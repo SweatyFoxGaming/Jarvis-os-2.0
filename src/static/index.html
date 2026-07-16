@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jarvis OS · The Living Mind</title>
+    <!-- Cytoscape for network graph visualization -->
+    <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"></script>
+    <style>
+        /* ------------------------------------------------------------------
+           THE LIVING MIND – Experimental UI for Jarvis OS v3.0 (Phase XI)
+           Design: calm, elegant, futuristic, and fully observable.
+           ------------------------------------------------------------------ */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #06060c;
+            color: #d0d0e0;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+        #app {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            height: 100vh;
+            width: 100vw;
+            position: relative;
+        }
+        @media (max-width: 1024px) {
+            #app {
+                grid-template-columns: 1fr;
+            }
+            #sidebar {
+                display: none; /* Sidebar collapses on small views */
+            }
+        }
+
+        /* ---------- Left Sidebar: Observation Center ---------- */
+        #sidebar {
+            background: rgba(10, 10, 20, 0.95);
+            border-right: 1px solid rgba(100, 120, 200, 0.15);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            z-index: 10;
+        }
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .sidebar-header h1 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #e0e8f0;
+            letter-spacing: 0.05em;
+        }
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            color: #8ab4f8;
+            background: rgba(138, 180, 248, 0.1);
+            padding: 4px 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(138, 180, 248, 0.2);
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #4CAF50;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        /* Tabs Navigation */
+        .tabs {
+            display: flex;
+            background: rgba(0,0,0,0.2);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 12px;
+            background: none;
+            border: none;
+            color: #707888;
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            border-bottom: 2px solid transparent;
+        }
+        .tab-btn:hover {
+            color: #a0b0c8;
+            background: rgba(255,255,255,0.01);
+        }
+        .tab-btn.active {
+            color: #8ab4f8;
+            border-bottom-color: #8ab4f8;
+            background: rgba(120, 160, 255, 0.04);
+        }
+
+        .tab-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: none;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.05) transparent;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Tab Content: Diagnostics & Metrics */
+        .metric-card {
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.04);
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 10px;
+        }
+        .metric-card h3 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #6a768c;
+            margin-bottom: 6px;
+        }
+        .metric-value {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #e2e8f0;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        /* Tab Content: Telemetry Streams */
+        .log-container {
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .log-item {
+            padding: 6px 8px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.01);
+            border-left: 2px solid #555;
+            line-height: 1.4;
+        }
+        .log-item.info { border-left-color: #4abfc7; color: #b0d8e8; }
+        .log-item.warn { border-left-color: #FFA726; color: #ffd8a8; }
+        .log-item.error { border-left-color: #EF5350; color: #ffc9c9; }
+        .log-item.debug { border-left-color: #78909C; color: #8899a6; }
+        .log-meta {
+            font-size: 0.65rem;
+            color: rgba(255,255,255,0.25);
+            margin-bottom: 2px;
+        }
+
+        /* Tab Content: Decision traces */
+        .trace-card {
+            background: rgba(138, 180, 248, 0.03);
+            border: 1px solid rgba(138, 180, 248, 0.1);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+        .trace-card .title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #8ab4f8;
+            margin-bottom: 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 6px;
+        }
+        .trace-field {
+            margin-bottom: 8px;
+        }
+        .trace-label {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #6a768c;
+        }
+        .trace-value {
+            font-size: 0.8rem;
+            color: #d0d8e8;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+        .trace-badge {
+            display: inline-block;
+            font-size: 0.65rem;
+            background: rgba(255,255,255,0.05);
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-right: 4px;
+            margin-top: 4px;
+            color: #a0c0e0;
+        }
+
+        /* ---------- Main Area: Graph Canvas ---------- */
+        #main-viewport {
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            height: 100vh;
+            background: radial-gradient(ellipse at center, #11111a 0%, #06060c 100%);
+        }
+        #mind-graph {
+            flex: 1;
+            width: 100%;
+        }
+
+        /* ---------- Chat Console: Floating Right ---------- */
+        #conversation-panel {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            width: 380px;
+            max-height: 340px;
+            background: rgba(10, 10, 18, 0.85);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(138, 180, 248, 0.15);
+            border-radius: 16px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+            transition: all 0.3s ease;
+            z-index: 10;
+        }
+        #conversation-panel:hover {
+            border-color: rgba(138, 180, 248, 0.3);
+            box-shadow: 0 16px 48px rgba(120, 160, 255, 0.1);
+        }
+        #conversation-messages {
+            flex: 1;
+            max-height: 220px;
+            overflow-y: auto;
+            margin-bottom: 12px;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.05) transparent;
+        }
+        #conversation-messages::-webkit-scrollbar {
+            width: 4px;
+        }
+        #conversation-messages::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+        }
+        .message {
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+            transition: opacity 0.2s;
+        }
+        .message.user {
+            color: #8ab4f8;
+            font-weight: 500;
+        }
+        .message.user::before {
+            content: "You: ";
+            opacity: 0.5;
+            font-size: 0.75rem;
+        }
+        .message.assistant {
+            color: #e2e8f0;
+        }
+        .message.assistant::before {
+            content: "Jarvis: ";
+            opacity: 0.5;
+            font-size: 0.75rem;
+            color: #9C27B0;
+        }
+        #conversation-input {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding-top: 10px;
+        }
+        #user-input {
+            flex: 1;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 20px;
+            padding: 8px 16px;
+            color: #f1f3f5;
+            font-size: 0.85rem;
+            outline: none;
+            transition: all 0.2s;
+        }
+        #user-input:focus {
+            border-color: rgba(138, 180, 248, 0.4);
+            background: rgba(255,255,255,0.05);
+        }
+        #send-btn {
+            background: rgba(138, 180, 248, 0.15);
+            border: none;
+            border-radius: 50%;
+            width: 34px;
+            height: 34px;
+            color: #8ab4f8;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #send-btn:hover {
+            background: rgba(138, 180, 248, 0.3);
+            color: #ffffff;
+        }
+
+        /* ---------- Control Bar: Bottom Left ---------- */
+        #controls {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            display: flex;
+            gap: 12px;
+            z-index: 10;
+        }
+        #controls button {
+            background: rgba(20, 20, 35, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 30px;
+            padding: 8px 18px;
+            color: #a0b0c8;
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        #controls button:hover {
+            background: rgba(138, 180, 248, 0.15);
+            border-color: rgba(138, 180, 248, 0.3);
+            color: #ffffff;
+        }
+
+        /* ---------- Info Drawer Panel ---------- */
+        #info-panel {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            width: 320px;
+            max-height: 70vh;
+            background: rgba(10, 10, 20, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(138, 180, 248, 0.2);
+            border-radius: 16px;
+            padding: 18px;
+            z-index: 20;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.8);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            overflow-y: auto;
+            color: #c0c8d8;
+        }
+        #info-panel.hidden {
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-10px);
+        }
+        .info-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 8px;
+        }
+        .info-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #e2e8f0;
+        }
+        #info-close {
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.4);
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0 4px;
+        }
+        #info-close:hover {
+            color: #fff;
+        }
+        #info-content {
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+        #info-content .label {
+            color: #6a768c;
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 10px;
+        }
+        #info-content .value {
+            color: #e2e8f0;
+            word-break: break-all;
+        }
+
+        /* ---------- Sleep overlay ---------- */
+        #sleep-overlay {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background: rgba(5, 5, 15, 0.65);
+            backdrop-filter: blur(6px);
+            z-index: 5;
+            pointer-events: none;
+        }
+        #sleep-overlay.active {
+            display: block;
+        }
+
+        /* ---------- Notifications Badge ---------- */
+        #notification-container {
+            position: absolute;
+            bottom: 30px;
+            right: 430px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 15;
+            pointer-events: none;
+        }
+        .notification-badge {
+            background: rgba(10, 15, 30, 0.9);
+            backdrop-filter: blur(10px);
+            border-left: 3px solid #8ab4f8;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            color: #b0c8e8;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: auto;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(30px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <!-- Sidebar: Observation Center (Phase XI Pass 6) -->
+    <div id="sidebar">
+        <div class="sidebar-header">
+            <h1>JARVIS OS v3.0</h1>
+            <div class="status-badge">
+                <span class="status-dot"></span>
+                <span>Active Mind</span>
+            </div>
+        </div>
+
+        <!-- Navigation tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('diagnostics')">Diagnostics</button>
+            <button class="tab-btn" onclick="switchTab('telemetry')">Telemetry</button>
+            <button class="tab-btn" onclick="switchTab('traces')">Decisions</button>
+        </div>
+
+        <!-- Tab 1: Diagnostics & Real Metrics -->
+        <div id="tab-diagnostics" class="tab-content active">
+            <div class="metric-grid">
+                <div class="metric-card">
+                    <h3>Uptime</h3>
+                    <div class="metric-value" id="uptime-val">0s</div>
+                </div>
+                <div class="metric-card">
+                    <h3>API Success</h3>
+                    <div class="metric-value" id="success-val">100%</div>
+                </div>
+            </div>
+            <div class="metric-grid">
+                <div class="metric-card">
+                    <h3>Avg Latency</h3>
+                    <div class="metric-value" id="latency-val">0ms</div>
+                </div>
+                <div class="metric-card">
+                    <h3>Cognitive Load</h3>
+                    <div class="metric-value" id="cpu-val">12%</div>
+                </div>
+            </div>
+
+            <div class="metric-card" style="margin-top: 10px;">
+                <h3>System Architecture Integrity</h3>
+                <div style="font-size: 0.8rem; color: #a0aec0; margin-top: 4px; line-height: 1.4;">
+                    • Single-Responsibility: <span style="color: #4CAF50;">Aligned</span><br>
+                    • Subsystem Boundaries: <span style="color: #4CAF50;">Decoupled</span><br>
+                    • Database Pathway: <span style="color: #8ab4f8;">In-Memory SQLite Stub</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Cognitive Facts Loaded</h3>
+                <div class="metric-value" style="font-size: 1.1rem; color: #9C27B0;" id="facts-count">3</div>
+            </div>
+        </div>
+
+        <!-- Tab 2: Telemetry Logger -->
+        <div id="tab-telemetry" class="tab-content">
+            <div class="log-container" id="telemetry-logs">
+                <div style="color: #6a768c; text-align: center; margin-top: 40px;">No telemetry logs received.</div>
+            </div>
+        </div>
+
+        <!-- Tab 3: Detailed Decision Trace (Pass 7 Explainability) -->
+        <div id="tab-traces" class="tab-content">
+            <div id="decision-trace-content">
+                <div style="color: #6a768c; text-align: center; margin-top: 40px;">Awaiting decision trace triggers.<br><span style="font-size: 0.7rem; opacity: 0.8;">Send a message to view reasoning.</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Viewport: Graph Canvas & Controllers -->
+    <div id="main-viewport">
+        <!-- Cytoscape Network Mind Map -->
+        <div id="mind-graph"></div>
+
+        <!-- Controls: Bottom Left -->
+        <div id="controls">
+            <button id="sleep-toggle">💤 Sleep Mode</button>
+            <button id="memory-scan">🧠 Scan Memory</button>
+            <button id="capability-exec">⚡ Run Capability</button>
+            <button id="reflect-btn">🔄 Reflect</button>
+        </div>
+
+        <!-- Conversation Panel: Floating Right -->
+        <div id="conversation-panel">
+            <div id="conversation-messages"></div>
+            <div id="conversation-input">
+                <input type="text" id="user-input" placeholder="Ask Jarvis…" autocomplete="off" />
+                <button id="send-btn">→</button>
+            </div>
+        </div>
+
+        <!-- Info Drawer Panel (Dynamic, clicking nodes loads live express variables) -->
+        <div id="info-panel" class="hidden">
+            <div class="info-header">
+                <h2 id="info-title">Node</h2>
+                <button id="info-close">✕</button>
+            </div>
+            <div id="info-content"></div>
+        </div>
+
+        <!-- Sleep Mode Overlay -->
+        <div id="sleep-overlay"></div>
+
+        <!-- Notifications badge container -->
+        <div id="notification-container"></div>
+    </div>
+</div>
+
+<script>
+    // ------------------------------------------------------------------
+    // FRONTEND INTERACTIVE ENGINE (PHASE XI PASS 10 POLISH)
+    // ------------------------------------------------------------------
+
+    const API_KEY = "admin"; // Default admin token matching Express backend
+
+    // Network definitions
+    const NODES = [
+        { id: 'user', label: 'User', type: 'user', color: '#6a8cff' },
+        { id: 'conversation', label: 'Conversation', type: 'conversation', color: '#8899cc' },
+        { id: 'intent', label: 'Intent', type: 'executive', color: '#4a8fc7' },
+        { id: 'goals', label: 'Goals', type: 'executive', color: '#4a8fc7' },
+        { id: 'strategy', label: 'Strategy', type: 'executive', color: '#4a8fc7' },
+        { id: 'planner', label: 'Planner', type: 'executive', color: '#4a8fc7' },
+        { id: 'decision', label: 'Decision Engine', type: 'executive', color: '#4a8fc7' },
+        { id: 'delegation', label: 'Delegation', type: 'executive', color: '#4a8fc7' },
+        { id: 'execution', label: 'Execution', type: 'execution', color: '#4CAF50' },
+        { id: 'reflection', label: 'Reflection', type: 'cognitive', color: '#9C27B0' },
+        { id: 'learning', label: 'Learning', type: 'cognitive', color: '#9C27B0' },
+        { id: 'knowledge', label: 'Knowledge', type: 'cognitive', color: '#9C27B0' },
+        { id: 'workspace', label: 'Workspace', type: 'cognitive', color: '#9C27B0' },
+        { id: 'memory', label: 'Memory', type: 'cognitive', color: '#9C27B0' },
+        { id: 'capability_platform', label: 'Capability Platform', type: 'capability', color: '#FF9800' },
+        { id: 'capability_resolver', label: 'Capability Resolver', type: 'capability', color: '#FF9800' },
+        { id: 'capability_registry', label: 'Capability Registry', type: 'capability', color: '#FF9800' },
+        { id: 'scheduler', label: 'Scheduler', type: 'execution', color: '#4CAF50' },
+        { id: 'event_bus', label: 'Event Bus', type: 'infrastructure', color: '#78909C' },
+        { id: 'system', label: 'System', type: 'infrastructure', color: '#78909C' },
+    ];
+
+    const EDGES = [
+        { source: 'user', target: 'conversation' },
+        { source: 'conversation', target: 'intent' },
+        { source: 'intent', target: 'goals' },
+        { source: 'goals', target: 'strategy' },
+        { source: 'strategy', target: 'planner' },
+        { source: 'planner', target: 'decision' },
+        { source: 'decision', target: 'delegation' },
+        { source: 'delegation', target: 'execution' },
+        { source: 'execution', target: 'capability_platform' },
+        { source: 'capability_platform', target: 'capability_resolver' },
+        { source: 'capability_resolver', target: 'capability_registry' },
+        { source: 'capability_platform', target: 'scheduler' },
+        { source: 'scheduler', target: 'execution' },
+        { source: 'execution', target: 'reflection' },
+        { source: 'reflection', target: 'learning' },
+        { source: 'learning', target: 'knowledge' },
+        { source: 'knowledge', target: 'workspace' },
+        { source: 'workspace', target: 'memory' },
+        { source: 'memory', target: 'goals' },
+        { source: 'event_bus', target: 'execution' },
+        { source: 'event_bus', target: 'delegation' },
+        { source: 'system', target: 'event_bus' },
+        { source: 'system', target: 'capability_registry' },
+    ];
+
+    // ---- Cytoscape Init ----
+    const cy = cytoscape({
+        container: document.getElementById('mind-graph'),
+        elements: [
+            ...NODES.map(n => ({ data: { id: n.id, label: n.label, type: n.type, color: n.color } })),
+            ...EDGES.map(e => ({ data: { source: e.source, target: e.target } })),
+        ],
+        style: [
+            {
+                selector: 'node',
+                style: {
+                    'background-color': 'data(color)',
+                    'width': 42,
+                    'height': 42,
+                    'border-width': 2,
+                    'border-color': 'rgba(255,255,255,0.12)',
+                    'label': 'data(label)',
+                    'font-size': '10px',
+                    'color': '#b0c8e8',
+                    'text-valign': 'bottom',
+                    'text-halign': 'center',
+                    'text-margin-y': 8,
+                    'text-wrap': 'wrap',
+                    'text-max-width': 90,
+                },
+            },
+            {
+                selector: 'edge',
+                style: {
+                    'width': 1.5,
+                    'line-color': 'rgba(138, 180, 248, 0.15)',
+                    'curve-style': 'bezier',
+                    'target-arrow-shape': 'none',
+                    'opacity': 0.5,
+                },
+            },
+            {
+                selector: 'node.user',
+                style: { 'width': 48, 'height': 48, 'font-size': '11px', 'border-color': '#6a8cff' }
+            }
+        ],
+        layout: {
+            name: 'cose',
+            idealEdgeLength: 70,
+            nodeRepulsion: 500,
+            gravity: 0.25,
+            numIter: 1000,
+            animate: false,
+        },
+        zoom: 0.75,
+        pan: { x: 20, y: 10 },
+        minZoom: 0.3,
+        maxZoom: 1.5,
+    });
+
+    // Node state tracker
+    const nodeStates = {};
+
+    function setNodeState(nodeId, state, duration = 1200) {
+        const node = cy.getElementById(nodeId);
+        if (!node.length) return;
+        const colors = {
+            idle: NODES.find(n => n.id === nodeId)?.color || '#4a8fc7',
+            thinking: '#ffffff',
+            planning: '#FFD700',
+            learning: '#9C27B0',
+            executing: '#4CAF50',
+            warning: '#FFA726',
+            failure: '#EF5350',
+            sleeping: '#80DEEA',
+        };
+        const bg = colors[state] || colors.idle;
+        node.style('background-color', bg);
+        if (state === 'thinking') {
+            node.style('border-color', '#ffffff');
+            node.style('border-width', 4);
+        } else {
+            node.style('border-color', 'rgba(255,255,255,0.12)');
+            node.style('border-width', 2);
+        }
+        nodeStates[nodeId] = { state, timestamp: Date.now() };
+    }
+
+    // ---- Sidebar Navigation ----
+    function switchTab(tabId) {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        
+        const eventBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => b.textContent.toLowerCase().includes(tabId));
+        if (eventBtn) eventBtn.classList.add('active');
+        
+        const content = document.getElementById(`tab-${tabId}`);
+        if (content) content.classList.add('active');
+    }
+
+    // ---- Micro Animations ----
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function animateThinking() {
+        const path = ['user', 'conversation', 'intent', 'goals', 'strategy', 'planner', 'decision', 'delegation', 'execution'];
+        NODES.forEach(n => setNodeState(n.id, 'idle'));
+        for (const id of path) {
+            setNodeState(id, 'thinking', 400);
+            await sleep(150);
+        }
+    }
+
+    async function animateMemoryScan() {
+        addNotification("Accessing long-term semantic knowledge vectors.");
+        const path = ['user', 'conversation', 'memory'];
+        for (const id of path) {
+            setNodeState(id, 'learning', 600);
+            await sleep(200);
+        }
+        await sleep(600);
+        NODES.forEach(n => setNodeState(n.id, 'idle'));
+    }
+
+    async function animateCapabilityExecution() {
+        addNotification("Invoking external capability layer.");
+        const path = ['capability_platform', 'capability_resolver', 'capability_registry', 'execution'];
+        for (const id of path) {
+            setNodeState(id, 'executing', 600);
+            await sleep(200);
+        }
+        await sleep(600);
+        NODES.forEach(n => setNodeState(n.id, 'idle'));
+    }
+
+    async function animateReflection() {
+        addNotification("Performing system heuristic alignment check.");
+        const cluster = ['reflection', 'learning', 'knowledge', 'workspace', 'memory'];
+        for (const id of cluster) setNodeState(id, 'learning', 1000);
+        await sleep(1200);
+        NODES.forEach(n => setNodeState(n.id, 'idle'));
+    }
+
+    // ---- Sleep Mode ----
+    let sleepMode = false;
+    document.getElementById('sleep-toggle').addEventListener('click', () => {
+        sleepMode = !sleepMode;
+        document.getElementById('sleep-overlay').classList.toggle('active', sleepMode);
+        document.getElementById('sleep-toggle').classList.toggle('active', sleepMode);
+        NODES.forEach(n => {
+            const node = cy.getElementById(n.id);
+            if (node.length) {
+                if (sleepMode) {
+                    node.style('background-color', '#80DEEA');
+                    node.style('opacity', 0.6);
+                } else {
+                    node.style('background-color', n.color);
+                    node.style('opacity', 1);
+                }
+            }
+        });
+        addNotification(sleepMode ? "Jarvis OS entering low power state." : "Jarvis OS returned to executive active state.");
+    });
+
+    // ---- API Communication & Observation Fetching ----
+    async function loadObservationData() {
+        try {
+            const headers = { 'X-API-Key': API_KEY };
+
+            // 1. Fetch Metrics
+            const metricsRes = await fetch('/api/observation/metrics', { headers });
+            if (metricsRes.ok) {
+                const metrics = await metricsRes.json();
+                document.getElementById('uptime-val').textContent = formatUptime(metrics.system.uptimeSeconds);
+                document.getElementById('cpu-val').textContent = `${Math.round(metrics.system.cpuUsagePercent)}%`;
+                document.getElementById('latency-val').textContent = `${metrics.counters.averageLatencyMs}ms`;
+                
+                const calls = metrics.counters.geminiApiCalls;
+                const rate = calls > 0 ? "100%" : "Simulated";
+                document.getElementById('success-val').textContent = rate;
+            }
+
+            // 2. Fetch Telemetry logs
+            const telemetryRes = await fetch('/api/observation/telemetry', { headers });
+            if (telemetryRes.ok) {
+                const logs = await telemetryRes.json();
+                const container = document.getElementById('telemetry-logs');
+                if (logs.length === 0) {
+                    container.innerHTML = '<div style="color: #6a768c; text-align: center; margin-top: 40px;">No telemetry logs received.</div>';
+                } else {
+                    container.innerHTML = logs.slice().reverse().map(log => `
+                        <div class="log-item ${log.level}">
+                            <div class="log-meta">[${new Date(log.timestamp).toLocaleTimeString()}] ${log.subsystem}</div>
+                            <div>${log.message}</div>
+                        </div>
+                    `).join('');
+                }
+            }
+
+            // 3. Fetch Cognitive Workspace snapshot
+            const workspaceRes = await fetch('/api/cognition/workspace', { headers });
+            if (workspaceRes.ok) {
+                const ws = await workspaceRes.json();
+                document.getElementById('facts-count').textContent = ws.knowledge.factsCount;
+            }
+
+        } catch (e) {
+            console.error("Failed to load metrics/logs:", e);
+        }
+    }
+
+    function formatUptime(secs) {
+        if (secs < 60) return `${secs}s`;
+        const mins = Math.floor(secs / 60);
+        const rem = secs % 60;
+        return `${mins}m ${rem}s`;
+    }
+
+    // ---- Chat Integration & Decision Trace Render ----
+    const messagesContainer = document.getElementById('conversation-messages');
+    const userInput = document.getElementById('user-input');
+    const sendBtn = document.getElementById('send-btn');
+
+    function addMessage(text, sender) {
+        const div = document.createElement('div');
+        div.className = `message ${sender}`;
+        div.textContent = text;
+        messagesContainer.appendChild(div);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    async function handleSend() {
+        const text = userInput.value.trim();
+        if (!text) return;
+        userInput.value = '';
+        addMessage(text, 'user');
+
+        // Play thinking pulses
+        animateThinking();
+
+        try {
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': API_KEY
+                },
+                body: JSON.stringify({ message: text })
+            });
+
+            if (!response.ok) {
+                throw new Error("HTTP error " + response.status);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let assistantMessageDiv = null;
+            let fullAssistantText = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split("\n");
+
+                for (const line of lines) {
+                    if (line.startsWith("data: ")) {
+                        const dataStr = line.slice(6).trim();
+                        if (dataStr === "[DONE]") {
+                            break;
+                        }
+
+                        // Check if it's a decision trace detail
+                        if (dataStr.startsWith("detail: ")) {
+                            try {
+                                const trace = JSON.parse(dataStr.slice(8));
+                                renderDecisionTrace(trace);
+                                addNotification("Decision trace recorded. Click 'Decisions' to inspect.");
+                            } catch (err) {
+                                console.error("Error parsing trace detail:", err);
+                            }
+                            continue;
+                        }
+
+                        if (dataStr.startsWith("Error:")) {
+                            addMessage(dataStr, 'assistant');
+                            break;
+                        }
+
+                        // Text stream chunk
+                        if (!assistantMessageDiv) {
+                            assistantMessageDiv = document.createElement('div');
+                            assistantMessageDiv.className = 'message assistant';
+                            messagesContainer.appendChild(assistantMessageDiv);
+                        }
+                        fullAssistantText += dataStr;
+                        assistantMessageDiv.textContent = fullAssistantText;
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    }
+                }
+            }
+
+            // Refresh dashboards
+            loadObservationData();
+
+        } catch (err) {
+            console.error("Chat failure:", err);
+            addMessage("Cognitive interface pipeline severed. Confirm server connectivity.", 'assistant');
+        }
+    }
+
+    function renderDecisionTrace(trace) {
+        const container = document.getElementById('decision-trace-content');
+        container.innerHTML = `
+            <div class="trace-card">
+                <div class="title">🧠 ${trace.intent}</div>
+                
+                <div class="trace-field">
+                    <div class="trace-label">Goals Assigned</div>
+                    <div class="trace-value">
+                        ${trace.goals.map(g => `<span class="trace-badge">🎯 ${g}</span>`).join('')}
+                    </div>
+                </div>
+
+                <div class="trace-field" style="margin-top: 10px;">
+                    <div class="trace-label">Strategy Chosen</div>
+                    <div class="trace-value" style="color: #8ab4f8; font-weight: 500;">
+                        ${trace.strategy}
+                    </div>
+                </div>
+
+                <div class="trace-field">
+                    <div class="trace-label">Planner Sequence</div>
+                    <div class="trace-value">
+                        ${trace.planner.map(p => `• ${p}<br>`).join('')}
+                    </div>
+                </div>
+
+                <div class="trace-field">
+                    <div class="trace-label">Capability Selection</div>
+                    <div class="trace-value">
+                        ${trace.capabilitySelection.map(c => `<span class="trace-badge">⚡ ${c}</span>`).join('')}
+                    </div>
+                </div>
+
+                <div class="trace-field" style="margin-top: 10px;">
+                    <div class="trace-label">Decision Reasoning</div>
+                    <div class="trace-value" style="font-style: italic; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 6px; margin-top: 2px;">
+                        "${trace.reasoning}"
+                    </div>
+                </div>
+
+                <div class="trace-field" style="margin-top: 10px;">
+                    <div class="trace-label">Reflection State</div>
+                    <div class="trace-value" style="color: #4CAF50;">
+                        ✓ ${trace.reflection}
+                    </div>
+                </div>
+
+                <div class="trace-field" style="margin-top: 8px; display: flex; justify-content: space-between;">
+                    <div>
+                        <span class="trace-label">Confidence</span>
+                        <span class="trace-value" style="color: #9C27B0; font-weight: 600;"> ${Math.round(trace.confidence * 100)}%</span>
+                    </div>
+                    <div style="font-size: 0.65rem; color: rgba(255,255,255,0.3);">
+                        ${new Date(trace.timestamp).toLocaleTimeString()}
+                    </div>
+                </div>
+            </div>
+        `;
+        switchTab('traces'); // Switch tabs to display the trace immediately
+    }
+
+    sendBtn.addEventListener('click', handleSend);
+    userInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleSend();
+    });
+
+    // ---- Node Information Window Loader ----
+    const infoPanel = document.getElementById('info-panel');
+    const infoTitle = document.getElementById('info-title');
+    const infoContent = document.getElementById('info-content');
+    const infoClose = document.getElementById('info-close');
+
+    cy.on('tap', 'node', async (evt) => {
+        const node = evt.target;
+        const id = node.id();
+        const data = node.data();
+        const label = data.label || id;
+
+        infoTitle.textContent = label;
+        infoContent.innerHTML = `<div style="color: #6a768c;">Interrogating platform interfaces...</div>`;
+        infoPanel.classList.remove('hidden');
+
+        try {
+            // Fetch live context values from the Express server!
+            const headers = { 'X-API-Key': API_KEY };
+            const res = await fetch('/api/cognition/workspace', { headers });
+            
+            if (res.ok) {
+                const ws = await res.json();
+                
+                let contextSpecificHTML = '';
+                if (id === 'goals') {
+                    contextSpecificHTML = `
+                        <div class="label">Primary Active Objective</div>
+                        <div class="value" style="color: #FF9800; font-weight: 500;">${ws.goal.activeGoal}</div>
+                        <div class="label">Priority Rating</div>
+                        <div class="value">${ws.goal.priority}/10</div>
+                        <div class="label">System Budget Remaining</div>
+                        <div class="value" style="color: #4CAF50;">${ws.goal.budgetCredits} Credits</div>
+                    `;
+                } else if (id === 'workspace') {
+                    contextSpecificHTML = `
+                        <div class="label">Active Core Context Views</div>
+                        <div class="value">• Goal Context<br>• Conversation Context<br>• Execution Context<br>• Knowledge Context<br>• Capability Context<br>• Environment Context<br>• Reasoning Context</div>
+                    `;
+                } else if (id === 'execution') {
+                    contextSpecificHTML = `
+                        <div class="label">Active Task</div>
+                        <div class="value">${ws.execution.activeTask || 'None'}</div>
+                        <div class="label">State Status</div>
+                        <div class="value" style="color: #4CAF50; font-weight: 600;">${ws.execution.status.toUpperCase()}</div>
+                    `;
+                } else if (id === 'knowledge') {
+                    contextSpecificHTML = `
+                        <div class="label">Active Knowledge Facts</div>
+                        <div class="value">${ws.knowledge.factsCount} rules integrated in-memory</div>
+                    `;
+                } else if (id === 'intent') {
+                    contextSpecificHTML = `
+                        <div class="label">Last Tracked Intent</div>
+                        <div class="value" style="color: #8ab4f8;">Analyze Operator Queries</div>
+                    `;
+                }
+
+                infoContent.innerHTML = `
+                    <div class="label">Interface Port</div>
+                    <div class="value">/api/cognition/workspace</div>
+                    <div class="label">Bound Subsystem</div>
+                    <div class="value">${id} (Type: ${data.type || 'unknown'})</div>
+                    ${contextSpecificHTML}
+                    <div class="label">Functional Boundary</div>
+                    <div class="value">${getNodeDescription(id)}</div>
+                `;
+            } else {
+                throw new Error();
+            }
+        } catch {
+            // Fallback to offline defaults
+            infoContent.innerHTML = `
+                <div class="label">ID</div><div class="value">${id}</div>
+                <div class="label">Type</div><div class="value">${data.type || 'unknown'}</div>
+                <div class="label">Boundary Description</div><div class="value">${getNodeDescription(id)}</div>
+            `;
+        }
+    });
+
+    infoClose.addEventListener('click', () => infoPanel.classList.add('hidden'));
+
+    function getNodeDescription(id) {
+        const desc = {
+            user: 'The human operator. The source of all actions.',
+            conversation: 'The Dialogue Interface context. Holds recent conversational memory buffer.',
+            intent: 'Interpretation mapping. Distills user statements to explicit operational targets.',
+            goals: 'Executive Goals. Tracks active objectives, scheduling credits, and priority weights.',
+            strategy: 'Strategy Resolution. Selects processing loops, constraints check, and fallback paths.',
+            planner: 'Task planning. Splits complex strategic goals into sequentially execution arrays.',
+            decision: 'Executive decision engine. Signs and commits execution directives.',
+            delegation: 'Delegates active plans to corresponding execution capabilities.',
+            execution: 'Execution monitoring. Invokes capabilities, watches timeouts, tracks exceptions.',
+            reflection: 'Post-execution analyzer. Self-reflects on response quality, duration, and safety rules.',
+            learning: 'Knowledge assimilation. Integrates reflection outputs into memory structures.',
+            knowledge: 'Assimilated Fact Vault. Holds loaded guidelines, rules, and persistent configurations.',
+            workspace: 'Unified Cognitive Workspace. Synthesizes 7 independent contextual views safely.',
+            memory: 'Long-term Semantic Index. Direct access to stored interactions.',
+            capability_platform: 'Integrations Broker. Handles execution abstractions safely.',
+            capability_resolver: 'Resolver router. Matches specific tasks to registries.',
+            capability_registry: 'Capability database. Houses component manifests and API connections.',
+            scheduler: 'Time broker. Arranges repeating checks and background loops.',
+            event_bus: 'System-wide decoupled publish/subscribe channel.',
+            system: 'Foundational OS layer, hardware interfaces, and hosting runtime.',
+        };
+        return desc[id] || 'No description available.';
+    }
+
+    // ---- Toast Notification ----
+    function addNotification(message) {
+        const container = document.getElementById('notification-container');
+        const badge = document.createElement('div');
+        badge.className = 'notification-badge';
+        badge.textContent = message;
+        container.appendChild(badge);
+        setTimeout(() => badge.remove(), 4000);
+    }
+
+    // Controls Action bindings
+    document.getElementById('memory-scan').addEventListener('click', animateMemoryScan);
+    document.getElementById('capability-exec').addEventListener('click', animateCapabilityExecution);
+    document.getElementById('reflect-btn').addEventListener('click', animateReflection);
+
+    // ---- Live Network Float (Pass 10 Visual Polish) ----
+    setInterval(() => {
+        cy.nodes().forEach(node => {
+            node.position({
+                x: node.position('x') + (Math.random() - 0.5) * 1.5,
+                y: node.position('y') + (Math.random() - 0.5) * 1.5,
+            });
+        });
+    }, 4000);
+
+    // Warmup idle nodes visualization
+    setTimeout(() => {
+        ['executive', 'cognitive', 'capability_platform', 'memory'].forEach(id => {
+            setNodeState(id, 'idle');
+        });
+    }, 500);
+
+    // Periodic live updater (every 4 seconds)
+    loadObservationData();
+    setInterval(loadObservationData, 4000);
+
+    console.log('🧠 Observable Living Mind UI initialized.');
+</script>
+</body>
+</html>

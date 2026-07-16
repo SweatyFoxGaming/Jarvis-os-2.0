@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jarvis OS · The Living Mind</title>
+    <!-- Cytoscape.js -->
+    <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js">
+    </script>
+    <!-- Custom Styles & Scripts -->
+    <link rel="stylesheet" href="/css/mind.css" />
+</head>
+<body>
+
+    <div id="app">
+        <!-- Graph Container -->
+        <div id="mind-graph"></div>
+
+        <!-- Conversation Panel -->
+        <div id="conversation-panel">
+            <div id="conversation-messages"></div>
+            <div id="conversation-input">
+                <input type="text" id="user-input" placeholder="Ask Jarvis…" />
+                <button id="send-btn">→</button>
+            </div>
+        </div>
+
+        <!-- Info Panel (hidden by default) -->
+        <div id="info-panel" class="hidden">
+            <div class="info-header">
+                <h2 id="info-title">Node</h2>
+                <button id="info-close">✕</button>
+            </div>
+            <div id="info-content"></div>
+        </div>
+
+        <!-- Notification indicators -->
+        <div id="notification-container"></div>
+    </div>
+
+    <!-- JavaScript Modules -->
+    <script src="/js/mind.js"></script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Logs
+logs/
+*.log
+
+# Database
+data/*.db
+data/*.sqlite
+*.db
+*.sqlite
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Model files (large)
+models/*.gguf
+models/*.bin
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.part
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# MyPy
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# Project specific
+data/
+tmp/
