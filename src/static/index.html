@@ -3,612 +3,650 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jarvis OS · The Living Mind</title>
-    <!-- Cytoscape for network graph visualization -->
+    <title>Jarvis OS · Autonomous Core</title>
+    <!-- Tailwind CSS CDN for modern utility classes -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Cytoscape for interactive network graph visualization -->
     <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"></script>
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        bg: '#07090e',
+                        card: '#0f131a',
+                        primary: '#38bdf8', // Cyber sky blue
+                        accent: '#a855f7', // Cognitive purple
+                        success: '#34d399', // Executing emerald
+                        warning: '#fbbf24', // Planning amber
+                        danger: '#f87171',
+                        text: '#f3f4f6',
+                        muted: '#6b7280'
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        /* ------------------------------------------------------------------
-           THE LIVING MIND – Experimental UI for Jarvis OS v3.0 (Phase XI)
-           Design: calm, elegant, futuristic, and fully observable.
-           ------------------------------------------------------------------ */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            background: #06060c;
-            color: #d0d0e0;
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            height: 100vh;
-            overflow: hidden;
-            user-select: none;
-        }
-        #app {
-            display: grid;
-            grid-template-columns: 380px 1fr;
-            height: 100vh;
-            width: 100vw;
-            position: relative;
-        }
-        @media (max-width: 1024px) {
-            #app {
-                grid-template-columns: 1fr;
-            }
-            #sidebar {
-                display: none; /* Sidebar collapses on small views */
-            }
-        }
-
-        /* ---------- Left Sidebar: Observation Center ---------- */
-        #sidebar {
-            background: rgba(10, 10, 20, 0.95);
-            border-right: 1px solid rgba(100, 120, 200, 0.15);
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            overflow: hidden;
-            z-index: 10;
-        }
-        .sidebar-header {
-            padding: 20px;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .sidebar-header h1 {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: #e0e8f0;
-            letter-spacing: 0.05em;
-        }
-        .status-badge {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 0.75rem;
-            color: #8ab4f8;
-            background: rgba(138, 180, 248, 0.1);
-            padding: 4px 10px;
-            border-radius: 12px;
-            border: 1px solid rgba(138, 180, 248, 0.2);
-        }
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            background: #4CAF50;
-            border-radius: 50%;
-            display: inline-block;
-        }
-
-        /* Tabs Navigation */
-        .tabs {
-            display: flex;
-            background: rgba(0,0,0,0.2);
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        .tab-btn {
-            flex: 1;
-            padding: 12px;
-            background: none;
-            border: none;
-            color: #707888;
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-            text-align: center;
-            border-bottom: 2px solid transparent;
-        }
-        .tab-btn:hover {
-            color: #a0b0c8;
-            background: rgba(255,255,255,0.01);
-        }
-        .tab-btn.active {
-            color: #8ab4f8;
-            border-bottom-color: #8ab4f8;
-            background: rgba(120, 160, 255, 0.04);
-        }
-
-        .tab-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 16px;
-            display: none;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255,255,255,0.05) transparent;
-        }
-        .tab-content.active {
-            display: block;
-        }
-
-        /* Tab Content: Diagnostics & Metrics */
-        .metric-card {
-            background: rgba(255,255,255,0.02);
-            border: 1px solid rgba(255,255,255,0.04);
-            border-radius: 10px;
-            padding: 12px;
-            margin-bottom: 10px;
-        }
-        .metric-card h3 {
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #6a768c;
-            margin-bottom: 6px;
-        }
-        .metric-value {
-            font-size: 1.4rem;
-            font-weight: 600;
-            color: #e2e8f0;
-        }
-        .metric-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-
-        /* Tab Content: Telemetry Streams */
-        .log-container {
-            font-family: 'JetBrains Mono', 'Courier New', monospace;
-            font-size: 0.75rem;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-        .log-item {
-            padding: 6px 8px;
-            border-radius: 4px;
-            background: rgba(255,255,255,0.01);
-            border-left: 2px solid #555;
-            line-height: 1.4;
-        }
-        .log-item.info { border-left-color: #4abfc7; color: #b0d8e8; }
-        .log-item.warn { border-left-color: #FFA726; color: #ffd8a8; }
-        .log-item.error { border-left-color: #EF5350; color: #ffc9c9; }
-        .log-item.debug { border-left-color: #78909C; color: #8899a6; }
-        .log-meta {
-            font-size: 0.65rem;
-            color: rgba(255,255,255,0.25);
-            margin-bottom: 2px;
-        }
-
-        /* Tab Content: Decision traces */
-        .trace-card {
-            background: rgba(138, 180, 248, 0.03);
-            border: 1px solid rgba(138, 180, 248, 0.1);
-            border-radius: 12px;
-            padding: 14px;
-            margin-bottom: 12px;
-        }
-        .trace-card .title {
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: #8ab4f8;
-            margin-bottom: 8px;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            padding-bottom: 6px;
-        }
-        .trace-field {
-            margin-bottom: 8px;
-        }
-        .trace-label {
-            font-size: 0.65rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #6a768c;
-        }
-        .trace-value {
-            font-size: 0.8rem;
-            color: #d0d8e8;
-            line-height: 1.4;
-            word-break: break-word;
-        }
-        .trace-badge {
-            display: inline-block;
-            font-size: 0.65rem;
-            background: rgba(255,255,255,0.05);
-            padding: 2px 6px;
-            border-radius: 4px;
-            margin-right: 4px;
-            margin-top: 4px;
-            color: #a0c0e0;
-        }
-
-        /* ---------- Main Area: Graph Canvas ---------- */
-        #main-viewport {
-            display: flex;
-            flex-direction: column;
-            position: relative;
-            height: 100vh;
-            background: radial-gradient(ellipse at center, #11111a 0%, #06060c 100%);
-        }
-        #mind-graph {
-            flex: 1;
-            width: 100%;
-        }
-
-        /* ---------- Chat Console: Floating Right ---------- */
-        #conversation-panel {
-            position: absolute;
-            bottom: 30px;
-            right: 30px;
-            width: 380px;
-            max-height: 340px;
-            background: rgba(10, 10, 18, 0.85);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(138, 180, 248, 0.15);
-            border-radius: 16px;
-            padding: 16px;
-            display: flex;
-            flex-direction: column;
-            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
-            transition: all 0.3s ease;
-            z-index: 10;
-        }
-        #conversation-panel:hover {
-            border-color: rgba(138, 180, 248, 0.3);
-            box-shadow: 0 16px 48px rgba(120, 160, 255, 0.1);
-        }
-        #conversation-messages {
-            flex: 1;
-            max-height: 220px;
-            overflow-y: auto;
-            margin-bottom: 12px;
-            font-size: 0.85rem;
-            line-height: 1.5;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255,255,255,0.05) transparent;
-        }
-        #conversation-messages::-webkit-scrollbar {
+        /* Custom scrollbar styles */
+        ::-webkit-scrollbar {
             width: 4px;
+            height: 4px;
         }
-        #conversation-messages::-webkit-scrollbar-thumb {
-            background: rgba(255,255,255,0.1);
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(56, 189, 248, 0.15);
             border-radius: 4px;
         }
-        .message {
-            padding: 6px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.02);
-            transition: opacity 0.2s;
-        }
-        .message.user {
-            color: #8ab4f8;
-            font-weight: 500;
-        }
-        .message.user::before {
-            content: "You: ";
-            opacity: 0.5;
-            font-size: 0.75rem;
-        }
-        .message.assistant {
-            color: #e2e8f0;
-        }
-        .message.assistant::before {
-            content: "Jarvis: ";
-            opacity: 0.5;
-            font-size: 0.75rem;
-            color: #9C27B0;
-        }
-        #conversation-input {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-            border-top: 1px solid rgba(255,255,255,0.05);
-            padding-top: 10px;
-        }
-        #user-input {
-            flex: 1;
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 20px;
-            padding: 8px 16px;
-            color: #f1f3f5;
-            font-size: 0.85rem;
-            outline: none;
-            transition: all 0.2s;
-        }
-        #user-input:focus {
-            border-color: rgba(138, 180, 248, 0.4);
-            background: rgba(255,255,255,0.05);
-        }
-        #send-btn {
-            background: rgba(138, 180, 248, 0.15);
-            border: none;
-            border-radius: 50%;
-            width: 34px;
-            height: 34px;
-            color: #8ab4f8;
-            font-size: 1.1rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        #send-btn:hover {
-            background: rgba(138, 180, 248, 0.3);
-            color: #ffffff;
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(56, 189, 248, 0.3);
         }
 
-        /* ---------- Control Bar: Bottom Left ---------- */
-        #controls {
-            position: absolute;
-            bottom: 30px;
-            left: 30px;
-            display: flex;
-            gap: 12px;
-            z-index: 10;
-        }
-        #controls button {
-            background: rgba(20, 20, 35, 0.7);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.05);
-            border-radius: 30px;
-            padding: 8px 18px;
-            color: #a0b0c8;
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        #controls button:hover {
-            background: rgba(138, 180, 248, 0.15);
-            border-color: rgba(138, 180, 248, 0.3);
-            color: #ffffff;
+        /* Glassmorphic panel elements */
+        .glass-panel {
+            background: rgba(15, 19, 26, 0.8);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.04);
         }
 
-        /* ---------- Info Drawer Panel ---------- */
-        #info-panel {
-            position: absolute;
-            top: 30px;
-            left: 30px;
-            width: 320px;
-            max-height: 70vh;
-            background: rgba(10, 10, 20, 0.95);
-            backdrop-filter: blur(20px);
-            border: 1px solid rgba(138, 180, 248, 0.2);
-            border-radius: 16px;
-            padding: 18px;
-            z-index: 20;
-            box-shadow: 0 16px 48px rgba(0,0,0,0.8);
-            transition: opacity 0.3s ease, transform 0.3s ease;
-            overflow-y: auto;
-            color: #c0c8d8;
+        .cyber-border {
+            border: 1px solid rgba(56, 189, 248, 0.08);
         }
-        #info-panel.hidden {
-            opacity: 0;
-            pointer-events: none;
-            transform: translateY(-10px);
-        }
-        .info-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 14px;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            padding-bottom: 8px;
-        }
-        .info-header h2 {
-            font-size: 1rem;
-            font-weight: 600;
-            color: #e2e8f0;
-        }
-        #info-close {
-            background: none;
-            border: none;
-            color: rgba(255,255,255,0.4);
-            font-size: 1.2rem;
-            cursor: pointer;
-            padding: 0 4px;
-        }
-        #info-close:hover {
-            color: #fff;
-        }
-        #info-content {
-            font-size: 0.8rem;
-            line-height: 1.5;
-        }
-        #info-content .label {
-            color: #6a768c;
-            font-size: 0.65rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-top: 10px;
-        }
-        #info-content .value {
-            color: #e2e8f0;
-            word-break: break-all;
+        
+        .cyber-border-active {
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.08);
         }
 
-        /* ---------- Sleep overlay ---------- */
-        #sleep-overlay {
-            display: none;
+        /* Micro-animations */
+        @keyframes pulse-slow {
+            0%, 100% { opacity: 0.3; transform: scale(0.98); }
+            50% { opacity: 0.95; transform: scale(1.02); }
+        }
+        .pulse-indicator {
+            animation: pulse-slow 2.5s infinite ease-in-out;
+        }
+
+        @keyframes orbit-slow {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .orbit-element {
+            animation: orbit-slow 20s infinite linear;
+        }
+
+        #mind-graph {
+            width: 100%;
+            height: 100%;
             position: absolute;
             inset: 0;
-            background: rgba(5, 5, 15, 0.65);
-            backdrop-filter: blur(6px);
-            z-index: 5;
-            pointer-events: none;
-        }
-        #sleep-overlay.active {
-            display: block;
+            z-index: 1;
         }
 
-        /* ---------- Notifications Badge ---------- */
-        #notification-container {
-            position: absolute;
-            bottom: 30px;
-            right: 430px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            z-index: 15;
-            pointer-events: none;
-        }
-        .notification-badge {
-            background: rgba(10, 15, 30, 0.9);
-            backdrop-filter: blur(10px);
-            border-left: 3px solid #8ab4f8;
-            padding: 8px 16px;
-            border-radius: 8px;
-            font-size: 0.75rem;
-            color: #b0c8e8;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-            animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-            pointer-events: auto;
-        }
-        @keyframes slideIn {
-            from { opacity: 0; transform: translateX(30px); }
-            to { opacity: 1; transform: translateX(0); }
+        /* Ambient scanline grid */
+        .grid-bg {
+            background-size: 40px 40px;
+            background-image: 
+                linear-gradient(to right, rgba(255, 255, 255, 0.01) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255, 255, 255, 0.01) 1px, transparent 1px);
         }
     </style>
 </head>
-<body>
-<div id="app">
-    <!-- Sidebar: Observation Center (Phase XI Pass 6) -->
-    <div id="sidebar">
-        <div class="sidebar-header">
-            <h1>JARVIS OS v3.0</h1>
-            <div class="status-badge">
-                <span class="status-dot"></span>
-                <span>Active Mind</span>
-            </div>
+<body class="bg-[#07090e] text-text font-sans h-screen w-screen overflow-hidden select-none grid-bg">
+<div id="app" class="h-full w-full flex">
+    
+    <!-- 1. LEFT-MOST NAVIGATION RAIL (Width: 80px) -->
+    <div class="w-20 bg-[#040609] border-r border-white/5 flex flex-col items-center py-6 gap-5 z-20 flex-shrink-0">
+        <div class="flex flex-col items-center gap-1.5 mb-6">
+            <span class="text-xs font-bold text-primary tracking-[0.2em] font-mono">JV-OS</span>
+            <div class="w-1.5 h-1.5 rounded-full bg-success pulse-indicator shadow-[0_0_8px_rgba(52,211,153,0.5)]"></div>
         </div>
+        
+        <!-- Navigation Buttons - Elegant SVG Icons and Typography -->
+        <div class="flex flex-col gap-1 w-full px-2 flex-1">
+            <!-- Dashboard -->
+            <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2z" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">DASH</span>
+            </button>
 
-        <!-- Navigation tabs -->
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('diagnostics')">Diagnostics</button>
-            <button class="tab-btn" onclick="switchTab('telemetry')">Telemetry</button>
-            <button class="tab-btn" onclick="switchTab('traces')">Decisions</button>
+            <!-- Conversation -->
+            <button onclick="switchTab('conversation')" id="nav-conversation" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">CHAT</span>
+            </button>
+
+            <!-- Working Memory (Workspace) -->
+            <button onclick="switchTab('workspace')" id="nav-workspace" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">MEM-W</span>
+            </button>
+
+            <!-- Semantic Index -->
+            <button onclick="switchTab('memory')" id="nav-memory" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">INDEX</span>
+            </button>
+
+            <!-- Logs -->
+            <button onclick="switchTab('observation')" id="nav-observation" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">TELEM</span>
+            </button>
+
+            <!-- Goals -->
+            <button onclick="switchTab('goals')" id="nav-goals" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">GOALS</span>
+            </button>
+
+            <!-- Capabilities (Tools) -->
+            <button onclick="switchTab('capabilities')" id="nav-capabilities" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">TOOLS</span>
+            </button>
+
+            <!-- Plugins (Plug) -->
+            <button onclick="switchTab('plugins')" id="nav-plugins" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">MATRIX</span>
+            </button>
+
+            <!-- Learning (Learn) -->
+            <button onclick="switchTab('learning')" id="nav-learning" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">LEARN</span>
+            </button>
+
+            <!-- Setup (Settings) -->
+            <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
+                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">SETUP</span>
+            </button>
         </div>
-
-        <!-- Tab 1: Diagnostics & Real Metrics -->
-        <div id="tab-diagnostics" class="tab-content active">
-            <div class="metric-grid">
-                <div class="metric-card">
-                    <h3>Uptime</h3>
-                    <div class="metric-value" id="uptime-val">0s</div>
-                </div>
-                <div class="metric-card">
-                    <h3>API Success</h3>
-                    <div class="metric-value" id="success-val">100%</div>
-                </div>
-            </div>
-            <div class="metric-grid">
-                <div class="metric-card">
-                    <h3>Avg Latency</h3>
-                    <div class="metric-value" id="latency-val">0ms</div>
-                </div>
-                <div class="metric-card">
-                    <h3>Cognitive Load</h3>
-                    <div class="metric-value" id="cpu-val">12%</div>
-                </div>
-            </div>
-
-            <div class="metric-card" style="margin-top: 10px;">
-                <h3>System Architecture Integrity</h3>
-                <div style="font-size: 0.8rem; color: #a0aec0; margin-top: 4px; line-height: 1.4;">
-                    • Single-Responsibility: <span style="color: #4CAF50;">Aligned</span><br>
-                    • Subsystem Boundaries: <span style="color: #4CAF50;">Decoupled</span><br>
-                    • Database Pathway: <span style="color: #8ab4f8;">In-Memory SQLite Stub</span>
-                </div>
-            </div>
-
-            <div class="metric-card">
-                <h3>Cognitive Facts Loaded</h3>
-                <div class="metric-value" style="font-size: 1.1rem; color: #9C27B0;" id="facts-count">3</div>
-            </div>
-        </div>
-
-        <!-- Tab 2: Telemetry Logger -->
-        <div id="tab-telemetry" class="tab-content">
-            <div class="log-container" id="telemetry-logs">
-                <div style="color: #6a768c; text-align: center; margin-top: 40px;">No telemetry logs received.</div>
-            </div>
-        </div>
-
-        <!-- Tab 3: Detailed Decision Trace (Pass 7 Explainability) -->
-        <div id="tab-traces" class="tab-content">
-            <div id="decision-trace-content">
-                <div style="color: #6a768c; text-align: center; margin-top: 40px;">Awaiting decision trace triggers.<br><span style="font-size: 0.7rem; opacity: 0.8;">Send a message to view reasoning.</span></div>
-            </div>
+        
+        <div class="mt-auto text-center text-[10px] text-muted font-mono opacity-50 tracking-wider">
+            v3.2
         </div>
     </div>
 
-    <!-- Main Viewport: Graph Canvas & Controllers -->
-    <div id="main-viewport">
-        <!-- Cytoscape Network Mind Map -->
+    <!-- 2. DETAILS SIDE-PANEL (Width: 360px) -->
+    <div class="w-90 bg-[#090d14]/90 border-r border-white/5 flex flex-col h-full overflow-hidden z-20 flex-shrink-0">
+        
+        <!-- Header -->
+        <div class="p-6 border-b border-white/5 flex items-center justify-between">
+            <div class="flex flex-col gap-0.5">
+                <h1 class="text-xs font-bold tracking-[0.25em] uppercase text-white font-mono">Jarvis Core</h1>
+                <span class="text-[10px] font-mono tracking-widest text-primary/70 uppercase" id="panel-title">DASHBOARD METRICS</span>
+            </div>
+            <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-primary/5 border border-primary/20 text-[9px] font-mono text-primary font-semibold tracking-wider">
+                <span id="active-user">SECURE_NODE</span>
+            </div>
+        </div>
+
+        <!-- Scrollable Tab Content Container -->
+        <div class="flex-1 overflow-y-auto p-5 space-y-4" id="details-scroller">
+            
+            <!-- Tab: Dashboard -->
+            <div id="view-dashboard" class="view-pane space-y-4">
+                <!-- Executive Status -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Executive State Parameters</h3>
+                    <div class="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                        <div id="status-thinking" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-white opacity-40"></span>THINKING</div>
+                        <div id="status-planning" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-warning opacity-40"></span>PLANNING</div>
+                        <div id="status-executing" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-success opacity-40"></span>EXECUTING</div>
+                        <div id="status-reflecting" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-purple-500 opacity-40"></span>REFLECTING</div>
+                        <div id="status-learning" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-blue-400 opacity-40"></span>LEARNING</div>
+                        <div id="status-idle" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>IDLE</div>
+                    </div>
+                </div>
+
+                <!-- Current Goal -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Active Target</h3>
+                        <span id="goal-priority" class="text-[9px] font-mono px-2 py-0.5 rounded bg-warning/10 text-warning font-semibold tracking-wider">PRI: 8</span>
+                    </div>
+                    <div class="text-xs font-semibold text-white leading-relaxed tracking-wide font-mono" id="goal-name">Aligning system with human preferences</div>
+                    <div class="space-y-1.5">
+                        <div class="flex justify-between text-[9px] font-mono text-muted uppercase tracking-wider">
+                            <span>Completeness Vector</span>
+                            <span id="goal-progress-text" class="text-primary">75%</span>
+                        </div>
+                        <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                            <div class="h-full bg-primary" id="goal-progress-bar" style="width: 75%;"></div>
+                        </div>
+                    </div>
+                    <div class="flex justify-between text-[9px] font-mono text-muted pt-1 border-t border-white/5 uppercase">
+                        <span>Horizon: <span class="text-white">Continuous</span></span>
+                        <span>Energy: <span id="goal-budget" class="text-success">100 Cr</span></span>
+                    </div>
+                </div>
+
+                <!-- Current Plan -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Target Workflow Breakdown</h3>
+                    <div id="current-plan-list" class="space-y-2 text-xs font-mono">
+                        <!-- Filled by JavaScript -->
+                    </div>
+                </div>
+
+                <!-- Health Dashboard -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Performance Ingestion</h3>
+                    <div class="grid grid-cols-2 gap-2 text-xs font-mono">
+                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
+                            <span class="text-muted block text-[9px] uppercase tracking-wider">Core Load</span>
+                            <span id="health-cpu" class="text-white font-semibold text-sm">12%</span>
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
+                            <span class="text-muted block text-[9px] uppercase tracking-wider">Workspace Allocation</span>
+                            <span id="health-ram" class="text-white font-semibold text-sm">4.2 GB</span>
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
+                            <span class="text-muted block text-[9px] uppercase tracking-wider">Response Clock</span>
+                            <span id="health-latency" class="text-white font-semibold text-sm">0ms</span>
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
+                            <span class="text-muted block text-[9px] uppercase tracking-wider">Persistent DB</span>
+                            <span class="text-success font-semibold text-[10px] tracking-wider uppercase">SQLite Active</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Conversation -->
+            <div id="view-conversation" class="view-pane space-y-4 hidden h-full flex flex-col">
+                <div class="bg-card border border-white/5 rounded-xl p-4 flex-1 flex flex-col min-h-[320px] cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono mb-3">Dialogue Matrix</h3>
+                    <div id="chat-scroller" class="flex-1 overflow-y-auto space-y-3 p-3 text-xs font-mono border border-white/5 rounded-lg bg-black/35 max-h-[320px]">
+                        <!-- Messages go here -->
+                        <div class="text-muted text-center py-12 text-[10px] tracking-widest uppercase opacity-60">Awaiting Dialogue stream.</div>
+                    </div>
+                    <div class="mt-3 flex gap-2">
+                        <input type="text" id="chat-input" placeholder="Enter objective command..." class="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-primary text-white tracking-wide">
+                        <button id="btn-chat-send" class="px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-mono hover:bg-primary/20 transition-all font-semibold tracking-wider">EXEC</button>
+                    </div>
+                </div>
+
+                <!-- Last Debate Report -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 hidden cyber-border" id="executive-board-widget">
+                    <div class="flex justify-between items-center border-b border-white/5 pb-2">
+                        <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Multi-Agent Board Consensus</h3>
+                        <span id="board-consensus-badge" class="text-[9px] font-mono px-2 py-0.5 rounded bg-success/15 text-success font-bold tracking-wider">APPROVED</span>
+                    </div>
+                    <div class="space-y-3 text-[11px] font-mono" id="board-debate-transcripts">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Workspace (Working Memory 2.0) -->
+            <div id="view-workspace" class="view-pane space-y-4 hidden">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Working Memory</h3>
+                    <button onclick="refreshWorkspaceSnapshot()" class="text-[10px] text-primary font-mono hover:underline uppercase tracking-wider">Snapshot</button>
+                </div>
+                <div id="working-memory-cells" class="space-y-3 text-xs">
+                    <!-- Loaded via API -->
+                </div>
+            </div>
+
+            <!-- Tab: Memory (Semantic Index) -->
+            <div id="view-memory" class="view-pane space-y-4 hidden">
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Cognitive Index Consolidation</h3>
+                    <div class="text-[11px] text-muted font-mono leading-relaxed">
+                        Verify transient schema nodes. Validation commits elements into SQLite primary database schemas permanently.
+                    </div>
+                    <div class="flex justify-between">
+                        <button onclick="verifyAllMemory()" class="w-full py-2 bg-success/10 text-success border border-success/20 rounded-lg text-xs font-mono font-semibold tracking-wider hover:bg-success/20 transition-all">Consolidate All Pending</button>
+                    </div>
+                </div>
+
+                <div class="space-y-3" id="pending-memories-container">
+                    <h4 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Pending Commit Nodes</h4>
+                    <div id="pending-memories-list" class="space-y-2">
+                        <!-- Loaded dynamically -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Observation -->
+            <div id="view-observation" class="view-pane space-y-4 hidden">
+                <div class="bg-card border border-white/5 rounded-xl p-4 flex flex-col h-full cyber-border">
+                    <div class="flex justify-between items-center border-b border-white/5 pb-2 mb-3">
+                        <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Telemetry Streams</h3>
+                        <button onclick="clearTelemetryLocal()" class="text-[9px] text-muted font-mono hover:underline uppercase tracking-wider">Flush</button>
+                    </div>
+                    <div id="telemetry-log-pane" class="overflow-y-auto space-y-2 p-3 font-mono text-[10px] bg-black/35 rounded-lg max-h-[220px] min-h-[160px]">
+                        <!-- Telemetry items -->
+                    </div>
+                </div>
+
+                <div class="bg-card border border-white/5 rounded-xl p-4 cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono mb-2">Audit Registry</h3>
+                    <div id="audit-trail-pane" class="overflow-y-auto space-y-1.5 font-mono text-[9px] max-h-[180px] text-muted leading-relaxed">
+                        <!-- Audit items -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Goals (Autonomous Execution Engine) -->
+            <div id="view-goals" class="view-pane space-y-4 hidden">
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Swarm Orchestration</h3>
+                    <div class="text-[11px] text-muted font-mono leading-relaxed">
+                        Commit objective formulations to the 5-stage sovereign multi-agent deployment platform.
+                    </div>
+                    <div class="space-y-2">
+                        <input type="text" id="objective-input" placeholder="Deploy microservices orchestrator..." class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-primary">
+                        <button id="btn-trigger-autonomous" class="w-full py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-mono font-bold tracking-wider hover:bg-primary/20 transition-all">INITIALIZE PIPELINE</button>
+                    </div>
+                </div>
+
+                <!-- Trace report status -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 hidden animate-pulse cyber-border" id="autonomous-running-indicator">
+                    <div class="flex items-center gap-2">
+                        <div class="w-1.5 h-1.5 rounded-full bg-warning animate-bounce"></div>
+                        <span class="text-[10px] font-mono font-medium text-warning uppercase tracking-wider">Swarm Engine Compiling Workflows...</span>
+                    </div>
+                </div>
+
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 hidden cyber-border" id="autonomous-trace-report">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-2">Swarm Execution Trace Map</h3>
+                    <div id="trace-steps-timeline" class="space-y-3 text-xs font-mono">
+                        <!-- Populated step-by-step -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Capabilities -->
+            <div id="view-capabilities" class="view-pane space-y-4 hidden">
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-4 cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono mb-2">Live Capability Bus</h3>
+                    <div class="space-y-4 text-xs font-mono">
+                        
+                        <!-- Capability: Research -->
+                        <div class="space-y-1.5">
+                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
+                                <span class="text-white">Research Swarm</span>
+                                <span class="text-success font-semibold">Running</span>
+                            </div>
+                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden flex gap-0.5">
+                                <div class="h-full bg-success w-1/4 animate-pulse"></div>
+                                <div class="h-full bg-success w-1/4 animate-pulse" style="animation-delay: 0.2s"></div>
+                                <div class="h-full bg-success w-1/4 animate-pulse" style="animation-delay: 0.4s"></div>
+                                <div class="h-full bg-white/5 w-1/4"></div>
+                            </div>
+                            <div class="flex justify-between text-[9px] text-muted uppercase">
+                                <span>Core Lat: 45ms</span>
+                                <span>Health: Excellent</span>
+                            </div>
+                        </div>
+
+                        <!-- Capability: Planning -->
+                        <div class="space-y-1.5">
+                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
+                                <span class="text-white">Planning Engine</span>
+                                <span class="text-muted">Idle</span>
+                            </div>
+                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                <div class="h-full bg-primary" style="width: 100%;"></div>
+                            </div>
+                            <div class="flex justify-between text-[9px] text-muted uppercase">
+                                <span>Core Lat: 12ms</span>
+                                <span>Health: 100%</span>
+                            </div>
+                        </div>
+
+                        <!-- Capability: Voice Synthesizer -->
+                        <div class="space-y-1.5">
+                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
+                                <span class="text-white">Voice Matrix</span>
+                                <span class="text-muted">Idle</span>
+                            </div>
+                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                <div class="h-full bg-gray-600 w-0"></div>
+                            </div>
+                            <div class="flex justify-between text-[9px] text-muted uppercase">
+                                <span>Core Lat: --</span>
+                                <span>Status: Ready</span>
+                            </div>
+                        </div>
+
+                        <!-- Capability: Filesystem broker -->
+                        <div class="space-y-1.5">
+                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
+                                <span class="text-white">Filesystem Sandbox</span>
+                                <span class="text-success font-semibold">Online</span>
+                            </div>
+                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                <div class="h-full bg-success" style="width: 100%;"></div>
+                            </div>
+                            <div class="flex justify-between text-[9px] text-muted uppercase">
+                                <span>Core Lat: 3ms</span>
+                                <span>Status: Secure</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Plugins & Environment -->
+            <div id="view-plugins" class="view-pane space-y-4 hidden">
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs font-mono cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Infrastructure Matrix</h3>
+                    <div class="space-y-2.5">
+                        <div class="flex justify-between border-b border-white/5 pb-1.5">
+                            <span class="text-muted uppercase text-[10px]">HOST MACHINE</span>
+                            <span class="text-white font-semibold">ONLINE</span>
+                        </div>
+                        <div class="flex justify-between border-b border-white/5 pb-1.5">
+                            <span class="text-muted uppercase text-[10px]">DOCKER INSTANCE</span>
+                            <span class="text-white">VIRTUALIZED</span>
+                        </div>
+                        <div class="flex justify-between border-b border-white/5 pb-1.5">
+                            <span class="text-muted uppercase text-[10px]">GITHUB BRIDGE</span>
+                            <span class="text-primary hover:underline cursor-pointer" onclick="addNotification('Github connection verified')">SYNC ACTIVE</span>
+                        </div>
+                        <div class="flex justify-between border-b border-white/5 pb-1.5">
+                            <span class="text-muted uppercase text-[10px]">SANDBOX BROWSERS</span>
+                            <span class="text-white">ISOLATED IDLE</span>
+                        </div>
+                        <div class="flex justify-between border-b border-white/5 pb-1.5">
+                            <span class="text-muted uppercase text-[10px]">OAUTH TOKEN BUS</span>
+                            <span class="text-white">STANDBY</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Learning -->
+            <div id="view-learning" class="view-pane space-y-4 hidden">
+                <!-- Style Preferences Cache -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-1.5">Syntactic Style Cache</h3>
+                    <div class="space-y-2 font-mono">
+                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Convention:</span><span id="pref-naming" class="text-white font-semibold">snake_case</span></div>
+                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Tab Indent:</span><span id="pref-tab" class="text-white">4</span></div>
+                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Framework:</span><span id="pref-framework" class="text-white">Express / Node</span></div>
+                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Pattern Architecture:</span><span id="pref-architecture" class="text-white">Decoupled-Contexts</span></div>
+                    </div>
+                </div>
+
+                <!-- Workflow Optimizer -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-1.5">Workflow Optimizer Log</h3>
+                    <div id="workflow-optimized-list" class="space-y-2 font-mono text-[11px] text-muted">
+                        <!-- Loaded via API -->
+                    </div>
+                </div>
+
+                <!-- Mistake Logs -->
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-1.5">Heuristic Mistake Cache</h3>
+                    <div id="mistake-log-list" class="space-y-2 font-mono text-[11px]">
+                        <!-- Loaded via API -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Settings -->
+            <div id="view-settings" class="view-pane space-y-4 hidden">
+                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs font-mono cyber-border">
+                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Authentication Guard</h3>
+                    <div class="space-y-3">
+                        <div class="space-y-1.5">
+                            <label class="text-[9px] text-muted uppercase tracking-wider">Access Token (X-API-Key)</label>
+                            <input type="password" id="api-key-input" value="admin" class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white tracking-widest focus:outline-none focus:border-primary">
+                        </div>
+                        <div class="flex justify-between items-center text-[10px] uppercase tracking-wider">
+                            <span class="text-muted">Encryption Status</span>
+                            <span id="key-status" class="text-success font-semibold">VALID SECURE</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- 3. MAIN COGNITIVE GRAPH ENGINE -->
+    <div class="flex-1 h-full relative flex flex-col" id="viewport-right">
+        <!-- Interactive Cytoscape network background representing "Memory Graph" -->
         <div id="mind-graph"></div>
 
-        <!-- Controls: Bottom Left -->
-        <div id="controls">
-            <button id="sleep-toggle">💤 Sleep Mode</button>
-            <button id="memory-scan">🧠 Scan Memory</button>
-            <button id="capability-exec">⚡ Run Capability</button>
-            <button id="reflect-btn">🔄 Reflect</button>
-        </div>
-
-        <!-- Conversation Panel: Floating Right -->
-        <div id="conversation-panel">
-            <div id="conversation-messages"></div>
-            <div id="conversation-input">
-                <input type="text" id="user-input" placeholder="Ask Jarvis…" autocomplete="off" />
-                <button id="send-btn">→</button>
+        <!-- Float Info Panel Drawer (loads live variables when tapping graph nodes) -->
+        <div id="info-drawer" class="absolute top-6 left-6 w-80 glass-panel border border-white/10 rounded-2xl p-5 z-10 transition-all duration-300 transform translate-y-[-10px] opacity-0 pointer-events-none shadow-2xl">
+            <div class="flex justify-between items-center border-b border-white/5 pb-2.5 mb-3">
+                <h4 id="info-drawer-title" class="text-xs font-bold tracking-[0.2em] uppercase font-mono text-white">NODE PROTOCOL</h4>
+                <button onclick="closeInfoDrawer()" class="text-muted hover:text-white transition-colors text-sm">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div id="info-drawer-content" class="text-xs font-mono text-muted space-y-2">
+                <!-- Loaded dynamically -->
             </div>
         </div>
 
-        <!-- Info Drawer Panel (Dynamic, clicking nodes loads live express variables) -->
-        <div id="info-panel" class="hidden">
-            <div class="info-header">
-                <h2 id="info-title">Node</h2>
-                <button id="info-close">✕</button>
+        <!-- Floating Dialog Trace Inspector (Loaded after dialogue execution) -->
+        <div id="float-trace-panel" class="absolute bottom-6 left-6 w-96 glass-panel rounded-2xl p-5 z-10 shadow-2xl transition-all duration-300 transform translate-y-[10px] opacity-0 pointer-events-none border border-primary/20">
+            <div class="flex justify-between items-center border-b border-white/10 pb-2.5 mb-3">
+                <h4 class="text-[10px] font-bold tracking-[0.15em] uppercase font-mono text-primary flex items-center gap-2">
+                    <span class="w-1.5 h-1.5 rounded-full bg-primary pulse-indicator shadow-[0_0_6px_rgba(56,189,248,0.4)]"></span>
+                    Explainability Trace Logic
+                </h4>
+                <button onclick="closeFloatTrace()" class="text-muted hover:text-white transition-colors text-sm">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
             </div>
-            <div id="info-content"></div>
+            <div id="float-trace-body" class="text-xs font-mono space-y-3 text-muted">
+                <!-- Filled dynamically on chat replies -->
+            </div>
         </div>
 
-        <!-- Sleep Mode Overlay -->
-        <div id="sleep-overlay"></div>
+        <!-- Floating Controls HUD -->
+        <div class="absolute bottom-6 right-6 z-10 flex gap-2">
+            <button onclick="runLocalDiagnostics()" class="px-4 py-2 bg-[#090d14]/80 backdrop-blur-md border border-white/10 hover:border-primary/30 rounded-full text-[10px] font-mono tracking-wider hover:bg-primary/5 transition-all flex items-center gap-2 text-white font-semibold">
+                <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                DIAGNOSTICS
+            </button>
+            <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="px-4 py-2 bg-[#090d14]/80 backdrop-blur-md border border-white/10 hover:border-accent/30 rounded-full text-[10px] font-mono tracking-wider hover:bg-accent/5 transition-all flex items-center gap-2 text-white font-semibold">
+                <svg class="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+                SLEEP COLD
+            </button>
+        </div>
 
-        <!-- Notifications badge container -->
-        <div id="notification-container"></div>
+        <!-- Ambient sleep mode overlay -->
+        <div id="sleep-mode-overlay" class="absolute inset-0 bg-blue-950/20 backdrop-blur-lg pointer-events-none opacity-0 transition-opacity duration-500 z-10 flex items-center justify-center">
+            <div class="text-center font-mono space-y-3">
+                <div class="relative w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                    <div class="absolute inset-0 rounded-full border border-accent/20 orbit-element"></div>
+                    <div class="absolute w-3 h-3 rounded-full bg-accent pulse-indicator shadow-[0_0_12px_rgba(168,85,247,0.6)]"></div>
+                </div>
+                <div class="text-sm font-bold text-accent tracking-[0.25em] uppercase">JARVIS COLD STANDBY</div>
+                <div class="text-[10px] text-muted uppercase tracking-wider">Passive security parameters executing</div>
+            </div>
+        </div>
+
+        <!-- Floating Notifications container -->
+        <div id="toast-container" class="absolute top-6 right-6 z-30 flex flex-col gap-2 pointer-events-none"></div>
     </div>
+
 </div>
 
+<!-- Interactive logic & APIs integration script -->
 <script>
-    // ------------------------------------------------------------------
-    // FRONTEND INTERACTIVE ENGINE (PHASE XI PASS 10 POLISH)
-    // ------------------------------------------------------------------
+    const API_URL = "";
+    let CURRENT_API_KEY = "admin";
 
-    const API_KEY = "admin"; // Default admin token matching Express backend
-
-    // Network definitions
-    const NODES = [
-        { id: 'user', label: 'User', type: 'user', color: '#6a8cff' },
-        { id: 'conversation', label: 'Conversation', type: 'conversation', color: '#8899cc' },
-        { id: 'intent', label: 'Intent', type: 'executive', color: '#4a8fc7' },
-        { id: 'goals', label: 'Goals', type: 'executive', color: '#4a8fc7' },
-        { id: 'strategy', label: 'Strategy', type: 'executive', color: '#4a8fc7' },
-        { id: 'planner', label: 'Planner', type: 'executive', color: '#4a8fc7' },
-        { id: 'decision', label: 'Decision Engine', type: 'executive', color: '#4a8fc7' },
-        { id: 'delegation', label: 'Delegation', type: 'executive', color: '#4a8fc7' },
-        { id: 'execution', label: 'Execution', type: 'execution', color: '#4CAF50' },
-        { id: 'reflection', label: 'Reflection', type: 'cognitive', color: '#9C27B0' },
-        { id: 'learning', label: 'Learning', type: 'cognitive', color: '#9C27B0' },
-        { id: 'knowledge', label: 'Knowledge', type: 'cognitive', color: '#9C27B0' },
-        { id: 'workspace', label: 'Workspace', type: 'cognitive', color: '#9C27B0' },
-        { id: 'memory', label: 'Memory', type: 'cognitive', color: '#9C27B0' },
-        { id: 'capability_platform', label: 'Capability Platform', type: 'capability', color: '#FF9800' },
-        { id: 'capability_resolver', label: 'Capability Resolver', type: 'capability', color: '#FF9800' },
-        { id: 'capability_registry', label: 'Capability Registry', type: 'capability', color: '#FF9800' },
-        { id: 'scheduler', label: 'Scheduler', type: 'execution', color: '#4CAF50' },
-        { id: 'event_bus', label: 'Event Bus', type: 'infrastructure', color: '#78909C' },
-        { id: 'system', label: 'System', type: 'infrastructure', color: '#78909C' },
+    // 1. Defined 20 Node entities mapping all active subsystems
+    const CY_NODES = [
+        { id: 'user', label: 'User Node', type: 'user', color: '#38bdf8' },
+        { id: 'conversation', label: 'Dialogue Matrix', type: 'conversation', color: '#38bdf8' },
+        { id: 'intent', label: 'Intent Classifier', type: 'executive', color: '#38bdf8' },
+        { id: 'goals', label: 'Goal Formulator', type: 'executive', color: '#38bdf8' },
+        { id: 'strategy', label: 'Strategy Core', type: 'executive', color: '#38bdf8' },
+        { id: 'planner', label: 'Planning Engine', type: 'executive', color: '#38bdf8' },
+        { id: 'decision', label: 'Decision Logic', type: 'executive', color: '#38bdf8' },
+        { id: 'delegation', label: 'Delegator Swarm', type: 'executive', color: '#38bdf8' },
+        { id: 'execution', label: 'Execution Router', type: 'execution', color: '#34d399' },
+        { id: 'reflection', label: 'Self-Reflection', type: 'cognitive', color: '#a855f7' },
+        { id: 'learning', label: 'Heuristic Optimizer', type: 'cognitive', color: '#a855f7' },
+        { id: 'knowledge', label: 'Sovereign Vault', type: 'cognitive', color: '#a855f7' },
+        { id: 'workspace', label: 'Cognitive Space', type: 'cognitive', color: '#a855f7' },
+        { id: 'memory', label: 'Semantic Index', type: 'cognitive', color: '#a855f7' },
+        { id: 'capability_platform', label: 'Capabilities Bus', type: 'capability', color: '#fbbf24' },
+        { id: 'capability_resolver', label: 'Resolver Engine', type: 'capability', color: '#fbbf24' },
+        { id: 'capability_registry', label: 'Manifest Index', type: 'capability', color: '#fbbf24' },
+        { id: 'scheduler', label: 'Schedule Broker', type: 'execution', color: '#34d399' },
+        { id: 'event_bus', label: 'Command Bus', type: 'infrastructure', color: '#6b7280' },
+        { id: 'system', label: 'OS Kernel', type: 'infrastructure', color: '#6b7280' },
     ];
 
-    const EDGES = [
+    const CY_EDGES = [
         { source: 'user', target: 'conversation' },
         { source: 'conversation', target: 'intent' },
         { source: 'intent', target: 'goals' },
@@ -634,258 +672,413 @@
         { source: 'system', target: 'capability_registry' },
     ];
 
-    // ---- Cytoscape Init ----
+    // Initialize Cytoscape Instance with futuristic design properties
     const cy = cytoscape({
         container: document.getElementById('mind-graph'),
         elements: [
-            ...NODES.map(n => ({ data: { id: n.id, label: n.label, type: n.type, color: n.color } })),
-            ...EDGES.map(e => ({ data: { source: e.source, target: e.target } })),
+            ...CY_NODES.map(n => ({ data: { id: n.id, label: n.label, type: n.type, color: n.color } })),
+            ...CY_EDGES.map(e => ({ data: { source: e.source, target: e.target } })),
         ],
         style: [
             {
                 selector: 'node',
                 style: {
-                    'background-color': 'data(color)',
-                    'width': 42,
-                    'height': 42,
+                    'background-color': '#0d131a',
+                    'width': 18,
+                    'height': 18,
                     'border-width': 2,
-                    'border-color': 'rgba(255,255,255,0.12)',
+                    'border-color': 'data(color)',
                     'label': 'data(label)',
-                    'font-size': '10px',
-                    'color': '#b0c8e8',
+                    'font-size': '8px',
+                    'color': '#8892b0',
+                    'font-family': 'JetBrains Mono, monospace',
                     'text-valign': 'bottom',
                     'text-halign': 'center',
-                    'text-margin-y': 8,
-                    'text-wrap': 'wrap',
-                    'text-max-width': 90,
-                },
+                    'text-margin-y': 6,
+                    'transition-property': 'background-color, border-color, border-width, width, height',
+                    'transition-duration': '0.35s'
+                }
             },
             {
                 selector: 'edge',
                 style: {
-                    'width': 1.5,
-                    'line-color': 'rgba(138, 180, 248, 0.15)',
+                    'width': 1.0,
+                    'line-color': 'rgba(56, 189, 248, 0.08)',
                     'curve-style': 'bezier',
                     'target-arrow-shape': 'none',
-                    'opacity': 0.5,
-                },
+                    'opacity': 0.8
+                }
             },
             {
-                selector: 'node.user',
-                style: { 'width': 48, 'height': 48, 'font-size': '11px', 'border-color': '#6a8cff' }
+                selector: 'node.highlighted',
+                style: {
+                    'background-color': '#ffffff',
+                    'border-color': '#38bdf8',
+                    'border-width': 4,
+                    'color': '#ffffff',
+                    'width': 24,
+                    'height': 24
+                }
             }
         ],
         layout: {
             name: 'cose',
-            idealEdgeLength: 70,
+            idealEdgeLength: 75,
             nodeRepulsion: 500,
             gravity: 0.25,
             numIter: 1000,
-            animate: false,
+            animate: false
         },
-        zoom: 0.75,
-        pan: { x: 20, y: 10 },
+        zoom: 0.85,
+        pan: { x: 40, y: 30 },
         minZoom: 0.3,
-        maxZoom: 1.5,
+        maxZoom: 2.0
     });
 
-    // Node state tracker
-    const nodeStates = {};
-
-    function setNodeState(nodeId, state, duration = 1200) {
-        const node = cy.getElementById(nodeId);
-        if (!node.length) return;
-        const colors = {
-            idle: NODES.find(n => n.id === nodeId)?.color || '#4a8fc7',
-            thinking: '#ffffff',
-            planning: '#FFD700',
-            learning: '#9C27B0',
-            executing: '#4CAF50',
-            warning: '#FFA726',
-            failure: '#EF5350',
-            sleeping: '#80DEEA',
-        };
-        const bg = colors[state] || colors.idle;
-        node.style('background-color', bg);
-        if (state === 'thinking') {
-            node.style('border-color', '#ffffff');
-            node.style('border-width', 4);
-        } else {
-            node.style('border-color', 'rgba(255,255,255,0.12)');
-            node.style('border-width', 2);
-        }
-        nodeStates[nodeId] = { state, timestamp: Date.now() };
-    }
-
-    // ---- Sidebar Navigation ----
-    function switchTab(tabId) {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    // Handle tapping nodes
+    cy.on('tap', 'node', async (evt) => {
+        const node = evt.target;
+        const id = node.id();
+        const data = node.data();
         
-        const eventBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => b.textContent.toLowerCase().includes(tabId));
-        if (eventBtn) eventBtn.classList.add('active');
-        
-        const content = document.getElementById(`tab-${tabId}`);
-        if (content) content.classList.add('active');
-    }
+        // Highlight clicked node
+        cy.nodes().removeClass('highlighted');
+        node.addClass('highlighted');
 
-    // ---- Micro Animations ----
-    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+        const title = document.getElementById('info-drawer-title');
+        const content = document.getElementById('info-drawer-content');
+        const drawer = document.getElementById('info-drawer');
 
-    async function animateThinking() {
-        const path = ['user', 'conversation', 'intent', 'goals', 'strategy', 'planner', 'decision', 'delegation', 'execution'];
-        NODES.forEach(n => setNodeState(n.id, 'idle'));
-        for (const id of path) {
-            setNodeState(id, 'thinking', 400);
-            await sleep(150);
-        }
-    }
+        title.textContent = (data.label || id).toUpperCase();
+        drawer.style.opacity = "1";
+        drawer.style.pointerEvents = "auto";
+        drawer.style.transform = "translateY(0)";
 
-    async function animateMemoryScan() {
-        addNotification("Accessing long-term semantic knowledge vectors.");
-        const path = ['user', 'conversation', 'memory'];
-        for (const id of path) {
-            setNodeState(id, 'learning', 600);
-            await sleep(200);
-        }
-        await sleep(600);
-        NODES.forEach(n => setNodeState(n.id, 'idle'));
-    }
+        content.innerHTML = `<div class="text-muted italic py-2 text-[10px] uppercase tracking-wider">Querying workspace snapshot matrices...</div>`;
 
-    async function animateCapabilityExecution() {
-        addNotification("Invoking external capability layer.");
-        const path = ['capability_platform', 'capability_resolver', 'capability_registry', 'execution'];
-        for (const id of path) {
-            setNodeState(id, 'executing', 600);
-            await sleep(200);
-        }
-        await sleep(600);
-        NODES.forEach(n => setNodeState(n.id, 'idle'));
-    }
-
-    async function animateReflection() {
-        addNotification("Performing system heuristic alignment check.");
-        const cluster = ['reflection', 'learning', 'knowledge', 'workspace', 'memory'];
-        for (const id of cluster) setNodeState(id, 'learning', 1000);
-        await sleep(1200);
-        NODES.forEach(n => setNodeState(n.id, 'idle'));
-    }
-
-    // ---- Sleep Mode ----
-    let sleepMode = false;
-    document.getElementById('sleep-toggle').addEventListener('click', () => {
-        sleepMode = !sleepMode;
-        document.getElementById('sleep-overlay').classList.toggle('active', sleepMode);
-        document.getElementById('sleep-toggle').classList.toggle('active', sleepMode);
-        NODES.forEach(n => {
-            const node = cy.getElementById(n.id);
-            if (node.length) {
-                if (sleepMode) {
-                    node.style('background-color', '#80DEEA');
-                    node.style('opacity', 0.6);
-                } else {
-                    node.style('background-color', n.color);
-                    node.style('opacity', 1);
-                }
-            }
-        });
-        addNotification(sleepMode ? "Jarvis OS entering low power state." : "Jarvis OS returned to executive active state.");
-    });
-
-    // ---- API Communication & Observation Fetching ----
-    async function loadObservationData() {
         try {
-            const headers = { 'X-API-Key': API_KEY };
+            const res = await fetch('/api/cognition/workspace', {
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                const ws = await res.json();
+                let detailHTML = '';
+                if (id === 'goals') {
+                    detailHTML = `
+                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Active Target:</span> "${ws.goal.activeGoal}"</div>
+                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Priority Weight:</span> ${ws.goal.priority}/10</div>
+                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Energy Credits:</span> <span class="text-success">${ws.goal.budgetCredits} Credits</span></div>
+                    `;
+                } else if (id === 'workspace') {
+                    detailHTML = `
+                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Allocated Sectors:</span> 9 memory compartments active</div>
+                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Fact Matrix:</span> ${ws.knowledge.factsCount} schemas verified</div>
+                    `;
+                } else if (id === 'execution') {
+                    detailHTML = `
+                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Command Queue:</span> "${ws.execution.activeTask || 'None'}"</div>
+                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Resolver Code:</span> <span class="text-success">${ws.execution.status.toUpperCase()}</span></div>
+                    `;
+                } else if (id === 'user' || id === 'conversation') {
+                    detailHTML = `
+                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Dialogue History:</span> ${ws.conversation.history.length} matrix elements</div>
+                    `;
+                } else {
+                    detailHTML = `
+                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Type:</span> Active Heuristic Block</div>
+                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Unified API:</span> /api/cognition/workspace</div>
+                    `;
+                }
 
-            // 1. Fetch Metrics
-            const metricsRes = await fetch('/api/observation/metrics', { headers });
-            if (metricsRes.ok) {
-                const metrics = await metricsRes.json();
-                document.getElementById('uptime-val').textContent = formatUptime(metrics.system.uptimeSeconds);
-                document.getElementById('cpu-val').textContent = `${Math.round(metrics.system.cpuUsagePercent)}%`;
-                document.getElementById('latency-val').textContent = `${metrics.counters.averageLatencyMs}ms`;
+                content.innerHTML = `
+                    <div class="space-y-2.5">
+                        ${detailHTML}
+                        <div class="pt-1"><span class="text-[9px] text-muted font-bold block uppercase tracking-wider mb-0.5">Physical Boundary:</span> <span class="text-[10px] text-white leading-relaxed">${getNodeDescription(id)}</span></div>
+                    </div>
+                `;
+            } else {
+                throw new Error();
+            }
+        } catch {
+            content.innerHTML = `
+                <div class="space-y-2">
+                    <div><span class="text-white font-semibold">Node ID:</span> ${id}</div>
+                    <div><span class="text-white font-semibold">Category:</span> ${data.type || 'unknown'}</div>
+                    <div class="text-[10px] text-muted leading-relaxed border-t border-white/5 pt-1.5 mt-1.5">${getNodeDescription(id)}</div>
+                </div>
+            `;
+        }
+    });
+
+    function closeInfoDrawer() {
+        const drawer = document.getElementById('info-drawer');
+        drawer.style.opacity = "0";
+        drawer.style.pointerEvents = "none";
+        drawer.style.transform = "translateY(-10px)";
+        cy.nodes().removeClass('highlighted');
+    }
+
+    function getNodeDescription(id) {
+        const descriptions = {
+            user: 'The human operator. Originates physical command vectors.',
+            conversation: 'The dialogic context index mapping transient sessions.',
+            intent: 'Parses raw command vectors into executable system instructions.',
+            goals: 'Sovereign prioritizer formulating targets and budget boundaries.',
+            strategy: 'Determines optimum loop constraints and self-checks.',
+            planner: 'Decomposes primary goals into ordered task pipelines.',
+            decision: 'Commits, records, and asserts tactical plans to the swarm.',
+            delegation: 'Schedules and partitions pipeline workloads to capability swarms.',
+            execution: 'Executes individual routines, catches exceptions, and logs metrics.',
+            reflection: 'Active security and alignment scanner verifying output validity.',
+            learning: 'Ingests performance feedback loops directly into the database style caches.',
+            knowledge: 'Aggregated Fact Vault compiling persistent core guidelines.',
+            workspace: 'Unified memory compartment staging real-time process nodes.',
+            memory: 'Long-term Semantic Index caches compiling deep database links.',
+            capability_platform: 'Modular system interfaces and external APIs bridge.',
+            capability_resolver: 'Dynamically links system routines to physical libraries.',
+            capability_registry: 'Local database catalogs listing verified tool declarations.',
+            scheduler: 'Controls cron configurations and background interval timeouts.',
+            event_bus: 'Decoupled publisher-subscriber messaging infrastructure.',
+            system: 'Foundational container sandbox boundary.'
+        };
+        return descriptions[id] || 'No specific parameters compiled.';
+    }
+
+    // 2. SWITCH TAB VIEWS
+    function switchTab(tabId) {
+        // Toggle view panes
+        document.querySelectorAll('.view-pane').forEach(el => el.classList.add('hidden'));
+        const pane = document.getElementById(`view-${tabId}`);
+        if (pane) pane.classList.remove('hidden');
+
+        // Toggle nav buttons styling
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.classList.remove('bg-primary/10', 'text-white', 'cyber-border-active');
+            btn.classList.add('text-muted');
+        });
+        const activeBtn = document.getElementById(`nav-${tabId}`);
+        if (activeBtn) {
+            activeBtn.classList.remove('text-muted');
+            activeBtn.classList.add('bg-primary/10', 'text-white', 'cyber-border-active');
+        }
+
+        // Update panel title
+        const titles = {
+            dashboard: 'Dashboard Metrics',
+            conversation: 'Dialogue Centre',
+            workspace: 'Working Memory Cells',
+            memory: 'Memory Verification Index',
+            observation: 'Telemetry logs & Audits',
+            goals: 'Autonomous Executive Swarm',
+            capabilities: 'Capability platform',
+            plugins: 'Environment status',
+            learning: 'Long-term learning engine',
+            settings: 'System Configuration'
+        };
+        document.getElementById('panel-title').textContent = (titles[tabId] || tabId).toUpperCase();
+        
+        // Custom actions when switching tab
+        if (tabId === 'workspace') refreshWorkspaceSnapshot();
+        if (tabId === 'memory') loadPendingMemories();
+        if (tabId === 'learning') loadLearningDashboard();
+    }
+
+    // Default to Dashboard tab
+    switchTab('dashboard');
+
+    // 3. TOAST NOTIFICATION UTILITY
+    function addNotification(msg, type = 'primary') {
+        const container = document.getElementById('toast-container');
+        const badge = document.createElement('div');
+        
+        const colors = {
+            primary: 'border-primary/20 text-white bg-[#0f131a]/95',
+            success: 'border-success/20 text-success bg-[#0f131a]/95',
+            warning: 'border-warning/20 text-warning bg-[#0f131a]/95',
+            danger: 'border-danger/20 text-danger bg-[#0f131a]/95'
+        };
+
+        badge.className = `flex items-center gap-2 px-4 py-3 rounded-xl border ${colors[type]} shadow-2xl text-xs font-mono pointer-events-auto transition-all duration-300 transform translate-x-[30px] opacity-0`;
+        badge.innerHTML = `
+            <svg class="w-4 h-4 text-primary animate-pulse flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <span class="tracking-wide">${msg}</span>
+        `;
+        container.appendChild(badge);
+        
+        // Trigger show animation
+        setTimeout(() => {
+            badge.style.opacity = "1";
+            badge.style.transform = "translateX(0)";
+        }, 10);
+
+        // Auto remove
+        setTimeout(() => {
+            badge.style.opacity = "0";
+            badge.style.transform = "translateX(30px)";
+            setTimeout(() => badge.remove(), 300);
+        }, 4000);
+    }
+
+    // 4. POLL STATUS & REAL-TIME DIAGNOSTICS
+    async function loadLiveSystemData() {
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            
+            // Fetch live metrics
+            const resMetrics = await fetch('/api/observation/metrics', { headers });
+            if (resMetrics.ok) {
+                const metrics = await resMetrics.json();
+                document.getElementById('health-cpu').textContent = `${Math.round(metrics.system.cpuUsagePercent)}%`;
+                document.getElementById('health-ram').textContent = `${Math.round(metrics.system.freeMemoryMb / 100) / 10} GB`;
+                document.getElementById('health-latency').textContent = `${metrics.counters.averageLatencyMs}ms`;
                 
-                const calls = metrics.counters.geminiApiCalls;
-                const rate = calls > 0 ? "100%" : "Simulated";
-                document.getElementById('success-val').textContent = rate;
+                // Light up active status Indicators
+                updateExecutiveStatusIndicators(metrics.counters.activeGoal ? 'executing' : 'idle');
             }
 
-            // 2. Fetch Telemetry logs
-            const telemetryRes = await fetch('/api/observation/telemetry', { headers });
-            if (telemetryRes.ok) {
-                const logs = await telemetryRes.json();
-                const container = document.getElementById('telemetry-logs');
+            // Fetch live logs
+            const resLogs = await fetch('/api/observation/telemetry', { headers });
+            if (resLogs.ok) {
+                const logs = await resLogs.json();
+                const logPane = document.getElementById('telemetry-log-pane');
                 if (logs.length === 0) {
-                    container.innerHTML = '<div style="color: #6a768c; text-align: center; margin-top: 40px;">No telemetry logs received.</div>';
+                    logPane.innerHTML = `<div class="text-muted text-center py-6 text-[10px] tracking-widest uppercase opacity-65">No telemetry received.</div>`;
                 } else {
-                    container.innerHTML = logs.slice().reverse().map(log => `
-                        <div class="log-item ${log.level}">
-                            <div class="log-meta">[${new Date(log.timestamp).toLocaleTimeString()}] ${log.subsystem}</div>
-                            <div>${log.message}</div>
-                        </div>
-                    `).join('');
+                    logPane.innerHTML = logs.slice().reverse().map(l => {
+                        const levelColors = { info: 'text-sky-300', warn: 'text-warning', error: 'text-danger' };
+                        const c = levelColors[l.level] || 'text-white';
+                        return `
+                            <div class="border-b border-white/5 pb-1.5 leading-relaxed">
+                                <span class="text-muted text-[8px] tracking-widest">[${new Date(l.timestamp).toLocaleTimeString()}]</span>
+                                <span class="${c} font-semibold">[${l.subsystem.toUpperCase()}]</span> ${l.message}
+                            </div>
+                        `;
+                    }).join('');
                 }
             }
 
-            // 3. Fetch Cognitive Workspace snapshot
-            const workspaceRes = await fetch('/api/cognition/workspace', { headers });
-            if (workspaceRes.ok) {
-                const ws = await workspaceRes.json();
-                document.getElementById('facts-count').textContent = ws.knowledge.factsCount;
+            // Fetch live Audit Trail logs
+            const resAudit = await fetch('/api/observation/audit', { headers });
+            if (resAudit.ok) {
+                const audits = await resAudit.json();
+                const auditPane = document.getElementById('audit-trail-pane');
+                if (audits.length === 0) {
+                    auditPane.innerHTML = `NO AUDIT ENTRIES LOGGED`;
+                } else {
+                    auditPane.innerHTML = audits.slice().reverse().map(a => `<div class="border-b border-white/5 pb-1 mb-1">${a}</div>`).join('');
+                }
+            }
+
+            // Fetch Active goal and plan
+            const resWorkspace = await fetch('/api/cognition/workspace', { headers });
+            if (resWorkspace.ok) {
+                const ws = await resWorkspace.json();
+                document.getElementById('goal-name').textContent = (ws.goal.activeGoal || 'Align system with human preferences').toUpperCase();
+                document.getElementById('goal-priority').textContent = `PRI: ${ws.goal.priority}`;
+                document.getElementById('goal-budget').textContent = `${ws.goal.budgetCredits} CR`;
+                document.getElementById('goal-progress-text').textContent = `${ws.mission.progressPercent}%`;
+                document.getElementById('goal-progress-bar').style.width = `${ws.mission.progressPercent}%`;
+
+                // Render plan list
+                const planList = document.getElementById('current-plan-list');
+                if (ws.execution.steps && ws.execution.steps.length > 0) {
+                    planList.innerHTML = ws.execution.steps.map((step, idx) => {
+                        const isCurrent = idx === ws.execution.currentStepIndex;
+                        const icon = isCurrent ? 
+                            `<span class="text-primary font-bold mr-1">&gt;</span>` : 
+                            `<span class="text-success font-bold mr-1">&#x2713;</span>`;
+                        const cls = isCurrent ? 'text-primary font-bold bg-white/5 px-2 py-1 rounded border border-primary/20' : 'text-muted pl-2';
+                        return `<div class="${cls} flex items-center">${icon} ${step}</div>`;
+                    }).join('');
+                } else {
+                    planList.innerHTML = `
+                        <div class="text-muted text-[11px] leading-relaxed space-y-1">
+                            <div class="flex items-center"><span class="text-success mr-2">&#x2713;</span> CORE PROCESSES STRUCTURALLY MAP</div>
+                            <div class="flex items-center"><span class="text-success mr-2">&#x2713;</span> DIAGNOSTIC CHECKS SECURE</div>
+                        </div>
+                    `;
+                }
             }
 
         } catch (e) {
-            console.error("Failed to load metrics/logs:", e);
+            console.error("System poll error:", e);
         }
     }
 
-    function formatUptime(secs) {
-        if (secs < 60) return `${secs}s`;
-        const mins = Math.floor(secs / 60);
-        const rem = secs % 60;
-        return `${mins}m ${rem}s`;
+    function updateExecutiveStatusIndicators(activeState) {
+        const statuses = ['thinking', 'planning', 'executing', 'reflecting', 'learning', 'idle'];
+        statuses.forEach(st => {
+            const el = document.getElementById(`status-${st}`);
+            if (st === activeState) {
+                el.className = "flex items-center gap-2 px-2.5 py-2 rounded-lg bg-primary/10 border border-primary/30 text-white font-bold";
+                el.querySelector('span').classList.remove('opacity-40');
+                if (st === 'executing') el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_8px_rgba(52,211,153,0.8)]";
+                if (st === 'thinking') el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]";
+                if (st === 'planning') el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-warning shadow-[0_0_8px_rgba(251,191,36,0.8)]";
+            } else {
+                el.className = "flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 text-muted hover:text-white transition-all";
+                el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-white opacity-40";
+            }
+        });
     }
 
-    // ---- Chat Integration & Decision Trace Render ----
-    const messagesContainer = document.getElementById('conversation-messages');
-    const userInput = document.getElementById('user-input');
-    const sendBtn = document.getElementById('send-btn');
+    // Refresh metrics/diagnostics loop every 4 seconds
+    setInterval(loadLiveSystemData, 4000);
+    loadLiveSystemData();
 
-    function addMessage(text, sender) {
+    // 5. INTUITIVE DIALOGUE & STREAM INTERFACE
+    const chatScroller = document.getElementById('chat-scroller');
+    const chatInput = document.getElementById('chat-input');
+    const btnChatSend = document.getElementById('btn-chat-send');
+
+    function appendChatMessage(text, role) {
         const div = document.createElement('div');
-        div.className = `message ${sender}`;
-        div.textContent = text;
-        messagesContainer.appendChild(div);
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        div.className = "border-b border-white/5 pb-2.5 mb-2.5";
+        const speaker = role === 'user' ? 'OPERATOR' : 'JARVIS';
+        const speakerColor = role === 'user' ? 'text-primary' : 'text-accent';
+        div.innerHTML = `
+            <div class="flex justify-between items-center text-[9px] text-muted mb-1 font-mono tracking-wider">
+                <span class="${speakerColor} font-bold">${speaker}</span>
+                <span>${new Date().toLocaleTimeString()}</span>
+            </div>
+            <div class="text-white text-xs leading-relaxed tracking-wide">${text}</div>
+        `;
+        chatScroller.appendChild(div);
+        chatScroller.scrollTop = chatScroller.scrollHeight;
     }
 
-    async function handleSend() {
-        const text = userInput.value.trim();
+    async function triggerChatDialogue() {
+        const text = chatInput.value.trim();
         if (!text) return;
-        userInput.value = '';
-        addMessage(text, 'user');
+        chatInput.value = '';
+        
+        // Remove empty placeholders
+        if (chatScroller.textContent.includes('Awaiting Dialogue stream')) {
+            chatScroller.innerHTML = '';
+        }
 
-        // Play thinking pulses
-        animateThinking();
+        appendChatMessage(text, 'user');
+        updateExecutiveStatusIndicators('thinking');
+        addNotification("Interfacing Autonomous Swarm Router.");
 
         try {
-            const response = await fetch('/api/chat', {
+            const res = await fetch('/api/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-API-Key': API_KEY
+                    'X-API-Key': CURRENT_API_KEY
                 },
                 body: JSON.stringify({ message: text })
             });
 
-            if (!response.ok) {
-                throw new Error("HTTP error " + response.status);
-            }
+            if (!res.ok) throw new Error();
 
-            const reader = response.body.getReader();
+            const reader = res.body.getReader();
             const decoder = new TextDecoder();
-            let assistantMessageDiv = null;
-            let fullAssistantText = "";
+            let responseContainer = null;
+            let fullReplyText = "";
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -897,261 +1090,424 @@
                 for (const line of lines) {
                     if (line.startsWith("data: ")) {
                         const dataStr = line.slice(6).trim();
-                        if (dataStr === "[DONE]") {
-                            break;
-                        }
+                        if (dataStr === "[DONE]") break;
 
-                        // Check if it's a decision trace detail
+                        // Check for Decision Trace JSON Attachment
                         if (dataStr.startsWith("detail: ")) {
                             try {
                                 const trace = JSON.parse(dataStr.slice(8));
-                                renderDecisionTrace(trace);
-                                addNotification("Decision trace recorded. Click 'Decisions' to inspect.");
+                                renderFloatTraceInspector(trace);
+                                addNotification("Tactical decision trace parsed.", "success");
                             } catch (err) {
-                                console.error("Error parsing trace detail:", err);
+                                console.error("Error parsing attached trace:", err);
                             }
                             continue;
                         }
 
-                        if (dataStr.startsWith("Error:")) {
-                            addMessage(dataStr, 'assistant');
-                            break;
+                        if (!responseContainer) {
+                            responseContainer = document.createElement('div');
+                            responseContainer.className = "border-b border-white/5 pb-2.5 mb-2.5";
+                            responseContainer.innerHTML = `
+                                <div class="flex justify-between items-center text-[9px] text-muted mb-1 font-mono tracking-wider">
+                                    <span class="text-accent font-bold">JARVIS</span>
+                                    <span>${new Date().toLocaleTimeString()}</span>
+                                </div>
+                                <div class="text-white text-xs leading-relaxed tracking-wide" id="stream-text-active"></div>
+                            `;
+                            chatScroller.appendChild(responseContainer);
                         }
 
-                        // Text stream chunk
-                        if (!assistantMessageDiv) {
-                            assistantMessageDiv = document.createElement('div');
-                            assistantMessageDiv.className = 'message assistant';
-                            messagesContainer.appendChild(assistantMessageDiv);
-                        }
-                        fullAssistantText += dataStr;
-                        assistantMessageDiv.textContent = fullAssistantText;
-                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                        fullReplyText += dataStr;
+                        document.getElementById('stream-text-active').textContent = fullReplyText;
+                        chatScroller.scrollTop = chatScroller.scrollHeight;
                     }
                 }
             }
 
-            // Refresh dashboards
-            loadObservationData();
+            // Cleanup stream ID so next replies spawn a clean container
+            if (document.getElementById('stream-text-active')) {
+                document.getElementById('stream-text-active').id = 'stream-text-completed';
+            }
+
+            // Fire multi-agent virtual board debate simulation dynamically!
+            triggerVirtualBoardDebate(text, fullReplyText);
+
+            // Reload metrics
+            loadLiveSystemData();
 
         } catch (err) {
-            console.error("Chat failure:", err);
-            addMessage("Cognitive interface pipeline severed. Confirm server connectivity.", 'assistant');
+            appendChatMessage("CRITICAL: Communication server pipeline severed. Confirm parameters.", 'system');
         }
     }
 
-    function renderDecisionTrace(trace) {
-        const container = document.getElementById('decision-trace-content');
-        container.innerHTML = `
-            <div class="trace-card">
-                <div class="title">🧠 ${trace.intent}</div>
-                
-                <div class="trace-field">
-                    <div class="trace-label">Goals Assigned</div>
-                    <div class="trace-value">
-                        ${trace.goals.map(g => `<span class="trace-badge">🎯 ${g}</span>`).join('')}
-                    </div>
-                </div>
-
-                <div class="trace-field" style="margin-top: 10px;">
-                    <div class="trace-label">Strategy Chosen</div>
-                    <div class="trace-value" style="color: #8ab4f8; font-weight: 500;">
-                        ${trace.strategy}
-                    </div>
-                </div>
-
-                <div class="trace-field">
-                    <div class="trace-label">Planner Sequence</div>
-                    <div class="trace-value">
-                        ${trace.planner.map(p => `• ${p}<br>`).join('')}
-                    </div>
-                </div>
-
-                <div class="trace-field">
-                    <div class="trace-label">Capability Selection</div>
-                    <div class="trace-value">
-                        ${trace.capabilitySelection.map(c => `<span class="trace-badge">⚡ ${c}</span>`).join('')}
-                    </div>
-                </div>
-
-                <div class="trace-field" style="margin-top: 10px;">
-                    <div class="trace-label">Decision Reasoning</div>
-                    <div class="trace-value" style="font-style: italic; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 6px; margin-top: 2px;">
-                        "${trace.reasoning}"
-                    </div>
-                </div>
-
-                <div class="trace-field" style="margin-top: 10px;">
-                    <div class="trace-label">Reflection State</div>
-                    <div class="trace-value" style="color: #4CAF50;">
-                        ✓ ${trace.reflection}
-                    </div>
-                </div>
-
-                <div class="trace-field" style="margin-top: 8px; display: flex; justify-content: space-between;">
-                    <div>
-                        <span class="trace-label">Confidence</span>
-                        <span class="trace-value" style="color: #9C27B0; font-weight: 600;"> ${Math.round(trace.confidence * 100)}%</span>
-                    </div>
-                    <div style="font-size: 0.65rem; color: rgba(255,255,255,0.3);">
-                        ${new Date(trace.timestamp).toLocaleTimeString()}
-                    </div>
-                </div>
-            </div>
-        `;
-        switchTab('traces'); // Switch tabs to display the trace immediately
-    }
-
-    sendBtn.addEventListener('click', handleSend);
-    userInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') handleSend();
+    btnChatSend.addEventListener('click', triggerChatDialogue);
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') triggerChatDialogue();
     });
 
-    // ---- Node Information Window Loader ----
-    const infoPanel = document.getElementById('info-panel');
-    const infoTitle = document.getElementById('info-title');
-    const infoContent = document.getElementById('info-content');
-    const infoClose = document.getElementById('info-close');
-
-    cy.on('tap', 'node', async (evt) => {
-        const node = evt.target;
-        const id = node.id();
-        const data = node.data();
-        const label = data.label || id;
-
-        infoTitle.textContent = label;
-        infoContent.innerHTML = `<div style="color: #6a768c;">Interrogating platform interfaces...</div>`;
-        infoPanel.classList.remove('hidden');
-
+    // 6. MULTI-AGENT BOARD DEBATE LOGS
+    async function triggerVirtualBoardDebate(promptText, proposedText) {
         try {
-            // Fetch live context values from the Express server!
-            const headers = { 'X-API-Key': API_KEY };
-            const res = await fetch('/api/cognition/workspace', { headers });
-            
+            const res = await fetch('/api/executive/board/debate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': CURRENT_API_KEY
+                },
+                body: JSON.stringify({ prompt: promptText, proposedResponse: proposedText })
+            });
+
+            if (res.ok) {
+                const debate = await res.json();
+                const widget = document.getElementById('executive-board-widget');
+                const badge = document.getElementById('board-consensus-badge');
+                const transcripts = document.getElementById('board-debate-transcripts');
+
+                widget.classList.remove('hidden');
+                badge.textContent = debate.consensusOutcome.toUpperCase();
+                badge.className = `text-[9px] font-mono px-2 py-0.5 rounded font-bold tracking-widest ${debate.consensusOutcome === 'approved' ? 'bg-success/10 text-success border border-success/20' : 'bg-warning/10 text-warning border border-warning/20'}`;
+
+                // Display transcript highlights - professional terminal style, NO emojis
+                transcripts.innerHTML = `
+                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
+                        <span class="text-primary block font-bold text-[9px] uppercase tracking-widest">[AGENT CHIEF_EXECUTIVE]:</span>
+                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.ceoMessage}"</p>
+                    </div>
+                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
+                        <span class="text-warning block font-bold text-[9px] uppercase tracking-widest">[AGENT SYSTEM_ARCHITECT]:</span>
+                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.architectMessage}"</p>
+                    </div>
+                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
+                        <span class="text-danger block font-bold text-[9px] uppercase tracking-widest">[AGENT RISK_MANAGER]:</span>
+                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.riskMessage}"</p>
+                    </div>
+                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
+                        <span class="text-success block font-bold text-[9px] uppercase tracking-widest">[AGENT INTEGRATION_QA]:</span>
+                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.qaMessage}"</p>
+                    </div>
+                `;
+            }
+        } catch (e) {
+            console.error("Board debate error:", e);
+        }
+    }
+
+    // 7. WORKING MEMORY COMPARTMENTS RENDERING
+    async function refreshWorkspaceSnapshot() {
+        try {
+            const res = await fetch('/api/cognition/workspace', {
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
             if (res.ok) {
                 const ws = await res.json();
+                const cellContainer = document.getElementById('working-memory-cells');
+
+                const compartments = [
+                    { label: "1. Active Mission Vector", val: ws.mission.currentMission, extra: `Status Code: ${ws.mission.status.toUpperCase()} (${ws.mission.progressPercent}%)` },
+                    { label: "2. Focus Intensity", val: ws.thought.activeThought, extra: `Amplitude Metric: ${ws.thought.intensity}` },
+                    { label: "3. Target Prioritization", val: ws.goal.activeGoal, extra: `Weight: ${ws.goal.priority}/10` },
+                    { label: "4. Modular Pipeline", val: ws.execution.steps.join(' ➔ ') || 'None', extra: `Cursor Index: #${ws.execution.currentStepIndex}` },
+                    { label: "5. Environment Host System", val: `Kernel: ${ws.environment.osType}`, extra: `Active Threads: ${ws.environment.activeSessionsCount}` },
+                    { label: "6. Dialogic Workspace", val: `History Buffer: ${ws.conversation.history.length} slots`, extra: `Config: ${JSON.stringify(ws.conversation.userPreferences)}` },
+                    { label: "7. Capability Registry Link", val: ws.capability.selectedCapability || 'None', extra: `Response State: ${JSON.stringify(ws.capability.lastExecutionResult)}` },
+                    { label: "8. Attention Target Cells", val: `Files: ${ws.attention.focusedFiles.join(', ')}`, extra: `Variables: ${ws.attention.focusedVariables.join(', ')}` },
+                    { label: "9. Reasoning Matrix", val: ws.reasoning.currentThought, extra: `Confidence Score: ${ws.reasoning.confidenceScore}` }
+                ];
+
+                cellContainer.innerHTML = compartments.map(comp => `
+                    <div class="p-3 bg-card border border-white/5 rounded-xl space-y-1.5 font-mono">
+                        <div class="text-[9px] text-primary uppercase font-bold tracking-wider">${comp.label}</div>
+                        <div class="text-white font-medium text-xs break-words tracking-wide leading-relaxed">${comp.val || 'Unset'}</div>
+                        <div class="text-[9px] text-muted border-t border-white/5 pt-1 mt-1 uppercase tracking-widest">${comp.extra}</div>
+                    </div>
+                `).join('');
                 
-                let contextSpecificHTML = '';
-                if (id === 'goals') {
-                    contextSpecificHTML = `
-                        <div class="label">Primary Active Objective</div>
-                        <div class="value" style="color: #FF9800; font-weight: 500;">${ws.goal.activeGoal}</div>
-                        <div class="label">Priority Rating</div>
-                        <div class="value">${ws.goal.priority}/10</div>
-                        <div class="label">System Budget Remaining</div>
-                        <div class="value" style="color: #4CAF50;">${ws.goal.budgetCredits} Credits</div>
-                    `;
-                } else if (id === 'workspace') {
-                    contextSpecificHTML = `
-                        <div class="label">Active Core Context Views</div>
-                        <div class="value">• Goal Context<br>• Conversation Context<br>• Execution Context<br>• Knowledge Context<br>• Capability Context<br>• Environment Context<br>• Reasoning Context</div>
-                    `;
-                } else if (id === 'execution') {
-                    contextSpecificHTML = `
-                        <div class="label">Active Task</div>
-                        <div class="value">${ws.execution.activeTask || 'None'}</div>
-                        <div class="label">State Status</div>
-                        <div class="value" style="color: #4CAF50; font-weight: 600;">${ws.execution.status.toUpperCase()}</div>
-                    `;
-                } else if (id === 'knowledge') {
-                    contextSpecificHTML = `
-                        <div class="label">Active Knowledge Facts</div>
-                        <div class="value">${ws.knowledge.factsCount} rules integrated in-memory</div>
-                    `;
-                } else if (id === 'intent') {
-                    contextSpecificHTML = `
-                        <div class="label">Last Tracked Intent</div>
-                        <div class="value" style="color: #8ab4f8;">Analyze Operator Queries</div>
-                    `;
+                addNotification("Workspace snapshot vectors updated.");
+            }
+        } catch {
+            addNotification("Query Workspace snapshots failed.", "danger");
+        }
+    }
+
+    // 8. COGNITIVE MEMORY SEEDING & VERIFY
+    async function loadPendingMemories() {
+        try {
+            const res = await fetch('/api/memory/pending', {
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                const records = await res.json();
+                const container = document.getElementById('pending-memories-list');
+                if (records.length === 0) {
+                    container.innerHTML = `<div class="text-muted text-center py-6 font-mono text-[10px] uppercase tracking-wider opacity-60">No pending index values mapped.</div>`;
+                    return;
                 }
 
-                infoContent.innerHTML = `
-                    <div class="label">Interface Port</div>
-                    <div class="value">/api/cognition/workspace</div>
-                    <div class="label">Bound Subsystem</div>
-                    <div class="value">${id} (Type: ${data.type || 'unknown'})</div>
-                    ${contextSpecificHTML}
-                    <div class="label">Functional Boundary</div>
-                    <div class="value">${getNodeDescription(id)}</div>
-                `;
+                container.innerHTML = records.map(rec => `
+                    <div class="p-3.5 bg-card border border-white/5 rounded-xl font-mono text-xs space-y-2.5 cyber-border">
+                        <div class="text-muted text-[9px] flex justify-between uppercase tracking-wider">
+                            <span>HEX: ${rec.uuid.slice(0, 8)}</span>
+                            <span>TYPE: ${rec.type}</span>
+                        </div>
+                        <div class="text-white font-semibold leading-relaxed">"${rec.content}"</div>
+                        <div class="flex justify-between items-center text-[9px] text-muted border-t border-white/5 pt-2 uppercase tracking-wider">
+                            <span>RELATION: ${rec.relationship || 'General'}</span>
+                            <button onclick="approveMemory('${rec.uuid}')" class="px-2.5 py-1 bg-success/10 border border-success/30 rounded text-success font-bold hover:bg-success/20 transition-all">APPROVE</button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        } catch {
+            console.error("Pending memory error");
+        }
+    }
+
+    async function approveMemory(uuid) {
+        try {
+            const res = await fetch(`/api/memory/verify/${uuid}`, {
+                method: 'POST',
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                addNotification("Cognitive node verified & hard-written to DB.", "success");
+                loadPendingMemories();
+                loadLiveSystemData();
+            }
+        } catch {
+            addNotification("Memory verification failed.", "danger");
+        }
+    }
+
+    async function verifyAllMemory() {
+        try {
+            const res = await fetch('/api/memory/verify_all', {
+                method: 'POST',
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                addNotification("Consolidated all outstanding database schemas.", "success");
+                loadPendingMemories();
+                loadLiveSystemData();
+            }
+        } catch {
+            addNotification("Batch consolidation failed.", "danger");
+        }
+    }
+
+    // 9. AUTONOMOUS SWARM TIMELINE PIPELINE TRIGGER
+    const btnAutonomous = document.getElementById('btn-trigger-autonomous');
+    const objInput = document.getElementById('objective-input');
+    const runningIndicator = document.getElementById('autonomous-running-indicator');
+    const traceReport = document.getElementById('autonomous-trace-report');
+    const stepsTimeline = document.getElementById('trace-steps-timeline');
+
+    btnAutonomous.addEventListener('click', async () => {
+        const objective = objInput.value.trim();
+        if (!objective) return;
+        objInput.value = '';
+
+        runningIndicator.classList.remove('hidden');
+        traceReport.classList.add('hidden');
+        addNotification("Compiling high-level sovereign tasks.");
+
+        // Set status indicators
+        updateExecutiveStatusIndicators('planning');
+
+        try {
+            const res = await fetch('/api/executive/run', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': CURRENT_API_KEY
+                },
+                body: JSON.stringify({ objective })
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                
+                // Introduce slight scifi loading lag before loading report
+                setTimeout(() => {
+                    runningIndicator.classList.add('hidden');
+                    traceReport.classList.remove('hidden');
+                    
+                    const stages = [
+                        { stage: "Stage 1: Objective Decomposition", desc: "Decomposes raw user requirements into decoupled sub-graphs." },
+                        { stage: "Stage 2: Goal Formulation", desc: `Aligns priorities and credits. Assigned ${data.budgetAllocated || 100} units.` },
+                        { stage: "Stage 3: Task Formulation", desc: `Generates task queue arrays mapping pipeline stages.` },
+                        { stage: "Stage 4: Swarm Dispatch", desc: `Invokes sandboxed workspace capabilities with QA checks.` },
+                        { stage: "Stage 5: Output Certification", desc: "Verifies type definitions, constraints, and imports." }
+                    ];
+
+                    stepsTimeline.innerHTML = stages.map((st, i) => `
+                        <div class="p-3 bg-[#0d131a] border border-white/5 rounded-xl relative pl-7 cyber-border">
+                            <div class="absolute left-3.5 top-4.5 w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_6px_rgba(52,211,153,0.5)]"></div>
+                            <div class="text-white font-bold text-[10px] tracking-widest uppercase mb-0.5">${st.stage}</div>
+                            <p class="text-muted text-[10px] leading-relaxed tracking-wide">${st.desc}</p>
+                        </div>
+                    `).join('');
+
+                    updateExecutiveStatusIndicators('idle');
+                    addNotification("Autonomous deployment trace fully resolved.");
+                    loadLiveSystemData();
+                }, 1500);
             } else {
                 throw new Error();
             }
         } catch {
-            // Fallback to offline defaults
-            infoContent.innerHTML = `
-                <div class="label">ID</div><div class="value">${id}</div>
-                <div class="label">Type</div><div class="value">${data.type || 'unknown'}</div>
-                <div class="label">Boundary Description</div><div class="value">${getNodeDescription(id)}</div>
-            `;
+            runningIndicator.classList.add('hidden');
+            addNotification("Autonomous execution pipeline failed.", "danger");
+            updateExecutiveStatusIndicators('idle');
         }
     });
 
-    infoClose.addEventListener('click', () => infoPanel.classList.add('hidden'));
+    // 10. FLUID DECISION TRACE INSPECTOR
+    const floatTrace = document.getElementById('float-trace-panel');
+    const floatTraceBody = document.getElementById('float-trace-body');
 
-    function getNodeDescription(id) {
-        const desc = {
-            user: 'The human operator. The source of all actions.',
-            conversation: 'The Dialogue Interface context. Holds recent conversational memory buffer.',
-            intent: 'Interpretation mapping. Distills user statements to explicit operational targets.',
-            goals: 'Executive Goals. Tracks active objectives, scheduling credits, and priority weights.',
-            strategy: 'Strategy Resolution. Selects processing loops, constraints check, and fallback paths.',
-            planner: 'Task planning. Splits complex strategic goals into sequentially execution arrays.',
-            decision: 'Executive decision engine. Signs and commits execution directives.',
-            delegation: 'Delegates active plans to corresponding execution capabilities.',
-            execution: 'Execution monitoring. Invokes capabilities, watches timeouts, tracks exceptions.',
-            reflection: 'Post-execution analyzer. Self-reflects on response quality, duration, and safety rules.',
-            learning: 'Knowledge assimilation. Integrates reflection outputs into memory structures.',
-            knowledge: 'Assimilated Fact Vault. Holds loaded guidelines, rules, and persistent configurations.',
-            workspace: 'Unified Cognitive Workspace. Synthesizes 7 independent contextual views safely.',
-            memory: 'Long-term Semantic Index. Direct access to stored interactions.',
-            capability_platform: 'Integrations Broker. Handles execution abstractions safely.',
-            capability_resolver: 'Resolver router. Matches specific tasks to registries.',
-            capability_registry: 'Capability database. Houses component manifests and API connections.',
-            scheduler: 'Time broker. Arranges repeating checks and background loops.',
-            event_bus: 'System-wide decoupled publish/subscribe channel.',
-            system: 'Foundational OS layer, hardware interfaces, and hosting runtime.',
-        };
-        return desc[id] || 'No description available.';
+    function renderFloatTraceInspector(trace) {
+        floatTrace.style.opacity = "1";
+        floatTrace.style.pointerEvents = "auto";
+        floatTrace.style.transform = "translateY(0)";
+
+        floatTraceBody.innerHTML = `
+            <div><span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-0.5">Semantic Intent:</span> ${trace.intent}</div>
+            <div class="pt-1.5"><span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-0.5">Execution Tactics:</span> <span class="text-primary font-bold tracking-wider">${trace.strategy}</span></div>
+            <div class="pt-1.5">
+                <span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-1">Dispatched Swarms:</span>
+                <span class="flex flex-wrap gap-1">
+                    ${trace.capabilitySelection.map(c => `<span class="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-[9px] uppercase tracking-wider font-semibold text-white">${c}</span>`).join('')}
+                </span>
+            </div>
+            <div class="bg-black/25 p-2.5 rounded-xl border border-white/5 my-2">
+                <span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-1">Algorithmic Assertion:</span>
+                <p class="text-muted text-[10px] italic leading-relaxed">"${trace.reasoning}"</p>
+            </div>
+            <div class="flex justify-between items-center pt-2 border-t border-white/5 text-[9px] uppercase tracking-wider">
+                <span>Confidence: <span class="text-success font-bold">${Math.round(trace.confidence * 100)}%</span></span>
+                <span>${new Date(trace.timestamp).toLocaleTimeString()}</span>
+            </div>
+        `;
     }
 
-    // ---- Toast Notification ----
-    function addNotification(message) {
-        const container = document.getElementById('notification-container');
-        const badge = document.createElement('div');
-        badge.className = 'notification-badge';
-        badge.textContent = message;
-        container.appendChild(badge);
-        setTimeout(() => badge.remove(), 4000);
+    function closeFloatTrace() {
+        floatTrace.style.opacity = "0";
+        floatTrace.style.pointerEvents = "none";
+        floatTrace.style.transform = "translateY(10px)";
     }
 
-    // Controls Action bindings
-    document.getElementById('memory-scan').addEventListener('click', animateMemoryScan);
-    document.getElementById('capability-exec').addEventListener('click', animateCapabilityExecution);
-    document.getElementById('reflect-btn').addEventListener('click', animateReflection);
+    // 11. PERSISTENT LEARNING AND STYLE MODULES
+    async function loadLearningDashboard() {
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await fetch('/api/learning/dashboard', { headers });
+            if (res.ok) {
+                const data = await res.json();
+                
+                // Render style
+                document.getElementById('pref-naming').textContent = data.stylePreferences.namingConvention;
+                document.getElementById('pref-tab').textContent = data.stylePreferences.tabSize;
+                document.getElementById('pref-framework').textContent = data.stylePreferences.frameworkPreference;
+                document.getElementById('pref-architecture').textContent = data.stylePreferences.architecturePattern;
 
-    // ---- Live Network Float (Pass 10 Visual Polish) ----
+                // Render optimized workflow entries
+                const workflowList = document.getElementById('workflow-optimized-list');
+                if (data.optimizedWorkflows.length === 0) {
+                    workflowList.innerHTML = `<span class="text-muted uppercase text-[10px]">No optimized pipelines compiled yet.</span>`;
+                } else {
+                    workflowList.innerHTML = data.optimizedWorkflows.map(wf => `
+                        <div class="border-b border-white/5 pb-2 mb-2">
+                            <span class="text-primary block font-bold uppercase tracking-wider text-[10px]">${wf.objective || wf.mission || 'Unknown Objective'}</span>
+                            <span class="text-[10px] leading-relaxed">Workflow: ${(wf.optimizedSteps || wf.steps || []).length} procedural actions compiled</span>
+                        </div>
+                    `).join('');
+                }
+
+                // Render proactive mistake log
+                const mistakeList = document.getElementById('mistake-log-list');
+                if (data.mistakeLog.length === 0) {
+                    mistakeList.innerHTML = `<span class="text-muted uppercase text-[10px] tracking-wider opacity-60">Anomaly register clean. No mistakes.</span>`;
+                } else {
+                    mistakeList.innerHTML = data.mistakeLog.map(m => `
+                        <div class="bg-card border border-white/5 p-3 rounded-lg text-muted space-y-1.5 mb-2">
+                            <span class="text-danger block font-bold uppercase tracking-widest text-[9px]">[SECTOR: ${m.affectedFile}]</span>
+                            <span class="text-white block font-medium">Signature: ${m.errorSignature}</span>
+                            <p class="leading-relaxed">Solution Vector: ${m.successfulFix}</p>
+                        </div>
+                    `).join('');
+                }
+            }
+        } catch {
+            console.error("Failed to load learning engine dashboard");
+        }
+    }
+
+    // 12. FLOATING CONTROL HANDLERS
+    let sleepModeActive = false;
+    function triggerLocalSleep() {
+        sleepModeActive = !sleepModeActive;
+        const btn = document.getElementById('btn-sleep-toggle');
+        const overlay = document.getElementById('sleep-mode-overlay');
+
+        if (sleepModeActive) {
+            btn.innerHTML = `
+                <svg class="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707-.707m12.728 0l-.707.707M6.343 6.343l-.707-.707m12.728 0l-.707.707" />
+                </svg>
+                WAKE ACTIVE
+            `;
+            overlay.classList.remove('opacity-0');
+            overlay.classList.add('opacity-100', 'pointer-events-auto');
+            addNotification("Low power safe state asserted. System modules parked.");
+            updateExecutiveStatusIndicators('sleeping');
+        } else {
+            btn.innerHTML = `
+                <svg class="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+                SLEEP COLD
+            `;
+            overlay.classList.remove('opacity-100', 'pointer-events-auto');
+            overlay.classList.add('opacity-0');
+            addNotification("Autonomous core initialized. Interfaces online.");
+            updateExecutiveStatusIndicators('idle');
+        }
+    }
+
+    async function runLocalDiagnostics() {
+        addNotification("Initializing full validation diagnostic suite.");
+        const res = await fetch('/api/observation/diagnostics', {
+            headers: { 'X-API-Key': CURRENT_API_KEY }
+        });
+        if (res.ok) {
+            const report = await res.json();
+            addNotification(`Diagnostics: CPU: ${Math.round(report.cpuUsagePercent)}% | Status: ${report.status}`, "success");
+        }
+    }
+
+    function clearTelemetryLocal() {
+        document.getElementById('telemetry-log-pane').innerHTML = `<div class="text-muted text-center py-6 text-[10px] tracking-widest uppercase opacity-60">Cleared local buffer.</div>`;
+    }
+
+    // 13. SETTINGS INPUT CHANGED
+    document.getElementById('api-key-input').addEventListener('change', (e) => {
+        CURRENT_API_KEY = e.target.value.trim() || "admin";
+        addNotification("API access token updated successfully.");
+    });
+
+    // Node visual jitter effect for "Living Mind" dynamic feeling
     setInterval(() => {
         cy.nodes().forEach(node => {
-            node.position({
-                x: node.position('x') + (Math.random() - 0.5) * 1.5,
-                y: node.position('y') + (Math.random() - 0.5) * 1.5,
-            });
+            if (!node.hasClass('highlighted')) {
+                node.position({
+                    x: node.position('x') + (Math.random() - 0.5) * 0.5,
+                    y: node.position('y') + (Math.random() - 0.5) * 0.5
+                });
+            }
         });
-    }, 4000);
+    }, 4500);
 
-    // Warmup idle nodes visualization
-    setTimeout(() => {
-        ['executive', 'cognitive', 'capability_platform', 'memory'].forEach(id => {
-            setNodeState(id, 'idle');
-        });
-    }, 500);
-
-    // Periodic live updater (every 4 seconds)
-    loadObservationData();
-    setInterval(loadObservationData, 4000);
-
-    console.log('🧠 Observable Living Mind UI initialized.');
+    console.log("🧠 Jarvis OS Web UI v3.2 fully compiled.");
 </script>
 </body>
 </html>
