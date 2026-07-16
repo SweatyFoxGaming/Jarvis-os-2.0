@@ -275,7 +275,7 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 
   // Update workspace contexts
   workspace.conversation.addMessage("user", message);
-  workspace.execution.setTask("Process user prompt");
+  workspace.execution.setPlan(["Process user prompt"]);
   workspace.execution.updateStatus("planning");
   workspace.reasoning.setThought("Interpreting user semantic intent and planning response strategy.", 0.95);
 
@@ -447,11 +447,11 @@ app.post("/api/notifications/mark_read", validateApiKey, (req, res) => {
 });
 
 // Admin & Memory Endpoints
-app.get("/api/memory/pending", validateApiKey, (req, res) => {
+app.get("/api/memory/pending", validateApiKey, (req: any, res: any) => {
   res.json(pendingRecords);
 });
 
-app.post("/api/memory/verify/:record_uuid", validateApiKey, (req, res) => {
+app.post("/api/memory/verify/:record_uuid", validateApiKey, (req: any, res: any) => {
   const { record_uuid } = req.params;
   const index = pendingRecords.findIndex(r => r.uuid === record_uuid);
   if (index !== -1) {
@@ -462,7 +462,7 @@ app.post("/api/memory/verify/:record_uuid", validateApiKey, (req, res) => {
   res.json({ status: "success" });
 });
 
-app.post("/api/memory/verify_all", validateApiKey, (req, res) => {
+app.post("/api/memory/verify_all", validateApiKey, (req: any, res: any) => {
   const approvedCount = pendingRecords.length;
   pendingRecords.forEach(rec => {
     observation.logAuditEvent(req.username || "admin", "verify_memory", "success", `Approved memory record ${rec.uuid}: "${rec.content}"`);

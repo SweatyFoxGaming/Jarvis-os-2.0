@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "build": "echo 'No compile step needed for static site'",
+    "build": "tsc",
+    "lint": "tsc --noEmit",
     "test": "tsx tests/index.test.ts"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^20.12.7",
-    "tsx": "^4.7.2"
+    "tsx": "^4.7.2",
+    "typescript": "^7.0.2"
   }
 }

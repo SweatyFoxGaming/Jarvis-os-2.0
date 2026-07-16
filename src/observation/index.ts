@@ -192,7 +192,7 @@ export class ObservationPlatform {
   }
 
   // ---------- 8. Audit ----------
-  public logAuditEvent(actor: string, action: string, outcome: "success" | "failed", details: string): void {
+  public logAuditEvent(actor: string, action: string, outcome: "success" | "failed" | "started" | "completed" | "warning", details: string): void {
     const timestamp = new Date().toISOString();
     const event = `[${timestamp}] Actor: ${actor} | Action: ${action} | Outcome: ${outcome} | Details: ${details}`;
     this.auditBuffer.push(event);

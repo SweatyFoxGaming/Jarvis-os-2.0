@@ -136,7 +136,7 @@ export class LongTermLearningEngine {
     };
     this.mistakeLog.push(entry);
     this.observation.logTelemetry("warn", "Learning", `New mistake registered in local Knowledge Graph for "${file}": ${errorSignature}`);
-    this.observation.logAuditEvent("System", "mistake_logged", "warning", `Mistake in ${file}: ${errorSignature}`);
+    this.observation.logAuditEvent("System", "mistake_logged", "failed", `Mistake in ${file}: ${errorSignature}`);
   }
 
   public getMistakesForFile(file: string): IMistakeEntry[] {
