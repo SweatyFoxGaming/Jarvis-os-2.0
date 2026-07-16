@@ -3,31 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jarvis OS · Autonomous Core</title>
-    <!-- Tailwind CSS CDN for modern utility classes -->
+    <title>Jarvis OS · Cognitive Command Console</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Cytoscape for interactive network graph visualization -->
     <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"></script>
-    <!-- Google Fonts: Inter & JetBrains Mono -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     
     <script>
         tailwind.config = {
             theme: {
                 extend: {
                     colors: {
-                        bg: '#07090e',
-                        card: '#0f131a',
-                        primary: '#38bdf8', // Cyber sky blue
-                        accent: '#a855f7', // Cognitive purple
-                        success: '#34d399', // Executing emerald
-                        warning: '#fbbf24', // Planning amber
-                        danger: '#f87171',
-                        text: '#f3f4f6',
-                        muted: '#6b7280'
+                        bg: '#040711',
+                        surface: '#0A0F1D',
+                        card: '#10172A',
+                        primary: '#38BDF8',
+                        accent: '#818CF8',
+                        success: '#34D399',
+                        warning: '#FBBF24',
+                        danger: '#F87171',
+                        text: '#F1F5F9',
+                        secondary: '#475569'
                     },
                     fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
+                        sans: ['Space Grotesk', 'Inter', 'sans-serif'],
                         mono: ['JetBrains Mono', 'monospace']
                     }
                 }
@@ -35,1015 +33,1503 @@
         }
     </script>
     <style>
-        /* Custom scrollbar styles */
-        ::-webkit-scrollbar {
-            width: 4px;
-            height: 4px;
-        }
-        ::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.2);
-        }
-        ::-webkit-scrollbar-thumb {
-            background: rgba(56, 189, 248, 0.15);
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(56, 189, 248, 0.3);
-        }
+        ::-webkit-scrollbar { width: 3px; height: 3px; }
+        ::-webkit-scrollbar-track { background: rgba(4, 7, 17, 0.5); }
+        ::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.15); border-radius: 9px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(56, 189, 248, 0.3); }
 
-        /* Glassmorphic panel elements */
         .glass-panel {
-            background: rgba(15, 19, 26, 0.8);
-            backdrop-filter: blur(24px);
-            -webkit-backdrop-filter: blur(24px);
-            border: 1px solid rgba(255, 255, 255, 0.04);
-        }
-
-        .cyber-border {
+            background: rgba(10, 15, 29, 0.75);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
             border: 1px solid rgba(56, 189, 248, 0.08);
+            box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.02), 0 8px 32px rgba(0, 0, 0, 0.5);
         }
         
-        .cyber-border-active {
-            border: 1px solid rgba(56, 189, 248, 0.3);
-            box-shadow: 0 0 12px rgba(56, 189, 248, 0.08);
+        .glow-accent {
+            position: absolute;
+            width: 350px;
+            height: 350px;
+            background: radial-gradient(circle, rgba(129, 140, 248, 0.06) 0%, transparent 70%);
+            pointer-events: none;
+            filter: blur(40px);
         }
 
-        /* Micro-animations */
-        @keyframes pulse-slow {
-            0%, 100% { opacity: 0.3; transform: scale(0.98); }
-            50% { opacity: 0.95; transform: scale(1.02); }
-        }
-        .pulse-indicator {
-            animation: pulse-slow 2.5s infinite ease-in-out;
+        .grid-bg {
+            background-size: 50px 50px;
+            background-image: 
+                linear-gradient(to right, rgba(56, 189, 248, 0.01) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(56, 189, 248, 0.01) 1px, transparent 1px);
         }
 
-        @keyframes orbit-slow {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        @keyframes scanline {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
         }
-        .orbit-element {
-            animation: orbit-slow 20s infinite linear;
+        .scanline::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 120px;
+            background: linear-gradient(to bottom, transparent, rgba(56, 189, 248, 0.02), transparent);
+            animation: scanline 8s infinite linear;
+            top: 0; left: 0; pointer-events: none; z-index: 10;
+        }
+
+        @keyframes scan {
+            0%, 100% { transform: translateY(-100%); }
+            50% { transform: translateY(100%); }
+        }
+        .scanning-laser {
+            animation: scan 4s ease-in-out infinite;
         }
 
         #mind-graph {
-            width: 100%;
-            height: 100%;
-            position: absolute;
-            inset: 0;
-            z-index: 1;
-        }
-
-        /* Ambient scanline grid */
-        .grid-bg {
-            background-size: 40px 40px;
-            background-image: 
-                linear-gradient(to right, rgba(255, 255, 255, 0.01) 1px, transparent 1px),
-                linear-gradient(to bottom, rgba(255, 255, 255, 0.01) 1px, transparent 1px);
+            width: 100%; height: 100%; position: absolute; inset: 0; z-index: 1;
         }
     </style>
 </head>
-<body class="bg-[#07090e] text-text font-sans h-screen w-screen overflow-hidden select-none grid-bg">
-<div id="app" class="h-full w-full flex">
+<body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none grid-bg scanline relative">
+<div class="absolute top-24 left-1/4 glow-accent"></div>
+<div class="absolute bottom-12 right-1/4 glow-accent"></div>
+
+<div id="app" class="h-full w-full flex relative z-10">
     
-    <!-- 1. LEFT-MOST NAVIGATION RAIL (Width: 80px) -->
-    <div class="w-20 bg-[#040609] border-r border-white/5 flex flex-col items-center py-6 gap-5 z-20 flex-shrink-0">
-        <div class="flex flex-col items-center gap-1.5 mb-6">
-            <span class="text-xs font-bold text-primary tracking-[0.2em] font-mono">JV-OS</span>
-            <div class="w-1.5 h-1.5 rounded-full bg-success pulse-indicator shadow-[0_0_8px_rgba(52,211,153,0.5)]"></div>
+    <!-- 1. LEFT COGNITIVE RAIL (Presence Side-Deck) -->
+    <div class="w-72 bg-[#03050c] border-r border-white/5 flex flex-col p-5 gap-5 z-20 flex-shrink-0 relative overflow-hidden">
+        <!-- Sidebar Brand -->
+        <div class="flex items-center justify-between border-b border-white/5 pb-4">
+            <div class="flex flex-col">
+                <span class="text-[8px] text-secondary tracking-widest font-mono">COGNITIVE ARCHITECTURE</span>
+                <span class="text-md font-bold text-white tracking-[0.15em]">JARVIS CORE <span class="text-primary font-mono text-xs">v4.0</span></span>
+            </div>
+            <div class="relative flex items-center">
+                <div class="w-2.5 h-2.5 rounded-full bg-success animate-pulse shadow-[0_0_12px_rgba(52,211,153,0.4)]"></div>
+            </div>
         </div>
         
-        <!-- Navigation Buttons - Elegant SVG Icons and Typography -->
-        <div class="flex flex-col gap-1 w-full px-2 flex-1">
-            <!-- Dashboard -->
-            <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <!-- THE QUANTUM EYE (AI Presence Module) -->
+        <div class="flex flex-col items-center justify-center py-5 bg-surface/40 rounded-2xl border border-white/5 relative group hover:border-primary/25 transition-all duration-500">
+            <span class="absolute top-2 left-3 text-[8px] font-mono text-secondary/30 tracking-wider">LOC_Q: COGNITION_04</span>
+            <span class="absolute top-2 right-3 text-[8px] font-mono text-secondary/30 tracking-wider">SYNC_INTELLIGENCE</span>
+            
+            <!-- Dynamic Eye Orb -->
+            <div class="relative w-32 h-32 flex items-center justify-center mt-2" id="quantum-eye-container">
+                <div class="absolute inset-0 rounded-full border border-primary/10 animate-[spin_30s_linear_infinite]"></div>
+                <div class="absolute inset-2 rounded-full border border-dashed border-accent/15 animate-[spin_15s_linear_infinite_reverse]"></div>
+                <div class="absolute inset-5 rounded-full bg-radial-gradient from-accent/5 to-transparent animate-pulse"></div>
+                
+                <svg class="absolute w-full h-full" viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r="44" stroke="currentColor" class="text-primary/5" stroke-width="0.5" fill="none" stroke-dasharray="2 12"/>
+                    <circle cx="50" cy="50" r="40" stroke="currentColor" class="text-accent/10" stroke-width="0.5" fill="none" stroke-dasharray="3 3"/>
+                </svg>
+                
+                <!-- Eye Pupil -->
+                <div id="quantum-eye" class="relative w-14 h-14 bg-[#050811] border border-primary/25 rounded-full flex items-center justify-center overflow-hidden transition-all duration-300 shadow-[0_0_24px_rgba(56,189,248,0.15)]">
+                    <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-60 pointer-events-none scale-110 filter brightness-110 contrast-125 saturate-50 hue-rotate-15 z-0"></video>
+                    <div class="absolute top-0 left-0 w-full h-[1px] bg-primary/45 shadow-[0_0_8px_rgba(56,189,248,0.7)] scanning-laser z-10"></div>
+                    
+                    <div id="quantum-iris" class="relative w-8 h-8 rounded-full bg-gradient-to-tr from-primary via-accent to-purple-500 p-[1.5px] flex items-center justify-center transition-transform duration-150 ease-out z-10">
+                        <div id="quantum-pupil" class="w-4 h-4 rounded-full bg-bg border border-white/20 flex items-center justify-center shadow-inner relative">
+                            <div class="w-2 h-2 rounded-full bg-primary animate-ping opacity-60"></div>
+                            <div class="absolute w-1.5 h-1.5 rounded-full bg-white shadow-lg"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Voice Waveform -->
+            <div class="mt-4 flex flex-col items-center gap-1.5 w-full px-4">
+                <span class="text-[9px] font-mono tracking-widest text-secondary/50 uppercase">Neural Stream Spectrum</span>
+                <div class="flex items-end justify-center gap-[3px] h-6 w-full" id="voice-waveform">
+                    <div class="w-[3px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
+                    <div class="w-[3px] h-1.5 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
+                    <div class="w-[3px] h-2 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
+                    <div class="w-[3px] h-2.5 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
+                    <div class="w-[3px] h-2.5 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
+                    <div class="w-[3px] h-2 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
+                    <div class="w-[3px] h-1.5 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
+                    <div class="w-[3px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
+                </div>
+            </div>
+
+            <!-- AI Presence Control Panel -->
+            <div class="mt-3.5 flex items-center justify-center gap-3 border-t border-white/5 pt-3.5 w-[90%]">
+                <!-- Camera Button -->
+                <button onclick="toggleCameraSensor()" id="btn-camera-toggle" title="Toggle Visual Sensor (Camera)" class="p-1.5 rounded bg-white/5 border border-white/10 hover:border-primary/40 text-secondary hover:text-primary transition-all duration-300">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                </button>
+                
+                <!-- Microphone Button -->
+                <button onclick="toggleMicrophoneSensor()" id="btn-mic-toggle" title="Toggle Neural Listening (STT)" class="p-1.5 rounded bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                    </svg>
+                    <!-- Pulse dot when active -->
+                    <span id="mic-pulse-dot" class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent animate-ping hidden"></span>
+                </button>
+                
+                <!-- Speaker Button -->
+                <button onclick="toggleVoiceSpeech()" id="btn-speech-toggle" title="Toggle Vocal Synthesis (TTS)" class="p-1.5 rounded bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 transition-all duration-300">
+                    <svg id="speech-icon-on" class="w-3.5 h-3.5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M12 18.75V5.25L7.75 9.5H4.5v5h3.25L12 18.75z" />
+                    </svg>
+                    <svg id="speech-icon-off" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                    </svg>
+                </button>
+            </div>
+            <div class="mt-1 text-center w-[90%] pb-2">
+                <span id="sensor-status-label" class="text-[8px] font-mono text-secondary uppercase tracking-widest">SENSORS STANDBY</span>
+            </div>
+        </div>
+        
+        <!-- Navigation Systems -->
+        <nav class="flex flex-col gap-1 flex-1 w-full overflow-y-auto pr-1">
+            <span class="text-[8px] font-mono tracking-widest text-secondary/40 uppercase mb-1 px-3">Subsystem Matrices</span>
+            
+            <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4 text-primary group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2z" />
                 </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">DASH</span>
+                <span class="text-xs font-mono tracking-wider font-semibold">CONSOLE</span>
             </button>
 
-            <!-- Conversation -->
-            <button onclick="switchTab('conversation')" id="nav-conversation" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <button onclick="switchTab('conversation')" id="nav-conversation" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4 text-accent group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                 </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">CHAT</span>
+                <span class="text-xs font-mono tracking-wider font-semibold">DIALOGUE</span>
             </button>
 
-            <!-- Working Memory (Workspace) -->
-            <button onclick="switchTab('workspace')" id="nav-workspace" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <button onclick="switchTab('workspace')" id="nav-workspace" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4 text-indigo-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">MEM-W</span>
+                <span class="text-xs font-mono tracking-wider font-semibold">WORKSPACE</span>
             </button>
 
-            <!-- Semantic Index -->
-            <button onclick="switchTab('memory')" id="nav-memory" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <button onclick="switchTab('memory')" id="nav-memory" class="nav-btn hidden group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4 text-pink-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
                 </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">INDEX</span>
+                <span class="text-xs font-mono tracking-wider font-semibold">MEMORY INDEX</span>
             </button>
 
-            <!-- Logs -->
-            <button onclick="switchTab('observation')" id="nav-observation" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            <button onclick="switchTab('observation')" id="nav-observation" class="nav-btn hidden group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4 text-emerald-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">TELEM</span>
+                <span class="text-xs font-mono tracking-wider font-semibold">TELEMETRY</span>
             </button>
 
-            <!-- Goals -->
-            <button onclick="switchTab('goals')" id="nav-goals" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">GOALS</span>
-            </button>
-
-            <!-- Capabilities (Tools) -->
-            <button onclick="switchTab('capabilities')" id="nav-capabilities" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">TOOLS</span>
-            </button>
-
-            <!-- Plugins (Plug) -->
-            <button onclick="switchTab('plugins')" id="nav-plugins" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">MATRIX</span>
-            </button>
-
-            <!-- Learning (Learn) -->
-            <button onclick="switchTab('learning')" id="nav-learning" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <button onclick="switchTab('learning')" id="nav-learning" class="nav-btn hidden group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4 text-yellow-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                 </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">LEARN</span>
+                <span class="text-xs font-mono tracking-wider font-semibold">LEARNING</span>
             </button>
-
-            <!-- Setup (Settings) -->
-            <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn group flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 text-muted hover:text-white hover:bg-white/5">
-                <svg class="w-5 h-5 transition-transform group-hover:scale-105" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <span class="text-[9px] font-mono tracking-wider mt-1.5 opacity-60 group-hover:opacity-100">SETUP</span>
-            </button>
-        </div>
+        </nav>
         
-        <div class="mt-auto text-center text-[10px] text-muted font-mono opacity-50 tracking-wider">
-            v3.2
+        <!-- Admin Link -->
+        <div class="border-t border-white/5 pt-4">
+            <a href="/admin" target="_blank" class="group flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent w-full">
+                <svg class="w-4 h-4 text-rose-500 group-hover:scale-110 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+                <span class="text-xs font-mono tracking-wider font-semibold">ADMIN PANEL</span>
+            </a>
         </div>
     </div>
 
-    <!-- 2. DETAILS SIDE-PANEL (Width: 360px) -->
-    <div class="w-90 bg-[#090d14]/90 border-r border-white/5 flex flex-col h-full overflow-hidden z-20 flex-shrink-0">
-        
-        <!-- Header -->
-        <div class="p-6 border-b border-white/5 flex items-center justify-between">
-            <div class="flex flex-col gap-0.5">
-                <h1 class="text-xs font-bold tracking-[0.25em] uppercase text-white font-mono">Jarvis Core</h1>
-                <span class="text-[10px] font-mono tracking-widest text-primary/70 uppercase" id="panel-title">DASHBOARD METRICS</span>
+    <!-- 2. MAIN DISPLAY SYSTEM -->
+    <div class="flex-1 flex flex-col h-full overflow-hidden bg-bg relative">
+        <!-- Top Status HUD -->
+        <header class="h-16 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0 glass-panel">
+            <div class="flex items-center gap-4">
+                <span class="px-2 py-0.5 rounded bg-primary/10 border border-primary/20 text-[9px] font-mono font-bold text-primary tracking-widest">[SYS_TRACE: SECURE]</span>
+                <span class="text-xs font-bold text-secondary font-mono">NODE_INDEX_CONNECTED</span>
             </div>
-            <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-primary/5 border border-primary/20 text-[9px] font-mono text-primary font-semibold tracking-wider">
-                <span id="active-user">SECURE_NODE</span>
-            </div>
-        </div>
-
-        <!-- Scrollable Tab Content Container -->
-        <div class="flex-1 overflow-y-auto p-5 space-y-4" id="details-scroller">
             
-            <!-- Tab: Dashboard -->
-            <div id="view-dashboard" class="view-pane space-y-4">
-                <!-- Executive Status -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Executive State Parameters</h3>
-                    <div class="grid grid-cols-2 gap-2 text-[11px] font-mono">
-                        <div id="status-thinking" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-white opacity-40"></span>THINKING</div>
-                        <div id="status-planning" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-warning opacity-40"></span>PLANNING</div>
-                        <div id="status-executing" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-success opacity-40"></span>EXECUTING</div>
-                        <div id="status-reflecting" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-purple-500 opacity-40"></span>REFLECTING</div>
-                        <div id="status-learning" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-blue-400 opacity-40"></span>LEARNING</div>
-                        <div id="status-idle" class="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 transition-all border border-transparent"><span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>IDLE</div>
-                    </div>
+            <!-- Real-time Diagnostics HUD -->
+            <div class="flex items-center gap-6 text-xs font-mono">
+                <div class="flex items-center gap-2">
+                    <span class="text-secondary">OS_CORE:</span>
+                    <span id="health-cpu" class="text-success font-bold">0%</span>
                 </div>
-
-                <!-- Current Goal -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
-                    <div class="flex justify-between items-center">
-                        <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Active Target</h3>
-                        <span id="goal-priority" class="text-[9px] font-mono px-2 py-0.5 rounded bg-warning/10 text-warning font-semibold tracking-wider">PRI: 8</span>
-                    </div>
-                    <div class="text-xs font-semibold text-white leading-relaxed tracking-wide font-mono" id="goal-name">Aligning system with human preferences</div>
-                    <div class="space-y-1.5">
-                        <div class="flex justify-between text-[9px] font-mono text-muted uppercase tracking-wider">
-                            <span>Completeness Vector</span>
-                            <span id="goal-progress-text" class="text-primary">75%</span>
-                        </div>
-                        <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                            <div class="h-full bg-primary" id="goal-progress-bar" style="width: 75%;"></div>
-                        </div>
-                    </div>
-                    <div class="flex justify-between text-[9px] font-mono text-muted pt-1 border-t border-white/5 uppercase">
-                        <span>Horizon: <span class="text-white">Continuous</span></span>
-                        <span>Energy: <span id="goal-budget" class="text-success">100 Cr</span></span>
-                    </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-secondary">Q_RAM:</span>
+                    <span id="health-ram" class="text-success font-bold">0.0 GB</span>
                 </div>
-
-                <!-- Current Plan -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Target Workflow Breakdown</h3>
-                    <div id="current-plan-list" class="space-y-2 text-xs font-mono">
-                        <!-- Filled by JavaScript -->
-                    </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-secondary">LATENCY:</span>
+                    <span id="health-latency" class="text-success font-bold">0ms</span>
                 </div>
+                <div class="h-4 w-[1px] bg-white/10"></div>
+                <!-- Sleep core -->
+                <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="flex items-center gap-1.5 px-3 py-1.5 bg-card border border-white/10 hover:border-primary/40 rounded-lg text-secondary hover:text-primary font-semibold transition-all">
+                    <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                    </svg>
+                    <span>CORES_SLEEP</span>
+                </button>
+            </div>
+        </header>
 
-                <!-- Health Dashboard -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Performance Ingestion</h3>
-                    <div class="grid grid-cols-2 gap-2 text-xs font-mono">
-                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                            <span class="text-muted block text-[9px] uppercase tracking-wider">Core Load</span>
-                            <span id="health-cpu" class="text-white font-semibold text-sm">12%</span>
+        <!-- Dynamic Viewports -->
+        <main class="flex-1 overflow-y-auto p-8 relative z-0">
+            
+            <!-- ================= SUB-PANEL 1: COGNITIVE OPERATING CONSOLE ================= -->
+            <div id="view-dashboard" class="view-pane space-y-6">
+                <!-- Bento HUD Core Grid -->
+                <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                    <!-- Attention Target -->
+                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">COGNITIVE_ATTENTION_LOCK</span>
+                            <div class="w-2 h-2 rounded-full bg-primary animate-ping"></div>
                         </div>
-                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                            <span class="text-muted block text-[9px] uppercase tracking-wider">Workspace Allocation</span>
-                            <span id="health-ram" class="text-white font-semibold text-sm">4.2 GB</span>
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                            <span class="text-muted block text-[9px] uppercase tracking-wider">Response Clock</span>
-                            <span id="health-latency" class="text-white font-semibold text-sm">0ms</span>
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                            <span class="text-muted block text-[9px] uppercase tracking-wider">Persistent DB</span>
-                            <span class="text-success font-semibold text-[10px] tracking-wider uppercase">SQLite Active</span>
+                        <div>
+                            <p id="kernel-attention" class="text-white text-lg font-bold tracking-wide leading-tight font-sans">Idle Reflection</p>
+                            <span class="text-[9px] font-mono text-secondary/50 uppercase mt-0.5 block">ACTIVE ATTENTION SPECTRUM</span>
                         </div>
                     </div>
-                </div>
-            </div>
 
-            <!-- Tab: Conversation -->
-            <div id="view-conversation" class="view-pane space-y-4 hidden h-full flex flex-col">
-                <div class="bg-card border border-white/5 rounded-xl p-4 flex-1 flex flex-col min-h-[320px] cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono mb-3">Dialogue Matrix</h3>
-                    <div id="chat-scroller" class="flex-1 overflow-y-auto space-y-3 p-3 text-xs font-mono border border-white/5 rounded-lg bg-black/35 max-h-[320px]">
-                        <!-- Messages go here -->
-                        <div class="text-muted text-center py-12 text-[10px] tracking-widest uppercase opacity-60">Awaiting Dialogue stream.</div>
+                    <!-- Heartbeat Status -->
+                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">EXECUTIVE_HEARTBEAT_STATE</span>
+                            <svg class="w-3.5 h-3.5 text-success animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <p id="kernel-status" class="text-success text-2xl font-bold font-mono tracking-widest uppercase">IDLE</p>
+                            <span class="text-[9px] font-mono text-secondary/50 uppercase mt-0.5 block">CORE STATE MACHINE</span>
+                        </div>
                     </div>
-                    <div class="mt-3 flex gap-2">
-                        <input type="text" id="chat-input" placeholder="Enter objective command..." class="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-primary text-white tracking-wide">
-                        <button id="btn-chat-send" class="px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-mono hover:bg-primary/20 transition-all font-semibold tracking-wider">EXEC</button>
-                    </div>
-                </div>
 
-                <!-- Last Debate Report -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 hidden cyber-border" id="executive-board-widget">
-                    <div class="flex justify-between items-center border-b border-white/5 pb-2">
-                        <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Multi-Agent Board Consensus</h3>
-                        <span id="board-consensus-badge" class="text-[9px] font-mono px-2 py-0.5 rounded bg-success/15 text-success font-bold tracking-wider">APPROVED</span>
+                    <!-- Confidence Model -->
+                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">MULTI_AGENT_CONFIDENCE_RATIO</span>
+                            <span class="text-[9px] font-mono text-primary font-bold">ALIGNED</span>
+                        </div>
+                        <div>
+                            <div class="flex items-baseline gap-2">
+                                <p id="kernel-confidence" class="text-white text-3xl font-extrabold tracking-tight font-sans">100%</p>
+                                <span class="text-[10px] text-secondary font-mono">/100 Q</span>
+                            </div>
+                            <span class="text-[9px] font-mono text-secondary/50 uppercase mt-0.5 block">SWARM ASSERTION WEIGHT</span>
+                        </div>
                     </div>
-                    <div class="space-y-3 text-[11px] font-mono" id="board-debate-transcripts">
-                        <!-- Populated dynamically -->
-                    </div>
-                </div>
-            </div>
 
-            <!-- Tab: Workspace (Working Memory 2.0) -->
-            <div id="view-workspace" class="view-pane space-y-4 hidden">
-                <div class="flex justify-between items-center">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Working Memory</h3>
-                    <button onclick="refreshWorkspaceSnapshot()" class="text-[10px] text-primary font-mono hover:underline uppercase tracking-wider">Snapshot</button>
-                </div>
-                <div id="working-memory-cells" class="space-y-3 text-xs">
-                    <!-- Loaded via API -->
-                </div>
-            </div>
-
-            <!-- Tab: Memory (Semantic Index) -->
-            <div id="view-memory" class="view-pane space-y-4 hidden">
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Cognitive Index Consolidation</h3>
-                    <div class="text-[11px] text-muted font-mono leading-relaxed">
-                        Verify transient schema nodes. Validation commits elements into SQLite primary database schemas permanently.
-                    </div>
-                    <div class="flex justify-between">
-                        <button onclick="verifyAllMemory()" class="w-full py-2 bg-success/10 text-success border border-success/20 rounded-lg text-xs font-mono font-semibold tracking-wider hover:bg-success/20 transition-all">Consolidate All Pending</button>
+                    <!-- Overarching Mission -->
+                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">QUANTUM_MISSION_OBJECTIVE</span>
+                            <span id="goal-progress-text" class="text-xs font-mono text-success font-bold">100%</span>
+                        </div>
+                        <div>
+                            <p id="goal-name" class="text-white text-xs font-semibold leading-relaxed line-clamp-2 uppercase">ALIGN SYSTEM WITH HUMAN PREFERENCES</p>
+                            <div class="w-full bg-white/5 h-1 rounded-full mt-2 overflow-hidden">
+                                <div id="goal-progress-bar" class="bg-success h-full rounded-full transition-all duration-500" style="width: 100%"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                <div class="space-y-3" id="pending-memories-container">
-                    <h4 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Pending Commit Nodes</h4>
-                    <div id="pending-memories-list" class="space-y-2">
-                        <!-- Loaded dynamically -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tab: Observation -->
-            <div id="view-observation" class="view-pane space-y-4 hidden">
-                <div class="bg-card border border-white/5 rounded-xl p-4 flex flex-col h-full cyber-border">
-                    <div class="flex justify-between items-center border-b border-white/5 pb-2 mb-3">
-                        <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Telemetry Streams</h3>
-                        <button onclick="clearTelemetryLocal()" class="text-[9px] text-muted font-mono hover:underline uppercase tracking-wider">Flush</button>
-                    </div>
-                    <div id="telemetry-log-pane" class="overflow-y-auto space-y-2 p-3 font-mono text-[10px] bg-black/35 rounded-lg max-h-[220px] min-h-[160px]">
-                        <!-- Telemetry items -->
-                    </div>
-                </div>
-
-                <div class="bg-card border border-white/5 rounded-xl p-4 cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono mb-2">Audit Registry</h3>
-                    <div id="audit-trail-pane" class="overflow-y-auto space-y-1.5 font-mono text-[9px] max-h-[180px] text-muted leading-relaxed">
-                        <!-- Audit items -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tab: Goals (Autonomous Execution Engine) -->
-            <div id="view-goals" class="view-pane space-y-4 hidden">
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Swarm Orchestration</h3>
-                    <div class="text-[11px] text-muted font-mono leading-relaxed">
-                        Commit objective formulations to the 5-stage sovereign multi-agent deployment platform.
-                    </div>
-                    <div class="space-y-2">
-                        <input type="text" id="objective-input" placeholder="Deploy microservices orchestrator..." class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-primary">
-                        <button id="btn-trigger-autonomous" class="w-full py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-mono font-bold tracking-wider hover:bg-primary/20 transition-all">INITIALIZE PIPELINE</button>
-                    </div>
-                </div>
-
-                <!-- Trace report status -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 hidden animate-pulse cyber-border" id="autonomous-running-indicator">
-                    <div class="flex items-center gap-2">
-                        <div class="w-1.5 h-1.5 rounded-full bg-warning animate-bounce"></div>
-                        <span class="text-[10px] font-mono font-medium text-warning uppercase tracking-wider">Swarm Engine Compiling Workflows...</span>
-                    </div>
-                </div>
-
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 hidden cyber-border" id="autonomous-trace-report">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-2">Swarm Execution Trace Map</h3>
-                    <div id="trace-steps-timeline" class="space-y-3 text-xs font-mono">
-                        <!-- Populated step-by-step -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tab: Capabilities -->
-            <div id="view-capabilities" class="view-pane space-y-4 hidden">
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-4 cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono mb-2">Live Capability Bus</h3>
-                    <div class="space-y-4 text-xs font-mono">
+                <!-- Graphical Matrix Panels -->
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <!-- Cytoscape Map -->
+                    <div class="lg:col-span-8 bg-surface/40 border border-white/5 rounded-2xl h-[480px] flex flex-col relative overflow-hidden">
+                        <div class="p-4 border-b border-white/5 flex justify-between items-center z-10 glass-panel">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase">LIVING COGNITION HYPER-GRAPH</h3>
+                                <p class="text-[9px] text-secondary tracking-wide">Real-time vector links across virtual nodes</p>
+                            </div>
+                            <button onclick="reinitGraph()" class="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[8px] font-mono tracking-widest font-semibold uppercase text-primary">REALIGN_MAP</button>
+                        </div>
                         
-                        <!-- Capability: Research -->
-                        <div class="space-y-1.5">
-                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
-                                <span class="text-white">Research Swarm</span>
-                                <span class="text-success font-semibold">Running</span>
+                        <div class="flex-1 relative">
+                            <div id="mind-graph"></div>
+                            
+                            <!-- Cyber Ticks Decorators -->
+                            <div class="absolute top-4 left-4 text-[9px] text-primary/30 font-mono select-none">T_SYS: [09.22.420]</div>
+                            <div class="absolute bottom-4 left-4 text-[9px] text-primary/30 font-mono select-none">LOC_Y: [290.490]</div>
+                            <div class="absolute bottom-4 right-4 text-[9px] text-primary/30 font-mono select-none">GRID: [ALPHA_4]</div>
+
+                            <!-- Drawer -->
+                            <div id="info-drawer" class="absolute top-4 right-4 z-10 w-60 bg-[#060914]/95 border border-white/10 p-4 rounded-xl shadow-2xl transition-all duration-300 transform -translate-y-2 opacity-0 pointer-events-none text-xs">
+                                <div class="flex justify-between items-start mb-2 pb-1.5 border-b border-white/5">
+                                    <span class="font-bold tracking-widest text-primary uppercase text-[8px]">COGNITIVE INSPECTOR</span>
+                                    <button onclick="closeInfoDrawer()" class="text-secondary hover:text-white">&times;</button>
+                                </div>
+                                <div id="info-drawer-content" class="text-secondary font-mono space-y-1"></div>
                             </div>
-                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden flex gap-0.5">
-                                <div class="h-full bg-success w-1/4 animate-pulse"></div>
-                                <div class="h-full bg-success w-1/4 animate-pulse" style="animation-delay: 0.2s"></div>
-                                <div class="h-full bg-success w-1/4 animate-pulse" style="animation-delay: 0.4s"></div>
-                                <div class="h-full bg-white/5 w-1/4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Core Controllers -->
+                    <div class="lg:col-span-4 flex flex-col gap-6">
+                        <!-- Dispatcher -->
+                        <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-[228px]">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase mb-1">SOVEREIGN QUANTUM DISPATCH</h3>
+                                <p class="text-[9px] text-secondary tracking-wide mb-3">Instruct the autonomous agent cluster directly</p>
                             </div>
-                            <div class="flex justify-between text-[9px] text-muted uppercase">
-                                <span>Core Lat: 45ms</span>
-                                <span>Health: Excellent</span>
+                            
+                            <div class="space-y-3">
+                                <input type="text" id="objective-input" placeholder="Transmit high-level goal vectors..." class="w-full bg-bg border border-white/5 focus:border-primary/40 rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 focus:outline-none transition-all">
+                                <button id="btn-trigger-autonomous" class="w-full py-2.5 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">DISPATCH_SWARM</button>
                             </div>
                         </div>
 
-                        <!-- Capability: Planning -->
-                        <div class="space-y-1.5">
-                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
-                                <span class="text-white">Planning Engine</span>
-                                <span class="text-muted">Idle</span>
+                        <!-- Thought steps -->
+                        <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[228px] overflow-hidden">
+                            <h3 class="font-bold text-xs tracking-widest uppercase mb-1">COGNITIVE FLOW STEPS</h3>
+                            <p class="text-[9px] text-secondary tracking-wide mb-2.5">Live state processing sequence</p>
+                            
+                            <div id="kernel-thought-stages" class="space-y-1.5 text-[10px] font-mono flex-1 overflow-y-auto pr-1"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Debates -->
+                <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl">
+                    <div class="flex justify-between items-center mb-3 pb-2 border-b border-white/5">
+                        <div>
+                            <h3 class="font-bold text-xs tracking-widest uppercase">MULTI-AGENT DECISION DEBATE LOG</h3>
+                            <p class="text-[9px] text-secondary tracking-wide">Synthesizing consensus across specialized cognitive models</p>
+                        </div>
+                        <span class="px-2 py-0.5 rounded bg-warning/10 border border-warning/20 text-[8px] font-mono font-bold text-warning tracking-widest uppercase">DEBATING_ASSEMBLY</span>
+                    </div>
+                    <div id="internal-dialogue-pane" class="grid grid-cols-1 md:grid-cols-4 gap-4 overflow-x-auto">
+                        <div class="text-secondary text-center col-span-4 py-6 text-xs uppercase tracking-widest font-mono opacity-50">Zero active deliberations. Transmit goals or prompt dialogue to trigger consensus loops.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================= SUB-PANEL 2: CHAT DIALOGUE SYSTEM ================= -->
+            <div id="view-conversation" class="view-pane hidden space-y-6">
+                <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                    <!-- Dialogue Hub -->
+                    <div class="lg:col-span-3 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col">
+                        <div class="p-4 border-b border-white/5 flex justify-between items-center glass-panel">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase">INTELLIGENT TELEMETRY STREAM</h3>
+                                <p class="text-[9px] text-secondary tracking-wide">Direct interfacing link with JARVIS</p>
                             </div>
-                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                                <div class="h-full bg-primary" style="width: 100%;"></div>
-                            </div>
-                            <div class="flex justify-between text-[9px] text-muted uppercase">
-                                <span>Core Lat: 12ms</span>
-                                <span>Health: 100%</span>
-                            </div>
+                            <span class="text-[9px] text-primary font-mono tracking-widest uppercase animate-pulse">STREAMING_ACTIVE</span>
+                        </div>
+                        
+                        <div id="chat-scroller" class="flex-1 overflow-y-auto p-5 space-y-4 font-mono">
+                            <div class="text-muted text-center py-12 text-[10px] tracking-widest uppercase opacity-45">Console idle. Send a greeting vector to activate JARVIS core feedback.</div>
                         </div>
 
-                        <!-- Capability: Voice Synthesizer -->
-                        <div class="space-y-1.5">
-                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
-                                <span class="text-white">Voice Matrix</span>
-                                <span class="text-muted">Idle</span>
-                            </div>
-                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                                <div class="h-full bg-gray-600 w-0"></div>
-                            </div>
-                            <div class="flex justify-between text-[9px] text-muted uppercase">
-                                <span>Core Lat: --</span>
-                                <span>Status: Ready</span>
-                            </div>
+                        <!-- Dialogue input -->
+                        <div class="p-4 border-t border-white/5 flex gap-3 glass-panel">
+                            <input type="text" id="chat-input" placeholder="Transmit direct thought queries..." class="flex-1 bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-3 text-xs font-mono text-white placeholder-secondary/50 transition-all" onkeypress="if(event.key === 'Enter') triggerChatDialogue()">
+                            <button id="btn-chat-send" onclick="triggerChatDialogue()" class="px-5 bg-primary/15 hover:bg-primary/25 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">TRANSMIT</button>
                         </div>
+                    </div>
 
-                        <!-- Capability: Filesystem broker -->
-                        <div class="space-y-1.5">
-                            <div class="flex justify-between text-[11px] uppercase tracking-wider">
-                                <span class="text-white">Filesystem Sandbox</span>
-                                <span class="text-success font-semibold">Online</span>
-                            </div>
-                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                                <div class="h-full bg-success" style="width: 100%;"></div>
-                            </div>
-                            <div class="flex justify-between text-[9px] text-muted uppercase">
-                                <span>Core Lat: 3ms</span>
-                                <span>Status: Secure</span>
+                    <!-- Holographic Trace Sidebar -->
+                    <div class="lg:col-span-1 flex flex-col">
+                        <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex-1 flex flex-col h-[520px]">
+                            <h3 class="font-bold text-xs tracking-widest uppercase mb-1">DECISION TRACE</h3>
+                            <p class="text-[9px] text-secondary tracking-wide mb-3">Underlying computational profile</p>
+                            
+                            <div id="float-trace-panel" class="text-secondary font-mono text-xs leading-relaxed space-y-3 flex-1 overflow-y-auto pr-1">
+                                <div class="text-center text-muted uppercase text-[8px] tracking-widest opacity-45 pt-12">No active profile compiled.</div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Tab: Plugins & Environment -->
-            <div id="view-plugins" class="view-pane space-y-4 hidden">
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs font-mono cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Infrastructure Matrix</h3>
-                    <div class="space-y-2.5">
-                        <div class="flex justify-between border-b border-white/5 pb-1.5">
-                            <span class="text-muted uppercase text-[10px]">HOST MACHINE</span>
-                            <span class="text-white font-semibold">ONLINE</span>
+            <!-- ================= SUB-PANEL 3: WORKING MEMORY CELLS ================= -->
+            <div id="view-workspace" class="view-pane hidden space-y-6">
+                <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                    <div>
+                        <h3 class="font-bold text-md tracking-widest uppercase">WORKING MEMORY ISOLATION CHAMBERS</h3>
+                        <p class="text-[10px] text-secondary">Monitoring the 9 high-affinity compartments of Workspace v4.0</p>
+                    </div>
+                    <button onclick="refreshWorkspaceSnapshot()" class="px-3 py-1.5 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">FORCE_MEM_SYNC</button>
+                </div>
+
+                <div id="workspace-cells-container" class="grid grid-cols-1 md:grid-cols-3 gap-6"></div>
+            </div>
+
+            <!-- ================= SUB-PANEL 4: MEMORY INDEX ================= -->
+            <div id="view-memory" class="view-pane hidden space-y-6">
+                <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                    <div>
+                        <h3 class="font-bold text-md tracking-widest uppercase">SEMANTIC KNOWLEDGE INDEX</h3>
+                        <p class="text-[10px] text-secondary font-mono">Approve pending knowledge segments before committing to long-term memory</p>
+                    </div>
+                    <button onclick="verifyAllMemory()" class="px-3 py-1.5 bg-success/15 hover:bg-success/25 border border-success/20 text-success hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">CONSOLIDATE_ALL</button>
+                </div>
+
+                <div id="pending-memory-container" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="text-secondary text-center col-span-3 py-12 text-xs uppercase tracking-widest font-mono opacity-50">Knowledge registers clean. Zero unverified nodes.</div>
+                </div>
+            </div>
+
+            <!-- ================= SUB-PANEL 5: TELEMETRY & OBSERVATION ================= -->
+            <div id="view-observation" class="view-pane hidden space-y-6">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-2 bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[500px]">
+                        <div class="flex justify-between items-center mb-3 pb-2 border-b border-white/5">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase">HOST TELEMETRY STREAMS</h3>
+                                <p class="text-[9px] text-secondary tracking-wide">Live sandboxed host process logs</p>
+                            </div>
+                            <button onclick="clearTelemetryLocal()" class="px-2 py-1 bg-white/5 border border-white/10 rounded-lg text-[8px] font-mono tracking-widest uppercase">CLEAR_STREAMS</button>
                         </div>
-                        <div class="flex justify-between border-b border-white/5 pb-1.5">
-                            <span class="text-muted uppercase text-[10px]">DOCKER INSTANCE</span>
-                            <span class="text-white">VIRTUALIZED</span>
+                        <div id="telemetry-log-pane" class="flex-1 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1 text-secondary pr-1"></div>
+                    </div>
+
+                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[500px]">
+                        <div class="mb-3 pb-2 border-b border-white/5">
+                            <h3 class="font-bold text-xs tracking-widest uppercase">LEDGER CONFORME</h3>
+                            <p class="text-[9px] text-secondary tracking-wide">Immutable, append-only security logs</p>
                         </div>
-                        <div class="flex justify-between border-b border-white/5 pb-1.5">
-                            <span class="text-muted uppercase text-[10px]">GITHUB BRIDGE</span>
-                            <span class="text-primary hover:underline cursor-pointer" onclick="addNotification('Github connection verified')">SYNC ACTIVE</span>
-                        </div>
-                        <div class="flex justify-between border-b border-white/5 pb-1.5">
-                            <span class="text-muted uppercase text-[10px]">SANDBOX BROWSERS</span>
-                            <span class="text-white">ISOLATED IDLE</span>
-                        </div>
-                        <div class="flex justify-between border-b border-white/5 pb-1.5">
-                            <span class="text-muted uppercase text-[10px]">OAUTH TOKEN BUS</span>
-                            <span class="text-white">STANDBY</span>
-                        </div>
+                        <div id="audit-trail-pane" class="flex-1 overflow-y-auto font-mono text-[9px] leading-relaxed text-secondary space-y-2"></div>
                     </div>
                 </div>
             </div>
 
-            <!-- Tab: Learning -->
-            <div id="view-learning" class="view-pane space-y-4 hidden">
-                <!-- Style Preferences Cache -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-1.5">Syntactic Style Cache</h3>
-                    <div class="space-y-2 font-mono">
-                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Convention:</span><span id="pref-naming" class="text-white font-semibold">snake_case</span></div>
-                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Tab Indent:</span><span id="pref-tab" class="text-white">4</span></div>
-                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Framework:</span><span id="pref-framework" class="text-white">Express / Node</span></div>
-                        <div class="flex justify-between"><span class="text-muted uppercase text-[10px]">Pattern Architecture:</span><span id="pref-architecture" class="text-white">Decoupled-Contexts</span></div>
+            <!-- ================= SUB-PANEL 6: LONG TERM LEARNING ENGINE ================= -->
+            <div id="view-learning" class="view-pane hidden space-y-6">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[480px]">
+                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">PREFERENCE STYLE CACHE</h3>
+                        <p class="text-[9px] text-secondary tracking-wide mb-3">Cached design parameters and developer styles</p>
+                        
+                        <div class="space-y-3 text-xs font-mono flex-1 overflow-y-auto pr-1">
+                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[10px]">NAMING CONVENTION</span>
+                                <span id="pref-naming" class="text-white font-bold text-sm uppercase">snake_case</span>
+                            </div>
+                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[10px]">TAB INDENTATION</span>
+                                <span id="pref-tab" class="text-white font-bold text-sm uppercase">4 spaces</span>
+                            </div>
+                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[10px]">PREFERRED FRAMEWORK</span>
+                                <span id="pref-framework" class="text-white font-bold text-sm uppercase">Express (Node.js)</span>
+                            </div>
+                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[10px]">ARCHITECTURE CONVENTIONS</span>
+                                <span id="pref-architecture" class="text-white font-bold text-sm uppercase">Decoupled-Contexts</span>
+                            </div>
+                        </div>
                     </div>
-                </div>
 
-                <!-- Workflow Optimizer -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-1.5">Workflow Optimizer Log</h3>
-                    <div id="workflow-optimized-list" class="space-y-2 font-mono text-[11px] text-muted">
-                        <!-- Loaded via API -->
+                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[480px]">
+                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">OPTIMIZED PROCEDURAL PATHS</h3>
+                        <p class="text-[9px] text-secondary tracking-wide mb-3">Adapted workflow pathways</p>
+                        <div id="workflow-optimized-list" class="space-y-2 font-mono text-xs text-secondary flex-1 overflow-y-auto pr-1"></div>
                     </div>
-                </div>
 
-                <!-- Mistake Logs -->
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono border-b border-white/5 pb-1.5">Heuristic Mistake Cache</h3>
-                    <div id="mistake-log-list" class="space-y-2 font-mono text-[11px]">
-                        <!-- Loaded via API -->
+                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[480px]">
+                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">RESOLVED EXCEPTIONS</h3>
+                        <p class="text-[9px] text-secondary tracking-wide mb-3">Core anomaly mitigations index</p>
+                        <div id="mistake-log-list" class="space-y-2 font-mono text-[10px] text-secondary flex-1 overflow-y-auto pr-1"></div>
                     </div>
                 </div>
             </div>
 
-            <!-- Tab: Settings -->
-            <div id="view-settings" class="view-pane space-y-4 hidden">
-                <div class="bg-card border border-white/5 rounded-xl p-4 space-y-3 text-xs font-mono cyber-border">
-                    <h3 class="text-[10px] font-bold uppercase tracking-[0.15em] text-muted font-mono">Authentication Guard</h3>
-                    <div class="space-y-3">
-                        <div class="space-y-1.5">
-                            <label class="text-[9px] text-muted uppercase tracking-wider">Access Token (X-API-Key)</label>
-                            <input type="password" id="api-key-input" value="admin" class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white tracking-widest focus:outline-none focus:border-primary">
-                        </div>
-                        <div class="flex justify-between items-center text-[10px] uppercase tracking-wider">
-                            <span class="text-muted">Encryption Status</span>
-                            <span id="key-status" class="text-success font-semibold">VALID SECURE</span>
-                        </div>
+            <!-- ================= SUB-PANEL 7: CONFIGURATION ================= -->
+            <div id="view-settings" class="view-pane hidden space-y-6">
+                <div class="max-w-xl bg-surface/50 border border-white/5 p-6 rounded-2xl space-y-4">
+                    <h3 class="font-bold text-sm tracking-widest uppercase border-b border-white/5 pb-2">SYSTEM CONFIG PANEL</h3>
+                    
+                    <div class="space-y-2">
+                        <label class="text-[10px] font-mono text-secondary tracking-wider block">X-API-KEY (JARVIS AUTH VECTOR)</label>
+                        <input type="text" id="api-key-input" placeholder="Enter key (defaults to 'admin')..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
                     </div>
+
+                    <button onclick="runLocalDiagnostics()" class="w-full py-3 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">RUN GENERAL DIAGNOSTICS</button>
                 </div>
             </div>
 
-        </div>
+        </main>
     </div>
-
-    <!-- 3. MAIN COGNITIVE GRAPH ENGINE -->
-    <div class="flex-1 h-full relative flex flex-col" id="viewport-right">
-        <!-- Interactive Cytoscape network background representing "Memory Graph" -->
-        <div id="mind-graph"></div>
-
-        <!-- Float Info Panel Drawer (loads live variables when tapping graph nodes) -->
-        <div id="info-drawer" class="absolute top-6 left-6 w-80 glass-panel border border-white/10 rounded-2xl p-5 z-10 transition-all duration-300 transform translate-y-[-10px] opacity-0 pointer-events-none shadow-2xl">
-            <div class="flex justify-between items-center border-b border-white/5 pb-2.5 mb-3">
-                <h4 id="info-drawer-title" class="text-xs font-bold tracking-[0.2em] uppercase font-mono text-white">NODE PROTOCOL</h4>
-                <button onclick="closeInfoDrawer()" class="text-muted hover:text-white transition-colors text-sm">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </div>
-            <div id="info-drawer-content" class="text-xs font-mono text-muted space-y-2">
-                <!-- Loaded dynamically -->
-            </div>
-        </div>
-
-        <!-- Floating Dialog Trace Inspector (Loaded after dialogue execution) -->
-        <div id="float-trace-panel" class="absolute bottom-6 left-6 w-96 glass-panel rounded-2xl p-5 z-10 shadow-2xl transition-all duration-300 transform translate-y-[10px] opacity-0 pointer-events-none border border-primary/20">
-            <div class="flex justify-between items-center border-b border-white/10 pb-2.5 mb-3">
-                <h4 class="text-[10px] font-bold tracking-[0.15em] uppercase font-mono text-primary flex items-center gap-2">
-                    <span class="w-1.5 h-1.5 rounded-full bg-primary pulse-indicator shadow-[0_0_6px_rgba(56,189,248,0.4)]"></span>
-                    Explainability Trace Logic
-                </h4>
-                <button onclick="closeFloatTrace()" class="text-muted hover:text-white transition-colors text-sm">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </div>
-            <div id="float-trace-body" class="text-xs font-mono space-y-3 text-muted">
-                <!-- Filled dynamically on chat replies -->
-            </div>
-        </div>
-
-        <!-- Floating Controls HUD -->
-        <div class="absolute bottom-6 right-6 z-10 flex gap-2">
-            <button onclick="runLocalDiagnostics()" class="px-4 py-2 bg-[#090d14]/80 backdrop-blur-md border border-white/10 hover:border-primary/30 rounded-full text-[10px] font-mono tracking-wider hover:bg-primary/5 transition-all flex items-center gap-2 text-white font-semibold">
-                <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                DIAGNOSTICS
-            </button>
-            <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="px-4 py-2 bg-[#090d14]/80 backdrop-blur-md border border-white/10 hover:border-accent/30 rounded-full text-[10px] font-mono tracking-wider hover:bg-accent/5 transition-all flex items-center gap-2 text-white font-semibold">
-                <svg class="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-                </svg>
-                SLEEP COLD
-            </button>
-        </div>
-
-        <!-- Ambient sleep mode overlay -->
-        <div id="sleep-mode-overlay" class="absolute inset-0 bg-blue-950/20 backdrop-blur-lg pointer-events-none opacity-0 transition-opacity duration-500 z-10 flex items-center justify-center">
-            <div class="text-center font-mono space-y-3">
-                <div class="relative w-16 h-16 mx-auto mb-4 flex items-center justify-center">
-                    <div class="absolute inset-0 rounded-full border border-accent/20 orbit-element"></div>
-                    <div class="absolute w-3 h-3 rounded-full bg-accent pulse-indicator shadow-[0_0_12px_rgba(168,85,247,0.6)]"></div>
-                </div>
-                <div class="text-sm font-bold text-accent tracking-[0.25em] uppercase">JARVIS COLD STANDBY</div>
-                <div class="text-[10px] text-muted uppercase tracking-wider">Passive security parameters executing</div>
-            </div>
-        </div>
-
-        <!-- Floating Notifications container -->
-        <div id="toast-container" class="absolute top-6 right-6 z-30 flex flex-col gap-2 pointer-events-none"></div>
-    </div>
-
 </div>
 
-<!-- Interactive logic & APIs integration script -->
+<!-- Core Sleep Mode Curtain -->
+<div id="sleep-mode-overlay" class="fixed inset-0 bg-[#020308]/96 z-50 flex flex-col items-center justify-center gap-3 transition-all duration-500 opacity-0 pointer-events-none">
+    <div class="w-16 h-16 rounded-full border border-primary/20 flex items-center justify-center shadow-[0_0_32px_rgba(56,189,248,0.2)]">
+        <svg class="w-8 h-8 text-primary animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+        </svg>
+    </div>
+    <span class="font-bold tracking-[0.25em] font-mono text-primary text-xs uppercase">JARVIS CORES PARKED</span>
+    <p class="text-secondary text-[11px] font-mono">Interfaces dormant. Toggle "CORES_SLEEP" in header to resume.</p>
+</div>
+
+<!-- Toasts -->
+<div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
 <script>
-    const API_URL = "";
     let CURRENT_API_KEY = "admin";
+    let CURRENT_TAB = "dashboard";
+    let cy;
 
-    // 1. Defined 20 Node entities mapping all active subsystems
-    const CY_NODES = [
-        { id: 'user', label: 'User Node', type: 'user', color: '#38bdf8' },
-        { id: 'conversation', label: 'Dialogue Matrix', type: 'conversation', color: '#38bdf8' },
-        { id: 'intent', label: 'Intent Classifier', type: 'executive', color: '#38bdf8' },
-        { id: 'goals', label: 'Goal Formulator', type: 'executive', color: '#38bdf8' },
-        { id: 'strategy', label: 'Strategy Core', type: 'executive', color: '#38bdf8' },
-        { id: 'planner', label: 'Planning Engine', type: 'executive', color: '#38bdf8' },
-        { id: 'decision', label: 'Decision Logic', type: 'executive', color: '#38bdf8' },
-        { id: 'delegation', label: 'Delegator Swarm', type: 'executive', color: '#38bdf8' },
-        { id: 'execution', label: 'Execution Router', type: 'execution', color: '#34d399' },
-        { id: 'reflection', label: 'Self-Reflection', type: 'cognitive', color: '#a855f7' },
-        { id: 'learning', label: 'Heuristic Optimizer', type: 'cognitive', color: '#a855f7' },
-        { id: 'knowledge', label: 'Sovereign Vault', type: 'cognitive', color: '#a855f7' },
-        { id: 'workspace', label: 'Cognitive Space', type: 'cognitive', color: '#a855f7' },
-        { id: 'memory', label: 'Semantic Index', type: 'cognitive', color: '#a855f7' },
-        { id: 'capability_platform', label: 'Capabilities Bus', type: 'capability', color: '#fbbf24' },
-        { id: 'capability_resolver', label: 'Resolver Engine', type: 'capability', color: '#fbbf24' },
-        { id: 'capability_registry', label: 'Manifest Index', type: 'capability', color: '#fbbf24' },
-        { id: 'scheduler', label: 'Schedule Broker', type: 'execution', color: '#34d399' },
-        { id: 'event_bus', label: 'Command Bus', type: 'infrastructure', color: '#6b7280' },
-        { id: 'system', label: 'OS Kernel', type: 'infrastructure', color: '#6b7280' },
-    ];
-
-    const CY_EDGES = [
-        { source: 'user', target: 'conversation' },
-        { source: 'conversation', target: 'intent' },
-        { source: 'intent', target: 'goals' },
-        { source: 'goals', target: 'strategy' },
-        { source: 'strategy', target: 'planner' },
-        { source: 'planner', target: 'decision' },
-        { source: 'decision', target: 'delegation' },
-        { source: 'delegation', target: 'execution' },
-        { source: 'execution', target: 'capability_platform' },
-        { source: 'capability_platform', target: 'capability_resolver' },
-        { source: 'capability_resolver', target: 'capability_registry' },
-        { source: 'capability_platform', target: 'scheduler' },
-        { source: 'scheduler', target: 'execution' },
-        { source: 'execution', target: 'reflection' },
-        { source: 'reflection', target: 'learning' },
-        { source: 'learning', target: 'knowledge' },
-        { source: 'knowledge', target: 'workspace' },
-        { source: 'workspace', target: 'memory' },
-        { source: 'memory', target: 'goals' },
-        { source: 'event_bus', target: 'execution' },
-        { source: 'event_bus', target: 'delegation' },
-        { source: 'system', target: 'event_bus' },
-        { source: 'system', target: 'capability_registry' },
-    ];
-
-    // Initialize Cytoscape Instance with futuristic design properties
-    const cy = cytoscape({
-        container: document.getElementById('mind-graph'),
-        elements: [
-            ...CY_NODES.map(n => ({ data: { id: n.id, label: n.label, type: n.type, color: n.color } })),
-            ...CY_EDGES.map(e => ({ data: { source: e.source, target: e.target } })),
-        ],
-        style: [
-            {
-                selector: 'node',
-                style: {
-                    'background-color': '#0d131a',
-                    'width': 18,
-                    'height': 18,
-                    'border-width': 2,
-                    'border-color': 'data(color)',
-                    'label': 'data(label)',
-                    'font-size': '8px',
-                    'color': '#8892b0',
-                    'font-family': 'JetBrains Mono, monospace',
-                    'text-valign': 'bottom',
-                    'text-halign': 'center',
-                    'text-margin-y': 6,
-                    'transition-property': 'background-color, border-color, border-width, width, height',
-                    'transition-duration': '0.35s'
-                }
-            },
-            {
-                selector: 'edge',
-                style: {
-                    'width': 1.0,
-                    'line-color': 'rgba(56, 189, 248, 0.08)',
-                    'curve-style': 'bezier',
-                    'target-arrow-shape': 'none',
-                    'opacity': 0.8
-                }
-            },
-            {
-                selector: 'node.highlighted',
-                style: {
-                    'background-color': '#ffffff',
-                    'border-color': '#38bdf8',
-                    'border-width': 4,
-                    'color': '#ffffff',
-                    'width': 24,
-                    'height': 24
-                }
+    // 1. TACTILE AUDIO SYNTHESIZER ENGINE (Web Audio API)
+    const AudioEngine = {
+        ctx: null,
+        init() {
+            if (!this.ctx) {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
             }
-        ],
-        layout: {
-            name: 'cose',
-            idealEdgeLength: 75,
-            nodeRepulsion: 500,
-            gravity: 0.25,
-            numIter: 1000,
-            animate: false
         },
-        zoom: 0.85,
-        pan: { x: 40, y: 30 },
-        minZoom: 0.3,
-        maxZoom: 2.0
-    });
-
-    // Handle tapping nodes
-    cy.on('tap', 'node', async (evt) => {
-        const node = evt.target;
-        const id = node.id();
-        const data = node.data();
-        
-        // Highlight clicked node
-        cy.nodes().removeClass('highlighted');
-        node.addClass('highlighted');
-
-        const title = document.getElementById('info-drawer-title');
-        const content = document.getElementById('info-drawer-content');
-        const drawer = document.getElementById('info-drawer');
-
-        title.textContent = (data.label || id).toUpperCase();
-        drawer.style.opacity = "1";
-        drawer.style.pointerEvents = "auto";
-        drawer.style.transform = "translateY(0)";
-
-        content.innerHTML = `<div class="text-muted italic py-2 text-[10px] uppercase tracking-wider">Querying workspace snapshot matrices...</div>`;
-
-        try {
-            const res = await fetch('/api/cognition/workspace', {
-                headers: { 'X-API-Key': CURRENT_API_KEY }
-            });
-            if (res.ok) {
-                const ws = await res.json();
-                let detailHTML = '';
-                if (id === 'goals') {
-                    detailHTML = `
-                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Active Target:</span> "${ws.goal.activeGoal}"</div>
-                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Priority Weight:</span> ${ws.goal.priority}/10</div>
-                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Energy Credits:</span> <span class="text-success">${ws.goal.budgetCredits} Credits</span></div>
-                    `;
-                } else if (id === 'workspace') {
-                    detailHTML = `
-                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Allocated Sectors:</span> 9 memory compartments active</div>
-                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Fact Matrix:</span> ${ws.knowledge.factsCount} schemas verified</div>
-                    `;
-                } else if (id === 'execution') {
-                    detailHTML = `
-                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Command Queue:</span> "${ws.execution.activeTask || 'None'}"</div>
-                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Resolver Code:</span> <span class="text-success">${ws.execution.status.toUpperCase()}</span></div>
-                    `;
-                } else if (id === 'user' || id === 'conversation') {
-                    detailHTML = `
-                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Dialogue History:</span> ${ws.conversation.history.length} matrix elements</div>
-                    `;
-                } else {
-                    detailHTML = `
-                        <div class="border-b border-white/5 pb-2"><span class="text-primary block text-[9px] uppercase tracking-wider">Type:</span> Active Heuristic Block</div>
-                        <div class="border-b border-white/5 pb-2 pt-1"><span class="text-primary block text-[9px] uppercase tracking-wider">Unified API:</span> /api/cognition/workspace</div>
-                    `;
+        playBeep(freq = 1200, duration = 0.04, type = 'sine', vol = 0.012) {
+            try {
+                this.init();
+                if (this.ctx.state === 'suspended') {
+                    this.ctx.resume();
                 }
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                
+                gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + duration);
+                
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                
+                osc.start();
+                osc.stop(this.ctx.currentTime + duration);
+            } catch {}
+        },
+        chirp() { this.playBeep(1600, 0.05, 'sine', 0.008); },
+        click() { this.playBeep(850, 0.03, 'triangle', 0.015); },
+        success() {
+            this.playBeep(1100, 0.08, 'sine', 0.012);
+            setTimeout(() => this.playBeep(1400, 0.12, 'sine', 0.012), 70);
+        },
+        sweep(up = true) {
+            try {
+                this.init();
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'sine';
+                const startFreq = up ? 250 : 850;
+                const endFreq = up ? 850 : 250;
+                osc.frequency.setValueAtTime(startFreq, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(endFreq, this.ctx.currentTime + 0.35);
+                
+                gain.gain.setValueAtTime(0.015, this.ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.0001, this.ctx.currentTime + 0.35);
+                
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start();
+                osc.stop(this.ctx.currentTime + 0.35);
+            } catch {}
+        }
+    };
 
-                content.innerHTML = `
-                    <div class="space-y-2.5">
-                        ${detailHTML}
-                        <div class="pt-1"><span class="text-[9px] text-muted font-bold block uppercase tracking-wider mb-0.5">Physical Boundary:</span> <span class="text-[10px] text-white leading-relaxed">${getNodeDescription(id)}</span></div>
-                    </div>
-                `;
-            } else {
-                throw new Error();
+    // Global tactile audio delegation
+    document.addEventListener('mouseenter', (e) => {
+        if (e.target && typeof e.target.closest === 'function') {
+            if (e.target.closest('button') || e.target.closest('.nav-btn')) {
+                AudioEngine.chirp();
             }
-        } catch {
-            content.innerHTML = `
-                <div class="space-y-2">
-                    <div><span class="text-white font-semibold">Node ID:</span> ${id}</div>
-                    <div><span class="text-white font-semibold">Category:</span> ${data.type || 'unknown'}</div>
-                    <div class="text-[10px] text-muted leading-relaxed border-t border-white/5 pt-1.5 mt-1.5">${getNodeDescription(id)}</div>
-                </div>
-            `;
+        }
+    }, true);
+    document.addEventListener('click', (e) => {
+        if (e.target && typeof e.target.closest === 'function') {
+            if (e.target.closest('button') || e.target.closest('.nav-btn') || e.target.closest('input')) {
+                AudioEngine.click();
+            }
+        }
+    }, true);
+
+    // 2. MULTIMEDIA SENSORS & TRANSLATORS (Camera, STT, TTS)
+    let speechUtterance = null;
+    let speechEnabled = false;
+    let micEnabled = false;
+    let cameraStream = null;
+
+    // MediaRecorder & Analyzer for Robust Voice Transcription
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let audioCtx = null;
+    let analyser = null;
+    let audioSource = null;
+    let dataArray = null;
+    let visualizerActive = false;
+
+    // Camera Motion Tracking State
+    let prevFrameData = null;
+    let motionCanvas = null;
+    let motionCtx = null;
+    let cameraTrackerActive = false;
+    let trackingLerpX = 0;
+    let trackingLerpY = 0;
+
+    function updateSensorStatusLabel() {
+        const label = document.getElementById('sensor-status-label');
+        if (!label) return;
+        let active = [];
+        if (cameraStream) active.push("VISUAL");
+        if (micEnabled) active.push("AURAL");
+        if (speechEnabled) active.push("VOCAL");
+        
+        if (active.length > 0) {
+            label.textContent = "JARVIS COGNIZANT: " + active.join(" + ");
+            label.className = "text-[8px] font-mono text-primary uppercase tracking-widest animate-pulse font-bold";
+        } else {
+            label.textContent = "SENSORS STANDBY";
+            label.className = "text-[8px] font-mono text-secondary uppercase tracking-widest";
+        }
+    }
+
+    function toggleVoiceSpeech() {
+        speechEnabled = !speechEnabled;
+        const iconOn = document.getElementById('speech-icon-on');
+        const iconOff = document.getElementById('speech-icon-off');
+        const btn = document.getElementById('btn-speech-toggle');
+        
+        if (speechEnabled) {
+            if (iconOn) iconOn.classList.remove('hidden');
+            if (iconOff) iconOff.classList.add('hidden');
+            if (btn) btn.className = "p-1.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 hover:text-indigo-300 transition-all duration-300";
+            addNotification("Vocalization synthesis active.", "success");
+            speakText("Vocalization matrix enabled.");
+        } else {
+            if (iconOn) iconOn.classList.add('hidden');
+            if (iconOff) iconOff.classList.remove('hidden');
+            if (btn) btn.className = "p-1.5 rounded bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 transition-all duration-300";
+            window.speechSynthesis.cancel();
+            addNotification("Vocalization synthesis suspended.", "warning");
+        }
+        updateSensorStatusLabel();
+    }
+
+    async function toggleCameraSensor() {
+        const video = document.getElementById('eye-camera');
+        const btn = document.getElementById('btn-camera-toggle');
+        
+        if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop());
+            cameraStream = null;
+            if (video) {
+                video.srcObject = null;
+                video.classList.add('hidden');
+            }
+            if (btn) btn.className = "p-1.5 rounded bg-white/5 border border-white/10 hover:border-primary/40 text-secondary hover:text-primary transition-all duration-300";
+            addNotification("Visual sensor deactivated.", "warning");
+            stopCameraMotionTracking();
+        } else {
+            try {
+                addNotification("Requesting visual sensor access...", "info");
+                cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 256, height: 256 } });
+                if (video) {
+                    video.srcObject = cameraStream;
+                    video.classList.remove('hidden');
+                }
+                if (btn) btn.className = "p-1.5 rounded bg-primary/20 border border-primary/40 text-primary hover:text-primary transition-all duration-300";
+                addNotification("Visual sensor online. Jarvis can now see you.", "success");
+                startCameraMotionTracking();
+            } catch (err) {
+                console.error("Camera access failed", err);
+                addNotification("Visual sensor connection failed.", "danger");
+            }
+        }
+        updateSensorStatusLabel();
+    }
+
+    // Camera Motion Tracking (Visual Follow Interface)
+    function startCameraMotionTracking() {
+        if (!cameraStream) return;
+        cameraTrackerActive = true;
+        
+        if (!motionCanvas) {
+            motionCanvas = document.createElement('canvas');
+            motionCanvas.width = 32;
+            motionCanvas.height = 32;
+            motionCtx = motionCanvas.getContext('2d');
+        }
+        requestAnimationFrame(trackMotionFrame);
+    }
+
+    function stopCameraMotionTracking() {
+        cameraTrackerActive = false;
+        prevFrameData = null;
+        const iris = document.getElementById('quantum-iris');
+        if (iris) {
+            iris.style.transform = 'translate(0px, 0px)';
+        }
+    }
+
+    function trackMotionFrame() {
+        if (!cameraTrackerActive || !cameraStream) return;
+        
+        const video = document.getElementById('eye-camera');
+        if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
+            try {
+                motionCtx.drawImage(video, 0, 0, 32, 32);
+                const frame = motionCtx.getImageData(0, 0, 32, 32);
+                const data = frame.data;
+                
+                if (prevFrameData) {
+                    let sumX = 0;
+                    let sumY = 0;
+                    let count = 0;
+                    
+                    for (let y = 0; y < 32; y++) {
+                        for (let x = 0; x < 32; x++) {
+                            const idx = (y * 32 + x) * 4;
+                            const r1 = data[idx], g1 = data[idx+1], b1 = data[idx+2];
+                            const r2 = prevFrameData[idx], g2 = prevFrameData[idx+1], b2 = prevFrameData[idx+2];
+                            
+                            const diff = Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2);
+                            if (diff > 55) {
+                                sumX += x;
+                                sumY += y;
+                                count++;
+                            }
+                        }
+                    }
+                    
+                    if (count > 8) {
+                        const avgX = sumX / count;
+                        const avgY = sumY / count;
+                        
+                        // Mirrored map to translation coordinate space (-12px to 12px range)
+                        const targetX = -((avgX / 32) * 24 - 12);
+                        const targetY = ((avgY / 32) * 24 - 12);
+                        
+                        trackingLerpX += (targetX - trackingLerpX) * 0.12;
+                        trackingLerpY += (targetY - trackingLerpY) * 0.12;
+                        
+                        const iris = document.getElementById('quantum-iris');
+                        if (iris) {
+                            iris.style.transform = `translate(${trackingLerpX}px, ${trackingLerpY}px)`;
+                        }
+                    }
+                }
+                prevFrameData = data;
+            } catch (e) {
+                console.warn("Motion tracking exception: ", e);
+            }
+        }
+        
+        setTimeout(() => {
+            if (cameraTrackerActive) requestAnimationFrame(trackMotionFrame);
+        }, 50);
+    }
+
+    // Live Audio Frequency Visualizer
+    function startMicrophoneVisualizer(stream) {
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 32;
+            audioSource = audioCtx.createMediaStreamSource(stream);
+            audioSource.connect(analyser);
+            
+            const bufferLength = analyser.frequencyBinCount;
+            dataArray = new Uint8Array(bufferLength);
+            visualizerActive = true;
+        } catch (e) {
+            console.warn("Failed to activate microphone frequency analyzer: ", e);
+        }
+    }
+
+    function stopMicrophoneVisualizer() {
+        visualizerActive = false;
+        if (audioSource) {
+            try { audioSource.disconnect(); } catch {}
+            audioSource = null;
+        }
+        if (audioCtx && audioCtx.state !== 'closed') {
+            try { audioCtx.close(); } catch {}
+            audioCtx = null;
+        }
+    }
+
+    // High Reliability Speech to Text utilizing Server-Side Gemini transcribing fallbacks
+    async function toggleMicrophoneSensor() {
+        if (micEnabled) {
+            await stopMicrophoneSensor();
+            return;
+        }
+
+        addNotification("Initializing neural audio vectors...", "info");
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            
+            audioChunks = [];
+            
+            // Choose optimal mimeType supported by browser
+            let options = { mimeType: 'audio/webm;codecs=opus' };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options = { mimeType: 'audio/webm' };
+            }
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options = {}; // browser default
+            }
+
+            mediaRecorder = new MediaRecorder(stream, options);
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data && event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+                addNotification("Translating speech metrics via Gemini CORES...", "info");
+                
+                // Convert blob to base64 and POST to backend
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = async () => {
+                    try {
+                        const base64Data = reader.result.split(',')[1];
+                        const mime = audioBlob.type;
+
+                        const response = await fetch('/api/voice-input', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-API-Key': CURRENT_API_KEY
+                            },
+                            body: JSON.stringify({ audio: base64Data, mimeType: mime })
+                        });
+
+                        if (response.ok) {
+                            const result = await response.json();
+                            const txt = result.transcription ? result.transcription.trim() : "";
+                            if (txt) {
+                                addNotification(`Heard: "${txt}"`, "success");
+                                const input = document.getElementById('chat-input');
+                                if (input) {
+                                    input.value = txt;
+                                    triggerChatDialogue();
+                                }
+                            } else {
+                                addNotification("STT completed. Silence detected.", "warning");
+                            }
+                        } else {
+                            throw new Error("Server transcription error");
+                        }
+                    } catch (err) {
+                        console.error("Transcription pipeline failed: ", err);
+                        addNotification("Vocal transcribing pipeline disrupted.", "danger");
+                    }
+                };
+
+                // Stop the streams
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start();
+            startMicrophoneVisualizer(stream);
+            
+            micEnabled = true;
+            const pulseDot = document.getElementById('mic-pulse-dot');
+            const btn = document.getElementById('btn-mic-toggle');
+            if (pulseDot) pulseDot.classList.remove('hidden');
+            if (btn) btn.className = "p-1.5 rounded bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
+            
+            addNotification("Neural listening active. Click again to transmit.", "success");
+            updateSensorStatusLabel();
+
+        } catch (e) {
+            console.error("Microphone access failed: ", e);
+            addNotification("Aural sensor access denied or unsupported.", "danger");
+            await stopMicrophoneSensor();
+        }
+    }
+
+    async function stopMicrophoneSensor() {
+        micEnabled = false;
+        stopMicrophoneVisualizer();
+        
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            try {
+                mediaRecorder.stop();
+            } catch {}
+        }
+        
+        const pulseDot = document.getElementById('mic-pulse-dot');
+        const btn = document.getElementById('btn-mic-toggle');
+        if (pulseDot) pulseDot.classList.add('hidden');
+        if (btn) btn.className = "p-1.5 rounded bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
+        
+        addNotification("Neural listening suspended.", "warning");
+        updateSensorStatusLabel();
+    }
+
+    function speakText(text) {
+        if (!speechEnabled) return;
+        try {
+            window.speechSynthesis.cancel();
+            const cleanText = text
+                .replace(/<[^>]*>/g, '')
+                .replace(/\[[^\]]*\]/g, '')
+                .replace(/uuid:[a-f0-9-]+/gi, 'node')
+                .slice(0, 160);
+                
+            speechUtterance = new SpeechSynthesisUtterance(cleanText);
+            const voices = window.speechSynthesis.getVoices();
+            let voice = voices.find(v => v.name.includes("Google") && v.lang.startsWith("en"));
+            if (!voice) voice = voices.find(v => v.lang.startsWith("en"));
+            if (voice) speechUtterance.voice = voice;
+            
+            speechUtterance.rate = 1.0;
+            speechUtterance.pitch = 0.85;
+            window.speechSynthesis.speak(speechUtterance);
+        } catch {}
+    }
+
+    // 3. CURSOR-TRACKING QUANTUM EYE & SPECTRUM
+    document.addEventListener('mousemove', (e) => {
+        if (cameraStream && cameraTrackerActive) return;
+        const eyeContainer = document.getElementById('quantum-eye-container');
+        if (!eyeContainer) return;
+        const rect = eyeContainer.getBoundingClientRect();
+        const eyeX = rect.left + rect.width / 2;
+        const eyeY = rect.top + rect.height / 2;
+        
+        const deltaX = e.clientX - eyeX;
+        const deltaY = e.clientY - eyeY;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        
+        const maxMove = 7; 
+        const angle = Math.atan2(deltaY, deltaX);
+        const moveX = Math.min(maxMove, distance / 22) * Math.cos(angle);
+        const moveY = Math.min(maxMove, distance / 22) * Math.sin(angle);
+        
+        const iris = document.getElementById('quantum-iris');
+        if (iris) {
+            iris.style.transform = `translate(${moveX}px, ${moveY}px)`;
         }
     });
+
+    function randomBlink() {
+        const eye = document.getElementById('quantum-eye');
+        if (eye) {
+            eye.style.transform = 'scaleY(0.03)';
+            setTimeout(() => {
+                eye.style.transform = 'scaleY(1)';
+            }, 140);
+        }
+        setTimeout(randomBlink, 4500 + Math.random() * 5000);
+    }
+    setTimeout(randomBlink, 3000);
+
+    function animateWaveform() {
+        const bars = document.querySelectorAll('.wave-bar');
+        const isSpeaking = window.speechSynthesis.speaking;
+        const status = document.getElementById('kernel-status')?.textContent || 'Idle';
+        const isThinking = status === 'Thinking' || status === 'Executing' || status === 'Planning';
+        
+        if (visualizerActive && analyser && dataArray) {
+            analyser.getByteFrequencyData(dataArray);
+        }
+        
+        bars.forEach((bar, idx) => {
+            let height;
+            if (isSpeaking) {
+                height = 7 + Math.random() * 17;
+                bar.style.backgroundColor = '#818CF8';
+            } else if (visualizerActive && dataArray) {
+                const val = dataArray[idx % dataArray.length] || 0;
+                height = 2 + (val / 255) * 22;
+                bar.style.backgroundColor = '#10B981';
+            } else if (isThinking) {
+                height = 5 + Math.sin(Date.now() / 90 + idx) * 8 + Math.random() * 4;
+                bar.style.backgroundColor = '#38BDF8';
+            } else {
+                height = 2 + Math.sin(Date.now() / 250 + idx) * 3;
+                bar.style.backgroundColor = 'rgba(56, 189, 248, 0.35)';
+            }
+            bar.style.height = `${height}px`;
+        });
+        requestAnimationFrame(animateWaveform);
+    }
+    requestAnimationFrame(animateWaveform);
+
+    // 4. CYTOSCAPE NETWORK VISUALIZATION
+    function initCytoscape() {
+        const pCol = '#38BDF8';
+        const aCol = '#818CF8';
+        const textColor = '#F1F5F9';
+
+        cy = cytoscape({
+            container: document.getElementById('mind-graph'),
+            boxSelectionEnabled: false,
+            autounselectify: true,
+            style: [
+                {
+                    selector: 'node',
+                    style: {
+                        'content': 'data(label)',
+                        'text-valign': 'center',
+                        'color': textColor,
+                        'background-color': '#0F172A',
+                        'border-width': '1.5px',
+                        'border-color': pCol,
+                        'font-size': '8px',
+                        'font-family': 'JetBrains Mono',
+                        'text-transform': 'uppercase',
+                        'font-weight': 'bold',
+                        'width': '48px',
+                        'height': '48px',
+                        'text-outline-width': '2px',
+                        'text-outline-color': '#040711',
+                        'overlay-padding': '4px',
+                        'transition-property': 'background-color, border-color, width, height',
+                        'transition-duration': '0.2s'
+                    }
+                },
+                {
+                    selector: 'edge',
+                    style: {
+                        'width': 1.2,
+                        'target-arrow-shape': 'triangle',
+                        'line-color': 'rgba(56, 189, 248, 0.1)',
+                        'target-arrow-color': 'rgba(56, 189, 248, 0.15)',
+                        'curve-style': 'bezier',
+                        'arrow-scale': 0.7
+                    }
+                },
+                {
+                    selector: 'node.highlighted',
+                    style: {
+                        'background-color': pCol,
+                        'border-color': '#FFFFFF',
+                        'width': '54px',
+                        'height': '54px',
+                        'text-outline-color': pCol
+                    }
+                },
+                {
+                    selector: 'edge.highlighted',
+                    style: {
+                        'line-color': pCol,
+                        'target-arrow-color': pCol,
+                        'width': 2.0
+                    }
+                }
+            ],
+            elements: {
+                nodes: [
+                    { data: { id: 'user', label: 'USER' } },
+                    { data: { id: 'kernel', label: 'KERNEL' } },
+                    { data: { id: 'attention', label: 'ATTENTION' } },
+                    { data: { id: 'thought', label: 'THOUGHT' } },
+                    { data: { id: 'confidence', label: 'CONFIDENCE' } },
+                    { data: { id: 'executive', label: 'EXECUTIVE' } },
+                    { data: { id: 'dialogue', label: 'DIALOGUE' } },
+                    { data: { id: 'workspace', label: 'WORK-MEM' } },
+                    { data: { id: 'observation', label: 'OBSERVE' } },
+                    { data: { id: 'learning', label: 'LEARNING' } }
+                ],
+                edges: [
+                    { data: { source: 'user', target: 'kernel' } },
+                    { data: { source: 'kernel', target: 'attention' } },
+                    { data: { source: 'kernel', target: 'thought' } },
+                    { data: { source: 'kernel', target: 'confidence' } },
+                    { data: { source: 'kernel', target: 'dialogue' } },
+                    { data: { source: 'kernel', target: 'workspace' } },
+                    { data: { source: 'executive', target: 'kernel' } },
+                    { data: { source: 'workspace', target: 'executive' } },
+                    { data: { source: 'observation', target: 'kernel' } },
+                    { data: { source: 'learning', target: 'workspace' } }
+                ]
+            },
+            layout: { name: 'cose', padding: 30, animate: true, animationDuration: 600 }
+        });
+
+        cy.on('tap', 'node', function(evt){
+            const node = evt.target;
+            const id = node.id();
+            
+            cy.elements().removeClass('highlighted');
+            node.addClass('highlighted');
+            node.neighborhood().addClass('highlighted');
+
+            const drawer = document.getElementById('info-drawer');
+            const drawerContent = document.getElementById('info-drawer-content');
+
+            drawer.style.opacity = "1";
+            drawer.style.pointerEvents = "auto";
+            drawer.style.transform = "translateY(0)";
+
+            drawerContent.innerHTML = `
+                <div class="space-y-1.5 mt-1.5">
+                    <div><span class="text-white font-semibold">Node:</span> <span class="text-primary font-bold">${id.toUpperCase()}</span></div>
+                    <div><span class="text-white font-semibold">Role:</span> ${getNodeRole(id)}</div>
+                    <div class="text-[9px] text-secondary leading-normal border-t border-white/5 pt-1.5 mt-1">${getNodeDescription(id)}</div>
+                </div>
+            `;
+        });
+    }
+
+    function reinitGraph() {
+        if (cy) {
+            cy.layout({ name: 'cose', padding: 30, animate: true }).run();
+            addNotification("Cognitive nodes re-aligned.", "primary");
+        }
+    }
 
     function closeInfoDrawer() {
         const drawer = document.getElementById('info-drawer');
         drawer.style.opacity = "0";
         drawer.style.pointerEvents = "none";
-        drawer.style.transform = "translateY(-10px)";
-        cy.nodes().removeClass('highlighted');
+        drawer.style.transform = "translateY(-8px)";
+        if (cy) cy.elements().removeClass('highlighted');
+    }
+
+    function getNodeRole(id) {
+        const roles = {
+            user: "External Operator", kernel: "Mind Kernel (State)", attention: "Priority Filter",
+            thought: "Reasoning Stages", confidence: "Validation System", executive: "Orchestrator Swarms",
+            dialogue: "Internal Debate Board", workspace: "Working Memory", observation: "Telemetry Logs",
+            learning: "Adaptation Engine"
+        };
+        return roles[id] || "Core Node";
     }
 
     function getNodeDescription(id) {
         const descriptions = {
-            user: 'The human operator. Originates physical command vectors.',
-            conversation: 'The dialogic context index mapping transient sessions.',
-            intent: 'Parses raw command vectors into executable system instructions.',
-            goals: 'Sovereign prioritizer formulating targets and budget boundaries.',
-            strategy: 'Determines optimum loop constraints and self-checks.',
-            planner: 'Decomposes primary goals into ordered task pipelines.',
-            decision: 'Commits, records, and asserts tactical plans to the swarm.',
-            delegation: 'Schedules and partitions pipeline workloads to capability swarms.',
-            execution: 'Executes individual routines, catches exceptions, and logs metrics.',
-            reflection: 'Active security and alignment scanner verifying output validity.',
-            learning: 'Ingests performance feedback loops directly into the database style caches.',
-            knowledge: 'Aggregated Fact Vault compiling persistent core guidelines.',
-            workspace: 'Unified memory compartment staging real-time process nodes.',
-            memory: 'Long-term Semantic Index caches compiling deep database links.',
-            capability_platform: 'Modular system interfaces and external APIs bridge.',
-            capability_resolver: 'Dynamically links system routines to physical libraries.',
-            capability_registry: 'Local database catalogs listing verified tool declarations.',
-            scheduler: 'Controls cron configurations and background interval timeouts.',
-            event_bus: 'Decoupled publisher-subscriber messaging infrastructure.',
-            system: 'Foundational container sandbox boundary.'
+            user: 'The human operator. Originates command vectors.',
+            kernel: 'Centralizes overall cognition state. All components sync through this module.',
+            attention: 'Locks onto high-priority goals. Sequences core objectives.',
+            thought: 'Tracks active mental logic pathways.',
+            confidence: 'Computes system accuracy ratios via cross-verifications.',
+            executive: 'Autonomous orchestrator swarm dispatcher.',
+            dialogue: 'Virtual board debate module (CEO, Architect, Security, QA).',
+            workspace: '9-compartment isolated cognitive working memory.',
+            observation: 'Process logger and telemetry audit trail ledger.',
+            learning: 'Caches procedural workflows and mitigations.'
         };
-        return descriptions[id] || 'No specific parameters compiled.';
+        return descriptions[id] || 'System node active.';
     }
 
-    // 2. SWITCH TAB VIEWS
+    // 5. SUBSYSTEM TAB CONTROLS
     function switchTab(tabId) {
-        // Toggle view panes
+        CURRENT_TAB = tabId;
         document.querySelectorAll('.view-pane').forEach(el => el.classList.add('hidden'));
         const pane = document.getElementById(`view-${tabId}`);
         if (pane) pane.classList.remove('hidden');
 
-        // Toggle nav buttons styling
         document.querySelectorAll('.nav-btn').forEach(btn => {
-            btn.classList.remove('bg-primary/10', 'text-white', 'cyber-border-active');
-            btn.classList.add('text-muted');
+            btn.classList.remove('bg-primary/10', 'text-white', 'border-primary/20');
+            btn.classList.add('text-secondary', 'border-transparent');
         });
         const activeBtn = document.getElementById(`nav-${tabId}`);
         if (activeBtn) {
-            activeBtn.classList.remove('text-muted');
-            activeBtn.classList.add('bg-primary/10', 'text-white', 'cyber-border-active');
+            activeBtn.classList.remove('text-secondary', 'border-transparent');
+            activeBtn.classList.add('bg-primary/10', 'text-white', 'border-primary/20');
         }
 
-        // Update panel title
-        const titles = {
-            dashboard: 'Dashboard Metrics',
-            conversation: 'Dialogue Centre',
-            workspace: 'Working Memory Cells',
-            memory: 'Memory Verification Index',
-            observation: 'Telemetry logs & Audits',
-            goals: 'Autonomous Executive Swarm',
-            capabilities: 'Capability platform',
-            plugins: 'Environment status',
-            learning: 'Long-term learning engine',
-            settings: 'System Configuration'
-        };
-        document.getElementById('panel-title').textContent = (titles[tabId] || tabId).toUpperCase();
-        
-        // Custom actions when switching tab
         if (tabId === 'workspace') refreshWorkspaceSnapshot();
         if (tabId === 'memory') loadPendingMemories();
         if (tabId === 'learning') loadLearningDashboard();
     }
 
-    // Default to Dashboard tab
-    switchTab('dashboard');
+    // 6. API SYNCHRONIZATIONS
+    async function loadMindKernelData() {
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await fetch('/api/cognition/kernel', { headers });
+            if (res.ok) {
+                const data = await res.json();
+                
+                document.getElementById('kernel-attention').textContent = data.attention || "Idle Reflection";
+                
+                const statusEl = document.getElementById('kernel-status');
+                const statusVal = data.state.executiveStatus || "Idle";
+                statusEl.textContent = statusVal;
+                
+                if (statusVal === "Idle") {
+                    statusEl.className = "text-secondary text-2xl font-bold font-mono tracking-widest uppercase";
+                } else if (["Listening", "Executing"].includes(statusVal)) {
+                    statusEl.className = "text-success text-2xl font-bold font-mono tracking-widest uppercase animate-pulse";
+                } else if (["Thinking", "Planning"].includes(statusVal)) {
+                    statusEl.className = "text-primary text-2xl font-bold font-mono tracking-widest uppercase animate-pulse";
+                } else {
+                    statusEl.className = "text-warning text-2xl font-bold font-mono tracking-widest uppercase";
+                }
 
-    // 3. TOAST NOTIFICATION UTILITY
-    function addNotification(msg, type = 'primary') {
-        const container = document.getElementById('toast-container');
-        const badge = document.createElement('div');
-        
-        const colors = {
-            primary: 'border-primary/20 text-white bg-[#0f131a]/95',
-            success: 'border-success/20 text-success bg-[#0f131a]/95',
-            warning: 'border-warning/20 text-warning bg-[#0f131a]/95',
-            danger: 'border-danger/20 text-danger bg-[#0f131a]/95'
-        };
+                document.getElementById('kernel-confidence').textContent = `${data.confidence || 100}%`;
 
-        badge.className = `flex items-center gap-2 px-4 py-3 rounded-xl border ${colors[type]} shadow-2xl text-xs font-mono pointer-events-auto transition-all duration-300 transform translate-x-[30px] opacity-0`;
-        badge.innerHTML = `
-            <svg class="w-4 h-4 text-primary animate-pulse flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            <span class="tracking-wide">${msg}</span>
-        `;
-        container.appendChild(badge);
-        
-        // Trigger show animation
-        setTimeout(() => {
-            badge.style.opacity = "1";
-            badge.style.transform = "translateX(0)";
-        }, 10);
+                // Thought sequence
+                const stagesList = document.getElementById('kernel-thought-stages');
+                const currentThought = data.thoughtStage || "Idle";
+                stagesList.innerHTML = data.thoughtStages.map(st => {
+                    const isActive = st === currentThought;
+                    const isDone = data.thoughtStages.indexOf(st) < data.thoughtStages.indexOf(currentThought);
+                    let colorClass = "text-secondary/50";
+                    let prefix = "[ ]";
+                    if (isActive) {
+                        colorClass = "text-primary font-bold"; prefix = "[▶]";
+                    } else if (isDone) {
+                        colorClass = "text-success opacity-80"; prefix = "[✓]";
+                    }
+                    return `<div class="${colorClass} flex items-center gap-2 font-mono"><span>${prefix}</span> <span>${st.toUpperCase()}</span></div>`;
+                }).join('');
 
-        // Auto remove
-        setTimeout(() => {
-            badge.style.opacity = "0";
-            badge.style.transform = "translateX(30px)";
-            setTimeout(() => badge.remove(), 300);
-        }, 4000);
+                // Deliberations
+                const dialoguePane = document.getElementById('internal-dialogue-pane');
+                if (data.dialogueHistory.length === 0) {
+                    dialoguePane.innerHTML = `<div class="text-secondary text-center col-span-4 py-6 text-xs uppercase tracking-widest font-mono opacity-50">Zero active deliberations. Transmit goals or prompt dialogue to trigger consensus loops.</div>`;
+                } else {
+                    dialoguePane.innerHTML = data.dialogueHistory.map(dh => {
+                        let roleColor = "text-primary border-primary/20 bg-primary/5";
+                        if (dh.role === 'CEO') roleColor = "text-white border-white/20 bg-white/5";
+                        if (dh.role === 'Security') roleColor = "text-danger border-danger/20 bg-danger/5";
+                        if (dh.role === 'QA') roleColor = "text-success border-success/20 bg-success/5";
+
+                        return `
+                            <div class="bg-card border border-white/5 p-4 rounded-xl space-y-1">
+                                <div class="flex justify-between items-center">
+                                    <span class="px-2 py-0.5 rounded border text-[8px] font-mono font-bold tracking-wider uppercase ${roleColor}">${dh.role}</span>
+                                    <span class="text-[7px] font-mono text-secondary">METRIC_STABLE</span>
+                                </div>
+                                <p class="text-white text-xs font-mono">"${dh.message}"</p>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+        } catch {}
     }
 
-    // 4. POLL STATUS & REAL-TIME DIAGNOSTICS
     async function loadLiveSystemData() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
             
-            // Fetch live metrics
+            // System
             const resMetrics = await fetch('/api/observation/metrics', { headers });
             if (resMetrics.ok) {
                 const metrics = await resMetrics.json();
                 document.getElementById('health-cpu').textContent = `${Math.round(metrics.system.cpuUsagePercent)}%`;
-                document.getElementById('health-ram').textContent = `${Math.round(metrics.system.freeMemoryMb / 100) / 10} GB`;
+                document.getElementById('health-ram').textContent = `${Math.round(metrics.system.freeMemoryMb / 1024 * 10) / 10} GB`;
                 document.getElementById('health-latency').textContent = `${metrics.counters.averageLatencyMs}ms`;
-                
-                // Light up active status Indicators
-                updateExecutiveStatusIndicators(metrics.counters.activeGoal ? 'executing' : 'idle');
             }
 
-            // Fetch live logs
+            // Logs
             const resLogs = await fetch('/api/observation/telemetry', { headers });
             if (resLogs.ok) {
                 const logs = await resLogs.json();
                 const logPane = document.getElementById('telemetry-log-pane');
                 if (logs.length === 0) {
-                    logPane.innerHTML = `<div class="text-muted text-center py-6 text-[10px] tracking-widest uppercase opacity-65">No telemetry received.</div>`;
+                    logPane.innerHTML = `<div class="text-muted text-center py-6 text-[9px] tracking-widest uppercase opacity-50">No logs stream received.</div>`;
                 } else {
                     logPane.innerHTML = logs.slice().reverse().map(l => {
-                        const levelColors = { info: 'text-sky-300', warn: 'text-warning', error: 'text-danger' };
-                        const c = levelColors[l.level] || 'text-white';
+                        const colors = { info: 'text-primary', warn: 'text-warning', error: 'text-danger' };
+                        const c = colors[l.level] || 'text-white';
                         return `
-                            <div class="border-b border-white/5 pb-1.5 leading-relaxed">
-                                <span class="text-muted text-[8px] tracking-widest">[${new Date(l.timestamp).toLocaleTimeString()}]</span>
-                                <span class="${c} font-semibold">[${l.subsystem.toUpperCase()}]</span> ${l.message}
+                            <div class="border-b border-white/5 pb-1 font-mono">
+                                <span class="text-secondary/40 text-[8px]">[${new Date(l.timestamp).toLocaleTimeString()}]</span>
+                                <span class="${c} font-bold">[${l.subsystem.toUpperCase()}]</span> ${l.message}
                             </div>
                         `;
                     }).join('');
                 }
             }
 
-            // Fetch live Audit Trail logs
+            // Audit
             const resAudit = await fetch('/api/observation/audit', { headers });
             if (resAudit.ok) {
                 const audits = await resAudit.json();
                 const auditPane = document.getElementById('audit-trail-pane');
                 if (audits.length === 0) {
-                    auditPane.innerHTML = `NO AUDIT ENTRIES LOGGED`;
+                    auditPane.innerHTML = `<div class="text-center py-6 text-[9px] text-muted uppercase tracking-widest">Empty Audit Records.</div>`;
                 } else {
-                    auditPane.innerHTML = audits.slice().reverse().map(a => `<div class="border-b border-white/5 pb-1 mb-1">${a}</div>`).join('');
+                    auditPane.innerHTML = audits.slice().reverse().map(a => `
+                        <div class="border-b border-white/5 pb-1.5 mb-1.5 font-mono">
+                            <span class="text-success text-[8px] block font-bold">&#x2713; INTEGRITY_PASS</span>
+                            <span class="text-white text-[10px]">${a}</span>
+                        </div>
+                    `).join('');
                 }
             }
 
-            // Fetch Active goal and plan
+            // Mission Goal
             const resWorkspace = await fetch('/api/cognition/workspace', { headers });
             if (resWorkspace.ok) {
                 const ws = await resWorkspace.json();
                 document.getElementById('goal-name').textContent = (ws.goal.activeGoal || 'Align system with human preferences').toUpperCase();
-                document.getElementById('goal-priority').textContent = `PRI: ${ws.goal.priority}`;
-                document.getElementById('goal-budget').textContent = `${ws.goal.budgetCredits} CR`;
                 document.getElementById('goal-progress-text').textContent = `${ws.mission.progressPercent}%`;
                 document.getElementById('goal-progress-bar').style.width = `${ws.mission.progressPercent}%`;
-
-                // Render plan list
-                const planList = document.getElementById('current-plan-list');
-                if (ws.execution.steps && ws.execution.steps.length > 0) {
-                    planList.innerHTML = ws.execution.steps.map((step, idx) => {
-                        const isCurrent = idx === ws.execution.currentStepIndex;
-                        const icon = isCurrent ? 
-                            `<span class="text-primary font-bold mr-1">&gt;</span>` : 
-                            `<span class="text-success font-bold mr-1">&#x2713;</span>`;
-                        const cls = isCurrent ? 'text-primary font-bold bg-white/5 px-2 py-1 rounded border border-primary/20' : 'text-muted pl-2';
-                        return `<div class="${cls} flex items-center">${icon} ${step}</div>`;
-                    }).join('');
-                } else {
-                    planList.innerHTML = `
-                        <div class="text-muted text-[11px] leading-relaxed space-y-1">
-                            <div class="flex items-center"><span class="text-success mr-2">&#x2713;</span> CORE PROCESSES STRUCTURALLY MAP</div>
-                            <div class="flex items-center"><span class="text-success mr-2">&#x2713;</span> DIAGNOSTIC CHECKS SECURE</div>
-                        </div>
-                    `;
-                }
             }
 
-        } catch (e) {
-            console.error("System poll error:", e);
+        } catch {}
+    }
+
+    async function refreshWorkspaceSnapshot() {
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await fetch('/api/cognition/workspace', { headers });
+            if (res.ok) {
+                const snap = await res.json();
+                const container = document.getElementById('workspace-cells-container');
+                
+                const cells = [
+                    { title: "Compartment 1: Core Mission", data: snap.mission, desc: "Foundational system objective being processed." },
+                    { title: "Compartment 2: Active Thought", data: snap.thought, desc: "Immediate logical context token." },
+                    { title: "Compartment 3: Core Goal", data: snap.goal, desc: "Current focus assignment matrix." },
+                    { title: "Compartment 4: Exec Plan", data: snap.plan, desc: "Sequential dispatch checklist." },
+                    { title: "Compartment 5: Environment", data: snap.environment, desc: "System limits and networks." },
+                    { title: "Compartment 6: User Context", data: snap.userContext, desc: "Cached user specifications." },
+                    { title: "Compartment 7: Capability Platforms", data: snap.capabilities, desc: "Active assigned system APIs." },
+                    { title: "Compartment 8: Active Attention", data: snap.attention, desc: "Locks on directory and file scopes." },
+                    { title: "Compartment 9: Log Reasoning", data: snap.reasoningState, desc: "Confidence levels and debate scores." }
+                ];
+
+                container.innerHTML = cells.map(cell => `
+                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-56 hover:border-primary/25 transition-all duration-300">
+                        <div>
+                            <span class="text-xs font-mono font-bold tracking-widest text-primary block uppercase mb-1">${cell.title}</span>
+                            <p class="text-[10px] text-secondary mb-2.5">${cell.desc}</p>
+                            <pre class="bg-bg p-3 border border-white/5 rounded-xl font-mono text-[9px] text-white overflow-x-auto max-h-24 leading-normal">${JSON.stringify(cell.data, null, 2)}</pre>
+                        </div>
+                    </div>
+                `).join('');
+                
+                addNotification("Memory snapshot synced.", "success");
+            }
+        } catch {
+            addNotification("Sync anomaly detected.", "danger");
         }
     }
 
-    function updateExecutiveStatusIndicators(activeState) {
-        const statuses = ['thinking', 'planning', 'executing', 'reflecting', 'learning', 'idle'];
-        statuses.forEach(st => {
-            const el = document.getElementById(`status-${st}`);
-            if (st === activeState) {
-                el.className = "flex items-center gap-2 px-2.5 py-2 rounded-lg bg-primary/10 border border-primary/30 text-white font-bold";
-                el.querySelector('span').classList.remove('opacity-40');
-                if (st === 'executing') el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_8px_rgba(52,211,153,0.8)]";
-                if (st === 'thinking') el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]";
-                if (st === 'planning') el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-warning shadow-[0_0_8px_rgba(251,191,36,0.8)]";
-            } else {
-                el.className = "flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 text-muted hover:text-white transition-all";
-                el.querySelector('span').className = "w-1.5 h-1.5 rounded-full bg-white opacity-40";
+    async function loadPendingMemories() {
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await fetch('/api/memory/pending', { headers });
+            if (res.ok) {
+                const list = await res.json();
+                const container = document.getElementById('pending-memory-container');
+                if (list.length === 0) {
+                    container.innerHTML = `<div class="text-secondary text-center col-span-3 py-12 text-xs uppercase tracking-widest font-mono opacity-50">Knowledge registers clean. Zero unverified nodes.</div>`;
+                } else {
+                    container.innerHTML = list.map(rec => `
+                        <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-56 hover:border-primary/25 transition-all duration-300">
+                            <div>
+                                <div class="flex justify-between items-center text-[8px] font-mono text-secondary mb-2 uppercase tracking-widest">
+                                    <span>HASH: ${rec.uuid.substring(0,8)}</span>
+                                    <span>TYPE: ${rec.type}</span>
+                                </div>
+                                <div class="text-white font-mono text-xs leading-normal line-clamp-3">"${rec.content}"</div>
+                            </div>
+                            <div class="flex justify-between items-center text-[8px] text-secondary border-t border-white/5 pt-3 uppercase tracking-widest mt-2">
+                                <span>LINK: ${rec.relationship || 'General'}</span>
+                                <button onclick="approveMemory('${rec.uuid}')" class="px-3 py-1 bg-success/10 border border-success/30 rounded-lg text-success font-bold hover:bg-success/20 transition-all">VERIFY</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
             }
-        });
+        } catch {}
     }
 
-    // Refresh metrics/diagnostics loop every 4 seconds
-    setInterval(loadLiveSystemData, 4000);
-    loadLiveSystemData();
+    async function approveMemory(uuid) {
+        try {
+            const res = await fetch(`/api/memory/verify/${uuid}`, {
+                method: 'POST',
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                AudioEngine.success();
+                addNotification("Memory node verified and locked.", "success");
+                speakText("Memory verified.");
+                loadPendingMemories();
+                loadLiveSystemData();
+            }
+        } catch {}
+    }
 
-    // 5. INTUITIVE DIALOGUE & STREAM INTERFACE
+    async function verifyAllMemory() {
+        try {
+            const res = await fetch('/api/memory/verify_all', {
+                method: 'POST',
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                AudioEngine.success();
+                addNotification("Consolidated and locked all pending schemas.", "success");
+                speakText("All memories verified.");
+                loadPendingMemories();
+                loadLiveSystemData();
+            }
+        } catch {}
+    }
+
+    // 7. DISPATCH COMMAND VECTOR
+    const btnAutonomous = document.getElementById('btn-trigger-autonomous');
+    const objInput = document.getElementById('objective-input');
+
+    btnAutonomous.addEventListener('click', async () => {
+        const objective = objInput.value.trim();
+        if (!objective) return;
+        objInput.value = '';
+
+        addNotification("Processing swarm command sequence...");
+        speakText("Dispatching swarms.");
+
+        try {
+            const res = await fetch('/api/executive/run', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': CURRENT_API_KEY
+                },
+                body: JSON.stringify({ objective })
+            });
+
+            if (res.ok) {
+                AudioEngine.success();
+                addNotification("Swarm dispatch completed.", "success");
+                speakText("Swarms finished objective.");
+                loadLiveSystemData();
+                loadMindKernelData();
+            } else {
+                throw new Error();
+            }
+        } catch {
+            addNotification("Swarm dispatch disrupted.", "danger");
+        }
+    });
+
+    // 8. SSE DIALOGUE INTERFACE
     const chatScroller = document.getElementById('chat-scroller');
     const chatInput = document.getElementById('chat-input');
-    const btnChatSend = document.getElementById('btn-chat-send');
 
     function appendChatMessage(text, role) {
         const div = document.createElement('div');
-        div.className = "border-b border-white/5 pb-2.5 mb-2.5";
+        div.className = "bg-card/50 border border-white/5 p-4 rounded-2xl relative pl-12";
         const speaker = role === 'user' ? 'OPERATOR' : 'JARVIS';
         const speakerColor = role === 'user' ? 'text-primary' : 'text-accent';
+        const speakerAvatar = role === 'user' ? 
+            `<div class="absolute left-3 top-4 w-6 h-6 rounded bg-primary/10 flex items-center justify-center font-bold text-[10px] text-primary">OP</div>` :
+            `<div class="absolute left-3 top-4 w-6 h-6 rounded bg-accent/10 flex items-center justify-center font-bold text-[10px] text-accent">JV</div>`;
+
         div.innerHTML = `
-            <div class="flex justify-between items-center text-[9px] text-muted mb-1 font-mono tracking-wider">
+            ${speakerAvatar}
+            <div class="flex justify-between items-center text-[8px] text-secondary mb-1 font-mono tracking-widest">
                 <span class="${speakerColor} font-bold">${speaker}</span>
                 <span>${new Date().toLocaleTimeString()}</span>
             </div>
-            <div class="text-white text-xs leading-relaxed tracking-wide">${text}</div>
+            <div class="text-white text-xs leading-normal font-mono">${text}</div>
         `;
         chatScroller.appendChild(div);
         chatScroller.scrollTop = chatScroller.scrollHeight;
@@ -1054,14 +1540,12 @@
         if (!text) return;
         chatInput.value = '';
         
-        // Remove empty placeholders
-        if (chatScroller.textContent.includes('Awaiting Dialogue stream')) {
+        if (chatScroller.textContent.includes('Awaiting Dialogue stream') || chatScroller.textContent.includes('Console idle')) {
             chatScroller.innerHTML = '';
         }
 
         appendChatMessage(text, 'user');
-        updateExecutiveStatusIndicators('thinking');
-        addNotification("Interfacing Autonomous Swarm Router.");
+        addNotification("Broadcasting query vector...");
 
         try {
             const res = await fetch('/api/chat', {
@@ -1077,8 +1561,8 @@
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
-            let responseContainer = null;
-            let fullReplyText = "";
+            let responseDiv = null;
+            let fullText = "";
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -1092,311 +1576,68 @@
                         const dataStr = line.slice(6).trim();
                         if (dataStr === "[DONE]") break;
 
-                        // Check for Decision Trace JSON Attachment
                         if (dataStr.startsWith("detail: ")) {
                             try {
                                 const trace = JSON.parse(dataStr.slice(8));
                                 renderFloatTraceInspector(trace);
-                                addNotification("Tactical decision trace parsed.", "success");
-                            } catch (err) {
-                                console.error("Error parsing attached trace:", err);
-                            }
+                                addNotification("Decision trace resolved.", "success");
+                            } catch {}
                             continue;
                         }
 
-                        if (!responseContainer) {
-                            responseContainer = document.createElement('div');
-                            responseContainer.className = "border-b border-white/5 pb-2.5 mb-2.5";
-                            responseContainer.innerHTML = `
-                                <div class="flex justify-between items-center text-[9px] text-muted mb-1 font-mono tracking-wider">
+                        if (!responseDiv) {
+                            responseDiv = document.createElement('div');
+                            responseDiv.className = "bg-card/50 border border-white/5 p-4 rounded-2xl relative pl-12";
+                            responseDiv.innerHTML = `
+                                <div class="absolute left-3 top-4 w-6 h-6 rounded bg-accent/10 flex items-center justify-center font-bold text-[10px] text-accent">JV</div>
+                                <div class="flex justify-between items-center text-[8px] text-secondary mb-1 font-mono tracking-widest">
                                     <span class="text-accent font-bold">JARVIS</span>
                                     <span>${new Date().toLocaleTimeString()}</span>
                                 </div>
-                                <div class="text-white text-xs leading-relaxed tracking-wide" id="stream-text-active"></div>
+                                <div class="reply-text text-white text-xs leading-normal font-mono"></div>
                             `;
-                            chatScroller.appendChild(responseContainer);
+                            chatScroller.appendChild(responseDiv);
                         }
 
-                        fullReplyText += dataStr;
-                        document.getElementById('stream-text-active').textContent = fullReplyText;
+                        fullText += dataStr;
+                        responseDiv.querySelector('.reply-text').textContent = fullText;
                         chatScroller.scrollTop = chatScroller.scrollHeight;
                     }
                 }
             }
-
-            // Cleanup stream ID so next replies spawn a clean container
-            if (document.getElementById('stream-text-active')) {
-                document.getElementById('stream-text-active').id = 'stream-text-completed';
-            }
-
-            // Fire multi-agent virtual board debate simulation dynamically!
-            triggerVirtualBoardDebate(text, fullReplyText);
-
-            // Reload metrics
+            speakText(fullText);
+            loadMindKernelData();
             loadLiveSystemData();
-
-        } catch (err) {
-            appendChatMessage("CRITICAL: Communication server pipeline severed. Confirm parameters.", 'system');
-        }
-    }
-
-    btnChatSend.addEventListener('click', triggerChatDialogue);
-    chatInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') triggerChatDialogue();
-    });
-
-    // 6. MULTI-AGENT BOARD DEBATE LOGS
-    async function triggerVirtualBoardDebate(promptText, proposedText) {
-        try {
-            const res = await fetch('/api/executive/board/debate', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': CURRENT_API_KEY
-                },
-                body: JSON.stringify({ prompt: promptText, proposedResponse: proposedText })
-            });
-
-            if (res.ok) {
-                const debate = await res.json();
-                const widget = document.getElementById('executive-board-widget');
-                const badge = document.getElementById('board-consensus-badge');
-                const transcripts = document.getElementById('board-debate-transcripts');
-
-                widget.classList.remove('hidden');
-                badge.textContent = debate.consensusOutcome.toUpperCase();
-                badge.className = `text-[9px] font-mono px-2 py-0.5 rounded font-bold tracking-widest ${debate.consensusOutcome === 'approved' ? 'bg-success/10 text-success border border-success/20' : 'bg-warning/10 text-warning border border-warning/20'}`;
-
-                // Display transcript highlights - professional terminal style, NO emojis
-                transcripts.innerHTML = `
-                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
-                        <span class="text-primary block font-bold text-[9px] uppercase tracking-widest">[AGENT CHIEF_EXECUTIVE]:</span>
-                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.ceoMessage}"</p>
-                    </div>
-                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
-                        <span class="text-warning block font-bold text-[9px] uppercase tracking-widest">[AGENT SYSTEM_ARCHITECT]:</span>
-                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.architectMessage}"</p>
-                    </div>
-                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
-                        <span class="text-danger block font-bold text-[9px] uppercase tracking-widest">[AGENT RISK_MANAGER]:</span>
-                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.riskMessage}"</p>
-                    </div>
-                    <div class="space-y-1.5 bg-black/35 p-2.5 rounded-lg border border-white/5">
-                        <span class="text-success block font-bold text-[9px] uppercase tracking-widest">[AGENT INTEGRATION_QA]:</span>
-                        <p class="text-muted text-[10px] italic leading-relaxed">"${debate.qaMessage}"</p>
-                    </div>
-                `;
-            }
-        } catch (e) {
-            console.error("Board debate error:", e);
-        }
-    }
-
-    // 7. WORKING MEMORY COMPARTMENTS RENDERING
-    async function refreshWorkspaceSnapshot() {
-        try {
-            const res = await fetch('/api/cognition/workspace', {
-                headers: { 'X-API-Key': CURRENT_API_KEY }
-            });
-            if (res.ok) {
-                const ws = await res.json();
-                const cellContainer = document.getElementById('working-memory-cells');
-
-                const compartments = [
-                    { label: "1. Active Mission Vector", val: ws.mission.currentMission, extra: `Status Code: ${ws.mission.status.toUpperCase()} (${ws.mission.progressPercent}%)` },
-                    { label: "2. Focus Intensity", val: ws.thought.activeThought, extra: `Amplitude Metric: ${ws.thought.intensity}` },
-                    { label: "3. Target Prioritization", val: ws.goal.activeGoal, extra: `Weight: ${ws.goal.priority}/10` },
-                    { label: "4. Modular Pipeline", val: ws.execution.steps.join(' ➔ ') || 'None', extra: `Cursor Index: #${ws.execution.currentStepIndex}` },
-                    { label: "5. Environment Host System", val: `Kernel: ${ws.environment.osType}`, extra: `Active Threads: ${ws.environment.activeSessionsCount}` },
-                    { label: "6. Dialogic Workspace", val: `History Buffer: ${ws.conversation.history.length} slots`, extra: `Config: ${JSON.stringify(ws.conversation.userPreferences)}` },
-                    { label: "7. Capability Registry Link", val: ws.capability.selectedCapability || 'None', extra: `Response State: ${JSON.stringify(ws.capability.lastExecutionResult)}` },
-                    { label: "8. Attention Target Cells", val: `Files: ${ws.attention.focusedFiles.join(', ')}`, extra: `Variables: ${ws.attention.focusedVariables.join(', ')}` },
-                    { label: "9. Reasoning Matrix", val: ws.reasoning.currentThought, extra: `Confidence Score: ${ws.reasoning.confidenceScore}` }
-                ];
-
-                cellContainer.innerHTML = compartments.map(comp => `
-                    <div class="p-3 bg-card border border-white/5 rounded-xl space-y-1.5 font-mono">
-                        <div class="text-[9px] text-primary uppercase font-bold tracking-wider">${comp.label}</div>
-                        <div class="text-white font-medium text-xs break-words tracking-wide leading-relaxed">${comp.val || 'Unset'}</div>
-                        <div class="text-[9px] text-muted border-t border-white/5 pt-1 mt-1 uppercase tracking-widest">${comp.extra}</div>
-                    </div>
-                `).join('');
-                
-                addNotification("Workspace snapshot vectors updated.");
-            }
         } catch {
-            addNotification("Query Workspace snapshots failed.", "danger");
+            addNotification("Dialogue transmission failure.", "danger");
         }
     }
-
-    // 8. COGNITIVE MEMORY SEEDING & VERIFY
-    async function loadPendingMemories() {
-        try {
-            const res = await fetch('/api/memory/pending', {
-                headers: { 'X-API-Key': CURRENT_API_KEY }
-            });
-            if (res.ok) {
-                const records = await res.json();
-                const container = document.getElementById('pending-memories-list');
-                if (records.length === 0) {
-                    container.innerHTML = `<div class="text-muted text-center py-6 font-mono text-[10px] uppercase tracking-wider opacity-60">No pending index values mapped.</div>`;
-                    return;
-                }
-
-                container.innerHTML = records.map(rec => `
-                    <div class="p-3.5 bg-card border border-white/5 rounded-xl font-mono text-xs space-y-2.5 cyber-border">
-                        <div class="text-muted text-[9px] flex justify-between uppercase tracking-wider">
-                            <span>HEX: ${rec.uuid.slice(0, 8)}</span>
-                            <span>TYPE: ${rec.type}</span>
-                        </div>
-                        <div class="text-white font-semibold leading-relaxed">"${rec.content}"</div>
-                        <div class="flex justify-between items-center text-[9px] text-muted border-t border-white/5 pt-2 uppercase tracking-wider">
-                            <span>RELATION: ${rec.relationship || 'General'}</span>
-                            <button onclick="approveMemory('${rec.uuid}')" class="px-2.5 py-1 bg-success/10 border border-success/30 rounded text-success font-bold hover:bg-success/20 transition-all">APPROVE</button>
-                        </div>
-                    </div>
-                `).join('');
-            }
-        } catch {
-            console.error("Pending memory error");
-        }
-    }
-
-    async function approveMemory(uuid) {
-        try {
-            const res = await fetch(`/api/memory/verify/${uuid}`, {
-                method: 'POST',
-                headers: { 'X-API-Key': CURRENT_API_KEY }
-            });
-            if (res.ok) {
-                addNotification("Cognitive node verified & hard-written to DB.", "success");
-                loadPendingMemories();
-                loadLiveSystemData();
-            }
-        } catch {
-            addNotification("Memory verification failed.", "danger");
-        }
-    }
-
-    async function verifyAllMemory() {
-        try {
-            const res = await fetch('/api/memory/verify_all', {
-                method: 'POST',
-                headers: { 'X-API-Key': CURRENT_API_KEY }
-            });
-            if (res.ok) {
-                addNotification("Consolidated all outstanding database schemas.", "success");
-                loadPendingMemories();
-                loadLiveSystemData();
-            }
-        } catch {
-            addNotification("Batch consolidation failed.", "danger");
-        }
-    }
-
-    // 9. AUTONOMOUS SWARM TIMELINE PIPELINE TRIGGER
-    const btnAutonomous = document.getElementById('btn-trigger-autonomous');
-    const objInput = document.getElementById('objective-input');
-    const runningIndicator = document.getElementById('autonomous-running-indicator');
-    const traceReport = document.getElementById('autonomous-trace-report');
-    const stepsTimeline = document.getElementById('trace-steps-timeline');
-
-    btnAutonomous.addEventListener('click', async () => {
-        const objective = objInput.value.trim();
-        if (!objective) return;
-        objInput.value = '';
-
-        runningIndicator.classList.remove('hidden');
-        traceReport.classList.add('hidden');
-        addNotification("Compiling high-level sovereign tasks.");
-
-        // Set status indicators
-        updateExecutiveStatusIndicators('planning');
-
-        try {
-            const res = await fetch('/api/executive/run', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': CURRENT_API_KEY
-                },
-                body: JSON.stringify({ objective })
-            });
-
-            if (res.ok) {
-                const data = await res.json();
-                
-                // Introduce slight scifi loading lag before loading report
-                setTimeout(() => {
-                    runningIndicator.classList.add('hidden');
-                    traceReport.classList.remove('hidden');
-                    
-                    const stages = [
-                        { stage: "Stage 1: Objective Decomposition", desc: "Decomposes raw user requirements into decoupled sub-graphs." },
-                        { stage: "Stage 2: Goal Formulation", desc: `Aligns priorities and credits. Assigned ${data.budgetAllocated || 100} units.` },
-                        { stage: "Stage 3: Task Formulation", desc: `Generates task queue arrays mapping pipeline stages.` },
-                        { stage: "Stage 4: Swarm Dispatch", desc: `Invokes sandboxed workspace capabilities with QA checks.` },
-                        { stage: "Stage 5: Output Certification", desc: "Verifies type definitions, constraints, and imports." }
-                    ];
-
-                    stepsTimeline.innerHTML = stages.map((st, i) => `
-                        <div class="p-3 bg-[#0d131a] border border-white/5 rounded-xl relative pl-7 cyber-border">
-                            <div class="absolute left-3.5 top-4.5 w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_6px_rgba(52,211,153,0.5)]"></div>
-                            <div class="text-white font-bold text-[10px] tracking-widest uppercase mb-0.5">${st.stage}</div>
-                            <p class="text-muted text-[10px] leading-relaxed tracking-wide">${st.desc}</p>
-                        </div>
-                    `).join('');
-
-                    updateExecutiveStatusIndicators('idle');
-                    addNotification("Autonomous deployment trace fully resolved.");
-                    loadLiveSystemData();
-                }, 1500);
-            } else {
-                throw new Error();
-            }
-        } catch {
-            runningIndicator.classList.add('hidden');
-            addNotification("Autonomous execution pipeline failed.", "danger");
-            updateExecutiveStatusIndicators('idle');
-        }
-    });
-
-    // 10. FLUID DECISION TRACE INSPECTOR
-    const floatTrace = document.getElementById('float-trace-panel');
-    const floatTraceBody = document.getElementById('float-trace-body');
 
     function renderFloatTraceInspector(trace) {
-        floatTrace.style.opacity = "1";
-        floatTrace.style.pointerEvents = "auto";
-        floatTrace.style.transform = "translateY(0)";
-
-        floatTraceBody.innerHTML = `
-            <div><span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-0.5">Semantic Intent:</span> ${trace.intent}</div>
-            <div class="pt-1.5"><span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-0.5">Execution Tactics:</span> <span class="text-primary font-bold tracking-wider">${trace.strategy}</span></div>
-            <div class="pt-1.5">
-                <span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-1">Dispatched Swarms:</span>
-                <span class="flex flex-wrap gap-1">
-                    ${trace.capabilitySelection.map(c => `<span class="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-[9px] uppercase tracking-wider font-semibold text-white">${c}</span>`).join('')}
-                </span>
-            </div>
-            <div class="bg-black/25 p-2.5 rounded-xl border border-white/5 my-2">
-                <span class="text-white block font-bold text-[9px] uppercase tracking-wider mb-1">Algorithmic Assertion:</span>
-                <p class="text-muted text-[10px] italic leading-relaxed">"${trace.reasoning}"</p>
-            </div>
-            <div class="flex justify-between items-center pt-2 border-t border-white/5 text-[9px] uppercase tracking-wider">
-                <span>Confidence: <span class="text-success font-bold">${Math.round(trace.confidence * 100)}%</span></span>
-                <span>${new Date(trace.timestamp).toLocaleTimeString()}</span>
+        const panel = document.getElementById('float-trace-panel');
+        panel.innerHTML = `
+            <div class="space-y-3">
+                <div><span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-0.5">Semantic Intent:</span> ${trace.intent}</div>
+                <div><span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-0.5">Execution Tactics:</span> <span class="text-primary font-bold tracking-wider">${trace.strategy}</span></div>
+                <div>
+                    <span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-1">Active Swarms:</span>
+                    <div class="flex flex-wrap gap-1">
+                        ${trace.capabilitySelection.map(c => `<span class="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-[8px] uppercase font-semibold text-white">${c}</span>`).join('')}
+                    </div>
+                </div>
+                <div class="bg-black/25 p-3 rounded-xl border border-white/5 my-2">
+                    <span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-1">Reasoning Logic:</span>
+                    <p class="text-secondary text-[11px] italic leading-normal">"${trace.reasoning}"</p>
+                </div>
+                <div class="flex justify-between items-center pt-2 border-t border-white/5 text-[8px] uppercase tracking-widest">
+                    <span>Confidence: <span class="text-success font-bold">${Math.round(trace.confidence * 100)}%</span></span>
+                    <span>${new Date(trace.timestamp || Date.now()).toLocaleTimeString()}</span>
+                </div>
             </div>
         `;
     }
 
-    function closeFloatTrace() {
-        floatTrace.style.opacity = "0";
-        floatTrace.style.pointerEvents = "none";
-        floatTrace.style.transform = "translateY(10px)";
-    }
-
-    // 11. PERSISTENT LEARNING AND STYLE MODULES
+    // 9. LEARNING RUNBOOKS & EXCEPTIONS
     async function loadLearningDashboard() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -1404,45 +1645,40 @@
             if (res.ok) {
                 const data = await res.json();
                 
-                // Render style
                 document.getElementById('pref-naming').textContent = data.stylePreferences.namingConvention;
                 document.getElementById('pref-tab').textContent = data.stylePreferences.tabSize;
                 document.getElementById('pref-framework').textContent = data.stylePreferences.frameworkPreference;
                 document.getElementById('pref-architecture').textContent = data.stylePreferences.architecturePattern;
 
-                // Render optimized workflow entries
                 const workflowList = document.getElementById('workflow-optimized-list');
                 if (data.optimizedWorkflows.length === 0) {
-                    workflowList.innerHTML = `<span class="text-muted uppercase text-[10px]">No optimized pipelines compiled yet.</span>`;
+                    workflowList.innerHTML = `<span class="text-secondary/40 uppercase text-[9px] tracking-widest">Empty runbooks database.</span>`;
                 } else {
                     workflowList.innerHTML = data.optimizedWorkflows.map(wf => `
-                        <div class="border-b border-white/5 pb-2 mb-2">
-                            <span class="text-primary block font-bold uppercase tracking-wider text-[10px]">${wf.objective || wf.mission || 'Unknown Objective'}</span>
-                            <span class="text-[10px] leading-relaxed">Workflow: ${(wf.optimizedSteps || wf.steps || []).length} procedural actions compiled</span>
+                        <div class="p-3 bg-card border border-white/5 rounded-xl space-y-1">
+                            <span class="text-primary block font-bold uppercase tracking-wider text-[9px]">${wf.objective || wf.mission || 'Objective Node'}</span>
+                            <span class="text-[9px] block text-secondary">Latency: ${wf.averageLatencyMs || 0}ms</span>
                         </div>
                     `).join('');
                 }
 
-                // Render proactive mistake log
                 const mistakeList = document.getElementById('mistake-log-list');
                 if (data.mistakeLog.length === 0) {
-                    mistakeList.innerHTML = `<span class="text-muted uppercase text-[10px] tracking-wider opacity-60">Anomaly register clean. No mistakes.</span>`;
+                    mistakeList.innerHTML = `<span class="text-secondary/40 uppercase text-[9px] tracking-widest">Exceptions cache clean.</span>`;
                 } else {
                     mistakeList.innerHTML = data.mistakeLog.map(m => `
-                        <div class="bg-card border border-white/5 p-3 rounded-lg text-muted space-y-1.5 mb-2">
-                            <span class="text-danger block font-bold uppercase tracking-widest text-[9px]">[SECTOR: ${m.affectedFile}]</span>
-                            <span class="text-white block font-medium">Signature: ${m.errorSignature}</span>
-                            <p class="leading-relaxed">Solution Vector: ${m.successfulFix}</p>
+                        <div class="bg-card border border-white/5 p-3 rounded-xl space-y-1">
+                            <span class="text-danger block font-bold uppercase text-[8px]">[MITIGATED: ${m.affectedFile}]</span>
+                            <span class="text-white block text-[10px]">Error: ${m.errorSignature}</span>
+                            <p class="text-secondary text-[10px]">Fix: ${m.successfulFix}</p>
                         </div>
                     `).join('');
                 }
             }
-        } catch {
-            console.error("Failed to load learning engine dashboard");
-        }
+        } catch {}
     }
 
-    // 12. FLOATING CONTROL HANDLERS
+    // 10. SLEEP CONTROLLERS
     let sleepModeActive = false;
     function triggerLocalSleep() {
         sleepModeActive = !sleepModeActive;
@@ -1450,64 +1686,117 @@
         const overlay = document.getElementById('sleep-mode-overlay');
 
         if (sleepModeActive) {
+            AudioEngine.sweep(false);
             btn.innerHTML = `
-                <svg class="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-3.5 h-3.5 text-primary animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707-.707m12.728 0l-.707.707M6.343 6.343l-.707-.707m12.728 0l-.707.707" />
                 </svg>
-                WAKE ACTIVE
+                CORES_WAKE
             `;
             overlay.classList.remove('opacity-0');
             overlay.classList.add('opacity-100', 'pointer-events-auto');
-            addNotification("Low power safe state asserted. System modules parked.");
-            updateExecutiveStatusIndicators('sleeping');
+            addNotification("Cores entering dormant power preservation state.", "warning");
+            speakText("System cores parking.");
         } else {
+            AudioEngine.sweep(true);
             btn.innerHTML = `
-                <svg class="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
                 </svg>
-                SLEEP COLD
+                CORES_SLEEP
             `;
             overlay.classList.remove('opacity-100', 'pointer-events-auto');
             overlay.classList.add('opacity-0');
-            addNotification("Autonomous core initialized. Interfaces online.");
-            updateExecutiveStatusIndicators('idle');
+            addNotification("All cores synchronized and fully online.", "success");
+            speakText("System cores online.");
         }
     }
 
+    // 11. DIAGNOSTIC SUITE
     async function runLocalDiagnostics() {
-        addNotification("Initializing full validation diagnostic suite.");
-        const res = await fetch('/api/observation/diagnostics', {
-            headers: { 'X-API-Key': CURRENT_API_KEY }
-        });
-        if (res.ok) {
-            const report = await res.json();
-            addNotification(`Diagnostics: CPU: ${Math.round(report.cpuUsagePercent)}% | Status: ${report.status}`, "success");
+        addNotification("Executing diagnostic sweep...");
+        try {
+            const res = await fetch('/api/observation/diagnostics', {
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                AudioEngine.success();
+                const report = await res.json();
+                addNotification(`Diagnostics Pass. CPU: ${Math.round(report.cpuUsagePercent)}% | Load Status: ${report.status}`, "success");
+                speakText("Diagnostics pass.");
+            }
+        } catch {
+            addNotification("Diagnostics suite failed to respond.", "danger");
         }
     }
 
     function clearTelemetryLocal() {
-        document.getElementById('telemetry-log-pane').innerHTML = `<div class="text-muted text-center py-6 text-[10px] tracking-widest uppercase opacity-60">Cleared local buffer.</div>`;
+        document.getElementById('telemetry-log-pane').innerHTML = `<div class="text-muted text-center py-6 text-[10px] tracking-widest uppercase opacity-45">Streams buffer cleared.</div>`;
     }
 
-    // 13. SETTINGS INPUT CHANGED
     document.getElementById('api-key-input').addEventListener('change', (e) => {
         CURRENT_API_KEY = e.target.value.trim() || "admin";
-        addNotification("API access token updated successfully.");
+        addNotification("Authorization vector changed.");
     });
 
-    // Node visual jitter effect for "Living Mind" dynamic feeling
+    // Node mechanical random jitters
     setInterval(() => {
-        cy.nodes().forEach(node => {
-            if (!node.hasClass('highlighted')) {
-                node.position({
-                    x: node.position('x') + (Math.random() - 0.5) * 0.5,
-                    y: node.position('y') + (Math.random() - 0.5) * 0.5
-                });
-            }
-        });
-    }, 4500);
+        if (cy) {
+            cy.nodes().forEach(node => {
+                if (!node.hasClass('highlighted')) {
+                    node.position({
+                        x: node.position('x') + (Math.random() - 0.5) * 0.3,
+                        y: node.position('y') + (Math.random() - 0.5) * 0.3
+                    });
+                }
+            });
+        }
+    }, 4000);
 
-    console.log("🧠 Jarvis OS Web UI v3.2 fully compiled.");
+    // Initializers
+    window.addEventListener('DOMContentLoaded', () => {
+        initCytoscape();
+        switchTab('dashboard');
+        loadLiveSystemData();
+        loadMindKernelData();
+        setInterval(loadLiveSystemData, 4000);
+        setInterval(loadMindKernelData, 2000);
+    });
+
+    // Global Notification Badge
+    function addNotification(msg, type = 'primary') {
+        const container = document.getElementById('toast-container');
+        const badge = document.createElement('div');
+        
+        const colors = {
+            primary: 'border-primary/20 text-white bg-surface/90 shadow-[0_0_12px_rgba(56,189,248,0.15)]',
+            success: 'border-success/20 text-success bg-surface/90 shadow-[0_0_12px_rgba(52,211,153,0.15)]',
+            warning: 'border-warning/20 text-warning bg-surface/90 shadow-[0_0_12px_rgba(251,191,36,0.15)]',
+            danger: 'border-danger/20 text-danger bg-surface/90 shadow-[0_0_12px_rgba(248,113,113,0.15)]'
+        };
+
+        badge.className = `flex items-center gap-2 px-4 py-3 rounded-xl border ${colors[type]} text-xs font-mono pointer-events-auto transition-all duration-300 transform translate-x-[30px] opacity-0`;
+        badge.innerHTML = `
+            <svg class="w-4 h-4 text-primary animate-pulse flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <span class="tracking-wide">${msg}</span>
+        `;
+        container.appendChild(badge);
+        
+        setTimeout(() => {
+            badge.style.opacity = "1";
+            badge.style.transform = "translateX(0)";
+        }, 10);
+
+        setTimeout(() => {
+            badge.style.opacity = "0";
+            badge.style.transform = "translateX(30px)";
+            setTimeout(() => badge.remove(), 300);
+        }, 3500);
+    }
+
+    console.log("🧠 Jarvis OS Web Console compiled successfully.");
 </script>
 </body>
 </html>

@@ -1,7 +1,10 @@
 {
   "name": "Jarvis OS · The Living Mind",
   "description": "An experimental cognitive architecture and ambient dashboard for Jarvis OS",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

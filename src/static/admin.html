@@ -3,377 +3,510 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JARVIS Admin Dashboard</title>
+    <title>JARVIS OS · Executive Admin Control Panel</title>
+    <!-- Fonts & Tailwind CSS -->
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        bg: '#040711',
+                        surface: '#090d1e',
+                        card: '#0d152d',
+                        primary: '#38bdf8',
+                        accent: '#818cf8',
+                        success: '#34d399',
+                        warning: '#fbbf24',
+                        danger: '#f87171',
+                        secondary: '#94a3b8',
+                    },
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+                        sans: ['Space Grotesk', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
         body {
-            background: #0a0c10;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', 'Roboto', sans-serif;
-            padding: 20px;
+            background-color: #040711;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(56, 189, 248, 0.05) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(129, 140, 248, 0.05) 0%, transparent 40%);
         }
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 24px;
-            background: #13171d;
-            border-radius: 12px;
-            border: 1px solid #2a2f3a;
-            margin-bottom: 24px;
-        }
-        .header h1 {
-            font-size: 24px;
-            background: linear-gradient(135deg, #00b4d8, #0077b6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        .header .status {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .header .dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            display: inline-block;
-        }
-        .dot.online { background: #00e676; }
-        .dot.offline { background: #ff5252; }
-        .card {
-            background: #13171d;
-            border: 1px solid #2a2f3a;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .card h2 {
-            font-size: 18px;
-            font-weight: 500;
-            color: #9aa9b9;
-            margin-bottom: 12px;
-        }
-        .pending-item {
-            background: #0d1117;
-            padding: 12px 16px;
-            border-radius: 8px;
-            border: 1px solid #1a1f26;
-            margin-bottom: 8px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        .pending-item .content {
-            flex: 1;
-            min-width: 200px;
-        }
-        .pending-item .content .source {
-            font-size: 12px;
-            color: #6a7a8a;
-        }
-        .pending-item .actions button {
-            margin-left: 6px;
-            padding: 4px 12px;
-            border-radius: 4px;
-            border: none;
-            cursor: pointer;
-            font-weight: 500;
-        }
-        .btn-approve {
-            background: #00e676;
-            color: #000;
-        }
-        .btn-reject {
-            background: #ff5252;
-            color: #fff;
-        }
-        .btn-approve-all {
-            background: #1a73e8;
-            color: #fff;
-            padding: 8px 16px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-        }
-        .btn-approve-all:hover {
-            background: #2b7ff0;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-        }
-        .stat-box {
-            background: #0d1117;
-            padding: 12px 16px;
-            border-radius: 8px;
-            border: 1px solid #1a1f26;
-            text-align: center;
-        }
-        .stat-box .number {
-            font-size: 28px;
-            font-weight: 600;
-            color: #00b4d8;
-        }
-        .stat-box .label {
-            font-size: 12px;
-            color: #6a7a8a;
-            margin-top: 4px;
-        }
-        .error {
-            color: #ff5252;
-            padding: 12px;
-            background: #1a0a0a;
-            border-radius: 8px;
-            margin-bottom: 12px;
-        }
-        .success {
-            color: #00e676;
-            padding: 12px;
-            background: #0a1a0a;
-            border-radius: 8px;
-            margin-bottom: 12px;
-        }
-        #loading {
-            text-align: center;
-            padding: 40px;
-            color: #6a7a8a;
-        }
-        .hidden { display: none; }
-        .flex { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-        input[type="password"] {
-            background: #0d1117;
-            border: 1px solid #2a3a4a;
-            color: #e0e0e0;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 14px;
-            flex: 1;
-            min-width: 200px;
-        }
-        button {
-            padding: 8px 16px;
-            border-radius: 6px;
-            border: none;
-            background: #1a73e8;
-            color: #fff;
-            font-weight: 500;
-            cursor: pointer;
-        }
-        button:hover {
-            background: #2b7ff0;
+        .glass-panel {
+            background: rgba(9, 13, 30, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
         }
     </style>
 </head>
-<body>
+<body class="text-white min-h-screen flex flex-col font-sans">
 
-<div class="header">
-    <h1>⚙️ JARVIS Admin Dashboard</h1>
-    <div class="status">
-        <span class="dot online" id="statusDot"></span>
-        <span id="statusLabel">Loading...</span>
-    </div>
-</div>
-
-<div id="authSection" class="card">
-    <h2>🔑 API Key</h2>
-    <div class="flex">
-        <input type="password" id="apiKeyInput" placeholder="Enter your X-API-Key" />
-        <button id="authBtn">Connect</button>
-    </div>
-</div>
-
-<div id="dashboard" class="hidden">
-    <div class="stats-grid" id="statsGrid">
-        <div class="stat-box"><div class="number" id="pendingCount">—</div><div class="label">Pending Records</div></div>
-        <div class="stat-box"><div class="number" id="totalMemory">—</div><div class="label">Total Memory</div></div>
-        <div class="stat-box"><div class="number" id="engineStatus">—</div><div class="label">Engine Status</div></div>
-        <div class="stat-box"><div class="number" id="consolidationInterval">—</div><div class="label">Consolidation (min)</div></div>
-    </div>
-
-    <div class="card">
-        <div class="flex" style="justify-content:space-between;">
-            <h2>📋 Pending Records</h2>
-            <button id="approveAllBtn" class="btn-approve-all">✅ Approve All</button>
+    <!-- Top Navigation HUD -->
+    <header class="h-16 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0 glass-panel">
+        <div class="flex items-center gap-4">
+            <span class="text-xs font-bold text-rose-400 font-mono tracking-widest bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 rounded">🔒 SECURE ADMIN HUD</span>
+            <div class="h-4 w-[1px] bg-white/10"></div>
+            <span class="text-xs font-mono text-secondary">JARVIS OS COGNITIVE OVERWATCH</span>
         </div>
-        <div id="pendingList">
-            <div id="loading">Loading pending records...</div>
+        
+        <!-- Live status -->
+        <div class="flex items-center gap-6 text-xs font-mono">
+            <div class="flex items-center gap-2">
+                <span class="text-secondary">SYSTEM LEVEL:</span>
+                <span class="text-primary font-bold">ROOT_OP</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-secondary">COGNITION:</span>
+                <span id="system-status-indicator" class="text-success font-bold flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse"></span> ONLINE
+                </span>
+            </div>
         </div>
-    </div>
+    </header>
 
-    <div id="messageContainer"></div>
-</div>
-
-<script>
-    // ---------- State ----------
-    let apiKey = sessionStorage.getItem('admin_api_key') || '';
-    let pendingRecords = [];
-
-    // ---------- DOM refs ----------
-    const authSection = document.getElementById('authSection');
-    const dashboard = document.getElementById('dashboard');
-    const apiKeyInput = document.getElementById('apiKeyInput');
-    const authBtn = document.getElementById('authBtn');
-    const statusDot = document.getElementById('statusDot');
-    const statusLabel = document.getElementById('statusLabel');
-    const pendingList = document.getElementById('pendingList');
-    const approveAllBtn = document.getElementById('approveAllBtn');
-    const messageContainer = document.getElementById('messageContainer');
-
-    const pendingCountEl = document.getElementById('pendingCount');
-    const totalMemoryEl = document.getElementById('totalMemory');
-    const engineStatusEl = document.getElementById('engineStatus');
-    const consolidationIntervalEl = document.getElementById('consolidationInterval');
-
-    // ---------- Helpers ----------
-    function setStatus(online) {
-        statusDot.className = 'dot ' + (online ? 'online' : 'offline');
-        statusLabel.textContent = online ? 'Online' : 'Offline';
-    }
-
-    function showMessage(text, type = 'success') {
-        const div = document.createElement('div');
-        div.className = type;
-        div.textContent = text;
-        messageContainer.appendChild(div);
-        setTimeout(() => div.remove(), 5000);
-    }
-
-    async function apiCall(endpoint, options = {}) {
-        const headers = {
-            'Content-Type': 'application/json',
-            'X-API-Key': apiKey,
-            ...(options.headers || {})
-        };
-        const res = await fetch(endpoint, { ...options, headers });
-        if (!res.ok) {
-            const err = await res.text();
-            throw new Error(`HTTP ${res.status}: ${err}`);
-        }
-        return res.json();
-    }
-
-    // ---------- Auth ----------
-    function authenticate() {
-        const key = apiKeyInput.value.trim();
-        if (!key) {
-            showMessage('Please enter an API key.', 'error');
-            return;
-        }
-        apiKey = key;
-        sessionStorage.setItem('admin_api_key', key);
-        authSection.classList.add('hidden');
-        dashboard.classList.remove('hidden');
-        loadDashboard();
-    }
-
-    // ---------- Load Dashboard ----------
-    async function loadDashboard() {
-        try {
-            setStatus(false);
-            // Fetch pending records
-            const pending = await apiCall('/api/memory/pending');
-            pendingRecords = pending;
-            renderPending(pending);
-
-            // Fetch consolidation status
-            const statusData = await apiCall('/api/admin/consolidation/status');
-            pendingCountEl.textContent = statusData.pending_records || 0;
-            consolidationIntervalEl.textContent = statusData.interval_minutes || '—';
-            engineStatusEl.textContent = 'Online';
-
-            // Health check
-            const health = await fetch('/health').then(r => r.json());
-            engineStatusEl.textContent = health.engine_ready ? 'Online' : 'Offline';
-            setStatus(health.engine_ready);
-
-            // Total memory (approximate via PostgreSQL)
-            // We can use a count from memory table – we'll add later
-            totalMemoryEl.textContent = '?'; // placeholder
-        } catch (err) {
-            console.error('Dashboard load error:', err);
-            showMessage('Failed to load dashboard: ' + err.message, 'error');
-            setStatus(false);
-        }
-    }
-
-    // ---------- Render Pending ----------
-    function renderPending(records) {
-        if (!records || records.length === 0) {
-            pendingList.innerHTML = '<p style="color:#6a7a8a;">✅ No pending records.</p>';
-            return;
-        }
-        const list = records.map(rec => {
-            const content = typeof rec.content === 'string' ? rec.content : JSON.stringify(rec.content);
-            return `
-            <div class="pending-item" data-uuid="${rec.uuid}">
-                <div class="content">
-                    <div>${content.substring(0, 150)}${content.length > 150 ? '...' : ''}</div>
-                    <div class="source">Source: ${rec.source || 'unknown'} • Importance: ${rec.importance || '—'}</div>
+    <div class="flex-1 flex flex-col p-8 max-w-7xl w-full mx-auto gap-6">
+        
+        <!-- Section: Authorization Entry -->
+        <div id="authSection" class="max-w-md w-full mx-auto my-auto p-6 rounded-2xl glass-panel space-y-4">
+            <div class="text-center space-y-1">
+                <div class="w-12 h-12 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center justify-center mx-auto text-rose-500 mb-2">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
                 </div>
-                <div class="actions">
-                    <button class="btn-approve" onclick="verifyRecord('${rec.uuid}', true)">✅ Approve</button>
-                    <button class="btn-reject" onclick="verifyRecord('${rec.uuid}', false)">❌ Reject</button>
+                <h2 class="text-lg font-bold tracking-wider uppercase text-white">X-API-Key Required</h2>
+                <p class="text-xs text-secondary leading-relaxed">Authorize terminal session to access deep system telemetry, memories, style configs, and long-term learning Runbooks.</p>
+            </div>
+            
+            <div class="space-y-3">
+                <div class="relative">
+                    <input type="password" id="apiKeyInput" placeholder="Enter X-API-Key (default: admin)" class="w-full bg-bg border border-white/10 focus:border-rose-500/50 focus:outline-none rounded-xl pl-4 pr-10 py-3 text-sm font-mono text-white placeholder-secondary/50 transition-all">
+                </div>
+                <button id="authBtn" class="w-full py-3 bg-rose-500/10 hover:bg-rose-500/25 border border-rose-500/20 text-rose-400 hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">CONNECT SYSTEM</button>
+            </div>
+        </div>
+
+        <!-- Section: Main Admin Panel Interface (Initially Hidden) -->
+        <div id="adminPanel" class="hidden flex flex-col gap-6 w-full">
+            
+            <!-- Welcome Header -->
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-white/5 pb-4">
+                <div>
+                    <h1 class="text-2xl font-bold tracking-wider text-white">JARVIS COGNITIVE INTERFACE</h1>
+                    <p class="text-xs text-secondary font-mono mt-0.5">ADMINISTRATIVE INTERFACING MODULE · SECURE LEVEL 4 ACCESS</p>
+                </div>
+                
+                <!-- Tab Headers -->
+                <div class="flex gap-1.5 bg-surface/80 p-1 rounded-xl border border-white/5">
+                    <button onclick="switchAdminTab('memory')" id="tab-memory" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">MEMORY INDEX</button>
+                    <button onclick="switchAdminTab('telemetry')" id="tab-telemetry" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">TELEMETRY STREAMS</button>
+                    <button onclick="switchAdminTab('learning')" id="tab-learning" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">LEARNING CACHE</button>
+                    <button onclick="switchAdminTab('diagnostics')" id="tab-diagnostics" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">DIAGNOSTICS HUD</button>
                 </div>
             </div>
-            `;
-        }).join('');
-        pendingList.innerHTML = list;
-    }
 
-    // ---------- Verify Record ----------
-    async function verifyRecord(uuid, approve) {
-        try {
-            await apiCall(`/api/memory/verify/${uuid}?approve=${approve}`, { method: 'POST' });
-            showMessage(`Record ${approve ? 'approved' : 'rejected'} successfully.`, 'success');
-            // Reload pending list
-            loadDashboard();
-        } catch (err) {
-            showMessage('Error: ' + err.message, 'error');
+            <!-- ================= TAB CONTENT 1: MEMORY INDEX ================= -->
+            <div id="admin-view-memory" class="tab-pane space-y-6 hidden">
+                <div class="flex justify-between items-center pb-2 border-b border-white/5">
+                    <div>
+                        <h2 class="text-lg font-bold tracking-widest uppercase text-white">SEMANTIC KNOWLEDGE INDEX</h2>
+                        <p class="text-xs text-secondary">Verify and consolidate cognitive memory nodes before logging to disk</p>
+                    </div>
+                    <button onclick="verifyAllMemory()" class="px-4 py-2 bg-success/10 hover:bg-success/20 border border-success/30 text-success hover:text-white font-mono text-xs font-bold uppercase rounded-xl transition-all">CONSOLIDATE_ALL_RECORDS</button>
+                </div>
+                
+                <div id="pending-memory-container" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="text-secondary text-center col-span-3 py-16 text-xs uppercase tracking-widest font-mono opacity-50">Knowledge registers clean. Zero unverified nodes.</div>
+                </div>
+            </div>
+
+            <!-- ================= TAB CONTENT 2: TELEMETRY & LOGS ================= -->
+            <div id="admin-view-telemetry" class="tab-pane space-y-6 hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Logs stream -->
+                    <div class="lg:col-span-2 rounded-2xl glass-panel p-5 flex flex-col h-[520px]">
+                        <div class="flex justify-between items-center pb-2 border-b border-white/5 mb-3">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase">HOST TELEMETRY LOGS</h3>
+                                <p class="text-[9px] text-secondary">Real-time internal system process streams</p>
+                            </div>
+                            <button onclick="clearTelemetryLocal()" class="px-2 py-1 bg-white/5 border border-white/10 rounded-lg text-[8px] font-mono uppercase hover:bg-white/10">CLEAR_LOCAL_LOGS</button>
+                        </div>
+                        <div id="telemetry-log-pane" class="flex-1 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5 text-secondary pr-1"></div>
+                    </div>
+
+                    <!-- Security ledger -->
+                    <div class="rounded-2xl glass-panel p-5 flex flex-col h-[520px]">
+                        <div class="pb-2 border-b border-white/5 mb-3">
+                            <h3 class="font-bold text-xs tracking-widest uppercase">INTEGRITY LEDGER AUDIT</h3>
+                            <p class="text-[9px] text-secondary">Immutable event verification record</p>
+                        </div>
+                        <div id="audit-trail-pane" class="flex-1 overflow-y-auto font-mono text-[9px] leading-relaxed text-secondary space-y-2.5"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================= TAB CONTENT 3: LEARNING CACHE ================= -->
+            <div id="admin-view-learning" class="tab-pane space-y-6 hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Preference style -->
+                    <div class="rounded-2xl glass-panel p-5 flex flex-col h-[480px]">
+                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">PREFERENCE STYLE CACHE</h3>
+                        <p class="text-[9px] text-secondary tracking-wide mb-3">Cached structural parameters and design parameters</p>
+                        
+                        <div class="space-y-3.5 text-xs font-mono flex-1 overflow-y-auto pr-1">
+                            <div class="p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[9px] uppercase tracking-wider">Naming Convention</span>
+                                <span id="pref-naming" class="text-white font-bold text-xs uppercase">snake_case</span>
+                            </div>
+                            <div class="p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[9px] uppercase tracking-wider">Tab Indentation</span>
+                                <span id="pref-tab" class="text-white font-bold text-xs uppercase">4 spaces</span>
+                            </div>
+                            <div class="p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[9px] uppercase tracking-wider">Preferred Framework</span>
+                                <span id="pref-framework" class="text-white font-bold text-xs uppercase">Express (Node.js)</span>
+                            </div>
+                            <div class="p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                <span class="text-secondary block mb-0.5 text-[9px] uppercase tracking-wider">Architecture Convention</span>
+                                <span id="pref-architecture" class="text-white font-bold text-xs uppercase">Decoupled-Contexts</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Optimized runbooks -->
+                    <div class="rounded-2xl glass-panel p-5 flex flex-col h-[480px]">
+                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">OPTIMIZED PATHWAYS</h3>
+                        <p class="text-[9px] text-secondary tracking-wide mb-3">Dynamically reinforced code compile pathways</p>
+                        <div id="workflow-optimized-list" class="space-y-2 font-mono text-xs text-secondary flex-1 overflow-y-auto pr-1"></div>
+                    </div>
+
+                    <!-- Exception log -->
+                    <div class="rounded-2xl glass-panel p-5 flex flex-col h-[480px]">
+                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">RESOLVED LINT EXCEPTIONS</h3>
+                        <p class="text-[9px] text-secondary tracking-wide mb-3">Cognitive error mitigations index</p>
+                        <div id="mistake-log-list" class="space-y-2 font-mono text-[9px] text-secondary flex-1 overflow-y-auto pr-1"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================= TAB CONTENT 4: DIAGNOSTICS & CONTROLS ================= -->
+            <div id="admin-view-diagnostics" class="tab-pane space-y-6 hidden">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Session Key Control -->
+                    <div class="rounded-2xl glass-panel p-6 space-y-4">
+                        <h3 class="font-bold text-sm tracking-widest uppercase border-b border-white/5 pb-2 text-white">SYSTEM KEY MANAGEMENT</h3>
+                        
+                        <div class="space-y-2">
+                            <label class="text-[9px] font-mono text-secondary tracking-wider block">CURRENT AUTHENTICATION VECTOR (X-API-KEY)</label>
+                            <div class="flex gap-2">
+                                <input type="text" id="api-key-display-input" readonly class="flex-1 bg-bg border border-white/5 rounded-xl px-4 py-2 text-xs font-mono text-white placeholder-secondary/40">
+                                <button onclick="disconnectAdminSession()" class="px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 hover:text-white font-mono text-xs uppercase font-bold rounded-xl transition-all">DISCONNECT</button>
+                            </div>
+                        </div>
+
+                        <div class="pt-2">
+                            <h4 class="text-xs font-bold text-white uppercase tracking-wider mb-2">RUN LIVE SYSTEM DIAGNOSTICS</h4>
+                            <button onclick="runLocalDiagnostics()" class="w-full py-3 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">EXECUTE_HEALTH_TESTS</button>
+                        </div>
+                    </div>
+
+                    <!-- Diagnostics report output -->
+                    <div class="rounded-2xl glass-panel p-6 flex flex-col h-72 md:h-auto">
+                        <h3 class="font-bold text-sm tracking-widest uppercase border-b border-white/5 pb-2 text-white">DIAGNOSTIC TESTBED OUTPUT</h3>
+                        <div id="diagnostics-testbed-output" class="flex-1 mt-3 bg-bg/50 p-4 border border-white/5 rounded-xl font-mono text-[10px] text-primary overflow-y-auto leading-relaxed whitespace-pre">Awaiting diagnostics execution sequence...</div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Toast / Notification containers -->
+    <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <script>
+        let apiKey = sessionStorage.getItem('admin_api_key') || '';
+        let CURRENT_ADMIN_TAB = 'memory';
+        let telemetryInterval = null;
+
+        // --- Auth controls ---
+        const authSection = document.getElementById('authSection');
+        const adminPanel = document.getElementById('adminPanel');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const authBtn = document.getElementById('authBtn');
+
+        function showMessage(text, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const div = document.createElement('div');
+            div.className = `p-4 rounded-xl border font-mono text-xs flex items-center gap-3 transition-all duration-300 transform translate-y-2 opacity-0 shadow-lg pointer-events-auto`;
+            
+            const styles = {
+                success: 'bg-success/10 border-success/30 text-success',
+                warning: 'bg-warning/10 border-warning/30 text-warning',
+                danger: 'bg-danger/10 border-danger/30 text-danger',
+                info: 'bg-primary/10 border-primary/30 text-primary'
+            };
+            div.className += ' ' + (styles[type] || styles.success);
+            div.innerHTML = `<span>&#x25C8;</span> <span>${text}</span>`;
+            
+            container.appendChild(div);
+            setTimeout(() => {
+                div.classList.remove('translate-y-2', 'opacity-0');
+            }, 50);
+
+            setTimeout(() => {
+                div.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => div.remove(), 350);
+            }, 4500);
         }
-    }
 
-    // ---------- Approve All ----------
-    async function approveAll() {
-        if (!confirm('Approve all pending records?')) return;
-        try {
-            await apiCall('/api/memory/verify_all?approve=true', { method: 'POST' });
-            showMessage('All pending records approved.', 'success');
-            loadDashboard();
-        } catch (err) {
-            showMessage('Error: ' + err.message, 'error');
+        async function apiCall(endpoint, options = {}) {
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': apiKey,
+                ...(options.headers || {})
+            };
+            const res = await fetch(endpoint, { ...options, headers });
+            if (!res.ok) {
+                const err = await res.text();
+                throw new Error(`HTTP ${res.status}: ${err}`);
+            }
+            return res.json();
         }
-    }
 
-    // ---------- Event Listeners ----------
-    authBtn.addEventListener('click', authenticate);
-    apiKeyInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') authenticate();
-    });
-    approveAllBtn.addEventListener('click', approveAll);
+        function authenticate() {
+            const key = apiKeyInput.value.trim();
+            if (!key) {
+                showMessage('An API key must be entered.', 'danger');
+                return;
+            }
+            apiKey = key;
+            sessionStorage.setItem('admin_api_key', key);
+            
+            authSection.classList.add('hidden');
+            adminPanel.classList.remove('hidden');
+            document.getElementById('api-key-display-input').value = apiKey;
+            
+            showMessage('Secure administrative session initiated.', 'success');
+            switchAdminTab(CURRENT_ADMIN_TAB);
+            
+            // Start sync intervals
+            if (telemetryInterval) clearInterval(telemetryInterval);
+            telemetryInterval = setInterval(syncAdminTelemetryData, 5000);
+        }
 
-    // ---------- Auto-login if key exists ----------
-    if (apiKey) {
-        apiKeyInput.value = apiKey;
-        authenticate();
-    } else {
-        authSection.classList.remove('hidden');
-        dashboard.classList.add('hidden');
-        setStatus(false);
-    }
+        function disconnectAdminSession() {
+            sessionStorage.removeItem('admin_api_key');
+            apiKey = '';
+            clearInterval(telemetryInterval);
+            telemetryInterval = null;
+            
+            authSection.classList.remove('hidden');
+            adminPanel.classList.add('hidden');
+            apiKeyInput.value = '';
+            
+            showMessage('Session credentials cleared.', 'warning');
+        }
 
-    // Refresh dashboard every 30 seconds
-    setInterval(() => {
-        if (apiKey) loadDashboard();
-    }, 30000);
-</script>
+        authBtn.addEventListener('click', authenticate);
+        apiKeyInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') authenticate();
+        });
+
+        // --- Tabs ---
+        function switchAdminTab(tabId) {
+            CURRENT_ADMIN_TAB = tabId;
+            document.querySelectorAll('.tab-pane').forEach(el => el.classList.add('hidden'));
+            
+            const activePane = document.getElementById(`admin-view-${tabId}`);
+            if (activePane) activePane.classList.remove('hidden');
+
+            document.querySelectorAll('[id^="tab-"]').forEach(btn => {
+                btn.className = "px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200 text-secondary hover:text-white hover:bg-white/5";
+            });
+
+            const activeBtn = document.getElementById(`tab-${tabId}`);
+            if (activeBtn) {
+                activeBtn.className = "px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200 bg-rose-500/15 border border-rose-500/20 text-rose-400";
+            }
+
+            syncAdminTelemetryData();
+        }
+
+        // --- Data syncing ---
+        async function syncAdminTelemetryData() {
+            if (!apiKey) return;
+            try {
+                if (CURRENT_ADMIN_TAB === 'memory') {
+                    await loadPendingMemories();
+                } else if (CURRENT_ADMIN_TAB === 'telemetry') {
+                    await loadTelemetryLogs();
+                    await loadAuditLedger();
+                } else if (CURRENT_ADMIN_TAB === 'learning') {
+                    await loadLearningCache();
+                }
+            } catch (err) {
+                console.error('Telemetry fetch failure', err);
+                showMessage('Data synchronization anomaly: ' + err.message, 'danger');
+            }
+        }
+
+        // Pending Memories
+        async function loadPendingMemories() {
+            try {
+                const list = await apiCall('/api/memory/pending');
+                const container = document.getElementById('pending-memory-container');
+                if (list.length === 0) {
+                    container.innerHTML = `<div class="text-secondary text-center col-span-3 py-16 text-xs uppercase tracking-widest font-mono opacity-50">Knowledge registers clean. Zero unverified nodes.</div>`;
+                } else {
+                    container.innerHTML = list.map(rec => `
+                        <div class="bg-card/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-56 hover:border-primary/25 transition-all duration-300">
+                            <div>
+                                <div class="flex justify-between items-center text-[8px] font-mono text-secondary mb-2 uppercase tracking-widest">
+                                    <span>HASH: ${rec.uuid.substring(0,8)}</span>
+                                    <span>TYPE: ${rec.source || 'General'}</span>
+                                </div>
+                                <div class="text-white font-mono text-xs leading-normal line-clamp-3">"${rec.content}"</div>
+                            </div>
+                            <div class="flex justify-between items-center text-[8px] text-secondary border-t border-white/5 pt-3 uppercase tracking-widest mt-2">
+                                <span>LINK: IMP_${rec.importance || 5}</span>
+                                <div class="flex gap-1">
+                                    <button onclick="approveRecord('${rec.uuid}', true)" class="px-2.5 py-1 bg-success/10 border border-success/30 rounded-lg text-success font-bold hover:bg-success/20 transition-all font-mono">VERIFY</button>
+                                    <button onclick="approveRecord('${rec.uuid}', false)" class="px-2.5 py-1 bg-danger/10 border border-danger/30 rounded-lg text-danger font-bold hover:bg-danger/20 transition-all font-mono">REJECT</button>
+                                </div>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch {}
+        }
+
+        async function approveRecord(uuid, approve) {
+            try {
+                await apiCall(`/api/memory/verify/${uuid}?approve=${approve}`, { method: 'POST' });
+                showMessage(`Record ${approve ? 'verified' : 'rejected'} successfully.`, 'success');
+                loadPendingMemories();
+            } catch (err) {
+                showMessage('Action failed: ' + err.message, 'danger');
+            }
+        }
+
+        async function verifyAllMemory() {
+            try {
+                const data = await apiCall('/api/memory/verify_all', { method: 'POST' });
+                showMessage(`Consolidated and locked ${data.processed || 0} memory segments.`, 'success');
+                loadPendingMemories();
+            } catch (err) {
+                showMessage('Action failed: ' + err.message, 'danger');
+            }
+        }
+
+        // Telemetry Logs
+        async function loadTelemetryLogs() {
+            try {
+                const logs = await apiCall('/api/observation/telemetry');
+                const logPane = document.getElementById('telemetry-log-pane');
+                if (logs.length === 0) {
+                    logPane.innerHTML = `<div class="text-secondary/45 text-center py-12 text-[9px] tracking-widest uppercase">No telemetry streams captured.</div>`;
+                } else {
+                    logPane.innerHTML = logs.slice().reverse().map(l => {
+                        const colors = { info: 'text-primary', warn: 'text-warning', error: 'text-danger' };
+                        const c = colors[l.level] || 'text-white';
+                        return `
+                            <div class="border-b border-white/5 pb-1 font-mono text-[9px]">
+                                <span class="text-secondary/40">[${new Date(l.timestamp).toLocaleTimeString()}]</span>
+                                <span class="${c} font-bold">[${l.subsystem.toUpperCase()}]</span> ${l.message}
+                            </div>
+                        `;
+                    }).join('');
+                }
+            } catch {}
+        }
+
+        async function loadAuditLedger() {
+            try {
+                const audits = await apiCall('/api/observation/audit');
+                const auditPane = document.getElementById('audit-trail-pane');
+                if (audits.length === 0) {
+                    auditPane.innerHTML = `<div class="text-secondary/45 text-center py-12 text-[9px] tracking-widest uppercase">Audit registers empty.</div>`;
+                } else {
+                    auditPane.innerHTML = audits.slice().reverse().map(a => `
+                        <div class="border-b border-white/5 pb-1.5 font-mono text-[8px]">
+                            <span class="text-success block font-bold">&#x2713; INTEGRITY_VERIFIED</span>
+                            <span class="text-white">${a}</span>
+                        </div>
+                    `).join('');
+                }
+            } catch {}
+        }
+
+        function clearTelemetryLocal() {
+            document.getElementById('telemetry-log-pane').innerHTML = `<div class="text-secondary/45 text-center py-12 text-[9px] tracking-widest uppercase">Telemetry stream flushed.</div>`;
+            showMessage('Telemetry stream display cache cleared.', 'info');
+        }
+
+        // Learning Cache
+        async function loadLearningCache() {
+            try {
+                const data = await apiCall('/api/learning/dashboard');
+                document.getElementById('pref-naming').textContent = data.stylePreferences.namingConvention;
+                document.getElementById('pref-tab').textContent = data.stylePreferences.tabSize;
+                document.getElementById('pref-framework').textContent = data.stylePreferences.frameworkPreference;
+                document.getElementById('pref-architecture').textContent = data.stylePreferences.architecturePattern;
+
+                const workflowList = document.getElementById('workflow-optimized-list');
+                if (data.optimizedWorkflows.length === 0) {
+                    workflowList.innerHTML = `<span class="text-secondary/40 uppercase text-[9px] tracking-widest block text-center py-8">Empty runbooks database.</span>`;
+                } else {
+                    workflowList.innerHTML = data.optimizedWorkflows.map(wf => `
+                        <div class="p-3 bg-bg/40 border border-white/5 rounded-xl space-y-1">
+                            <span class="text-accent block font-bold uppercase tracking-wider text-[9px]">${wf.objective || wf.mission || 'Compile Routine'}</span>
+                            <span class="text-[9px] block text-secondary font-mono">Average Latency: ${wf.averageLatencyMs || 0}ms</span>
+                        </div>
+                    `).join('');
+                }
+
+                const mistakeList = document.getElementById('mistake-log-list');
+                if (data.mistakeLog.length === 0) {
+                    mistakeList.innerHTML = `<span class="text-secondary/40 uppercase text-[9px] tracking-widest block text-center py-8">No mitigations cached.</span>`;
+                } else {
+                    mistakeList.innerHTML = data.mistakeLog.map(m => `
+                        <div class="p-3 bg-danger/5 border border-danger/20 rounded-xl space-y-1">
+                            <span class="text-rose-400 block font-bold font-mono text-[9px]">[MITIGATED] ${m.errorSignature}</span>
+                            <span class="text-secondary text-[8px] font-mono leading-normal block">FILE: ${m.affectedFile}</span>
+                            <span class="text-white text-[8px] font-mono leading-normal block">CAUSE: ${m.rootCause || 'Unknown'}</span>
+                        </div>
+                    `).join('');
+                }
+            } catch {}
+        }
+
+        // Diagnostics
+        async function runLocalDiagnostics() {
+            const outPane = document.getElementById('diagnostics-testbed-output');
+            outPane.textContent = ">>> INITIALIZING COGNITIVE DIAGNOSTIC DIAGNOSIS\n>>> LINKING THREADS...\n";
+            try {
+                const data = await apiCall('/api/observation/diagnostics');
+                outPane.textContent += JSON.stringify(data, null, 2);
+                showMessage('Diagnostics sweep completed successfully.', 'success');
+            } catch (err) {
+                outPane.textContent += `\n!!! DIAGNOSTIC EXCEPTION OCCURRED: ${err.message}`;
+                showMessage('Diagnostics sweep exception: ' + err.message, 'danger');
+            }
+        }
+
+        // Check if session storage key already exists
+        if (apiKey) {
+            apiKeyInput.value = apiKey;
+            authenticate();
+        }
+    </script>
 </body>
 </html>

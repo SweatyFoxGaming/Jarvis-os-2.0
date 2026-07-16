@@ -8,6 +8,7 @@ import { ObservationPlatform } from "./observation/index.js";
 import { AutonomousExecutive } from "./execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
 import { ExecutiveBoard } from "./execution/executive_board.js";
+import { MindKernel } from "./cognition/kernel/kernel.js";
 
 dotenv.config();
 
@@ -15,7 +16,8 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ limit: "15mb", extended: true }));
 
 // ---------- Platform Instances ----------
 const workspace = new CognitiveWorkspace();
@@ -37,6 +39,29 @@ if (process.env.GEMINI_API_KEY) {
   observation.logTelemetry("info", "Cognition", "Gemini AI client successfully configured with API Key.");
 } else {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
+}
+
+// Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
+async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
+  const modelsToTry = customModels || ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+  let lastError: any = null;
+  
+  for (const modelName of modelsToTry) {
+    try {
+      observation.logTelemetry("info", "Cognition", `Attempting content generation with model: ${modelName}`);
+      const response = await aiClient.models.generateContent({
+        ...params,
+        model: modelName,
+      });
+      observation.logTelemetry("info", "Cognition", `Successfully generated content with model: ${modelName}`);
+      return response;
+    } catch (error: any) {
+      lastError = error;
+      observation.logTelemetry("warn", "Cognition", `Model ${modelName} failed. Error: ${error.message || error}`);
+    }
+  }
+  
+  throw lastError || new Error("All fallback models failed content generation");
 }
 
 const executive = new AutonomousExecutive(workspace, observation, ai);
@@ -199,6 +224,19 @@ app.get("/api/cognition/workspace", validateApiKey, (req, res) => {
   res.json(workspace.toSnapshot());
 });
 
+app.get("/api/cognition/kernel", validateApiKey, (req, res) => {
+  const kernel = MindKernel.getInstance();
+  res.json({
+    state: kernel.getState(),
+    attention: kernel.attentionEngine.getCurrentAttention(),
+    thoughtStage: kernel.thoughtEngine.getStage(),
+    thoughtStages: kernel.thoughtEngine.getStages(),
+    dialogueHistory: kernel.dialogue.getHistory(),
+    summarizedDecision: kernel.dialogue.getSummarizedDecision(),
+    confidence: kernel.getState().confidence
+  });
+});
+
 // Autonomous Executive Execution Hook
 app.post("/api/executive/run", validateApiKey, async (req: any, res: any) => {
   const { objective } = req.body;
@@ -262,6 +300,47 @@ app.post("/api/executive/board/debate", validateApiKey, async (req: any, res: an
 
 // ---------- Intelligent Action Loop ----------
 
+// Voice Transcription Endpoint
+app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
+  const { audio, mimeType } = req.body;
+  if (!audio) {
+    return res.status(400).json({ error: "Missing audio payload" });
+  }
+
+  observation.logTelemetry("info", "Sensors", `Received audio payload of type: ${mimeType || "unknown"}`);
+
+  try {
+    if (ai) {
+      observation.incrementMetric("geminiApiCalls");
+      
+      const response = await generateContentWithFallback(ai, {
+        contents: [
+          "Please transcribe this voice recording accurately into plain English text. If there is no audible speech, return an empty string. Do not add any conversational remarks, commentary, or punctuation padding, just the literal transcribed words.",
+          {
+            inlineData: {
+              data: audio,
+              mimeType: mimeType || "audio/webm"
+            }
+          }
+        ]
+      });
+
+      const transcription = response.text ? response.text.trim() : "";
+      observation.logTelemetry("info", "Sensors", `Voice transcription completed: "${transcription}"`);
+      res.json({ transcription });
+    } else {
+      // Simulation mode
+      const simText = "Simulated speech transcription: Please configure your GEMINI_API_KEY to activate neural voice listening.";
+      observation.logTelemetry("warn", "Sensors", "Running transcription in simulation mode (No API Key).");
+      res.json({ transcription: simText });
+    }
+  } catch (error: any) {
+    console.error("Transcription error:", error);
+    observation.logTelemetry("error", "Sensors", `Voice transcription failed: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Chat Streaming Endpoint (SSE)
 app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   const { message } = req.body;
@@ -273,11 +352,18 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   observation.startProfile("chat_request");
   observation.incrementMetric("totalRequests");
 
-  // Update workspace contexts
+  const kernel = MindKernel.getInstance();
+
+  // Add message to conversation
   workspace.conversation.addMessage("user", message);
-  workspace.execution.setPlan(["Process user prompt"]);
-  workspace.execution.updateStatus("planning");
-  workspace.reasoning.setThought("Interpreting user semantic intent and planning response strategy.", 0.95);
+
+  // Update mind kernel state!
+  kernel.updateState({
+    currentThought: "Understanding Request",
+    executiveStatus: "Thinking",
+    currentPlan: ["Process user prompt"],
+    attentionTarget: kernel.attentionEngine.determineAttention({ userRequest: message })
+  }, workspace, observation);
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -289,16 +375,36 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   try {
     if (ai) {
       observation.incrementMetric("geminiApiCalls");
-      workspace.execution.updateStatus("executing");
-      workspace.capability.setCapability("Gemini LLM Generation");
+      kernel.updateState({
+        currentThought: "Executing Research",
+        executiveStatus: "Executing",
+        activeCapability: "Gemini LLM Generation"
+      }, workspace, observation);
 
-      const responseStream = await ai.models.generateContentStream({
-        model: "gemini-3.5-flash",
-        contents: message,
-        config: {
-          systemInstruction: "You are JARVIS V3, the Executive Mind of the Phoenix Intelligence Platform. Respond in a calm, helpful, intellectual tone.",
+      let responseStream;
+      const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+      let lastStreamError = null;
+
+      for (const modelName of chatModels) {
+        try {
+          observation.logTelemetry("info", "Cognition", `Attempting chat stream with model: ${modelName}`);
+          responseStream = await ai.models.generateContentStream({
+            model: modelName,
+            contents: message,
+            config: {
+              systemInstruction: "You are JARVIS V3, the Executive Mind of the Phoenix Intelligence Platform. Respond in a calm, helpful, intellectual tone.",
+            }
+          });
+          break; // successfully initialized the stream
+        } catch (err: any) {
+          lastStreamError = err;
+          observation.logTelemetry("warn", "Cognition", `Model ${modelName} stream initiation failed. Error: ${err.message || err}`);
         }
-      });
+      }
+
+      if (!responseStream) {
+        throw lastStreamError || new Error("All chat stream models failed");
+      }
 
       for await (const chunk of responseStream) {
         if (chunk.text) {
@@ -308,8 +414,12 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
       }
     } else {
       // Simulation mode
-      workspace.execution.updateStatus("executing");
-      workspace.capability.setCapability("Local Cognitive Simulator");
+      kernel.updateState({
+        currentThought: "Executing Research",
+        executiveStatus: "Executing",
+        activeCapability: "Local Cognitive Simulator"
+      }, workspace, observation);
+
       const simulatedResponse = `I have received your request: "${message}". I am operating in simulation mode. Once you configure process.env.GEMINI_API_KEY, I can connect to my fully cognitive deep reasoning system.`;
       
       const words = simulatedResponse.split(" ");
@@ -321,13 +431,33 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
     }
 
     // Refinement/Reflection stage
-    workspace.execution.updateStatus("learning");
+    kernel.updateState({
+      currentThought: "Preparing Response",
+      executiveStatus: "Reflecting"
+    }, workspace, observation);
+
     workspace.conversation.addMessage("assistant", fullReply);
-    workspace.reasoning.setThought("Response generated. Updating cognitive workspace with response statistics.", 1.0);
     
     const latency = performance.now() - startTime;
     observation.recordLatency(latency);
     observation.endProfile("chat_request");
+
+    const calculatedConfidence = kernel.confidenceModel.calculateOverallConfidence({
+      memoryConfidence: ai ? 0.98 : 0.8,
+      toolConfidence: 1.0,
+      validationConfidence: 1.0,
+      capabilityConfidence: ai ? 0.95 : 0.75,
+      environmentConfidence: 1.0
+    });
+
+    // Finalize state to idle
+    kernel.updateState({
+      currentThought: "Idle",
+      executiveStatus: "Idle",
+      confidence: calculatedConfidence,
+      activeCapability: null,
+      attentionTarget: kernel.attentionEngine.determineAttention({})
+    }, workspace, observation);
 
     // Pass 7: Build detailed Decision Trace
     const decisionTrace = {
@@ -340,11 +470,10 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
       knowledgeUsed: workspace.knowledge.loadedFacts,
       executionResult: "Successfully flushed SSE token stream to client",
       reflection: `Latency of ${latency.toFixed(0)}ms was highly acceptable. Response quality matched Jarvis OS guidelines. No anomalies detected.`,
-      confidence: ai ? 0.98 : 0.85
+      confidence: calculatedConfidence / 100
     };
 
     observation.recordDecisionTrace(decisionTrace);
-    workspace.execution.updateStatus("idle");
 
     // Output trace detail for the frontend to render elegantly
     res.write(`data: detail: ${JSON.stringify(decisionTrace)}\n\n`);
@@ -353,6 +482,11 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 
   } catch (error: any) {
     observation.logTelemetry("error", "Executive", `Failed to complete chat stream: ${error.message}`);
+    kernel.updateState({
+      currentThought: "Idle",
+      executiveStatus: "Idle",
+      attentionTarget: kernel.attentionEngine.determineAttention({ emergency: error.message })
+    }, workspace, observation);
     workspace.execution.updateStatus("error");
     res.write(`data: Error: ${error.message}\n\n`);
     res.write("data: [DONE]\n\n");
@@ -373,8 +507,7 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
     let reply = "";
     if (ai) {
       observation.incrementMetric("geminiApiCalls");
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+      const response = await generateContentWithFallback(ai, {
         contents: userMsg,
       });
       reply = response.text || "";
