@@ -2,7 +2,18 @@
  * Pass 10: Polishing frontend interaction & state synchronization for `/mind` route
  */
 
-const API_KEY = "admin";
+// Shares the same sessionStorage key as admin.html so logging in once
+// carries over — never ship a real credential in static JS.
+function getApiKey() {
+    let key = sessionStorage.getItem('admin_api_key');
+    if (!key) {
+        key = window.prompt('Enter your Jarvis API key:') || '';
+        if (key) sessionStorage.setItem('admin_api_key', key);
+    }
+    return key;
+}
+
+const API_KEY = getApiKey();
 
 const NODES = [
     { id: 'user', label: 'User', type: 'user', color: '#6a8cff' },
@@ -333,7 +344,10 @@ async function handleSend() {
 
             for (const line of lines) {
                 if (line.startsWith("data: ")) {
-                    const dataStr = line.slice(6).trim();
+                    // Only strip a trailing \r — a full .trim() ate the
+                    // trailing space each streamed word chunk ends with,
+                    // so replies rendered with no spaces between words.
+                    const dataStr = line.slice(6).replace(/\r$/, "");
                     if (dataStr === "[DONE]") break;
                     if (dataStr.startsWith("detail: ")) continue;
 

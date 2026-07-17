@@ -15,8 +15,8 @@ logs/
 *.log
 
 # Database
-data/*.db
-data/*.sqlite
+/data/*.db
+/data/*.sqlite
 *.db
 *.sqlite
 
@@ -53,6 +53,7 @@ Thumbs.db
 .pytest_cache/
 .coverage
 
-# Project specific
-data/
+# Project specific — root-level runtime state (settings.json, learning.json).
+# Must be anchored: a bare "data/" also matches src/data/, which is source.
+/data/
 tmp/

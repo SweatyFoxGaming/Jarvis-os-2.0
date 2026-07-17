@@ -9,7 +9,7 @@ import re
 import sys
 import ast
 
-# Forbidden jargon (case‑insensitive)
+# Forbidden jargon (case‑insensitive, whole-word — see FORBIDDEN_PATTERNS)
 FORBIDDEN = [
     "department", "worker", "registry", "pipeline", "scheduler",
     "capability", "execution", "engine", "planner", "board",
@@ -18,13 +18,17 @@ FORBIDDEN = [
     "security module", "user manager", "model manager",
 ]
 
-# Files to scan
+# Word-boundary regexes, not substring checks — otherwise "dashboard" trips
+# "board" and "engine_ready" (a JSON field name, not prose) trips "engine".
+# \b already treats "_" as a word character, so it correctly does NOT split
+# "engine_ready" into "engine" + "_ready".
+FORBIDDEN_PATTERNS = [(word, re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)) for word in FORBIDDEN]
+
+# Files to scan. This is a Python-only, AST-based literal scanner, so it
+# cannot cover the actual user-facing strings in src/server.ts or
+# src/static/*.html/js — most of this app's UI copy lives there, not here.
 SCAN_PATHS = [
-    "src/executive/mind.py",
-    "src/templates.py",
-    "src/gui.py",
     "src/api.py",
-    "src/core/constitution.py",
 ]
 
 def extract_strings(filepath):
@@ -37,10 +41,13 @@ def extract_strings(filepath):
         return []
     strings = []
     for node in ast.walk(tree):
+        # ast.Constant covers string literals on every currently-supported
+        # Python version; the old ast.Str branch this used to fall back to
+        # was removed in Python 3.12 and crashed this script outright
+        # (AttributeError: module 'ast' has no attribute 'Str') rather than
+        # gracefully skipping anything.
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             strings.append(node.value)
-        elif isinstance(node, ast.Str):  # for older Python versions
-            strings.append(node.s)
     return strings
 
 def main():
@@ -56,11 +63,8 @@ def main():
                 continue
             if s.startswith('--') or s.startswith('#'):
                 continue
-            lower = s.lower()
-            for word in FORBIDDEN:
-                if word in lower:
-                    # Check if it's a technical description (like in comments) – we allow if it's a code comment
-                    # But we'll still flag it if it's not a comment or docstring
+            for word, pattern in FORBIDDEN_PATTERNS:
+                if pattern.search(s):
                     print(f"❌ Jargon in {path}: '{s[:80]}...' contains '{word}'")
                     found = True
                     break

@@ -1,5 +1,7 @@
 # Jarvis OS – Cognitive Model
 
+> **Historical design doc.** This describes an earlier, larger architecture that predates the current Docker/FastAPI/Express implementation and has since been replaced. For what actually exists today, see [README.md](README.md) and [docs/architecture/ROADMAP.md](docs/architecture/ROADMAP.md).
+
 Version: 1.0
 
 ---

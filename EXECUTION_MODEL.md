@@ -1,5 +1,7 @@
 # Execution Model – Jarvis OS
 
+> **Historical design doc.** This describes an earlier, larger architecture that predates the current Docker/FastAPI/Express implementation and has since been replaced. For what actually exists today, see [README.md](README.md) and [docs/architecture/ROADMAP.md](docs/architecture/ROADMAP.md).
+
 ## Overview
 The Execution Model governs how Jarvis transforms a user’s intent into action, results, and memory. It is deterministic where possible, and uses AI reasoning only where judgment is required.
 

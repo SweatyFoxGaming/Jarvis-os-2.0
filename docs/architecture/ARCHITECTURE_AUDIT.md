@@ -1,5 +1,7 @@
 # Architecture Audit – Jarvis OS
 
+> **Point-in-time snapshot (2026-07-15).** Describes system state as of that date, including subsystems since removed. Not current — see the top-level README.md.
+
 **Date:** 2026-07-15  
 **Phase:** XI – Sprint 1  
 **Status:** Complete

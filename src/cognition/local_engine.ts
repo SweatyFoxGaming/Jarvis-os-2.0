@@ -1,10 +1,12 @@
 import { CognitiveWorkspace } from "./workspace.js";
 
 /**
- * JARVIS Local Cognitive Simulation Engine (Offline Intelligence Matrix)
- * 
- * Provides incredibly fluent, witty, human-like responses when operating offline,
- * utilising local knowledge states, system diagnostics, and personality matrixes.
+ * Offline reply generator used when no local LLM endpoint and no
+ * GEMINI_API_KEY are configured — the default state on a fresh install, not
+ * a rare fallback. This is keyword matching against a fixed set of canned
+ * phrases (see generateResponse below); there is no language model, NLU, or
+ * learning involved. It reads real workspace/system state into the templates,
+ * but the "reasoning" itself is fixed lookup logic.
  */
 export class LocalCognitiveEngine {
   private static instance: LocalCognitiveEngine | null = null;
