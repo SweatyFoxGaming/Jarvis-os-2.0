@@ -1,137 +1,142 @@
-# Phoenix Intelligence Platform (JARVIS V3)
+# Jarvis OS
 
-The high-level **Executive Mind** and cognitive core for Phoenix OS (AIOS). Designed as an intelligent organization rather than a chatbot, JARVIS V3 implements a permanent executive hierarchy capable of strategic reasoning, long-term planning, and autonomous self-evolution.
+A self-hosted AI assistant console: a FastAPI gateway in front of an Express/TypeScript
+application, running in Docker alongside Postgres and a text-to-speech service. Chat
+runs against a local LLM (Ollama) by default, with an optional cloud fallback.
 
-## 🧠 Cognitive Architecture (V3)
+This README describes what's actually in this repository and how to run it. If you find
+another doc in this repo (or an old commit) describing a different architecture —
+`src/main.py`, a `ChiefOfStaff` scheduler, a multi-agent department system — that's a
+prior, now-replaced design. Treat this file and `docs/architecture/ROADMAP.md` as current.
 
-Phoenix JARVIS follows a Constitution-aligned **Executive Mind** architecture. It separates the "thinking" (Executive) from the "doing" (Specialist Departments), ensuring the system can scale for decades without architectural redesign.
+## Architecture
 
-### 1. Executive Hierarchy
-- **Executive Mind**: The cognitive core. It performs strategic reasoning, intent analysis, and goal management.
-- **Executive Board**: An internal reasoning council of specialized engines (Strategy, Planning, Risk, Resource, Context, Memory, Ethics, World Model).
-- **Chief of Staff**: The operational orchestrator. It transforms executive decisions into coordinated department tasks.
-- **Capability Registry**: The platform's nervous system. It maps strategic requirements to specialized departmental skills.
-
-### 2. Multi-Agent Organization
-- **Commander (Personality Layer)**: The primary interface. It handles general chat, maintains the JARVIS persona (calm, capable, professional), and orchestrates tasks by delegating to specialized agents or calling system functions.
-- **Research Agent**: Specialized in multi-source information gathering. It integrates **real-time web search** (via Brave Search API) and cross-references results with local memory.
-- **Coding Agent**: Specialized in code analysis, debugging, and review. It is pre-seeded with knowledge of the Phoenix OS (Rust/no_std) kernel architecture.
-- **Planning Agent**: Decomposes complex, multi-stage requests into structured action plans.
-- **Security Agent**: Audits every request against a capability-based security model before execution.
-- **Memory Agent**: Manages hierarchical retrieval (Episodic + Semantic) and autonomous experience summarization.
-- **Self-Improvement Agent**: Oversees the reflection and meta-learning cycles to refine system prompts and behavioral logic.
-
-### 2. Universal Multi-lingual Specialist
-JARVIS is pre-seeded with core principles for **Rust, C, C++, Python, JS, Go, Java, and Assembly**. If you request assistance with a technology it hasn't mastered yet, JARVIS will autonomously trigger its research swarm to onboard the new language or framework before assisting you.
-
-### 3. Agent Workflow (The Chain of Command)
-When you issue a request to the **Commander [Mode 0]**, the following lifecycle occurs:
-1. **Security Audit**: The Security Agent checks the request for risks or unauthorized system commands.
-2. **Strategic Planning**: The Planning Agent breaks the request into logical steps (e.g., "Step 1: Research X, Step 2: Write code for Y").
-3. **Contextual Retrieval**: The Memory Agent pulls relevant history and facts to "prime" the executing agents.
-4. **Delegated Execution**: The Commander dispatches tasks to the Research or Coding agents.
-5. **System Interaction**: If a system command is needed, the Commander uses the Synapse Bridge to talk to the Phoenix OS kernel.
-6. **Introspective Reflection**: The Self-Improvement Agent extracts a lesson from the result to improve future performance.
-
-### 3. Dual-Tier Memory System
-Memory is stored in a local SQLite database (`data/memory.db`) to ensure persistence and low memory overhead:
-- **Episodic Memory**: A rolling history of specific interactions, including prompts, responses, and autonomous reflections.
-- **Semantic Memory**: A permanent Knowledge Base of distilled facts, rules, and system principles.
-
-## 📈 Self-Improvement Cycle
-
-JARVIS is designed to get smarter with every use without the need for high-resource model retraining.
-
-### Phase 1: Active Reflection
-Immediately after an interaction, the **Reflection Module** analyzes the performance and extracts a "Lesson Learned." This lesson is stored in episodic memory and automatically injected into future prompts for immediate "behavioral" improvement.
-
-### Phase 2: Sleep-Learning (Semantic Consolidation)
-By selecting **Mode [4]**, the system enters "Sleep-Learning." It iterates through recent episodic reflections and uses the LLM to distill them into permanent, high-density factual statements in the **Semantic Knowledge Base**. This allows the model to "learn" new rules and facts permanently.
-
-### Observation does NOT think, plan,execute, remember, It only observes.
-
-## 🔌 System Integration
-
-### Synapse IPC Bridge
-The engine includes a `SynapseBridge` that follows the Phoenix OS Synapse specification. It allows the LLM to send structured messages to the kernel (e.g., `SYSTEM_CALL` for stats, file listing, or power management).
-
-### Knowledge Seeding
-The `src/seed_knowledge.py` script allows JARVIS to ingest core system documentation directly from the Phoenix OS repository, ensuring it understands the operating system it is running on.
-
-## 🚀 Installation & Usage (Ubuntu Linux)
-
-### 1. Clone & Enter Directory
-```bash
-git clone https://github.com/SweatyFoxGaming/llm.git
-cd llm
+```
+┌─────────────────────────────┐        ┌──────────────────────────────┐
+│  src/api.py (FastAPI :8000) │ proxy  │  src/server.ts (Express :3000)│
+│  Spawns & supervises the    │──────▶ │  All real business logic:     │
+│  Express process; falls     │        │  auth, chat, settings,        │
+│  back to canned JSON if the │        │  observation, integrations    │
+│  Express server is down     │        │                                │
+└─────────────────────────────┘        └──────────────┬─────────────────┘
+                                                        │
+                              ┌─────────────────────────┼─────────────────────────┐
+                              ▼                         ▼                         ▼
+                     ┌────────────────┐        ┌────────────────┐      ┌──────────────────┐
+                     │ Postgres        │        │ tts container   │      │ Ollama (host)     │
+                     │ users, API keys,│        │ (openai-edge-   │      │ via host.docker.  │
+                     │ memory records  │        │  tts)           │      │ internal:11434    │
+                     └────────────────┘        └────────────────┘      └──────────────────┘
 ```
 
-### 2. Install System Dependencies
-JARVIS requires specific build tools and system libraries to run its AI engine on Ubuntu:
-```bash
-sudo apt update
-sudo apt install -y build-essential cmake python3-pip python3-venv python3-dev \
-                    python3-pyqt6 espeak libportaudio2 portaudio19-dev python3-all-dev
-```
+Only `src/api.py` and `src/server.ts` are in the request path. Several other directories
+under `src/` (`bridge/`, `execution/planner.py`, `infrastructure/`) are leftover,
+unimported fragments from an earlier design — see "Known limitations" below before
+relying on anything not listed in "What's implemented."
 
-### 3. Setup Virtual Environment
-It is highly recommended to use a virtual environment on Linux:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+## Quickstart
 
-### 4. Install Python Dependencies
-**Important**: Ensure you are in the `llm` folder where `requirements.txt` is located:
-```bash
-pip3 install -r requirements.txt
-```
-
-### 5. Configuration
-- **Model**: JARVIS now automatically downloads the **Dolphin-Phi-2** model on first launch. No manual download is required.
-- **API Keys**: Add your `BRAVE_API_KEY` to the `.env` file.
-- **Seed Knowledge**: Run `export PYTHONPATH=$PYTHONPATH:. && python3 src/seed_knowledge.py` to ingest AIOS docs.
-
-### 6. Run JARVIS
-```bash
-python3 src/main.py
-```
-
-### 7. Build & Install as a Desktop App (Ubuntu)
-**Important**: You must have the virtual environment activated (`source venv/bin/activate`) before running this:
-```bash
-chmod +x build.sh
-./build.sh
-```
-This will package the app and create a launcher so you can open JARVIS just like Firefox.
-
-## 🛠️ Troubleshooting Installation
-
-If you encounter errors during `pip3 install`:
-
-1. **Error: "Failed building wheel for llama-cpp-python"**:
-   Ensure you installed `build-essential` and `cmake`. These are required to compile the engine.
-
-2. **Error: "externally-managed-environment"**:
-   You are trying to install to the system python. Ensure you created and activated the **Virtual Environment** (Step 2).
-
-3. **Memory Issues during pip install**:
-   Try running the install with a lower thread count:
+1. **Copy the env template and fill in secrets:**
    ```bash
-   pip3 install --no-cache-dir -r requirements.txt
+   cp .env.example .env
    ```
+   At minimum, set `INTERNAL_API_KEY` (generate one with `openssl rand -hex 32`) —
+   the server refuses to start without it. Everything else in `.env.example` is
+   optional and documented inline (GitHub/email/TTS integrations, Postgres, an
+   optional cloud LLM fallback).
 
-4. **Error: "Failed to fetch" or "Hash Sum mismatch" (sudo apt update)**:
-   This usually means the Ubuntu mirror you are using is currently syncing or broken. Try cleaning your cache and updating again:
+2. **Run it:**
    ```bash
-   sudo rm -rf /var/lib/apt/lists/*
-   sudo apt update
+   docker compose up -d --build
    ```
-   If it still fails, you can try changing your download server in Ubuntu's "Software & Updates" settings.
+   This starts three containers: `api` (the app, ports 8000 and 3000), `postgres`
+   (pgvector image, used for users/memory persistence), and `tts` (text-to-speech,
+   port 5051). `./start.sh` does the same thing and opens a browser tab.
 
-### CLI Modes:
-- `[0] Commander`: Full JARVIS orchestration (Auto-delegation).
-- `[1] Research`: Manual web research and info gathering.
-- `[2] Coding`: Manual code analysis and review.
-- `[3] Reflect`: Manually trigger reflection on the last interaction.
-- `[4] Sleep-Learn`: Trigger semantic consolidation of all recent lessons.
+3. **Open the console:** `http://localhost:8000` (main console), `/admin`
+   (operator panel), `/mind` (cognitive state graph).
+
+4. **Local LLM chat:** if you have [Ollama](https://ollama.com) running on your host
+   machine, Jarvis reaches it automatically via `host.docker.internal:11434` — no
+   extra config needed. Change the endpoint/model in the Settings tab if yours runs
+   elsewhere; it's saved to `data/settings.json` and survives restarts.
+
+## What's implemented
+
+- **Chat**, with a three-tier fallback chain: your local LLM → `GEMINI_API_KEY` (if
+  set) → a canned offline reply generator (keyword-matched templates, not a model —
+  see "Known limitations").
+- **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
+  with bcrypt-hashed passwords, both backed by Postgres.
+- **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.
+- **Observation**: real CPU/disk/memory metrics, telemetry log, audit ledger, decision
+  traces — all bounded in-memory buffers, viewable in `/admin`.
+- **Long-term learning**: coding style preferences, cached workflow steps, and a
+  mistake log — persisted to disk (`data/learning.json`), not reset on restart.
+- **Memory review queue**: a pending-records approval flow, backed by Postgres.
+- **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
+  read via IMAP), and text-to-speech — each gated behind its own env vars and
+  degrading gracefully (clear error, not a crash) when unset.
+- **Executive planning / board review**: a request planner and a static proposal
+  linter — see "Known limitations," they're both real but more modest than their
+  names suggest.
+
+## Known limitations
+
+Some subsystems produce plausible output without the reasoning their names imply.
+None of this is a security issue — it's worth knowing before you rely on it:
+
+- **`POST /api/executive/run`** ("Autonomous Executive") decomposes an objective into
+  steps (optionally via Gemini) and narrates what each step *would* do. It does not
+  write files, compile anything, or run tests. Its response includes
+  `"simulated": true` and an honest `buildVerification` field for exactly this reason.
+- **`POST /api/executive/board/debate`** ("Executive Board") is a deterministic
+  pattern-matching guardrail (checks for code fences, sensitive-key mentions) — a
+  real, useful lint step, not multi-agent LLM reasoning. Its response includes
+  `"method": "deterministic-pattern-check"`.
+- **The offline chat fallback** (`src/cognition/local_engine.ts`) is keyword-matched
+  canned phrasing, not a language model. It's the default reply path whenever no
+  local LLM and no `GEMINI_API_KEY` are reachable — i.e. out of the box, until you
+  point it at Ollama or set a cloud key.
+- A handful of files under `src/` (`bridge/synapse.py`, `execution/planner.py`,
+  `infrastructure/health.py`) are unused fragments from a prior design and are not
+  imported by anything that runs. `src/desktop/` is a separate, optional
+  pywebview/Electron launcher, not part of the Docker/API path.
+
+## Testing
+
+```bash
+npm test        # hand-rolled assertion suite, 12 scenarios covering the
+                 # cognition/execution/observation core logic
+npx tsc --noEmit # type check
+```
+
+Both run in CI on every push (`.github/workflows/ci.yml`).
+
+## Project structure
+
+```
+src/
+  api.py                 FastAPI gateway — proxies to Express, supervises the
+                          Node process, falls back to canned JSON if it's down
+  server.ts               Express app — all routes, auth, chat logic
+  cognition/               Kernel/state machine, workspace, long-term learning
+  execution/                Executive planner, board review
+  observation/               Telemetry, metrics, audit
+  integrations/                GitHub, email, TTS clients
+  data/                         Postgres access (users, memory records)
+  static/                       Frontend (vanilla HTML/JS, no build step)
+docker-compose.yml    api + postgres + tts services
+Dockerfile             Node 20 + Python 3 image running the FastAPI gateway
+```
+
+## Docs worth reading
+
+- `docs/architecture/ROADMAP.md` — closest thing to an accurate architecture history.
+- `docs/architecture/VISION.md` — where this could go next, and in what order.
+- `.env.example` — every environment variable, what reads it, and whether it's
+  currently used by any code.
+
+Other root-level markdown files (`ARCHITECTURE.md`, `CONSTITUTION.md`,
+`CONTEXT.md`, etc.) describe an earlier, larger system design that predates the
+current Docker/Express implementation and has been superseded by it.

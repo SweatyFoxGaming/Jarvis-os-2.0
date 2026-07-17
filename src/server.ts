@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
 import { GoogleGenAI } from "@google/genai";
 import { CognitiveWorkspace } from "./cognition/workspace.js";
 import { ObservationPlatform } from "./observation/index.js";
@@ -13,15 +14,51 @@ import { LocalCognitiveEngine } from "./cognition/local_engine.js";
 import * as github from "./integrations/github.js";
 import * as emailIntegration from "./integrations/email.js";
 import * as tts from "./integrations/tts.js";
+import { initDatabase } from "./data/db.js";
+import * as usersRepo from "./data/users-repo.js";
+import * as memoryRepo from "./data/memory-repo.js";
 
 dotenv.config();
+
+// A rejection/exception outside a route's own try/catch (e.g. inside an SSE
+// streaming loop) would otherwise silently kill the whole process.
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] Unhandled promise rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[server] Uncaught exception:", err);
+});
 
 const app = express();
 const PORT = 3000;
 
-app.use(cors());
+// No literal-fallback here on purpose: a missing/short key must fail loudly
+// at boot rather than silently granting admin access to a guessable default.
+const ADMIN_API_KEY = process.env.INTERNAL_API_KEY;
+if (!ADMIN_API_KEY || ADMIN_API_KEY.length < 16) {
+  console.error(
+    "[server] FATAL: INTERNAL_API_KEY is not set (or shorter than 16 characters). " +
+    "Refusing to start with a guessable/default admin key — set INTERNAL_API_KEY to a long random string in .env."
+  );
+  process.exit(1);
+}
+
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000,http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ limit: "15mb", extended: true }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many attempts, try again later" },
+});
 
 // ---------- Platform Instances ----------
 const workspace = new CognitiveWorkspace();
@@ -72,32 +109,14 @@ const executive = new AutonomousExecutive(workspace, observation, ai);
 const learningEngine = LongTermLearningEngine.getInstance();
 const executiveBoard = new ExecutiveBoard();
 
-// ---------- In-Memory Users & Keys ----------
-const users = new Map<string, string>(); // username -> password
-const apiKeys = new Map<string, string>(); // apiKey -> username
-
-// Seed default admin user
-users.set("admin", "admin123");
-apiKeys.set("admin", "admin");
-
-const ADMIN_API_KEY = process.env.INTERNAL_API_KEY || "admin";
-
-interface PendingRecord {
-  uuid: string;
-  content: string;
-  source: string;
-  importance: number;
-}
-
-const pendingRecords: PendingRecord[] = [
-  { uuid: "rec-1", content: "Executive goal: Integrate PostgreSQL for digital twins", source: "System", importance: 8 },
-  { uuid: "rec-2", content: "User preference: Prefers dark slate aesthetic for graph nodes", source: "User", importance: 6 },
-  { uuid: "rec-3", content: "Cognitive pattern: Auto-consolidation loop ran successfully", source: "Engine", importance: 5 },
-];
+// Users, API keys, and memory records are persisted in Postgres (src/data/) —
+// see initDatabase() near the bottom of this file, called before app.listen.
 
 // ---------- Middleware: API Key Auth ----------
-const validateApiKey = (req: any, res: any, next: any) => {
-  const apiKey = req.headers["x-api-key"] || req.query.api_key;
+// Header-only: query-string keys end up in access logs, browser history and
+// Referer headers, so ?api_key=... is intentionally not accepted.
+const validateApiKey = async (req: any, res: any, next: any) => {
+  const apiKey = req.headers["x-api-key"];
   if (!apiKey) {
     observation.logTelemetry("warn", "Security", "Access denied: Missing API Key");
     return res.status(401).json({ error: "Missing API Key" });
@@ -106,12 +125,19 @@ const validateApiKey = (req: any, res: any, next: any) => {
     req.username = "admin";
     return next();
   }
-  const username = apiKeys.get(apiKey);
-  if (username) {
-    req.username = username;
-    return next();
+  try {
+    const username = await usersRepo.getUsernameByApiKey(apiKey);
+    if (username) {
+      req.username = username;
+      return next();
+    }
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `API key lookup failed: ${err.message}`);
+    return res.status(503).json({ error: "Authentication service unavailable" });
   }
-  observation.logTelemetry("warn", "Security", `Access denied: Invalid API Key "${apiKey}"`);
+  // Deliberately not logging the submitted key itself — it's the caller's
+  // (possibly malicious) guess, not a secret worth persisting into telemetry.
+  observation.logTelemetry("warn", "Security", "Access denied: Invalid API Key");
   return res.status(403).json({ error: "Invalid API Key" });
 };
 
@@ -156,37 +182,44 @@ app.get("/api/governance", (req, res) => {
 });
 
 // Authentication Endpoints
-app.post("/api/register", (req, res) => {
+app.post("/api/register", authLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
-  if (users.has(username)) {
-    return res.status(400).json({ error: "Username already exists" });
+  if (typeof password !== "string" || password.length < 8) {
+    return res.status(400).json({ error: "Password must be at least 8 characters" });
   }
-  users.set(username, password);
-  const apiKey = `jarvis_key_${Math.random().toString(36).substring(2)}`;
-  apiKeys.set(apiKey, username);
-  observation.logAuditEvent(username, "register", "success", `Registered new user: ${username}`);
-  res.json({ username, api_key: apiKey });
+  try {
+    const apiKey = await usersRepo.createUser(username, password);
+    observation.logAuditEvent(username, "register", "success", `Registered new user: ${username}`);
+    res.json({ username, api_key: apiKey });
+  } catch (err: any) {
+    if (err instanceof usersRepo.UsernameTakenError) {
+      return res.status(400).json({ error: "Username already exists" });
+    }
+    observation.logTelemetry("warn", "Database", `Registration failed: ${err.message}`);
+    res.status(503).json({ error: "Registration is temporarily unavailable" });
+  }
 });
 
-app.post("/api/login", (req, res) => {
+app.post("/api/login", authLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
-  if (users.get(username) === password) {
-    let apiKey = [...apiKeys.entries()].find(([_, v]) => v === username)?.[0];
-    if (!apiKey) {
-      apiKey = `jarvis_key_${Math.random().toString(36).substring(2)}`;
-      apiKeys.set(apiKey, username);
+  try {
+    const valid = await usersRepo.verifyCredentials(username, password);
+    if (!valid) {
+      observation.logAuditEvent(username, "login", "failed", "Invalid credentials provided");
+      return res.status(401).json({ error: "Invalid credentials" });
     }
+    const apiKey = await usersRepo.getOrCreateApiKey(username);
     observation.logAuditEvent(username, "login", "success", `User logged in: ${username}`);
     res.json({ username, api_key: apiKey });
-  } else {
-    observation.logAuditEvent(username || "unknown", "login", "failed", "Invalid credentials provided");
-    res.status(401).json({ error: "Invalid credentials" });
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `Login failed: ${err.message}`);
+    res.status(503).json({ error: "Login is temporarily unavailable" });
   }
 });
 
@@ -197,7 +230,7 @@ app.get("/api/status", validateApiKey, (req: any, res: any) => {
   res.json({
     cpu: Math.round(stats.system.cpuUsagePercent * 10) / 10,
     ram_available_mb: stats.system.freeMemoryMb,
-    disk: 38,
+    disk: stats.system.diskUsagePercent,
     engine_ready: true,
     user: req.username,
     offline_mode: kernel.offlineMode
@@ -361,7 +394,8 @@ app.post("/api/executive/run", validateApiKey, async (req: any, res: any) => {
     const report = await executive.executeObjective(objective);
     res.json(report);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    observation.logTelemetry("error", "Executive", `Objective execution failed: ${error.message}`);
+    res.status(500).json({ error: "Objective execution failed" });
   }
 });
 
@@ -407,7 +441,8 @@ app.post("/api/executive/board/debate", validateApiKey, async (req: any, res: an
     const debateReport = await executiveBoard.conveneDebate(prompt, proposedResponse);
     res.json(debateReport);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    observation.logTelemetry("error", "Executive", `Board debate failed: ${error.message}`);
+    res.status(500).json({ error: "Board debate failed" });
   }
 });
 
@@ -451,9 +486,8 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
       res.json({ transcription: simText });
     }
   } catch (error: any) {
-    console.error("Transcription error:", error);
     observation.logTelemetry("error", "Sensors", `Voice transcription failed: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: "Voice transcription failed" });
   }
 });
 
@@ -816,7 +850,7 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
     });
   } catch (error: any) {
     observation.logTelemetry("error", "Cognition", `Chat completion failed: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: "Chat completion failed" });
   }
 });
 
@@ -833,7 +867,7 @@ app.post("/api/learn", validateApiKey, async (req: any, res: any) => {
 });
 
 // Shutdown Hook
-app.post("/api/shutdown", (req, res) => {
+app.post("/api/shutdown", validateApiKey, (req, res) => {
   observation.logTelemetry("warn", "System", "Server shutdown API invoked");
   res.json({ status: "shutdown initiated" });
 });
@@ -869,38 +903,56 @@ app.post("/api/notifications/mark_read", validateApiKey, (req, res) => {
   res.json({ status: "success" });
 });
 
-// Admin & Memory Endpoints
-app.get("/api/memory/pending", validateApiKey, (req: any, res: any) => {
-  res.json(pendingRecords);
-});
-
-app.post("/api/memory/verify/:record_uuid", validateApiKey, (req: any, res: any) => {
-  const { record_uuid } = req.params;
-  const index = pendingRecords.findIndex(r => r.uuid === record_uuid);
-  if (index !== -1) {
-    const record = pendingRecords[index];
-    pendingRecords.splice(index, 1);
-    observation.logAuditEvent(req.username || "admin", "verify_memory", "success", `Approved memory record ${record_uuid}: "${record.content}"`);
+// Admin & Memory Endpoints — persisted in Postgres, see src/data/memory-repo.ts
+app.get("/api/memory/pending", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json(await memoryRepo.getPendingRecords());
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `Failed to load memory records: ${err.message}`);
+    res.status(503).json({ error: "Memory store unavailable" });
   }
-  res.json({ status: "success" });
 });
 
-app.post("/api/memory/verify_all", validateApiKey, (req: any, res: any) => {
-  const approvedCount = pendingRecords.length;
-  pendingRecords.forEach(rec => {
-    observation.logAuditEvent(req.username || "admin", "verify_memory", "success", `Approved memory record ${rec.uuid}: "${rec.content}"`);
-  });
-  pendingRecords.length = 0;
-  res.json({ processed: approvedCount });
+app.post("/api/memory/verify/:record_uuid", validateApiKey, async (req: any, res: any) => {
+  const { record_uuid } = req.params;
+  try {
+    const record = await memoryRepo.removeMemoryRecord(record_uuid);
+    if (record) {
+      observation.logAuditEvent(req.username || "admin", "verify_memory", "success", `Approved memory record ${record_uuid}: "${record.content}"`);
+    }
+    res.json({ status: "success" });
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `Failed to verify memory record: ${err.message}`);
+    res.status(503).json({ error: "Memory store unavailable" });
+  }
+});
+
+app.post("/api/memory/verify_all", validateApiKey, async (req: any, res: any) => {
+  try {
+    const removed = await memoryRepo.clearMemoryRecords();
+    removed.forEach(rec => {
+      observation.logAuditEvent(req.username || "admin", "verify_memory", "success", `Approved memory record ${rec.uuid}: "${rec.content}"`);
+    });
+    res.json({ processed: removed.length });
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `Failed to verify all memory records: ${err.message}`);
+    res.status(503).json({ error: "Memory store unavailable" });
+  }
 });
 
 app.post("/api/admin/consolidate", validateApiKey, (req, res) => {
   res.json({ promoted: 0 });
 });
 
-app.get("/api/admin/consolidation/status", validateApiKey, (req, res) => {
+app.get("/api/admin/consolidation/status", validateApiKey, async (req, res) => {
+  let pendingCount = 0;
+  try {
+    pendingCount = await memoryRepo.countMemoryRecords();
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `Failed to count memory records: ${err.message}`);
+  }
   res.json({
-    pending_records: pendingRecords.length,
+    pending_records: pendingCount,
     enabled: true,
     interval_minutes: 30,
   });
@@ -1083,6 +1135,15 @@ app.get("*", (req, res) => {
 
 observation.endProfile("startup");
 
-app.listen(PORT, "0.0.0.0", () => {
-  observation.logTelemetry("info", "System", `🚀 Jarvis OS Server running on http://localhost:${PORT}`);
+initDatabase().then(async (ready) => {
+  if (ready) {
+    try {
+      await memoryRepo.seedMemoryRecords();
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Database", `Failed to seed memory records: ${err.message}`);
+    }
+  }
+  app.listen(PORT, "0.0.0.0", () => {
+    observation.logTelemetry("info", "System", `🚀 Jarvis OS Server running on http://localhost:${PORT}`);
+  });
 });

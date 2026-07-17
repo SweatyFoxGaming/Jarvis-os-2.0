@@ -4,8 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Jarvis OS · Cognitive Command Console</title>
+    <!-- Tailwind's Play CDN JIT-compiles on every load, so it can't carry a
+         static SRI hash and isn't meant for production (per Tailwind's own
+         docs) — replacing it with a pinned build is a follow-up, not done here. -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"
+        integrity="sha384-X7WMDD1lV+pn8w6J5+gz+4oe1KOb37V6QOOAFoNZHLuFqGfN3gKWUT5N7eiZewEo"
+        crossorigin="anonymous"></script>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     
     <script>
@@ -576,7 +581,7 @@
                         
                         <div class="space-y-2">
                             <label class="text-[10px] font-mono text-secondary tracking-wider block">X-API-KEY (JARVIS AUTH VECTOR)</label>
-                            <input type="text" id="api-key-input" placeholder="Enter key (defaults to 'admin')..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                            <input type="password" id="api-key-input" placeholder="Enter your API key..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
                         </div>
 
                         <button onclick="runLocalDiagnostics()" class="w-full py-3 bg-primary/5 hover:bg-primary/10 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">RUN DIAGNOSTIC_SUITE</button>
@@ -654,9 +659,20 @@
 <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
 <script>
-    let CURRENT_API_KEY = "admin";
+    // Shares sessionStorage with admin.html/mind.js so a key entered once
+    // carries over, and so a reload doesn't silently fall back to a guessable default.
+    let CURRENT_API_KEY = sessionStorage.getItem('admin_api_key') || "";
     let CURRENT_TAB = "dashboard";
     let cy;
+
+    // Untrusted strings (chat text, memory content, telemetry/audit messages,
+    // LLM output) must never go into innerHTML unescaped — this is the one
+    // choke point every dynamic innerHTML template in this file routes through.
+    function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+        }[ch]));
+    }
 
     // 1. TACTILE AUDIO SYNTHESIZER ENGINE (Web Audio API)
     const AudioEngine = {
@@ -1483,10 +1499,10 @@
                         return `
                             <div class="bg-card border border-white/5 p-4 rounded-xl space-y-1">
                                 <div class="flex justify-between items-center">
-                                    <span class="px-2 py-0.5 rounded border text-[8px] font-mono font-bold tracking-wider uppercase ${roleColor}">${dh.role}</span>
+                                    <span class="px-2 py-0.5 rounded border text-[8px] font-mono font-bold tracking-wider uppercase ${roleColor}">${escapeHtml(dh.role)}</span>
                                     <span class="text-[7px] font-mono text-secondary">METRIC_STABLE</span>
                                 </div>
-                                <p class="text-white text-xs font-mono">"${dh.message}"</p>
+                                <p class="text-white text-xs font-mono">"${escapeHtml(dh.message)}"</p>
                             </div>
                         `;
                     }).join('');
@@ -1531,7 +1547,7 @@
                         return `
                             <div class="border-b border-white/5 pb-1 font-mono">
                                 <span class="text-secondary/40 text-[8px]">[${new Date(l.timestamp).toLocaleTimeString()}]</span>
-                                <span class="${c} font-bold">[${l.subsystem.toUpperCase()}]</span> ${l.message}
+                                <span class="${c} font-bold">[${escapeHtml(l.subsystem.toUpperCase())}]</span> ${escapeHtml(l.message)}
                             </div>
                         `;
                     }).join('');
@@ -1549,7 +1565,7 @@
                     auditPane.innerHTML = audits.slice().reverse().map(a => `
                         <div class="border-b border-white/5 pb-1.5 mb-1.5 font-mono">
                             <span class="text-success text-[8px] block font-bold">&#x2713; INTEGRITY_PASS</span>
-                            <span class="text-white text-[10px]">${a}</span>
+                            <span class="text-white text-[10px]">${escapeHtml(a)}</span>
                         </div>
                     `).join('');
                 }
@@ -1618,14 +1634,14 @@
                         <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-56 hover:border-primary/25 transition-all duration-300">
                             <div>
                                 <div class="flex justify-between items-center text-[8px] font-mono text-secondary mb-2 uppercase tracking-widest">
-                                    <span>HASH: ${rec.uuid.substring(0,8)}</span>
-                                    <span>TYPE: ${rec.type}</span>
+                                    <span>HASH: ${escapeHtml(rec.uuid.substring(0,8))}</span>
+                                    <span>SOURCE: ${escapeHtml(rec.source)}</span>
                                 </div>
-                                <div class="text-white font-mono text-xs leading-normal line-clamp-3">"${rec.content}"</div>
+                                <div class="text-white font-mono text-xs leading-normal line-clamp-3">"${escapeHtml(rec.content)}"</div>
                             </div>
                             <div class="flex justify-between items-center text-[8px] text-secondary border-t border-white/5 pt-3 uppercase tracking-widest mt-2">
-                                <span>LINK: ${rec.relationship || 'General'}</span>
-                                <button onclick="approveMemory('${rec.uuid}')" class="px-3 py-1 bg-success/10 border border-success/30 rounded-lg text-success font-bold hover:bg-success/20 transition-all">VERIFY</button>
+                                <span>IMPORTANCE: ${escapeHtml(String(rec.importance ?? 'N/A'))}</span>
+                                <button onclick="approveMemory('${encodeURIComponent(rec.uuid)}')" class="px-3 py-1 bg-success/10 border border-success/30 rounded-lg text-success font-bold hover:bg-success/20 transition-all">VERIFY</button>
                             </div>
                         </div>
                     `).join('');
@@ -1721,7 +1737,7 @@
                 <span class="${speakerColor} font-bold">${speaker}</span>
                 <span>${new Date().toLocaleTimeString()}</span>
             </div>
-            <div class="text-white text-xs leading-normal font-mono">${text}</div>
+            <div class="text-white text-xs leading-normal font-mono">${escapeHtml(text)}</div>
         `;
         chatScroller.appendChild(div);
         chatScroller.scrollTop = chatScroller.scrollHeight;
@@ -1809,17 +1825,17 @@
         const panel = document.getElementById('float-trace-panel');
         panel.innerHTML = `
             <div class="space-y-3">
-                <div><span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-0.5">Semantic Intent:</span> ${trace.intent}</div>
-                <div><span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-0.5">Execution Tactics:</span> <span class="text-primary font-bold tracking-wider">${trace.strategy}</span></div>
+                <div><span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-0.5">Semantic Intent:</span> ${escapeHtml(trace.intent)}</div>
+                <div><span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-0.5">Execution Tactics:</span> <span class="text-primary font-bold tracking-wider">${escapeHtml(trace.strategy)}</span></div>
                 <div>
                     <span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-1">Active Swarms:</span>
                     <div class="flex flex-wrap gap-1">
-                        ${trace.capabilitySelection.map(c => `<span class="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-[8px] uppercase font-semibold text-white">${c}</span>`).join('')}
+                        ${trace.capabilitySelection.map(c => `<span class="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-[8px] uppercase font-semibold text-white">${escapeHtml(c)}</span>`).join('')}
                     </div>
                 </div>
                 <div class="bg-black/25 p-3 rounded-xl border border-white/5 my-2">
                     <span class="text-white block font-bold text-[8px] uppercase tracking-wider mb-1">Reasoning Logic:</span>
-                    <p class="text-secondary text-[11px] italic leading-normal">"${trace.reasoning}"</p>
+                    <p class="text-secondary text-[11px] italic leading-normal">"${escapeHtml(trace.reasoning)}"</p>
                 </div>
                 <div class="flex justify-between items-center pt-2 border-t border-white/5 text-[8px] uppercase tracking-widest">
                     <span>Confidence: <span class="text-success font-bold">${Math.round(trace.confidence * 100)}%</span></span>
@@ -1848,7 +1864,7 @@
                 } else {
                     workflowList.innerHTML = data.optimizedWorkflows.map(wf => `
                         <div class="p-3 bg-card border border-white/5 rounded-xl space-y-1">
-                            <span class="text-primary block font-bold uppercase tracking-wider text-[9px]">${wf.objective || wf.mission || 'Objective Node'}</span>
+                            <span class="text-primary block font-bold uppercase tracking-wider text-[9px]">${escapeHtml(wf.objective || wf.mission || 'Objective Node')}</span>
                             <span class="text-[9px] block text-secondary">Latency: ${wf.averageLatencyMs || 0}ms</span>
                         </div>
                     `).join('');
@@ -1860,9 +1876,9 @@
                 } else {
                     mistakeList.innerHTML = data.mistakeLog.map(m => `
                         <div class="bg-card border border-white/5 p-3 rounded-xl space-y-1">
-                            <span class="text-danger block font-bold uppercase text-[8px]">[MITIGATED: ${m.affectedFile}]</span>
-                            <span class="text-white block text-[10px]">Error: ${m.errorSignature}</span>
-                            <p class="text-secondary text-[10px]">Fix: ${m.successfulFix}</p>
+                            <span class="text-danger block font-bold uppercase text-[8px]">[MITIGATED: ${escapeHtml(m.affectedFile)}]</span>
+                            <span class="text-white block text-[10px]">Error: ${escapeHtml(m.errorSignature)}</span>
+                            <p class="text-secondary text-[10px]">Fix: ${escapeHtml(m.successfulFix)}</p>
                         </div>
                     `).join('');
                 }
@@ -1938,6 +1954,7 @@
         const apiKeyInput = document.getElementById('api-key-input').value.trim();
         if (apiKeyInput) {
             CURRENT_API_KEY = apiKeyInput;
+            sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
         }
 
         const headers = { 
@@ -2117,7 +2134,8 @@
     }
 
     document.getElementById('api-key-input').addEventListener('change', (e) => {
-        CURRENT_API_KEY = e.target.value.trim() || "admin";
+        CURRENT_API_KEY = e.target.value.trim();
+        sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
         addNotification("Authorization vector changed.");
     });
 

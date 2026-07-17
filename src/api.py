@@ -50,9 +50,19 @@ app = FastAPI(
     version="1.8.0"
 )
 
+# Wildcard origins combined with allow_credentials=True makes Starlette
+# reflect the caller's actual Origin header (browsers reject a literal
+# wildcard + credentials response), which effectively allows any site to
+# make credentialed cross-origin requests. Use an explicit allowlist instead.
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:8000,http://localhost:3000").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,31 +83,13 @@ def is_node_running() -> bool:
     except Exception:
         return False
 
-def run_node_server():
-    """Background thread function to spawn and monitor the Node.js server."""
+def log_stream(stream, prefix):
+    for line in iter(stream.readline, ''):
+        logger.info(f"[{prefix}] {line.strip()}")
+
+def spawn_node_process():
+    """Spawn 'npm run start' once and wire up its output streams. Returns the Popen, or None on failure."""
     global node_process
-    
-    # Wait a moment for uvicorn to bind
-    time.sleep(1.0)
-    
-    if is_node_running():
-        logger.info("[Gateway] Express server already active on port %s. Proxying enabled.", NODE_PORT)
-        return
-
-    logger.info("[Gateway] Checking for Node.js runtime to launch Express server...")
-    try:
-        # Check if node is installed
-        subprocess.run(["node", "--version"], capture_output=True, check=True)
-    except Exception:
-        logger.warning("[Gateway] Node.js runtime not found in this container. Running in Python fallback simulation mode.")
-        return
-
-    # Check if package.json exists in workspace
-    if not os.path.exists("package.json"):
-        logger.warning("[Gateway] package.json not found in workspace. Express server cannot be launched.")
-        return
-
-    logger.info("[Gateway] Spawning TypeScript/Express server via 'npm run start'...")
     try:
         node_process = subprocess.Popen(
             ["npm", "run", "start"],
@@ -106,29 +98,77 @@ def run_node_server():
             text=True,
             bufsize=1
         )
-        
-        # Monitor the output streams in a safe manner to prevent lockups
-        def log_stream(stream, prefix):
-            for line in iter(stream.readline, ''):
-                logger.info(f"[{prefix}] {line.strip()}")
-                
         threading.Thread(target=log_stream, args=(node_process.stdout, "Express-Out"), daemon=True).start()
         threading.Thread(target=log_stream, args=(node_process.stderr, "Express-Err"), daemon=True).start()
-        
-        # Wait and verify it started
+        return node_process
+    except Exception as e:
+        logger.error("[Gateway] Failed to start Node.js server subprocess: %s", e)
+        return None
+
+def supervise_node_server():
+    """
+    Background thread that spawns the Express server and keeps restarting it
+    (with exponential backoff) if it ever exits. Without this, a crash in the
+    Node process left the FastAPI gateway silently serving Python fallback
+    mock responses forever, since Docker's restart policy only sees the
+    top-level container process (uvicorn), not the Node subprocess.
+    """
+    global node_process
+
+    # Wait a moment for uvicorn to bind
+    time.sleep(1.0)
+
+    if is_node_running():
+        logger.info("[Gateway] Express server already active on port %s. Proxying enabled.", NODE_PORT)
+        return
+
+    logger.info("[Gateway] Checking for Node.js runtime to launch Express server...")
+    try:
+        subprocess.run(["node", "--version"], capture_output=True, check=True)
+    except Exception:
+        logger.warning("[Gateway] Node.js runtime not found in this container. Running in Python fallback simulation mode.")
+        return
+
+    if not os.path.exists("package.json"):
+        logger.warning("[Gateway] package.json not found in workspace. Express server cannot be launched.")
+        return
+
+    backoff_seconds = 2
+    max_backoff_seconds = 60
+
+    while True:
+        logger.info("[Gateway] Spawning TypeScript/Express server via 'npm run start'...")
+        proc = spawn_node_process()
+        if proc is None:
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
+            continue
+
+        started = False
         for _ in range(10):
             time.sleep(1.0)
             if is_node_running():
                 logger.info("[Gateway] Express server successfully launched and active on port %s.", NODE_PORT)
-                return
-        logger.warning("[Gateway] Express server process spawned but port %s remains unreachable.", NODE_PORT)
-    except Exception as e:
-        logger.error("[Gateway] Failed to start Node.js server subprocess: %s", e)
+                started = True
+                break
+        if not started:
+            logger.warning("[Gateway] Express server process spawned but port %s remains unreachable.", NODE_PORT)
+
+        if started:
+            backoff_seconds = 2  # reset backoff after a healthy start
+
+        exit_code = proc.wait()  # blocks until the Node process actually dies
+        logger.warning(
+            "[Gateway] Express server process exited (code %s). Restarting in %ss...",
+            exit_code, backoff_seconds
+        )
+        time.sleep(backoff_seconds)
+        backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
 
 @app.on_event("startup")
 async def on_startup():
-    """Trigger the Express server initialization on startup."""
-    threading.Thread(target=run_node_server, daemon=True).start()
+    """Trigger the Express server initialization (with crash supervision) on startup."""
+    threading.Thread(target=supervise_node_server, daemon=True).start()
 
 @app.on_event("shutdown")
 async def on_shutdown():

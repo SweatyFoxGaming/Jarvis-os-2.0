@@ -18,6 +18,10 @@ export interface IConsensusReport {
   finalConsensus: "APPROVED" | "AMENDED" | "REJECTED";
   refinedProposal: string;
   timestamp: Date;
+  // No LLM calls happen here — each "board member" is a deterministic
+  // keyword/pattern check (code-fence presence, sensitive-term matching).
+  // It's a real, useful static guardrail; it is not multi-agent reasoning.
+  method: "deterministic-pattern-check";
 }
 
 export class ExecutiveBoard {
@@ -95,7 +99,8 @@ export class ExecutiveBoard {
       debates,
       finalConsensus,
       refinedProposal,
-      timestamp: new Date()
+      timestamp: new Date(),
+      method: "deterministic-pattern-check"
     };
   }
 }

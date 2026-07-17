@@ -1,4 +1,5 @@
 import { ObservationPlatform } from "../observation/index.js";
+import { loadLearningState, saveLearningState } from "./learning-store.js";
 
 /**
  * Phase XV: Long-Term Learning
@@ -45,7 +46,13 @@ export class LongTermLearningEngine {
 
   private constructor() {
     this.observation = ObservationPlatform.getInstance();
-    this.seedInitialKnowledge();
+    // Persisted state (data/learning.json) survives restarts; only seed the
+    // canned demo entries on a genuinely fresh install with nothing saved yet
+    // — otherwise "long-term" learning was reset to the same seed every time
+    // the container restarted, which defeats the point.
+    if (!this.loadPersistedState()) {
+      this.seedInitialKnowledge();
+    }
   }
 
   public static getInstance(): LongTermLearningEngine {
@@ -55,8 +62,32 @@ export class LongTermLearningEngine {
     return this.instance;
   }
 
+  private loadPersistedState(): boolean {
+    const persisted = loadLearningState();
+    if (!persisted) return false;
+    if (persisted.styleCache) this.styleCache = persisted.styleCache;
+    if (Array.isArray(persisted.workflows)) {
+      for (const wf of persisted.workflows) {
+        this.workflowOptimizer.set(wf.objective.toLowerCase().trim(), wf);
+      }
+    }
+    if (Array.isArray(persisted.mistakes)) {
+      this.mistakeLog = persisted.mistakes;
+    }
+    return true;
+  }
+
+  private persist(): void {
+    saveLearningState({
+      styleCache: this.styleCache,
+      workflows: Array.from(this.workflowOptimizer.values()),
+      mistakes: this.mistakeLog,
+    });
+  }
+
   private seedInitialKnowledge() {
-    // Seed standard optimization templates
+    // Demo/example entries shown on a fresh install — not claims about what
+    // this deployment has actually learned yet.
     this.optimizeWorkflow("Deploy microservices orchestrator", [
       "Deconstruct requirements for Deploy microservices orchestrator",
       "Establish logical interfaces and database contracts",
@@ -64,7 +95,6 @@ export class LongTermLearningEngine {
       "Run regression suite and verify QA standards"
     ], 1200);
 
-    // Seed style preference defaults
     this.styleCache = {
       namingConvention: "camelCase",
       tabSize: 2,
@@ -72,7 +102,6 @@ export class LongTermLearningEngine {
       architecturePattern: "Decoupled-Contexts"
     };
 
-    // Seed mistake logs to avoid common compiler pitfalls
     this.logMistake(
       "Cannot find module '../src/cognition/workspace.js' or its corresponding type declarations.",
       "tests/index.test.ts",
@@ -89,6 +118,7 @@ export class LongTermLearningEngine {
 
   public updateStylePreference(updates: Partial<ICodingStylePreference>): void {
     this.styleCache = { ...this.styleCache, ...updates };
+    this.persist();
     this.observation.logTelemetry("info", "Learning", `Dynamic Style Cache updated: Naming: ${this.styleCache.namingConvention}, Pattern: ${this.styleCache.architecturePattern}`);
   }
 
@@ -112,6 +142,7 @@ export class LongTermLearningEngine {
         averageLatencyMs: latencyMs
       });
     }
+    this.persist();
     this.observation.logTelemetry("info", "Learning", `Workflow optimized for mission: "${objective}". Steps cached to local Knowledge Graph.`);
   }
 
@@ -135,6 +166,7 @@ export class LongTermLearningEngine {
       timestamp: new Date()
     };
     this.mistakeLog.push(entry);
+    this.persist();
     this.observation.logTelemetry("warn", "Learning", `New mistake registered in local Knowledge Graph for "${file}": ${errorSignature}`);
     this.observation.logAuditEvent("System", "mistake_logged", "success", `Mistake in ${file}: ${errorSignature}`);
   }

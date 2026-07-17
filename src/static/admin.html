@@ -6,6 +6,9 @@
     <title>JARVIS OS · Executive Admin Control Panel</title>
     <!-- Fonts & Tailwind CSS -->
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Tailwind's Play CDN JIT-compiles on every load, so it can't carry a
+         static SRI hash and isn't meant for production (per Tailwind's own
+         docs) — replacing it with a pinned build is a follow-up, not done here. -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -278,6 +281,14 @@
         let CURRENT_ADMIN_TAB = 'memory';
         let telemetryInterval = null;
 
+        // Untrusted strings (memory content, telemetry/audit messages, error
+        // text) must never go into innerHTML unescaped.
+        function escapeHtml(value) {
+            return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+            }[ch]));
+        }
+
         // --- Auth controls ---
         const authSection = document.getElementById('authSection');
         const adminPanel = document.getElementById('adminPanel');
@@ -296,7 +307,7 @@
                 info: 'bg-primary/10 border-primary/30 text-primary'
             };
             div.className += ' ' + (styles[type] || styles.success);
-            div.innerHTML = `<span>&#x25C8;</span> <span>${text}</span>`;
+            div.innerHTML = `<span>&#x25C8;</span> <span>${escapeHtml(text)}</span>`;
             
             container.appendChild(div);
             setTimeout(() => {
@@ -413,16 +424,16 @@
                         <div class="bg-card/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-56 hover:border-primary/25 transition-all duration-300">
                             <div>
                                 <div class="flex justify-between items-center text-[8px] font-mono text-secondary mb-2 uppercase tracking-widest">
-                                    <span>HASH: ${rec.uuid.substring(0,8)}</span>
-                                    <span>TYPE: ${rec.source || 'General'}</span>
+                                    <span>HASH: ${escapeHtml(rec.uuid.substring(0,8))}</span>
+                                    <span>TYPE: ${escapeHtml(rec.source || 'General')}</span>
                                 </div>
-                                <div class="text-white font-mono text-xs leading-normal line-clamp-3">"${rec.content}"</div>
+                                <div class="text-white font-mono text-xs leading-normal line-clamp-3">"${escapeHtml(rec.content)}"</div>
                             </div>
                             <div class="flex justify-between items-center text-[8px] text-secondary border-t border-white/5 pt-3 uppercase tracking-widest mt-2">
-                                <span>LINK: IMP_${rec.importance || 5}</span>
+                                <span>LINK: IMP_${escapeHtml(String(rec.importance ?? 5))}</span>
                                 <div class="flex gap-1">
-                                    <button onclick="approveRecord('${rec.uuid}', true)" class="px-2.5 py-1 bg-success/10 border border-success/30 rounded-lg text-success font-bold hover:bg-success/20 transition-all font-mono">VERIFY</button>
-                                    <button onclick="approveRecord('${rec.uuid}', false)" class="px-2.5 py-1 bg-danger/10 border border-danger/30 rounded-lg text-danger font-bold hover:bg-danger/20 transition-all font-mono">REJECT</button>
+                                    <button onclick="approveRecord('${encodeURIComponent(rec.uuid)}', true)" class="px-2.5 py-1 bg-success/10 border border-success/30 rounded-lg text-success font-bold hover:bg-success/20 transition-all font-mono">VERIFY</button>
+                                    <button onclick="approveRecord('${encodeURIComponent(rec.uuid)}', false)" class="px-2.5 py-1 bg-danger/10 border border-danger/30 rounded-lg text-danger font-bold hover:bg-danger/20 transition-all font-mono">REJECT</button>
                                 </div>
                             </div>
                         </div>
@@ -465,7 +476,7 @@
                         return `
                             <div class="border-b border-white/5 pb-1 font-mono text-[9px]">
                                 <span class="text-secondary/40">[${new Date(l.timestamp).toLocaleTimeString()}]</span>
-                                <span class="${c} font-bold">[${l.subsystem.toUpperCase()}]</span> ${l.message}
+                                <span class="${c} font-bold">[${escapeHtml(l.subsystem.toUpperCase())}]</span> ${escapeHtml(l.message)}
                             </div>
                         `;
                     }).join('');
@@ -483,7 +494,7 @@
                     auditPane.innerHTML = audits.slice().reverse().map(a => `
                         <div class="border-b border-white/5 pb-1.5 font-mono text-[8px]">
                             <span class="text-success block font-bold">&#x2713; INTEGRITY_VERIFIED</span>
-                            <span class="text-white">${a}</span>
+                            <span class="text-white">${escapeHtml(a)}</span>
                         </div>
                     `).join('');
                 }
@@ -510,7 +521,7 @@
                 } else {
                     workflowList.innerHTML = data.optimizedWorkflows.map(wf => `
                         <div class="p-3 bg-bg/40 border border-white/5 rounded-xl space-y-1">
-                            <span class="text-accent block font-bold uppercase tracking-wider text-[9px]">${wf.objective || wf.mission || 'Compile Routine'}</span>
+                            <span class="text-accent block font-bold uppercase tracking-wider text-[9px]">${escapeHtml(wf.objective || wf.mission || 'Compile Routine')}</span>
                             <span class="text-[9px] block text-secondary font-mono">Average Latency: ${wf.averageLatencyMs || 0}ms</span>
                         </div>
                     `).join('');
@@ -522,9 +533,9 @@
                 } else {
                     mistakeList.innerHTML = data.mistakeLog.map(m => `
                         <div class="p-3 bg-danger/5 border border-danger/20 rounded-xl space-y-1">
-                            <span class="text-rose-400 block font-bold font-mono text-[9px]">[MITIGATED] ${m.errorSignature}</span>
-                            <span class="text-secondary text-[8px] font-mono leading-normal block">FILE: ${m.affectedFile}</span>
-                            <span class="text-white text-[8px] font-mono leading-normal block">CAUSE: ${m.rootCause || 'Unknown'}</span>
+                            <span class="text-rose-400 block font-bold font-mono text-[9px]">[MITIGATED] ${escapeHtml(m.errorSignature)}</span>
+                            <span class="text-secondary text-[8px] font-mono leading-normal block">FILE: ${escapeHtml(m.affectedFile)}</span>
+                            <span class="text-white text-[8px] font-mono leading-normal block">CAUSE: ${escapeHtml(m.rootCause || 'Unknown')}</span>
                         </div>
                     `).join('');
                 }

@@ -4,6 +4,7 @@
  */
 
 import os from "os";
+import { execSync } from "child_process";
 
 // ---------- Interfaces ----------
 
@@ -106,13 +107,38 @@ export class ObservationPlatform {
     }
   }
 
+  // 1-minute load average relative to CPU count, as a 0-100 percentage.
+  // Not identical to instantaneous CPU%, but real (not simulated) and cheap.
+  private getCpuUsagePercent(): number {
+    const load1 = os.loadavg()[0];
+    const cpuCount = os.cpus().length || 1;
+    return Math.min(100, Math.round((load1 / cpuCount) * 1000) / 10);
+  }
+
+  // No portable Node API for disk usage without a native dependency; shells
+  // out to `df`, which is present in both the alpine (busybox) and typical
+  // Linux dev environments this runs in. Returns null (not a fake number)
+  // if that ever fails.
+  private getDiskUsagePercent(): number | null {
+    try {
+      const output = execSync("df -kP /", { encoding: "utf-8", timeout: 2000 });
+      const lastLine = output.trim().split("\n").pop() || "";
+      const capacityField = lastLine.trim().split(/\s+/)[4]; // e.g. "42%"
+      const percent = parseInt(capacityField, 10);
+      return Number.isFinite(percent) ? percent : null;
+    } catch {
+      return null;
+    }
+  }
+
   public getMetrics() {
     const freeMemMb = Math.round(os.freemem() / (1024 * 1024));
     const totalMemMb = Math.round(os.totalmem() / (1024 * 1024));
     return {
       counters: this.metrics,
       system: {
-        cpuUsagePercent: 12.5 + Math.random() * 5, // Simulated real-time variance
+        cpuUsagePercent: this.getCpuUsagePercent(),
+        diskUsagePercent: this.getDiskUsagePercent(),
         freeMemoryMb: freeMemMb,
         totalMemoryMb: totalMemMb,
         uptimeSeconds: Math.round(process.uptime()),

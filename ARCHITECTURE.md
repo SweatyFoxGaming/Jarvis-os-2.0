@@ -1,5 +1,7 @@
 # JARVIS Cognitive Engine V3 Architecture
 
+> **Historical design doc.** This describes an earlier, larger architecture that predates the current Docker/FastAPI/Express implementation and has since been replaced. For what actually exists today, see [README.md](README.md) and [docs/architecture/ROADMAP.md](docs/architecture/ROADMAP.md).
+
 ## 1. High-Level Overview
 JARVIS V3 is a multi‑layer, event‑driven cognitive platform. It is built around five core abstractions: Goal, Task, Capability, Event, and Memory. The architecture separates strategic reasoning (Executive Mind) from deterministic execution (Planner, Scheduler, ChiefOfStaff) and specialised work (Capabilities / Departments).
 

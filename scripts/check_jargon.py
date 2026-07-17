@@ -18,13 +18,11 @@ FORBIDDEN = [
     "security module", "user manager", "model manager",
 ]
 
-# Files to scan
+# Files to scan. This is a Python-only, AST-based literal scanner, so it
+# cannot cover the actual user-facing strings in src/server.ts or
+# src/static/*.html/js — most of this app's UI copy lives there, not here.
 SCAN_PATHS = [
-    "src/executive/mind.py",
-    "src/templates.py",
-    "src/gui.py",
     "src/api.py",
-    "src/core/constitution.py",
 ]
 
 def extract_strings(filepath):

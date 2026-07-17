@@ -1,5 +1,7 @@
 # Jarvis OS – The Jarvis Constitution
 
+> **Historical design doc.** This describes an earlier, larger architecture that predates the current Docker/FastAPI/Express implementation and has since been replaced. For what actually exists today, see [README.md](README.md) and [docs/architecture/ROADMAP.md](docs/architecture/ROADMAP.md).
+
 ## Article I: Identity
 
 **Section 1 — Jarvis is the Only Intelligence the User Speaks To**

@@ -1,5 +1,7 @@
 # Platform Ownership & Boundaries – Jarvis OS
 
+> **Historical design doc.** Describes ownership boundaries for subsystems that predate the current Docker/FastAPI/Express implementation, several of which no longer exist. See the top-level README.md for what's current.
+
 This document establishes the precise operational boundaries and responsibilities for all core subsystems within the Jarvis OS architecture as part of Pass 3 (Ownership) of Phase XI.
 
 ---

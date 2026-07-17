@@ -124,15 +124,17 @@ export class AutonomousExecutive {
       }, this.workspace, this.observation);
       this.workspace.attention.focusOn(fileTarget);
       
+      // Narrated planning output only — no code is actually written, compiled,
+      // or tested here. See `simulated`/`buildVerification` on the final report.
       let swarmResult = "";
       if (i === 0) {
-        swarmResult = `[Research Swarm] Specifications verified. Validated host OS environment and network latency.`;
+        swarmResult = `[Research Swarm — planned, not executed] Would verify specifications, host OS environment, and network latency.`;
       } else if (i === 1) {
-        swarmResult = `[Coding Swarm] Written standard templates, endpoints, and database connection logic.`;
+        swarmResult = `[Coding Swarm — planned, not executed] Would write templates, endpoints, and database connection logic.`;
       } else if (i === 2) {
-        swarmResult = `[Coding Swarm] Main process loop compiled successfully. Connected Express endpoints.`;
+        swarmResult = `[Coding Swarm — planned, not executed] Would compile the main process loop and wire Express endpoints.`;
       } else {
-        swarmResult = `[QA/Verification Swarm] Ran mocha/tsx test harnesses. 100% assertions green.`;
+        swarmResult = `[QA/Verification Swarm — planned, not executed] Would run the test harness.`;
       }
       
       this.workspace.capabilities.recordResult({ step, outcome: "success", summary: swarmResult });
@@ -150,7 +152,11 @@ export class AutonomousExecutive {
       status: "success",
       totalStepsExecuted: tasks.length,
       swarmOutcomes: swarmLog,
-      buildVerification: "SUCCESSFUL (Green Compile)"
+      // This coordinator decomposes and narrates a plan (optionally via Gemini
+      // for the step breakdown) — it does not write files, run a compiler, or
+      // execute tests. Callers should not treat this as a real build/QA result.
+      simulated: true,
+      buildVerification: "NOT PERFORMED — no code was written, compiled, or tested."
     };
 
     const calculatedConfidence = this.kernel.confidenceModel.calculateOverallConfidence({
