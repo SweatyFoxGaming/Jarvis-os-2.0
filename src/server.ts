@@ -589,7 +589,11 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 
     // Execute the chain
     for (const step of executionChain) {
-      if (success) break;
+      // Once any text has actually been streamed to the client, never fall
+      // through to another backend — that would silently append a second,
+      // unrelated generator's output onto the same reply (this used to
+      // happen when the local LLM's request timed out mid-stream).
+      if (success || fullReply) break;
 
       if (step === "LocalLLM") {
         try {
@@ -614,61 +618,15 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
             content: msg.content
           }));
 
-          // Try once with tool declarations (some Ollama models support
-          // OpenAI-style tool calling); if the backend rejects the request
-          // outright for it (as most local models currently do), fall back
-          // to the plain streaming request below instead of failing the
-          // whole LocalLLM step.
-          let toolCallHandled = false;
-          try {
-            const toolProbe = await fetch(targetUrl, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(kernel.localApiKey ? { "Authorization": `Bearer ${kernel.localApiKey}` } : {})
-              },
-              body: JSON.stringify({
-                model: kernel.localModelName,
-                messages: [{ role: "system", content: systemInstruction }, ...formattedMessages],
-                tools: TOOL_DECLARATIONS.map(fd => ({
-                  type: "function",
-                  function: { name: fd.name, description: fd.description, parameters: fd.parameters }
-                })),
-                stream: false
-              }),
-              signal: AbortSignal.timeout(15000)
-            });
-
-            if (toolProbe.ok) {
-              const toolData: any = await toolProbe.json();
-              const calls = toolData.choices?.[0]?.message?.tool_calls;
-              if (Array.isArray(calls) && calls.length > 0) {
-                for (const call of calls) {
-                  let args: Record<string, any> = {};
-                  try { args = JSON.parse(call.function?.arguments || "{}"); } catch {}
-                  const result = await executeTool(call.function?.name, args, req.username);
-                  toolCallsExecuted.push({ name: result.name, ok: result.ok });
-                }
-                const content = toolData.choices?.[0]?.message?.content;
-                if (content) {
-                  for (const word of String(content).split(" ")) {
-                    fullReply += word + " ";
-                    res.write(`data: ${word} \n\n`);
-                  }
-                } else {
-                  fullReply = `Done — I ${toolCallsExecuted.filter(t => t.ok).length}/${toolCallsExecuted.length} tool call(s) completed.`;
-                  res.write(`data: ${fullReply}\n\n`);
-                }
-                toolCallHandled = true;
-                success = true;
-              }
-            }
-          } catch {
-            // Model/backend doesn't support tools, or the probe failed —
-            // fall through to the plain streaming path below.
-          }
-
-          if (!toolCallHandled) {
+          // Not attempting tool-calling here on purpose: measured live against
+          // a real local model (llama.cpp serving a 2.7B GGUF on CPU), a
+          // non-streaming request with tool declarations took 130+ seconds
+          // and the model ignored the tools entirely, answering in plain text
+          // anyway. That's a pure latency tax for zero payoff for this class
+          // of local model — real tool-calling lives on the Gemini branch
+          // below, where it's fast and reliably supported. Revisit if a local
+          // backend/model with confirmed tool support becomes the norm here.
+          {
             const response = await fetch(targetUrl, {
               method: "POST",
               headers: {
@@ -683,7 +641,13 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
                 ],
                 stream: true
               }),
-              signal: AbortSignal.timeout(10000)
+              // CPU-based local inference is slow — measured 130+s for a ~100
+              // word response from a small (2.7B) model on this machine. 10s
+              // (the original value) was tuned for a cloud-speed backend and
+              // aborted real local generations mid-stream. 3 minutes is a
+              // first pass at a workable ceiling, not a carefully tuned one —
+              // a faster model or GPU acceleration would need less.
+              signal: AbortSignal.timeout(180000)
             });
 
             if (!response.ok) {

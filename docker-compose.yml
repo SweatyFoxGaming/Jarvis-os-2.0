@@ -23,6 +23,19 @@ services:
     depends_on:
       - postgres
       - tts
+      - llama-cpp
+
+  # Offline-first local inference: serves a GGUF model you already have on
+  # disk over an OpenAI-compatible API, entirely inside the Docker network —
+  # no host-networking/bind-address dependency the way a host-run Ollama has
+  # (see README's "Local LLM chat" note). Gemini stays fully optional.
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: jarvis-llama-cpp
+    volumes:
+      - ${HOST_MODEL_DIR}:/models:ro
+    command: ["-m", "/models/${LOCAL_MODEL_FILE}", "--host", "0.0.0.0", "--port", "8080", "-c", "4096"]
+    restart: unless-stopped
 
   postgres:
     image: pgvector/pgvector:pg16

@@ -10,11 +10,14 @@ export class MindKernel {
   private static instance: MindKernel | null = null;
 
   public offlineMode = false;
-  // "localhost" would resolve to the container itself, not the Docker host —
-  // host.docker.internal (mapped via extra_hosts in docker-compose.yml) reaches
-  // a local LLM (e.g. Ollama) running on the host machine.
-  public localLlmEndpoint = "http://host.docker.internal:11434";
-  public localModelName = "llama3";
+  // Defaults to the "llama-cpp" service in docker-compose.yml — a GGUF model
+  // from HOST_MODEL_DIR served entirely inside the Docker network, no host
+  // bind-address dependency the way a host-run Ollama has (host.docker.internal
+  // only helps if Ollama itself listens on more than 127.0.0.1 — see README).
+  // Point this at your own Ollama/LM Studio/etc. endpoint in Settings if you
+  // prefer that instead.
+  public localLlmEndpoint = "http://llama-cpp:8080";
+  public localModelName = "local-gguf";
   public localApiKey = "";
   public llmMode = "local-first";
 

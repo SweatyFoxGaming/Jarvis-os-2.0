@@ -1,8 +1,9 @@
 # Jarvis OS
 
-A self-hosted AI assistant console: a FastAPI gateway in front of an Express/TypeScript
-application, running in Docker alongside Postgres and a text-to-speech service. Chat
-runs against a local LLM (Ollama) by default, with an optional cloud fallback.
+A self-hosted, offline-first AI assistant console: a FastAPI gateway in front of an
+Express/TypeScript application, running in Docker alongside Postgres, a text-to-speech
+service, and a local LLM server. Chat runs against a GGUF model you already have on
+disk by default — no cloud account needed — with an optional cloud (Gemini) fallback.
 
 This README describes what's actually in this repository and how to run it. If you find
 another doc in this repo (or an old commit) describing a different architecture —
@@ -20,14 +21,18 @@ prior, now-replaced design. Treat this file and `docs/architecture/ROADMAP.md` a
 │  Express server is down     │        │                                │
 └─────────────────────────────┘        └──────────────┬─────────────────┘
                                                         │
-                              ┌─────────────────────────┼─────────────────────────┐
-                              ▼                         ▼                         ▼
-                     ┌────────────────┐        ┌────────────────┐      ┌──────────────────┐
-                     │ Postgres        │        │ tts container   │      │ Ollama (host)     │
-                     │ users, API keys,│        │ (openai-edge-   │      │ via host.docker.  │
-                     │ memory records  │        │  tts)           │      │ internal:11434    │
-                     └────────────────┘        └────────────────┘      └──────────────────┘
+                        ┌───────────────────────────────┼───────────────────────────────┐
+                        ▼                                ▼                                ▼
+               ┌────────────────┐              ┌────────────────┐              ┌──────────────────┐
+               │ Postgres        │              │ tts container   │              │ llama-cpp         │
+               │ users, API keys,│              │ (openai-edge-   │              │ serves a GGUF     │
+               │ memory records  │              │  tts)           │              │ model you provide,│
+               └────────────────┘              └────────────────┘              │ entirely offline   │
+                                                                                 └──────────────────┘
 ```
+
+Gemini is the only piece that talks to the internet, and only if you set `GEMINI_API_KEY` —
+everything else, including chat, runs fully inside this Docker network.
 
 Only `src/api.py` and `src/server.ts` are in the request path. Several other directories
 under `src/` (`bridge/`, `execution/planner.py`, `infrastructure/`) are leftover,
@@ -36,59 +41,68 @@ relying on anything not listed in "What's implemented."
 
 ## Quickstart
 
-1. **Copy the env template and fill in secrets:**
+1. **Get a GGUF model** — anything from [Hugging Face](https://huggingface.co/models?library=gguf)
+   works; a small quantized model (`Q4_K_M`, 2-4GB) is enough to get chat working, though
+   expect CPU inference to be slow (tens of seconds to a couple minutes per reply on a
+   modest machine — no GPU passthrough is configured here). Point `HOST_MODEL_DIR` (the
+   directory) and `LOCAL_MODEL_FILE` (the filename) at it in `.env`.
+
+2. **Copy the env template and fill in secrets:**
    ```bash
    cp .env.example .env
    ```
-   At minimum, set `INTERNAL_API_KEY` (generate one with `openssl rand -hex 32`) —
-   the server refuses to start without it. Everything else in `.env.example` is
-   optional and documented inline (GitHub/email/TTS integrations, Postgres, an
-   optional cloud LLM fallback).
+   At minimum, set `INTERNAL_API_KEY` (generate one with `openssl rand -hex 32`) and
+   `HOST_MODEL_DIR`/`LOCAL_MODEL_FILE` from step 1 — the server refuses to start without
+   the former, and chat falls back to a canned reply without the latter. Everything else
+   in `.env.example` is optional and documented inline (GitHub/email/TTS integrations,
+   Postgres, an optional cloud LLM fallback).
 
-2. **Run it:**
+3. **Run it:**
    ```bash
    docker compose up -d --build
    ```
-   This starts three containers: `api` (the app, ports 8000 and 3000), `postgres`
-   (pgvector image, used for users/memory persistence), and `tts` (text-to-speech,
-   port 5051). `./start.sh` does the same thing and opens a browser tab.
+   This starts four containers: `api` (the app, ports 8000 and 3000), `postgres`
+   (pgvector image, used for users/memory persistence), `tts` (text-to-speech, port
+   5051), and `llama-cpp` (serves your GGUF model). `./start.sh` does the same thing
+   and opens a browser tab. First boot pulls/loads the model, which can take a minute.
 
-3. **Open the console:** `http://localhost:8000` (main console), `/admin`
+4. **Open the console:** `http://localhost:8000` (main console), `/admin`
    (operator panel), `/mind` (cognitive state graph).
 
-4. **Local LLM chat:** the container is networked to reach a host-run Ollama at
-   `host.docker.internal:11434` — but Ollama also needs to be listening on more
-   than just loopback for that connection to succeed. If Ollama was installed
-   with defaults, it binds to `127.0.0.1` only, which no container (Docker's
-   `host.docker.internal` mapping included) can reach — you'll see chat fall
-   through to the simulated response and `[WARN] [Memory] Local embedding
-   request errored: fetch failed` in the logs. Fix: set `OLLAMA_HOST=0.0.0.0`
-   for the Ollama service and restart it (e.g. `sudo systemctl edit ollama`,
-   add `Environment="OLLAMA_HOST=0.0.0.0"`, `sudo systemctl restart ollama`)
-   — this exposes Ollama beyond localhost, so only do it on a machine where
-   that's acceptable. Change the endpoint/model in the Settings tab if yours
-   runs elsewhere; it's saved to `data/settings.json` and survives restarts.
+5. **Prefer a different local backend (e.g. Ollama) instead?** Change the endpoint/model
+   in the Settings tab — it's saved to `data/settings.json` and survives restarts. One
+   thing to know if you go that route: Ollama binds to `127.0.0.1` only by default, which
+   no container can reach (not even via `host.docker.internal`, which this compose file
+   maps for exactly this case) — you'd need `OLLAMA_HOST=0.0.0.0` and a restart on the
+   host for it to be reachable at all. The `llama-cpp` service above avoids this whole
+   class of problem by running inside the same Docker network as everything else.
 
 ## What's implemented
 
-- **Chat**, with a three-tier fallback chain: your local LLM → `GEMINI_API_KEY` (if
-  set) → a canned offline reply generator (keyword-matched templates, not a model —
-  see "Known limitations"). Each turn retrieves relevant semantic memory and applies
-  your learned style preferences before generating a reply.
+- **Chat**, with a three-tier fallback chain: your local `llama-cpp` model →
+  `GEMINI_API_KEY` (if set) → a canned offline reply generator (keyword-matched
+  templates, not a model — see "Known limitations"). Each turn retrieves relevant
+  semantic memory and applies your learned style preferences before generating a
+  reply. CPU inference of even a small (2-3B) local model is genuinely slow —
+  live-measured at 90-130 seconds for a short reply on a modest machine — not a
+  bug, just the tradeoff of offline-first, CPU-only local inference.
 - **Sessions**: conversational state (current thought, attention, dialogue) is scoped
   per authenticated user — two people talking to Jarvis at once no longer interleave
   into the same state (`src/cognition/session.ts`).
 - **Real delegation**: when Gemini is configured, chat supports function-calling
   against real capabilities (GitHub, email, TTS) — the model extracts structured
   arguments from the conversation and the server executes them for real, gated by a
-  default-deny permission grant system (`GET/POST /api/permissions*`). Local-model
-  tool-calling is attempted opportunistically and falls back cleanly when the model
-  doesn't support it (most don't yet).
+  default-deny permission grant system (`GET/POST /api/permissions*`). Local models
+  are not attempted for tool-calling: live-tested against a real local model, a
+  tool-enabled request took over two minutes and the model ignored the tools
+  entirely — a pure latency cost with no payoff for this class of model.
 - **Semantic memory**: every real (non-simulated) chat turn is embedded and stored in
   Postgres/pgvector, then retrieved by similarity on future turns — requires an
-  embedding provider to actually be reachable (Gemini, or a local Ollama instance
-  with an embedding model *and* `--embeddings` support); degrades to no-op, not a
-  crash, when neither is available.
+  embedding provider to actually be reachable (Gemini, or a local model server with
+  embedding support); degrades to no-op, not a crash, when neither is available. The
+  bundled `llama-cpp` service doesn't serve embeddings by default (would need a
+  second instance with `--embeddings` and an embedding-capable model) — this
+  currently only lights up with `GEMINI_API_KEY` set.
 - **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
   with bcrypt-hashed passwords, both backed by Postgres.
 - **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.
@@ -122,9 +136,10 @@ None of this is a security issue — it's worth knowing before you rely on it:
   real, useful lint step, not multi-agent LLM reasoning. Its response includes
   `"method": "deterministic-pattern-check"`.
 - **The offline chat fallback** (`src/cognition/local_engine.ts`) is keyword-matched
-  canned phrasing, not a language model. It's the default reply path whenever no
-  local LLM and no `GEMINI_API_KEY` are reachable — i.e. out of the box, until you
-  point it at Ollama or set a cloud key.
+  canned phrasing, not a language model. It only fires if `llama-cpp` itself is
+  unreachable (or `HOST_MODEL_DIR`/`LOCAL_MODEL_FILE` were never set) and no
+  `GEMINI_API_KEY` is configured either — with the bundled `llama-cpp` service, that's
+  no longer the out-of-the-box default the way it used to be with a host-run Ollama.
 - A couple of files under `src/` (`bridge/synapse.py`, `infrastructure/health.py`)
   are unused fragments from a prior design and are not imported by anything that
   runs. `src/desktop/` is a separate, optional pywebview launcher, not part of the
