@@ -61,10 +61,12 @@ relying on anything not listed in "What's implemented."
    ```bash
    docker compose up -d --build
    ```
-   This starts four containers: `api` (the app, ports 8000 and 3000), `postgres`
+   This starts five containers: `api` (the app, ports 8000 and 3000), `postgres`
    (pgvector image, used for users/memory persistence), `tts` (text-to-speech, port
-   5051), and `llama-cpp` (serves your GGUF model). `./start.sh` does the same thing
-   and opens a browser tab. First boot pulls/loads the model, which can take a minute.
+   5051), `llama-cpp` (serves your GGUF model), and `whisper-cpp` (offline speech-to-
+   text — a real ~142MB whisper-base.en model ships inside that image, no separate
+   download needed). `./start.sh` does the same thing and opens a browser tab. First
+   boot pulls/loads the model, which can take a minute.
 
 4. **Open the console:** `http://localhost:3000` (main console), `/admin`
    (operator panel), `/mind` (cognitive state graph). Port 8000 (the FastAPI
@@ -88,17 +90,33 @@ relying on anything not listed in "What's implemented."
   semantic memory and applies your learned style preferences before generating a
   reply. CPU inference of even a small (2-3B) local model is genuinely slow —
   live-measured at 90-130 seconds for a short reply on a modest machine — not a
-  bug, just the tradeoff of offline-first, CPU-only local inference.
+  bug, just the tradeoff of offline-first, CPU-only local inference. A message
+  that looks like it needs a real tool (GitHub, email, ...) is routed to Gemini
+  first when it's available, rather than to the local model — which has no tool
+  access and, left to answer such a request itself, was observed fabricating a
+  plausible-sounding result instead of admitting it couldn't act. If forced into
+  strictly-local mode (or Gemini isn't configured), the local model is told
+  explicitly it has no tool access and to say so rather than invent an answer.
 - **Sessions**: conversational state (current thought, attention, dialogue) is scoped
   per authenticated user — two people talking to Jarvis at once no longer interleave
-  into the same state (`src/cognition/session.ts`).
+  into the same state (`src/cognition/session.ts`). Conversation history specifically
+  is persisted to Postgres and rehydrated on first access after a restart — the
+  "live" cognitive state (current thought, active plan step) is not, since it's a
+  per-turn narration of what's happening right now, not something a restart should
+  pretend to remember.
 - **Real delegation**: when Gemini is configured, chat supports function-calling
-  against real capabilities (GitHub, email, TTS) — the model extracts structured
-  arguments from the conversation and the server executes them for real, gated by a
-  default-deny permission grant system (`GET/POST /api/permissions*`). Local models
-  are not attempted for tool-calling: live-tested against a real local model, a
-  tool-enabled request took over two minutes and the model ignored the tools
-  entirely — a pure latency cost with no payoff for this class of model.
+  against real capabilities (GitHub, email, TTS, and objective planning) — the
+  model extracts structured arguments from the conversation and the server
+  executes them for real, gated by a default-deny permission grant system
+  (`GET/POST /api/permissions*`). Local models are not attempted for
+  tool-calling: live-tested against a real local model, a tool-enabled request
+  took over two minutes and the model ignored the tools entirely — a pure
+  latency cost with no payoff for this class of model. Objective planning
+  (`/api/executive/run`'s decomposition logic) is reachable as a `decompose_plan`
+  tool too, so a plain chat request like "make me a step-by-step plan for X"
+  triggers it directly — live-verified Gemini's own function-calling correctly
+  chose this tool and extracted the objective from a natural sentence, not just
+  a hand-written test calling it directly.
 - **Semantic memory**: every real (non-simulated) chat turn is embedded and stored in
   Postgres/pgvector, then retrieved by similarity on future turns — requires an
   embedding provider to actually be reachable (Gemini, or a local model server with
@@ -113,7 +131,15 @@ relying on anything not listed in "What's implemented."
   traces — all bounded in-memory buffers, viewable in `/admin`.
 - **Long-term learning**: coding style preferences, cached workflow steps, and a
   mistake log — persisted to disk (`data/learning.json`), not reset on restart, and
-  consulted (style preferences) when generating chat replies.
+  consulted (style preferences) when generating chat replies. Written automatically
+  too: after every real chat turn, a lightweight Gemini reflection call judges
+  whether the exchange actually revealed a style preference or a genuine
+  mistake+fix, and only then writes it — not a manual `/api/learning/*` call
+  required for either.
+- **Speech-to-text**: Gemini's multimodal API when configured; otherwise a real
+  local `whisper-cpp` service (`docker-compose.yml`) with a genuine bundled
+  whisper-base.en model, entirely offline. Falls back to a canned string only if
+  neither is reachable.
 - **Confidence**: computed per-turn from what actually happened (which backend
   answered, whether memory had relevant hits, whether tool calls succeeded) instead
   of fixed inputs.
@@ -147,9 +173,6 @@ None of this is a security issue — it's worth knowing before you rely on it:
   are unused fragments from a prior design and are not imported by anything that
   runs. `src/desktop/` is a separate, optional pywebview launcher, not part of the
   Docker/API path.
-- **Capability grants are in-memory, not persisted** — they reset on restart (the
-  admin default re-seeds itself; anyone else granted a capability needs it granted
-  again). Durable storage is a natural next step once there's a UI to manage grants.
 - **Tool-calling delegation only fires through `/api/chat`** — `/api/executive/run`'s
   free-text objective planner stays plan-only on purpose (see its own doc comment):
   invoking GitHub/email actions needs structured arguments an LLM extracts from real

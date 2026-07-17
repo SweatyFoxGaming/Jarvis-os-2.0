@@ -175,7 +175,7 @@ registerTest("Cognitive 2.0", "Working memory compartment cells validation", () 
 registerTest("Executive 2.0", "Autonomous executive 5-stage pipeline validation", async () => {
   const session = new SessionState();
   const obs = ObservationPlatform.getInstance();
-  const exec = new AutonomousExecutive(obs, null); // Run in simulated mode
+  const exec = AutonomousExecutive.getInstance(obs, null); // Run in simulated mode
 
   const report = await exec.executeObjective("Deploy microservices orchestrator", session);
 
@@ -321,15 +321,15 @@ registerTest("Audit", "Pragmatic append-only audit tracking", () => {
 });
 
 // ---------- 11. Session Tests ----------
-registerTest("Session", "Per-user session isolation", () => {
-  const sessionA = getSession("test_user_a");
-  const sessionB = getSession("test_user_b");
+registerTest("Session", "Per-user session isolation", async () => {
+  const sessionA = await getSession("test_user_a");
+  const sessionB = await getSession("test_user_b");
 
   if (sessionA === sessionB) {
     throw new Error("Session: different usernames must not share a SessionState instance");
   }
 
-  const sameSessionAgain = getSession("test_user_a");
+  const sameSessionAgain = await getSession("test_user_a");
   if (sameSessionAgain !== sessionA) {
     throw new Error("Session: same username must return the same SessionState instance");
   }
@@ -359,7 +359,7 @@ registerTest("Session", "updateState synchronizes workspace and audits the trans
 });
 
 // ---------- 12. Permissions Tests ----------
-registerTest("Permissions", "Default-deny grants with admin pre-seeded", () => {
+registerTest("Permissions", "Default-deny grants with admin pre-seeded", async () => {
   if (!hasGrant("admin", "github.read")) {
     throw new Error("Permissions: admin should have github.read granted by default");
   }
@@ -367,7 +367,11 @@ registerTest("Permissions", "Default-deny grants with admin pre-seeded", () => {
     throw new Error("Permissions: a fresh username must not have any grants by default");
   }
 
-  grantCapability("brand_new_test_user", "email.send", "test-harness");
+  // No live Postgres in this test harness — grantCapability/revokeCapability
+  // still update the in-memory cache and just log a warning on the failed
+  // DB write, so this exercises the in-memory contract independent of DB
+  // availability (persistence itself is verified live, not by this suite).
+  await grantCapability("brand_new_test_user", "email.send", "test-harness");
   if (!hasGrant("brand_new_test_user", "email.send")) {
     throw new Error("Permissions: grantCapability did not take effect");
   }
@@ -375,7 +379,7 @@ registerTest("Permissions", "Default-deny grants with admin pre-seeded", () => {
     throw new Error("Permissions: listGrants did not reflect the new grant");
   }
 
-  revokeCapability("brand_new_test_user", "email.send", "test-harness");
+  await revokeCapability("brand_new_test_user", "email.send", "test-harness");
   if (hasGrant("brand_new_test_user", "email.send")) {
     throw new Error("Permissions: revokeCapability did not take effect");
   }

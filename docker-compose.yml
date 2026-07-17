@@ -24,6 +24,7 @@ services:
       - postgres
       - tts
       - llama-cpp
+      - whisper-cpp
 
   # Offline-first local inference: serves a GGUF model you already have on
   # disk over an OpenAI-compatible API, entirely inside the Docker network —
@@ -35,6 +36,19 @@ services:
     volumes:
       - ${HOST_MODEL_DIR}:/models:ro
     command: ["-m", "/models/${LOCAL_MODEL_FILE}", "--host", "0.0.0.0", "--port", "8080", "-c", "4096"]
+    restart: unless-stopped
+
+  # Offline-first speech-to-text, mirroring the llama-cpp pattern above: a
+  # real ggml model (a genuine ~142MB whisper-base.en, not a stub) is already
+  # baked into this image, so no extra host download/volume is needed the way
+  # the LLM model requires. --convert uses the image's bundled ffmpeg to
+  # accept whatever format the browser's MediaRecorder sends (webm/opus)
+  # instead of requiring pre-converted WAV.
+  whisper-cpp:
+    image: ghcr.io/ggml-org/whisper.cpp:main
+    container_name: jarvis-whisper-cpp
+    entrypoint: ["/app/build/bin/whisper-server"]
+    command: ["--host", "0.0.0.0", "--port", "8081", "-m", "/app/models/ggml-base.en.bin", "--convert"]
     restart: unless-stopped
 
   postgres:

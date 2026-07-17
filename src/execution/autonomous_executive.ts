@@ -26,12 +26,27 @@ import { SessionState } from "../cognition/session.js";
  * guessing a repo/recipient from keyword matches on a plan string.
  */
 export class AutonomousExecutive {
+  private static instance: AutonomousExecutive | null = null;
   private observation: ObservationPlatform;
   private ai: GoogleGenAI | null;
 
-  constructor(observation: ObservationPlatform, ai: GoogleGenAI | null) {
+  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null) {
     this.observation = observation;
     this.ai = ai;
+  }
+
+  // A singleton (like the other cognition engines) rather than a plain
+  // constructor so tools.ts's decompose_plan tool can reach the same
+  // instance server.ts already created at startup with the real ai client,
+  // instead of needing a circular import back into server.ts.
+  public static getInstance(observation?: ObservationPlatform, ai?: GoogleGenAI | null): AutonomousExecutive {
+    if (!this.instance) {
+      if (!observation) {
+        throw new Error("AutonomousExecutive.getInstance() called before server.ts initialized it");
+      }
+      this.instance = new AutonomousExecutive(observation, ai ?? null);
+    }
+    return this.instance;
   }
 
   public async executeObjective(objective: string, session: SessionState): Promise<any> {

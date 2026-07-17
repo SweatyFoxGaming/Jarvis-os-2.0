@@ -5,6 +5,8 @@ import * as emailIntegration from "../integrations/email.js";
 import * as tts from "../integrations/tts.js";
 import { hasGrant } from "./permissions.js";
 import { ObservationPlatform } from "../observation/index.js";
+import { AutonomousExecutive } from "./autonomous_executive.js";
+import { getSession } from "../cognition/session.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -20,6 +22,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   github_create_issue: "github.issues.create",
   send_email: "email.send",
   speak_text: "tts.speak",
+  decompose_plan: "executive.plan",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -74,6 +77,18 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["text"],
     },
   },
+  {
+    name: "decompose_plan",
+    description:
+      "Break a complex, multi-step objective down into a sequence of concrete plan steps. Use this when the user asks to plan, break down, or map out how to accomplish something non-trivial. This produces a plan only — it does not write code, execute commands, or perform any of the plan's steps itself.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        objective: { type: Type.STRING, description: "The high-level objective to decompose into steps" },
+      },
+      required: ["objective"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -107,6 +122,11 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = { synthesized: true, bytes: audio.length };
         break;
       }
+      case "decompose_plan": {
+        const session = await getSession(username);
+        output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -116,4 +136,28 @@ export async function executeTool(name: string, args: Record<string, any>, usern
     observation.logAuditEvent(username, "tool_call", "failed", `${name}(${JSON.stringify(args)}): ${err.message}`);
     return { name, ok: false, error: err.message || String(err) };
   }
+}
+
+// Keyword triggers per tool, not a single flat list — makes it obvious which
+// tool a match implies and keeps this in sync with TOOL_DECLARATIONS by
+// construction rather than a second hand-maintained list drifting from it.
+const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
+  github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
+  github_create_issue: ["github", "issue", "repo", "repository"],
+  send_email: ["email", "e-mail", "send mail", "inbox"],
+  speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
+  decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
+};
+
+/**
+ * Heuristic only — used to decide *routing* (prefer a backend that can
+ * actually fulfill the request), never to decide whether to execute a tool.
+ * Real execution always goes through Gemini's own function-calling decision
+ * plus the permission grant in executeTool(); this just avoids sending an
+ * obviously tool-shaped request to a backend (the local model) that's known
+ * to fabricate an answer instead of admitting it has no tool access.
+ */
+export function looksToolShaped(message: string): boolean {
+  const lower = message.toLowerCase();
+  return Object.values(TOOL_TRIGGER_WORDS).some(words => words.some(w => lower.includes(w)));
 }

@@ -13,14 +13,17 @@ import { LocalCognitiveEngine } from "./cognition/local_engine.js";
 import * as github from "./integrations/github.js";
 import * as emailIntegration from "./integrations/email.js";
 import * as tts from "./integrations/tts.js";
+import * as whisper from "./integrations/whisper.js";
 import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
+import * as sessionRepo from "./data/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
-import { TOOL_DECLARATIONS, executeTool } from "./execution/tools.js";
+import { TOOL_DECLARATIONS, executeTool, looksToolShaped } from "./execution/tools.js";
 import * as permissions from "./execution/permissions.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./execution/scheduler.js";
+import { reflectAndLearn } from "./cognition/reflection.js";
 
 dotenv.config();
 
@@ -111,7 +114,7 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = new AutonomousExecutive(observation, ai);
+const executive = AutonomousExecutive.getInstance(observation, ai);
 const learningEngine = LongTermLearningEngine.getInstance();
 const executiveBoard = new ExecutiveBoard();
 
@@ -373,13 +376,13 @@ app.get("/api/observation/audit", validateApiKey, (req, res) => {
   res.json(observation.getAuditLogs());
 });
 
-app.get("/api/cognition/workspace", validateApiKey, (req: any, res: any) => {
-  const session = getSession(req.username);
+app.get("/api/cognition/workspace", validateApiKey, async (req: any, res: any) => {
+  const session = await getSession(req.username);
   res.json(session.workspace.toSnapshot());
 });
 
-app.get("/api/cognition/kernel", validateApiKey, (req: any, res: any) => {
-  const session = getSession(req.username);
+app.get("/api/cognition/kernel", validateApiKey, async (req: any, res: any) => {
+  const session = await getSession(req.username);
   res.json({
     state: session.getState(),
     attention: session.attentionEngine.getCurrentAttention(),
@@ -399,7 +402,7 @@ app.post("/api/executive/run", validateApiKey, async (req: any, res: any) => {
   }
 
   try {
-    const session = getSession(req.username);
+    const session = await getSession(req.username);
     const report = await executive.executeObjective(objective, session);
     res.json(report);
   } catch (error: any) {
@@ -487,12 +490,21 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
       observation.logTelemetry("info", "Sensors", `Voice transcription completed: "${transcription}"`);
       res.json({ transcription });
     } else {
-      // Simulation/Offline mode
-      const simText = kernel.offlineMode 
-        ? "Notice: Voice input was captured, but I am operating in Offline Mode, sir."
-        : "Simulated speech transcription: Please configure your GEMINI_API_KEY to activate neural voice listening.";
-      observation.logTelemetry("warn", "Sensors", "Running transcription in simulation/offline mode.");
-      res.json({ transcription: simText });
+      // Offline-first path: a real local whisper-cpp service, matching the
+      // local-first chat pattern, instead of going straight to a canned
+      // string. Only falls back to the simulated text below if whisper-cpp
+      // itself is unreachable/not configured.
+      try {
+        const transcription = await whisper.transcribeAudio(audio, mimeType || "audio/webm");
+        observation.logTelemetry("info", "Sensors", `Offline (whisper-cpp) transcription completed: "${transcription}"`);
+        res.json({ transcription });
+      } catch (whisperErr: any) {
+        observation.logTelemetry("warn", "Sensors", `Offline transcription unavailable: ${whisperErr.message}`);
+        const simText = kernel.offlineMode
+          ? "Notice: Voice input was captured, but offline speech-to-text isn't reachable right now, sir."
+          : "Simulated speech transcription: Please configure your GEMINI_API_KEY, or ensure the whisper-cpp service is running, to activate voice listening.";
+        res.json({ transcription: simText });
+      }
     }
   } catch (error: any) {
     observation.logTelemetry("error", "Sensors", `Voice transcription failed: ${error.message}`);
@@ -512,11 +524,14 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   observation.incrementMetric("totalRequests");
 
   const kernel = MindKernel.getInstance();
-  const session = getSession(req.username);
+  const session = await getSession(req.username);
   const workspace = session.workspace;
 
   // Add message to conversation
   workspace.conversation.addMessage("user", message);
+  // Persist so a restart mid-conversation doesn't lose it — fire-and-forget,
+  // same pattern as the memory/reflection writes further down.
+  sessionRepo.appendMessage(req.username, "user", message).catch(() => {});
 
   // Update mind kernel state!
   session.updateState({
@@ -550,9 +565,21 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
     const stylePrefs = learningEngine.getStylePreferences();
     const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
 
-    const systemInstruction =
+    const baseSystemInstruction =
       "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm."
       + memoryContext + styleContext;
+
+    // The Gemini branch genuinely has tool access (declared via `tools` in
+    // its request config below), so its prompt stays as-is. The local model
+    // never gets tools wired in (see the latency/no-payoff note further
+    // down) — without this, it was observed live fabricating plausible
+    // GitHub/email answers instead of admitting it can't act, which is a
+    // trust hazard worse than no answer at all. This addendum makes the
+    // boundary explicit so it declines and points the user at online mode
+    // instead of inventing a result.
+    const systemInstruction = baseSystemInstruction;
+    const localSystemInstruction = baseSystemInstruction +
+      "\n\nImportant: you are currently running as a local, fully offline model with no access to GitHub, email, or any other external tool or live data source. If the user asks you to look something up, send something, or take an action that would require one of those, say plainly that you don't have that capability while running locally, and suggest switching to online mode (Gemini) if they'd like it done for real. Never invent a plausible-sounding result for an action you did not actually perform.";
 
     // We will decide which strategy to execute based on kernel.llmMode and kernel.offlineMode
     let success = false;
@@ -582,6 +609,24 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
         // local-first (default)
         executionChain.push("LocalLLM", "Gemini");
       }
+    }
+
+    // A tool-shaped request ("check that GitHub repo", "send an email...")
+    // sent to the local model is exactly the fabrication risk the honest
+    // local prompt above is a safety net for — but the better outcome is to
+    // not need that net at all. When Gemini is actually available and the
+    // user hasn't explicitly forced strictly-local, prefer it first so the
+    // request gets real capability instead of an honest decline.
+    if (
+      ai &&
+      kernel.llmMode !== "strictly-local" &&
+      looksToolShaped(message) &&
+      executionChain[0] === "LocalLLM" &&
+      executionChain.includes("Gemini")
+    ) {
+      const idx = executionChain.indexOf("Gemini");
+      executionChain.splice(idx, 1);
+      executionChain.unshift("Gemini");
     }
 
     // Always append simulated as final fallback
@@ -636,7 +681,7 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
               body: JSON.stringify({
                 model: kernel.localModelName,
                 messages: [
-                  { role: "system", content: systemInstruction },
+                  { role: "system", content: localSystemInstruction },
                   ...formattedMessages
                 ],
                 stream: true
@@ -801,6 +846,9 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
     }, observation);
 
     workspace.conversation.addMessage("assistant", fullReply);
+    if (fullReply) {
+      sessionRepo.appendMessage(req.username, "assistant", fullReply).catch(() => {});
+    }
 
     // Automatic learning capture (write side of "continuously learns") — every
     // real (non-simulated) exchange is remembered without a manual API call.
@@ -810,6 +858,13 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
       memoryStore
         .remember(req.username, `User asked: "${message}" — Jarvis replied: "${fullReply.slice(0, 500)}"`, ai, kernel.localLlmEndpoint)
         .catch(() => {});
+
+      // Write side of style/mistake learning — see reflection.ts. Needs
+      // Gemini specifically (structured JSON output), independent of which
+      // backend actually answered the user.
+      if (ai) {
+        reflectAndLearn(ai, message, fullReply).catch(() => {});
+      }
     }
 
     const latency = performance.now() - startTime;
@@ -912,7 +967,7 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
   try {
     let reply = "";
     const kernel = MindKernel.getInstance();
-    const session = getSession(req.username);
+    const session = await getSession(req.username);
     const localEngine = LocalCognitiveEngine.getInstance();
     if (ai && !kernel.offlineMode) {
       try {
@@ -952,7 +1007,7 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
 // Learn Endpoint
 app.post("/api/learn", validateApiKey, async (req: any, res: any) => {
   const { message } = req.body;
-  const session = getSession(req.username);
+  const session = await getSession(req.username);
   session.workspace.knowledge.addFact(`Learned from operator: ${message}`);
   observation.logTelemetry("info", "Cognition", `Dynamically learned new concept: "${message}"`);
   res.json({
@@ -1126,7 +1181,7 @@ app.get("/api/permissions", validateApiKey, (req: any, res: any) => {
   res.json({ username: req.username, grants: permissions.listGrants(req.username), available: permissions.ALL_CAPABILITIES });
 });
 
-app.post("/api/permissions/grant", validateApiKey, (req: any, res: any) => {
+app.post("/api/permissions/grant", validateApiKey, async (req: any, res: any) => {
   if (req.username !== "admin") {
     return res.status(403).json({ error: "Only admin can grant capabilities" });
   }
@@ -1137,11 +1192,11 @@ app.post("/api/permissions/grant", validateApiKey, (req: any, res: any) => {
   if (!(permissions.ALL_CAPABILITIES as readonly string[]).includes(capability)) {
     return res.status(400).json({ error: `Unknown capability "${capability}"` });
   }
-  permissions.grantCapability(username, capability, req.username);
+  await permissions.grantCapability(username, capability, req.username);
   res.json({ status: "success", username, grants: permissions.listGrants(username) });
 });
 
-app.post("/api/permissions/revoke", validateApiKey, (req: any, res: any) => {
+app.post("/api/permissions/revoke", validateApiKey, async (req: any, res: any) => {
   if (req.username !== "admin") {
     return res.status(403).json({ error: "Only admin can revoke capabilities" });
   }
@@ -1149,7 +1204,7 @@ app.post("/api/permissions/revoke", validateApiKey, (req: any, res: any) => {
   if (!username || !capability) {
     return res.status(400).json({ error: "username and capability are required" });
   }
-  permissions.revokeCapability(username, capability, req.username);
+  await permissions.revokeCapability(username, capability, req.username);
   res.json({ status: "success", username, grants: permissions.listGrants(username) });
 });
 
@@ -1275,6 +1330,11 @@ initDatabase().then(async (ready) => {
       await memoryRepo.seedMemoryRecords();
     } catch (err: any) {
       observation.logTelemetry("warn", "Database", `Failed to seed memory records: ${err.message}`);
+    }
+    try {
+      await permissions.loadGrantsFromDb();
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Database", `Failed to load capability grants: ${err.message}`);
     }
   }
   app.listen(PORT, "0.0.0.0", () => {
