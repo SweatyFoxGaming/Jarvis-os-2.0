@@ -5,11 +5,15 @@
  */
 
 import { CognitiveWorkspace } from "../src/cognition/workspace.js";
-import { SessionState } from "../src/cognition/session.js";
+import { SessionState, getSession } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/observation/index.js";
 import { AutonomousExecutive } from "../src/execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/cognition/long_term_learning.js";
 import { ExecutiveBoard } from "../src/execution/executive_board.js";
+import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/execution/permissions.js";
+import { executeTool } from "../src/execution/tools.js";
+import { embedText, remember, recall } from "../src/cognition/memory-store.js";
+import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
 
 interface TestResult {
   name: string;
@@ -313,6 +317,142 @@ registerTest("Audit", "Pragmatic append-only audit tracking", () => {
   }
   if (!logs[logs.length - 1].includes("Completed audit unit test validation")) {
     throw new Error("Audit content mismatch or missing details");
+  }
+});
+
+// ---------- 11. Session Tests ----------
+registerTest("Session", "Per-user session isolation", () => {
+  const sessionA = getSession("test_user_a");
+  const sessionB = getSession("test_user_b");
+
+  if (sessionA === sessionB) {
+    throw new Error("Session: different usernames must not share a SessionState instance");
+  }
+
+  const sameSessionAgain = getSession("test_user_a");
+  if (sameSessionAgain !== sessionA) {
+    throw new Error("Session: same username must return the same SessionState instance");
+  }
+
+  sessionA.workspace.userContext.addFact("Session A specific fact");
+  if (sessionB.workspace.userContext.loadedFacts.includes("Session A specific fact")) {
+    throw new Error("Session: workspace state leaked between sessions");
+  }
+});
+
+registerTest("Session", "updateState synchronizes workspace and audits the transition", () => {
+  const session = new SessionState();
+  const obs = ObservationPlatform.getInstance();
+  const auditCountBefore = obs.getAuditLogs().length;
+
+  session.updateState({ currentThought: "Testing", executiveStatus: "Thinking" }, obs);
+
+  if (session.getState().currentThought !== "Testing") {
+    throw new Error("Session: updateState did not update the underlying MindState");
+  }
+  if (session.workspace.thought.activeThought !== "Testing") {
+    throw new Error("Session: updateState did not synchronize the workspace");
+  }
+  if (obs.getAuditLogs().length <= auditCountBefore) {
+    throw new Error("Session: updateState did not record an audit event");
+  }
+});
+
+// ---------- 12. Permissions Tests ----------
+registerTest("Permissions", "Default-deny grants with admin pre-seeded", () => {
+  if (!hasGrant("admin", "github.read")) {
+    throw new Error("Permissions: admin should have github.read granted by default");
+  }
+  if (hasGrant("brand_new_test_user", "github.read")) {
+    throw new Error("Permissions: a fresh username must not have any grants by default");
+  }
+
+  grantCapability("brand_new_test_user", "email.send", "test-harness");
+  if (!hasGrant("brand_new_test_user", "email.send")) {
+    throw new Error("Permissions: grantCapability did not take effect");
+  }
+  if (!listGrants("brand_new_test_user").includes("email.send")) {
+    throw new Error("Permissions: listGrants did not reflect the new grant");
+  }
+
+  revokeCapability("brand_new_test_user", "email.send", "test-harness");
+  if (hasGrant("brand_new_test_user", "email.send")) {
+    throw new Error("Permissions: revokeCapability did not take effect");
+  }
+});
+
+// ---------- 13. Tools Tests (permission gating only — no live network calls) ----------
+registerTest("Tools", "executeTool denies calls without a grant", async () => {
+  const result = await executeTool("github_get_repo_or_file", { owner: "x", repo: "y" }, "ungranted_test_user");
+  if (result.ok !== false) {
+    throw new Error("Tools: executeTool should deny a call with no capability grant");
+  }
+  if (!result.error || !result.error.toLowerCase().includes("grant")) {
+    throw new Error("Tools: denial error message should mention the missing grant");
+  }
+});
+
+registerTest("Tools", "executeTool rejects unknown tool names", async () => {
+  const result = await executeTool("not_a_real_tool", {}, "admin");
+  if (result.ok !== false) {
+    throw new Error("Tools: executeTool should reject an unrecognized tool name");
+  }
+});
+
+// ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
+registerTest("Memory", "embedText returns null with no provider configured", async () => {
+  const result = await embedText("hello world", null, null);
+  if (result !== null) {
+    throw new Error("Memory: embedText should return null when no embedding provider is available");
+  }
+});
+
+registerTest("Memory", "remember/recall degrade cleanly when pgvector isn't initialized", async () => {
+  // This test process never calls initDatabase() (src/data/db.ts), so
+  // isVectorReady() is false — remember/recall must degrade gracefully
+  // rather than attempt a DB connection that doesn't exist here.
+  const stored = await remember("test_user", "a memory", null, null);
+  if (stored !== false) {
+    throw new Error("Memory: remember should return false, not throw, when pgvector isn't ready");
+  }
+  const recalled = await recall("test_user", "a memory", null, null);
+  if (!Array.isArray(recalled) || recalled.length !== 0) {
+    throw new Error("Memory: recall should return an empty array when pgvector isn't ready");
+  }
+});
+
+// ---------- 15. Scheduler Tests ----------
+registerTest("Scheduler", "Notifications: push, list, and mark read", () => {
+  const user = "scheduler_test_user";
+  pushNotification(user, "Test notification one", "info");
+  pushNotification(user, "Test notification two", "warning");
+
+  const items = getNotifications(user);
+  if (items.length !== 2) {
+    throw new Error("Scheduler: expected 2 notifications after pushing 2");
+  }
+  if (items.some(n => n.read)) {
+    throw new Error("Scheduler: freshly pushed notifications should start unread");
+  }
+
+  markAllRead(user);
+  if (getNotifications(user).some(n => !n.read)) {
+    throw new Error("Scheduler: markAllRead should mark every notification as read");
+  }
+});
+
+registerTest("Scheduler", "registerJob ticks on an interval and survives a throwing job", async () => {
+  let ticks = 0;
+  const handle = registerJob("test-tick-job", 50, () => {
+    ticks++;
+    if (ticks === 1) throw new Error("Deliberate test failure");
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 180));
+  clearInterval(handle);
+
+  if (ticks < 2) {
+    throw new Error(`Scheduler: expected registerJob to tick at least twice, got ${ticks}`);
   }
 });
 
