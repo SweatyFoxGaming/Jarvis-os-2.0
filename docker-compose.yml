@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  jarvis-os:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jarvis-os
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    env_file:
+      - .env
+    # Volumes mapping is helpful if you want code changes to reflect inside the container instantly
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
