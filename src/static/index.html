@@ -108,82 +108,27 @@
             </div>
         </div>
         
-        <!-- THE QUANTUM EYE (AI Presence Module) -->
-        <div class="flex flex-col items-center justify-center py-5 bg-surface/40 rounded-2xl border border-white/5 relative group hover:border-primary/25 transition-all duration-500">
-            <span class="absolute top-2 left-3 text-[8px] font-mono text-secondary/30 tracking-wider">LOC_Q: COGNITION_04</span>
-            <span class="absolute top-2 right-3 text-[8px] font-mono text-secondary/30 tracking-wider">SYNC_INTELLIGENCE</span>
+        <!-- OFFLINE KERNEL CAPABILITIES DECK -->
+        <div class="flex flex-col py-4 px-4 bg-surface/20 rounded-2xl border border-white/5 relative group hover:border-primary/20 transition-all duration-300 space-y-3">
+            <span class="text-[8px] font-mono text-secondary/40 tracking-wider uppercase">LOCAL_OS_DECK_INDICATORS</span>
             
-            <!-- Dynamic Eye Orb -->
-            <div class="relative w-32 h-32 flex items-center justify-center mt-2" id="quantum-eye-container">
-                <div class="absolute inset-0 rounded-full border border-primary/10 animate-[spin_30s_linear_infinite]"></div>
-                <div class="absolute inset-2 rounded-full border border-dashed border-accent/15 animate-[spin_15s_linear_infinite_reverse]"></div>
-                <div class="absolute inset-5 rounded-full bg-radial-gradient from-accent/5 to-transparent animate-pulse"></div>
-                
-                <svg class="absolute w-full h-full" viewBox="0 0 100 100">
-                    <circle cx="50" cy="50" r="44" stroke="currentColor" class="text-primary/5" stroke-width="0.5" fill="none" stroke-dasharray="2 12"/>
-                    <circle cx="50" cy="50" r="40" stroke="currentColor" class="text-accent/10" stroke-width="0.5" fill="none" stroke-dasharray="3 3"/>
-                </svg>
-                
-                <!-- Eye Pupil -->
-                <div id="quantum-eye" class="relative w-14 h-14 bg-[#050811] border border-primary/25 rounded-full flex items-center justify-center overflow-hidden transition-all duration-300 shadow-[0_0_24px_rgba(56,189,248,0.15)]">
-                    <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-60 pointer-events-none scale-110 filter brightness-110 contrast-125 saturate-50 hue-rotate-15 z-0"></video>
-                    <div class="absolute top-0 left-0 w-full h-[1px] bg-primary/45 shadow-[0_0_8px_rgba(56,189,248,0.7)] scanning-laser z-10"></div>
-                    
-                    <div id="quantum-iris" class="relative w-8 h-8 rounded-full bg-gradient-to-tr from-primary via-accent to-purple-500 p-[1.5px] flex items-center justify-center transition-transform duration-150 ease-out z-10">
-                        <div id="quantum-pupil" class="w-4 h-4 rounded-full bg-bg border border-white/20 flex items-center justify-center shadow-inner relative">
-                            <div class="w-2 h-2 rounded-full bg-primary animate-ping opacity-60"></div>
-                            <div class="absolute w-1.5 h-1.5 rounded-full bg-white shadow-lg"></div>
-                        </div>
-                    </div>
+            <div class="space-y-2 text-[10px] font-mono">
+                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
+                    <span class="text-secondary/60">OFFLINE OPERATION</span>
+                    <span class="text-success font-bold text-[9px] px-1.5 py-0.5 bg-success/5 border border-success/15 rounded">SECURE_ON</span>
                 </div>
-            </div>
-            
-            <!-- Voice Waveform -->
-            <div class="mt-4 flex flex-col items-center gap-1.5 w-full px-4">
-                <span class="text-[9px] font-mono tracking-widest text-secondary/50 uppercase">Neural Stream Spectrum</span>
-                <div class="flex items-end justify-center gap-[3px] h-6 w-full" id="voice-waveform">
-                    <div class="w-[3px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
-                    <div class="w-[3px] h-1.5 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
-                    <div class="w-[3px] h-2 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
-                    <div class="w-[3px] h-2.5 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
-                    <div class="w-[3px] h-2.5 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
-                    <div class="w-[3px] h-2 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
-                    <div class="w-[3px] h-1.5 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
-                    <div class="w-[3px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
+                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
+                    <span class="text-secondary/60">LOCAL SPEECH (STT)</span>
+                    <span class="text-accent font-bold text-[9px] px-1.5 py-0.5 bg-accent/5 border border-accent/15 rounded">LOCAL_EARS</span>
                 </div>
-            </div>
-
-            <!-- AI Presence Control Panel -->
-            <div class="mt-3.5 flex items-center justify-center gap-3 border-t border-white/5 pt-3.5 w-[90%]">
-                <!-- Camera Button -->
-                <button onclick="toggleCameraSensor()" id="btn-camera-toggle" title="Toggle Visual Sensor (Camera)" class="p-1.5 rounded bg-white/5 border border-white/10 hover:border-primary/40 text-secondary hover:text-primary transition-all duration-300">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                    </svg>
-                </button>
-                
-                <!-- Microphone Button -->
-                <button onclick="toggleMicrophoneSensor()" id="btn-mic-toggle" title="Toggle Neural Listening (STT)" class="p-1.5 rounded bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
-                    </svg>
-                    <!-- Pulse dot when active -->
-                    <span id="mic-pulse-dot" class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent animate-ping hidden"></span>
-                </button>
-                
-                <!-- Speaker Button -->
-                <button onclick="toggleVoiceSpeech()" id="btn-speech-toggle" title="Toggle Vocal Synthesis (TTS)" class="p-1.5 rounded bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 transition-all duration-300">
-                    <svg id="speech-icon-on" class="w-3.5 h-3.5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M12 18.75V5.25L7.75 9.5H4.5v5h3.25L12 18.75z" />
-                    </svg>
-                    <svg id="speech-icon-off" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
-                    </svg>
-                </button>
-            </div>
-            <div class="mt-1 text-center w-[90%] pb-2">
-                <span id="sensor-status-label" class="text-[8px] font-mono text-secondary uppercase tracking-widest">SENSORS STANDBY</span>
+                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
+                    <span class="text-secondary/60">LOCAL VOCAL (TTS)</span>
+                    <span class="text-indigo-400 font-bold text-[9px] px-1.5 py-0.5 bg-indigo-500/5 border border-indigo-500/15 rounded">LOCAL_VOICE</span>
+                </div>
+                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
+                    <span class="text-secondary/60">DESKTOP LINKPORT</span>
+                    <span class="text-primary font-bold text-[9px] px-1.5 py-0.5 bg-primary/5 border border-primary/15 rounded">PORT_3000</span>
+                </div>
             </div>
         </div>
         
@@ -283,69 +228,110 @@
         <main class="flex-1 overflow-y-auto p-8 relative z-0">
             
             <!-- ================= SUB-PANEL 1: COGNITIVE OPERATING CONSOLE ================= -->
-            <div id="view-dashboard" class="view-pane space-y-6">
-                <!-- Bento HUD Core Grid -->
-                <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                    <!-- Attention Target -->
-                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
-                        <div class="flex justify-between items-start">
-                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">COGNITIVE_ATTENTION_LOCK</span>
-                            <div class="w-2 h-2 rounded-full bg-primary animate-ping"></div>
-                        </div>
-                        <div>
-                            <p id="kernel-attention" class="text-white text-lg font-bold tracking-wide leading-tight font-sans">Idle Reflection</p>
-                            <span class="text-[9px] font-mono text-secondary/50 uppercase mt-0.5 block">ACTIVE ATTENTION SPECTRUM</span>
-                        </div>
-                    </div>
-
-                    <!-- Heartbeat Status -->
-                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
-                        <div class="flex justify-between items-start">
-                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">EXECUTIVE_HEARTBEAT_STATE</span>
-                            <svg class="w-3.5 h-3.5 text-success animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                            </svg>
-                        </div>
-                        <div>
-                            <p id="kernel-status" class="text-success text-2xl font-bold font-mono tracking-widest uppercase">IDLE</p>
-                            <span class="text-[9px] font-mono text-secondary/50 uppercase mt-0.5 block">CORE STATE MACHINE</span>
-                        </div>
-                    </div>
-
-                    <!-- Confidence Model -->
-                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
-                        <div class="flex justify-between items-start">
-                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">MULTI_AGENT_CONFIDENCE_RATIO</span>
-                            <span class="text-[9px] font-mono text-primary font-bold">ALIGNED</span>
-                        </div>
-                        <div>
-                            <div class="flex items-baseline gap-2">
-                                <p id="kernel-confidence" class="text-white text-3xl font-extrabold tracking-tight font-sans">100%</p>
-                                <span class="text-[10px] text-secondary font-mono">/100 Q</span>
+            <div id="view-dashboard" class="view-pane flex flex-col items-center justify-center min-h-[550px] relative space-y-8 py-10">
+                <!-- Big futuristic glowing frame around the centerpiece Quantum Eye -->
+                <div class="relative flex flex-col items-center justify-center p-12 bg-surface/20 border border-white/5 rounded-3xl shadow-[0_0_50px_rgba(56,189,248,0.03)] w-full max-w-xl transition-all duration-500 hover:border-primary/10">
+                    
+                    <!-- Cyber Decorative Corner Lines -->
+                    <div class="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-primary/20 rounded-tl-3xl"></div>
+                    <div class="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-primary/20 rounded-tr-3xl"></div>
+                    <div class="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-primary/20 rounded-bl-3xl"></div>
+                    <div class="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-primary/20 rounded-br-3xl"></div>
+                    
+                    <!-- Context Tags -->
+                    <span class="absolute top-4 left-5 text-[9px] font-mono text-secondary/30 tracking-widest uppercase">LOC_Q: COGNITION_04</span>
+                    <span class="absolute top-4 right-5 text-[9px] font-mono text-secondary/30 tracking-widest uppercase">JARVIS PRESENCE ENGAGED</span>
+                    
+                    <!-- Huge Dynamic Eye Orb -->
+                    <div class="relative w-64 h-64 flex items-center justify-center mt-2" id="quantum-eye-container">
+                        <!-- Rotating circles, dashed rings, gradient glows -->
+                        <div class="absolute inset-0 rounded-full border border-primary/15 animate-[spin_35s_linear_infinite]"></div>
+                        <div class="absolute inset-4 rounded-full border border-dashed border-accent/20 animate-[spin_20s_linear_infinite_reverse]"></div>
+                        <div class="absolute inset-10 rounded-full border border-primary/5 animate-[spin_12s_linear_infinite]"></div>
+                        <div class="absolute inset-8 rounded-full bg-radial-gradient from-accent/5 via-primary/5 to-transparent animate-pulse opacity-40"></div>
+                        
+                        <svg class="absolute w-full h-full" viewBox="0 0 100 100">
+                            <circle cx="50" cy="50" r="46" stroke="currentColor" class="text-primary/5" stroke-width="0.3" fill="none" stroke-dasharray="1 10"/>
+                            <circle cx="50" cy="50" r="42" stroke="currentColor" class="text-accent/10" stroke-width="0.5" fill="none" stroke-dasharray="4 4"/>
+                            <circle cx="50" cy="50" r="38" stroke="currentColor" class="text-primary/10" stroke-width="0.2" fill="none"/>
+                        </svg>
+                        
+                        <!-- Beautiful Big Eye Pupil -->
+                        <div id="quantum-eye" class="relative w-32 h-32 bg-[#04060f]/90 border border-primary/30 rounded-full flex items-center justify-center overflow-hidden transition-all duration-300 shadow-[0_0_40px_rgba(56,189,248,0.25)]">
+                            <!-- Video stream overlay -->
+                            <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-60 pointer-events-none scale-110 filter brightness-115 contrast-125 saturate-50 hue-rotate-15 z-0"></video>
+                            <!-- Laser line scan -->
+                            <div class="absolute top-0 left-0 w-full h-[1.5px] bg-primary/60 shadow-[0_0_12px_rgba(56,189,248,0.9)] scanning-laser z-10"></div>
+                            
+                            <!-- Iris with subtle grad -->
+                            <div id="quantum-iris" class="relative w-16 h-16 rounded-full bg-gradient-to-tr from-primary via-accent to-purple-500 p-[2px] flex items-center justify-center transition-transform duration-150 ease-out z-10">
+                                <div id="quantum-pupil" class="w-10 h-10 rounded-full bg-[#03050c] border border-white/10 flex items-center justify-center shadow-inner relative">
+                                    <div class="w-4 h-4 rounded-full bg-primary animate-ping opacity-60"></div>
+                                    <div class="absolute w-3 h-3 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+                                </div>
                             </div>
-                            <span class="text-[9px] font-mono text-secondary/50 uppercase mt-0.5 block">SWARM ASSERTION WEIGHT</span>
                         </div>
                     </div>
 
-                    <!-- Overarching Mission -->
-                    <div class="bg-surface/50 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden group hover:border-primary/20 transition-all duration-300">
-                        <div class="flex justify-between items-start">
-                            <span class="text-[9px] font-mono text-secondary tracking-widest uppercase">QUANTUM_MISSION_OBJECTIVE</span>
-                            <span id="goal-progress-text" class="text-xs font-mono text-success font-bold">100%</span>
+                    <!-- Voice Waveform spectrum -->
+                    <div class="flex flex-col items-center gap-2 w-full max-w-xs mt-6">
+                        <span class="text-[9px] font-mono tracking-[0.2em] text-secondary/40 uppercase">NEURAL SPECTRUM</span>
+                        <div class="flex items-end justify-center gap-[4px] h-10 w-full" id="voice-waveform">
+                            <div class="w-[4px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-2 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-4 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-6 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-8 bg-accent/60 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-6 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-4 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-2 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
+                            <div class="w-[4px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
                         </div>
-                        <div>
-                            <p id="goal-name" class="text-white text-xs font-semibold leading-relaxed line-clamp-2 uppercase">ALIGN SYSTEM WITH HUMAN PREFERENCES</p>
-                            <div class="w-full bg-white/5 h-1 rounded-full mt-2 overflow-hidden">
-                                <div id="goal-progress-bar" class="bg-success h-full rounded-full transition-all duration-500" style="width: 100%"></div>
-                            </div>
+                    </div>
+
+                    <!-- Central Sensor Status & Toggles -->
+                    <div class="flex flex-col items-center gap-4 w-full mt-6 border-t border-white/5 pt-6">
+                        <!-- Sensor Status Label -->
+                        <div class="text-center">
+                            <span id="sensor-status-label" class="text-[10px] font-mono text-secondary uppercase tracking-[0.25em]">SENSORS STANDBY</span>
+                        </div>
+
+                        <!-- Big tactile Control Buttons -->
+                        <div class="flex items-center justify-center gap-5">
+                            <!-- Camera Button -->
+                            <button onclick="toggleCameraSensor()" id="btn-camera-toggle" title="Toggle Visual Sensor (Camera)" class="p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-primary/40 text-secondary hover:text-primary hover:bg-primary/5 shadow-md transition-all duration-300">
+                                <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                </svg>
+                            </button>
+                            
+                            <!-- Microphone Button (Main STT) -->
+                            <button onclick="toggleMicrophoneSensor()" id="btn-mic-toggle" title="Toggle Neural Listening (STT)" class="p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent hover:bg-accent/5 shadow-md transition-all duration-300 relative">
+                                <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                                </svg>
+                                <!-- Pulse dot when active -->
+                                <span id="mic-pulse-dot" class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent animate-ping hidden"></span>
+                            </button>
+                            
+                            <!-- Speaker Button (TTS) -->
+                            <button onclick="toggleVoiceSpeech()" id="btn-speech-toggle" title="Toggle Vocal Synthesis (TTS)" class="p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 hover:bg-indigo-400/5 shadow-md transition-all duration-300">
+                                <svg id="speech-icon-on" class="w-4.5 h-4.5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M12 18.75V5.25L7.75 9.5H4.5v5h3.25L12 18.75z" />
+                                </svg>
+                                <svg id="speech-icon-off" class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
                 </div>
 
                 <!-- Graphical Matrix Panels -->
-                <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div id="dashboard-secondary-grid" class="grid grid-cols-1 lg:grid-cols-12 gap-6 hidden">
                     <!-- Cytoscape Map -->
-                    <div class="lg:col-span-8 bg-surface/40 border border-white/5 rounded-2xl h-[480px] flex flex-col relative overflow-hidden">
+                    <div id="dashboard-hyper-graph" class="lg:col-span-8 bg-surface/40 border border-white/5 rounded-2xl h-[480px] flex flex-col relative overflow-hidden">
                         <div class="p-4 border-b border-white/5 flex justify-between items-center z-10 glass-panel">
                             <div>
                                 <h3 class="font-bold text-xs tracking-widest uppercase">LIVING COGNITION HYPER-GRAPH</h3>
@@ -374,9 +360,9 @@
                     </div>
 
                     <!-- Core Controllers -->
-                    <div class="lg:col-span-4 flex flex-col gap-6">
+                    <div id="dashboard-controllers" class="lg:col-span-4 flex flex-col gap-6">
                         <!-- Dispatcher -->
-                        <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-[228px]">
+                        <div id="dashboard-dispatcher" class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-[228px]">
                             <div>
                                 <h3 class="font-bold text-xs tracking-widest uppercase mb-1">SOVEREIGN QUANTUM DISPATCH</h3>
                                 <p class="text-[9px] text-secondary tracking-wide mb-3">Instruct the autonomous agent cluster directly</p>
@@ -389,7 +375,7 @@
                         </div>
 
                         <!-- Thought steps -->
-                        <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[228px] overflow-hidden">
+                        <div id="dashboard-thoughts" class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[228px] overflow-hidden">
                             <h3 class="font-bold text-xs tracking-widest uppercase mb-1">COGNITIVE FLOW STEPS</h3>
                             <p class="text-[9px] text-secondary tracking-wide mb-2.5">Live state processing sequence</p>
                             
@@ -399,7 +385,7 @@
                 </div>
 
                 <!-- Debates -->
-                <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl">
+                <div id="dashboard-debates" class="bg-surface/40 border border-white/5 p-5 rounded-2xl hidden">
                     <div class="flex justify-between items-center mb-3 pb-2 border-b border-white/5">
                         <div>
                             <h3 class="font-bold text-xs tracking-widest uppercase">MULTI-AGENT DECISION DEBATE LOG</h3>
@@ -663,6 +649,7 @@
 
     // MediaRecorder & Analyzer for Robust Voice Transcription
     let mediaRecorder = null;
+    let localSpeechRecognition = null;
     let audioChunks = [];
     let audioCtx = null;
     let analyser = null;
@@ -860,7 +847,9 @@
         }
     }
 
-    // High Reliability Speech to Text utilizing Server-Side Gemini transcribing fallbacks
+    // High Reliability Speech to Text utilizing Web Speech API first (offline, instant) and Gemini backend fallbacks
+    let speechRecognitionActive = false;
+
     async function toggleMicrophoneSensor() {
         if (micEnabled) {
             await stopMicrophoneSensor();
@@ -868,6 +857,91 @@
         }
 
         addNotification("Initializing neural audio vectors...", "info");
+        
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognition) {
+            try {
+                // Initialize local speech recognition for zero-latency offline-friendly operation
+                localSpeechRecognition = new SpeechRecognition();
+                localSpeechRecognition.continuous = false;
+                localSpeechRecognition.interimResults = false;
+                localSpeechRecognition.lang = 'en-US';
+                
+                localSpeechRecognition.onstart = () => {
+                    micEnabled = true;
+                    speechRecognitionActive = true;
+                    visualizerActive = true; // drives the audio wave animation locally
+                    
+                    const pulseDot = document.getElementById('mic-pulse-dot');
+                    const btn = document.getElementById('btn-mic-toggle');
+                    if (pulseDot) pulseDot.classList.remove('hidden');
+                    if (btn) btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
+                    
+                    addNotification("Neural speech recognition active. Speak now.", "success");
+                    updateSensorStatusLabel();
+                };
+                
+                localSpeechRecognition.onresult = (event) => {
+                    const transcript = event.results[0][0].transcript;
+                    if (transcript && transcript.trim()) {
+                        addNotification(`Heard: "${transcript}"`, "success");
+                        const input = document.getElementById('chat-input') || document.getElementById('objective-input');
+                        if (input) {
+                            input.value = transcript;
+                            // Check if current view is conversation or dispatch
+                            if (CURRENT_TAB === "conversation" || (document.getElementById('view-conversation') && !document.getElementById('view-conversation').classList.contains('hidden'))) {
+                                triggerChatDialogue();
+                            } else {
+                                // Trigger autonomous dispatcher in executive console
+                                const dispatchBtn = document.getElementById('btn-trigger-autonomous');
+                                if (dispatchBtn) {
+                                    dispatchBtn.click();
+                                } else {
+                                    // Fallback if dispatch button isn't visible
+                                    triggerChatDialogue();
+                                }
+                            }
+                        }
+                    } else {
+                        addNotification("Neural microphone idle. No speech detected.", "warning");
+                    }
+                };
+                
+                localSpeechRecognition.onerror = (event) => {
+                    console.warn("Speech recognition error: ", event.error);
+                    if (event.error !== 'no-speech') {
+                        addNotification(`Local STT error (${event.error}). Falling back to backend pipeline...`, "warning");
+                        // Fall back to server-side MediaRecorder
+                        localSpeechRecognition = null;
+                        speechRecognitionActive = false;
+                        runServerSideRecorder();
+                    } else {
+                        addNotification("No speech detected. Stopped listening.", "warning");
+                        stopMicrophoneSensor();
+                    }
+                };
+                
+                localSpeechRecognition.onend = () => {
+                    speechRecognitionActive = false;
+                    // Reset UI only if we are actually stopping
+                    if (!speechRecognitionActive && micEnabled) {
+                        stopMicrophoneSensor();
+                    }
+                };
+                
+                localSpeechRecognition.start();
+                
+            } catch (e) {
+                console.warn("Local speech recognition initialization failed, falling back: ", e);
+                runServerSideRecorder();
+            }
+        } else {
+            // No native browser recognition, use robust server-side audio recorder
+            runServerSideRecorder();
+        }
+    }
+
+    async function runServerSideRecorder() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
@@ -915,10 +989,19 @@
                             const txt = result.transcription ? result.transcription.trim() : "";
                             if (txt) {
                                 addNotification(`Heard: "${txt}"`, "success");
-                                const input = document.getElementById('chat-input');
+                                const input = document.getElementById('chat-input') || document.getElementById('objective-input');
                                 if (input) {
                                     input.value = txt;
-                                    triggerChatDialogue();
+                                    if (CURRENT_TAB === "conversation" || (document.getElementById('view-conversation') && !document.getElementById('view-conversation').classList.contains('hidden'))) {
+                                        triggerChatDialogue();
+                                    } else {
+                                        const dispatchBtn = document.getElementById('btn-trigger-autonomous');
+                                        if (dispatchBtn) {
+                                            dispatchBtn.click();
+                                        } else {
+                                            triggerChatDialogue();
+                                        }
+                                    }
                                 }
                             } else {
                                 addNotification("STT completed. Silence detected.", "warning");
@@ -943,7 +1026,7 @@
             const pulseDot = document.getElementById('mic-pulse-dot');
             const btn = document.getElementById('btn-mic-toggle');
             if (pulseDot) pulseDot.classList.remove('hidden');
-            if (btn) btn.className = "p-1.5 rounded bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
+            if (btn) btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
             
             addNotification("Neural listening active. Click again to transmit.", "success");
             updateSensorStatusLabel();
@@ -957,7 +1040,15 @@
 
     async function stopMicrophoneSensor() {
         micEnabled = false;
+        visualizerActive = false;
         stopMicrophoneVisualizer();
+        
+        if (localSpeechRecognition) {
+            try {
+                localSpeechRecognition.stop();
+            } catch {}
+            localSpeechRecognition = null;
+        }
         
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             try {
@@ -968,7 +1059,7 @@
         const pulseDot = document.getElementById('mic-pulse-dot');
         const btn = document.getElementById('btn-mic-toggle');
         if (pulseDot) pulseDot.classList.add('hidden');
-        if (btn) btn.className = "p-1.5 rounded bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
+        if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
         
         addNotification("Neural listening suspended.", "warning");
         updateSensorStatusLabel();
@@ -1753,9 +1844,80 @@
         }
     }, 4000);
 
+    function syncDashboardViewConfig() {
+        const showHyperGraph = localStorage.getItem('admin_show_hyper_graph') === 'true';
+        const showDispatcher = localStorage.getItem('admin_show_dispatcher') === 'true';
+        const showThoughts = localStorage.getItem('admin_show_thoughts') === 'true';
+        const showDebates = localStorage.getItem('admin_show_debates') === 'true';
+
+        const grid = document.getElementById('dashboard-secondary-grid');
+        const hg = document.getElementById('dashboard-hyper-graph');
+        const controllers = document.getElementById('dashboard-controllers');
+        const dispatcher = document.getElementById('dashboard-dispatcher');
+        const thoughts = document.getElementById('dashboard-thoughts');
+        const debates = document.getElementById('dashboard-debates');
+
+        const anyVisible = showHyperGraph || showDispatcher || showThoughts;
+
+        if (grid) {
+            if (anyVisible) {
+                grid.classList.remove('hidden');
+            } else {
+                grid.classList.add('hidden');
+            }
+        }
+
+        if (hg) {
+            if (showHyperGraph) {
+                hg.classList.remove('hidden');
+                setTimeout(() => { if (cy) cy.resize().fit(); }, 200);
+            } else {
+                hg.classList.add('hidden');
+            }
+        }
+
+        if (controllers) {
+            if (showDispatcher || showThoughts) {
+                controllers.classList.remove('hidden');
+            } else {
+                controllers.classList.add('hidden');
+            }
+        }
+
+        if (dispatcher) {
+            if (showDispatcher) {
+                dispatcher.classList.remove('hidden');
+            } else {
+                dispatcher.classList.add('hidden');
+            }
+        }
+
+        if (thoughts) {
+            if (showThoughts) {
+                thoughts.classList.remove('hidden');
+            } else {
+                thoughts.classList.add('hidden');
+            }
+        }
+
+        if (debates) {
+            if (showDebates) {
+                debates.classList.remove('hidden');
+            } else {
+                debates.classList.add('hidden');
+            }
+        }
+    }
+
     // Initializers
     window.addEventListener('DOMContentLoaded', () => {
         initCytoscape();
+        syncDashboardViewConfig();
+        window.addEventListener('storage', (e) => {
+            if (e.key && e.key.startsWith('admin_show_')) {
+                syncDashboardViewConfig();
+            }
+        });
         switchTab('dashboard');
         loadLiveSystemData();
         loadMindKernelData();

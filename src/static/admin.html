@@ -198,21 +198,63 @@
             <!-- ================= TAB CONTENT 4: DIAGNOSTICS & CONTROLS ================= -->
             <div id="admin-view-diagnostics" class="tab-pane space-y-6 hidden">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <!-- Session Key Control -->
-                    <div class="rounded-2xl glass-panel p-6 space-y-4">
-                        <h3 class="font-bold text-sm tracking-widest uppercase border-b border-white/5 pb-2 text-white">SYSTEM KEY MANAGEMENT</h3>
-                        
-                        <div class="space-y-2">
-                            <label class="text-[9px] font-mono text-secondary tracking-wider block">CURRENT AUTHENTICATION VECTOR (X-API-KEY)</label>
-                            <div class="flex gap-2">
-                                <input type="text" id="api-key-display-input" readonly class="flex-1 bg-bg border border-white/5 rounded-xl px-4 py-2 text-xs font-mono text-white placeholder-secondary/40">
-                                <button onclick="disconnectAdminSession()" class="px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 hover:text-white font-mono text-xs uppercase font-bold rounded-xl transition-all">DISCONNECT</button>
+                    <div class="space-y-6">
+                        <!-- Session Key Control -->
+                        <div class="rounded-2xl glass-panel p-6 space-y-4">
+                            <h3 class="font-bold text-sm tracking-widest uppercase border-b border-white/5 pb-2 text-white">SYSTEM KEY MANAGEMENT</h3>
+                            
+                            <div class="space-y-2">
+                                <label class="text-[9px] font-mono text-secondary tracking-wider block">CURRENT AUTHENTICATION VECTOR (X-API-KEY)</label>
+                                <div class="flex gap-2">
+                                    <input type="text" id="api-key-display-input" readonly class="flex-1 bg-bg border border-white/5 rounded-xl px-4 py-2 text-xs font-mono text-white placeholder-secondary/40">
+                                    <button onclick="disconnectAdminSession()" class="px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 hover:text-white font-mono text-xs uppercase font-bold rounded-xl transition-all">DISCONNECT</button>
+                                </div>
+                            </div>
+
+                            <div class="pt-2">
+                                <h4 class="text-xs font-bold text-white uppercase tracking-wider mb-2">RUN LIVE SYSTEM DIAGNOSTICS</h4>
+                                <button onclick="runLocalDiagnostics()" class="w-full py-3 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">EXECUTE_HEALTH_TESTS</button>
                             </div>
                         </div>
 
-                        <div class="pt-2">
-                            <h4 class="text-xs font-bold text-white uppercase tracking-wider mb-2">RUN LIVE SYSTEM DIAGNOSTICS</h4>
-                            <button onclick="runLocalDiagnostics()" class="w-full py-3 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">EXECUTE_HEALTH_TESTS</button>
+                        <!-- Dashboard Visibility Overrides -->
+                        <div class="rounded-2xl glass-panel p-6 space-y-4">
+                            <h3 class="font-bold text-sm tracking-widest uppercase border-b border-white/5 pb-2 text-white">DASHBOARD INTERFACE MODULES</h3>
+                            <p class="text-[10px] text-secondary leading-relaxed">Toggle secondary visualization matrices on the main console viewports dynamically.</p>
+                            
+                            <div class="space-y-3 pt-2 font-mono text-xs">
+                                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                    <span class="text-secondary text-[11px]">LIVING COGNITION HYPER-GRAPH</span>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="toggle-hyper-graph" onchange="updateViewConfig('hyper_graph')" class="sr-only peer">
+                                        <div class="w-9 h-5 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary after:border-secondary after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-checked:after:bg-white peer-checked:after:border-white"></div>
+                                    </label>
+                                </div>
+
+                                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                    <span class="text-secondary text-[11px]">SOVEREIGN QUANTUM DISPATCHER</span>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="toggle-dispatcher" onchange="updateViewConfig('dispatcher')" class="sr-only peer">
+                                        <div class="w-9 h-5 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary after:border-secondary after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-checked:after:bg-white peer-checked:after:border-white"></div>
+                                    </label>
+                                </div>
+
+                                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                    <span class="text-secondary text-[11px]">COGNITIVE FLOW STEPS</span>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="toggle-thoughts" onchange="updateViewConfig('thoughts')" class="sr-only peer">
+                                        <div class="w-9 h-5 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary after:border-secondary after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-checked:after:bg-white peer-checked:after:border-white"></div>
+                                    </label>
+                                </div>
+
+                                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
+                                    <span class="text-secondary text-[11px]">MULTI-AGENT DEBATE LOG</span>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="toggle-debates" onchange="updateViewConfig('debates')" class="sr-only peer">
+                                        <div class="w-9 h-5 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary after:border-secondary after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-checked:after:bg-white peer-checked:after:border-white"></div>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -295,6 +337,7 @@
             document.getElementById('api-key-display-input').value = apiKey;
             
             showMessage('Secure administrative session initiated.', 'success');
+            loadViewConfig();
             switchAdminTab(CURRENT_ADMIN_TAB);
             
             // Start sync intervals
@@ -500,6 +543,20 @@
                 outPane.textContent += `\n!!! DIAGNOSTIC EXCEPTION OCCURRED: ${err.message}`;
                 showMessage('Diagnostics sweep exception: ' + err.message, 'danger');
             }
+        }
+
+        // View config toggling
+        function loadViewConfig() {
+            document.getElementById('toggle-hyper-graph').checked = localStorage.getItem('admin_show_hyper_graph') === 'true';
+            document.getElementById('toggle-dispatcher').checked = localStorage.getItem('admin_show_dispatcher') === 'true';
+            document.getElementById('toggle-thoughts').checked = localStorage.getItem('admin_show_thoughts') === 'true';
+            document.getElementById('toggle-debates').checked = localStorage.getItem('admin_show_debates') === 'true';
+        }
+
+        function updateViewConfig(key) {
+            const isChecked = document.getElementById(`toggle-${key.replace('_', '-')}`).checked;
+            localStorage.setItem(`admin_show_${key}`, isChecked ? 'true' : 'false');
+            showMessage(`Dashboard viewport module config updated.`, 'info');
         }
 
         // Check if session storage key already exists
