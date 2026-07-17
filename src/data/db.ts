@@ -47,6 +47,15 @@ async function createSchema(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS capability_grants (
+      username TEXT NOT NULL,
+      capability TEXT NOT NULL,
+      granted_by TEXT NOT NULL,
+      granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (username, capability)
+    );
+  `);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a

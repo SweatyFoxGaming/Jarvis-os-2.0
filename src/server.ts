@@ -1156,7 +1156,7 @@ app.get("/api/permissions", validateApiKey, (req: any, res: any) => {
   res.json({ username: req.username, grants: permissions.listGrants(req.username), available: permissions.ALL_CAPABILITIES });
 });
 
-app.post("/api/permissions/grant", validateApiKey, (req: any, res: any) => {
+app.post("/api/permissions/grant", validateApiKey, async (req: any, res: any) => {
   if (req.username !== "admin") {
     return res.status(403).json({ error: "Only admin can grant capabilities" });
   }
@@ -1167,11 +1167,11 @@ app.post("/api/permissions/grant", validateApiKey, (req: any, res: any) => {
   if (!(permissions.ALL_CAPABILITIES as readonly string[]).includes(capability)) {
     return res.status(400).json({ error: `Unknown capability "${capability}"` });
   }
-  permissions.grantCapability(username, capability, req.username);
+  await permissions.grantCapability(username, capability, req.username);
   res.json({ status: "success", username, grants: permissions.listGrants(username) });
 });
 
-app.post("/api/permissions/revoke", validateApiKey, (req: any, res: any) => {
+app.post("/api/permissions/revoke", validateApiKey, async (req: any, res: any) => {
   if (req.username !== "admin") {
     return res.status(403).json({ error: "Only admin can revoke capabilities" });
   }
@@ -1179,7 +1179,7 @@ app.post("/api/permissions/revoke", validateApiKey, (req: any, res: any) => {
   if (!username || !capability) {
     return res.status(400).json({ error: "username and capability are required" });
   }
-  permissions.revokeCapability(username, capability, req.username);
+  await permissions.revokeCapability(username, capability, req.username);
   res.json({ status: "success", username, grants: permissions.listGrants(username) });
 });
 
@@ -1305,6 +1305,11 @@ initDatabase().then(async (ready) => {
       await memoryRepo.seedMemoryRecords();
     } catch (err: any) {
       observation.logTelemetry("warn", "Database", `Failed to seed memory records: ${err.message}`);
+    }
+    try {
+      await permissions.loadGrantsFromDb();
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Database", `Failed to load capability grants: ${err.message}`);
     }
   }
   app.listen(PORT, "0.0.0.0", () => {

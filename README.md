@@ -147,9 +147,6 @@ None of this is a security issue — it's worth knowing before you rely on it:
   are unused fragments from a prior design and are not imported by anything that
   runs. `src/desktop/` is a separate, optional pywebview launcher, not part of the
   Docker/API path.
-- **Capability grants are in-memory, not persisted** — they reset on restart (the
-  admin default re-seeds itself; anyone else granted a capability needs it granted
-  again). Durable storage is a natural next step once there's a UI to manage grants.
 - **Tool-calling delegation only fires through `/api/chat`** — `/api/executive/run`'s
   free-text objective planner stays plan-only on purpose (see its own doc comment):
   invoking GitHub/email actions needs structured arguments an LLM extracts from real
