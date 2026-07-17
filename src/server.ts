@@ -16,6 +16,7 @@ import * as tts from "./integrations/tts.js";
 import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
+import * as sessionRepo from "./data/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
 import { TOOL_DECLARATIONS, executeTool, looksToolShaped } from "./execution/tools.js";
 import * as permissions from "./execution/permissions.js";
@@ -374,13 +375,13 @@ app.get("/api/observation/audit", validateApiKey, (req, res) => {
   res.json(observation.getAuditLogs());
 });
 
-app.get("/api/cognition/workspace", validateApiKey, (req: any, res: any) => {
-  const session = getSession(req.username);
+app.get("/api/cognition/workspace", validateApiKey, async (req: any, res: any) => {
+  const session = await getSession(req.username);
   res.json(session.workspace.toSnapshot());
 });
 
-app.get("/api/cognition/kernel", validateApiKey, (req: any, res: any) => {
-  const session = getSession(req.username);
+app.get("/api/cognition/kernel", validateApiKey, async (req: any, res: any) => {
+  const session = await getSession(req.username);
   res.json({
     state: session.getState(),
     attention: session.attentionEngine.getCurrentAttention(),
@@ -400,7 +401,7 @@ app.post("/api/executive/run", validateApiKey, async (req: any, res: any) => {
   }
 
   try {
-    const session = getSession(req.username);
+    const session = await getSession(req.username);
     const report = await executive.executeObjective(objective, session);
     res.json(report);
   } catch (error: any) {
@@ -513,11 +514,14 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   observation.incrementMetric("totalRequests");
 
   const kernel = MindKernel.getInstance();
-  const session = getSession(req.username);
+  const session = await getSession(req.username);
   const workspace = session.workspace;
 
   // Add message to conversation
   workspace.conversation.addMessage("user", message);
+  // Persist so a restart mid-conversation doesn't lose it — fire-and-forget,
+  // same pattern as the memory/reflection writes further down.
+  sessionRepo.appendMessage(req.username, "user", message).catch(() => {});
 
   // Update mind kernel state!
   session.updateState({
@@ -832,6 +836,9 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
     }, observation);
 
     workspace.conversation.addMessage("assistant", fullReply);
+    if (fullReply) {
+      sessionRepo.appendMessage(req.username, "assistant", fullReply).catch(() => {});
+    }
 
     // Automatic learning capture (write side of "continuously learns") — every
     // real (non-simulated) exchange is remembered without a manual API call.
@@ -950,7 +957,7 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
   try {
     let reply = "";
     const kernel = MindKernel.getInstance();
-    const session = getSession(req.username);
+    const session = await getSession(req.username);
     const localEngine = LocalCognitiveEngine.getInstance();
     if (ai && !kernel.offlineMode) {
       try {
@@ -990,7 +997,7 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
 // Learn Endpoint
 app.post("/api/learn", validateApiKey, async (req: any, res: any) => {
   const { message } = req.body;
-  const session = getSession(req.username);
+  const session = await getSession(req.username);
   session.workspace.knowledge.addFact(`Learned from operator: ${message}`);
   observation.logTelemetry("info", "Cognition", `Dynamically learned new concept: "${message}"`);
   res.json({

@@ -321,15 +321,15 @@ registerTest("Audit", "Pragmatic append-only audit tracking", () => {
 });
 
 // ---------- 11. Session Tests ----------
-registerTest("Session", "Per-user session isolation", () => {
-  const sessionA = getSession("test_user_a");
-  const sessionB = getSession("test_user_b");
+registerTest("Session", "Per-user session isolation", async () => {
+  const sessionA = await getSession("test_user_a");
+  const sessionB = await getSession("test_user_b");
 
   if (sessionA === sessionB) {
     throw new Error("Session: different usernames must not share a SessionState instance");
   }
 
-  const sameSessionAgain = getSession("test_user_a");
+  const sameSessionAgain = await getSession("test_user_a");
   if (sameSessionAgain !== sessionA) {
     throw new Error("Session: same username must return the same SessionState instance");
   }

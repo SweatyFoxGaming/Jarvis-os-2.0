@@ -7,6 +7,9 @@ import { InternalDialogue } from "./kernel/dialogue.js";
 import { SynchronizationEngine } from "./kernel/synchronization.js";
 import { CognitiveWorkspace } from "./workspace.js";
 import { ObservationPlatform } from "../observation/index.js";
+import * as sessionRepo from "../data/session-repo.js";
+
+const observation = ObservationPlatform.getInstance();
 
 /**
  * Per-user working state: the "what is Jarvis thinking about right now, for
@@ -61,17 +64,29 @@ export class SessionState {
   }
 }
 
-// A container restart clears these (same tradeoff as the old in-memory
-// kernel state) — conversational working memory, not the durable long-term
-// learning/memory data, which is persisted separately.
+// A restart still clears the "live" compartments (currentThought, plan,
+// attention target, etc.) — those are a per-turn narration of what Jarvis is
+// doing right now, not information a user would notice or want restored.
+// Conversation history is different: losing it mid-conversation because the
+// process happened to restart is a real, noticeable regression, so it's the
+// one piece of session state persisted to Postgres and rehydrated below.
 const SESSION_IDLE_TTL_MS = 1000 * 60 * 60 * 4; // 4 hours
 const sessions = new Map<string, SessionState>();
 
-export function getSession(username: string): SessionState {
+export async function getSession(username: string): Promise<SessionState> {
   let session = sessions.get(username);
   if (!session) {
     session = new SessionState();
     sessions.set(username, session);
+    try {
+      const history = await sessionRepo.loadRecentHistory(username);
+      if (history.length > 0) {
+        session.workspace.userContext.history = history;
+        observation.logTelemetry("info", "Session", `Rehydrated ${history.length} conversation message(s) for "${username}" from Postgres.`);
+      }
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Session", `Conversation history rehydration failed for "${username}": ${err.message}`);
+    }
   }
   session.lastActiveAt = Date.now();
   return session;

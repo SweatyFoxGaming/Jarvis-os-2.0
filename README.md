@@ -91,7 +91,11 @@ relying on anything not listed in "What's implemented."
   bug, just the tradeoff of offline-first, CPU-only local inference.
 - **Sessions**: conversational state (current thought, attention, dialogue) is scoped
   per authenticated user — two people talking to Jarvis at once no longer interleave
-  into the same state (`src/cognition/session.ts`).
+  into the same state (`src/cognition/session.ts`). Conversation history specifically
+  is persisted to Postgres and rehydrated on first access after a restart — the
+  "live" cognitive state (current thought, active plan step) is not, since it's a
+  per-turn narration of what's happening right now, not something a restart should
+  pretend to remember.
 - **Real delegation**: when Gemini is configured, chat supports function-calling
   against real capabilities (GitHub, email, TTS) — the model extracts structured
   arguments from the conversation and the server executes them for real, gated by a
