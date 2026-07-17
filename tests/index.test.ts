@@ -175,7 +175,7 @@ registerTest("Cognitive 2.0", "Working memory compartment cells validation", () 
 registerTest("Executive 2.0", "Autonomous executive 5-stage pipeline validation", async () => {
   const session = new SessionState();
   const obs = ObservationPlatform.getInstance();
-  const exec = new AutonomousExecutive(obs, null); // Run in simulated mode
+  const exec = AutonomousExecutive.getInstance(obs, null); // Run in simulated mode
 
   const report = await exec.executeObjective("Deploy microservices orchestrator", session);
 

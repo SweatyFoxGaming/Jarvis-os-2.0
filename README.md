@@ -105,12 +105,18 @@ relying on anything not listed in "What's implemented."
   per-turn narration of what's happening right now, not something a restart should
   pretend to remember.
 - **Real delegation**: when Gemini is configured, chat supports function-calling
-  against real capabilities (GitHub, email, TTS) — the model extracts structured
-  arguments from the conversation and the server executes them for real, gated by a
-  default-deny permission grant system (`GET/POST /api/permissions*`). Local models
-  are not attempted for tool-calling: live-tested against a real local model, a
-  tool-enabled request took over two minutes and the model ignored the tools
-  entirely — a pure latency cost with no payoff for this class of model.
+  against real capabilities (GitHub, email, TTS, and objective planning) — the
+  model extracts structured arguments from the conversation and the server
+  executes them for real, gated by a default-deny permission grant system
+  (`GET/POST /api/permissions*`). Local models are not attempted for
+  tool-calling: live-tested against a real local model, a tool-enabled request
+  took over two minutes and the model ignored the tools entirely — a pure
+  latency cost with no payoff for this class of model. Objective planning
+  (`/api/executive/run`'s decomposition logic) is reachable as a `decompose_plan`
+  tool too, so a plain chat request like "make me a step-by-step plan for X"
+  triggers it directly — live-verified Gemini's own function-calling correctly
+  chose this tool and extracted the objective from a natural sentence, not just
+  a hand-written test calling it directly.
 - **Semantic memory**: every real (non-simulated) chat turn is embedded and stored in
   Postgres/pgvector, then retrieved by similarity on future turns — requires an
   embedding provider to actually be reachable (Gemini, or a local model server with

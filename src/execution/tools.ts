@@ -5,6 +5,8 @@ import * as emailIntegration from "../integrations/email.js";
 import * as tts from "../integrations/tts.js";
 import { hasGrant } from "./permissions.js";
 import { ObservationPlatform } from "../observation/index.js";
+import { AutonomousExecutive } from "./autonomous_executive.js";
+import { getSession } from "../cognition/session.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -20,6 +22,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   github_create_issue: "github.issues.create",
   send_email: "email.send",
   speak_text: "tts.speak",
+  decompose_plan: "executive.plan",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -74,6 +77,18 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["text"],
     },
   },
+  {
+    name: "decompose_plan",
+    description:
+      "Break a complex, multi-step objective down into a sequence of concrete plan steps. Use this when the user asks to plan, break down, or map out how to accomplish something non-trivial. This produces a plan only — it does not write code, execute commands, or perform any of the plan's steps itself.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        objective: { type: Type.STRING, description: "The high-level objective to decompose into steps" },
+      },
+      required: ["objective"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -107,6 +122,11 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = { synthesized: true, bytes: audio.length };
         break;
       }
+      case "decompose_plan": {
+        const session = await getSession(username);
+        output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -126,6 +146,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   github_create_issue: ["github", "issue", "repo", "repository"],
   send_email: ["email", "e-mail", "send mail", "inbox"],
   speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
+  decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
 };
 
 /**

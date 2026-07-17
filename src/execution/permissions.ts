@@ -22,6 +22,7 @@ export const ALL_CAPABILITIES = [
   "email.send",
   "email.read",
   "tts.speak",
+  "executive.plan",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
@@ -36,9 +37,13 @@ grants.set("admin", new Set(ALL_CAPABILITIES));
 
 /**
  * Rehydrates the in-memory grant cache from Postgres. Call once after
- * initDatabase() succeeds. On a fresh database (no rows yet), seeds the
- * admin's default grants into Postgres so they're stable across restarts
- * instead of being silently re-derived from ALL_CAPABILITIES every time.
+ * initDatabase() succeeds. Seeds the admin's default grants into Postgres so
+ * they're stable across restarts (an operator could later revoke one)
+ * instead of being silently re-derived from ALL_CAPABILITIES every time —
+ * but also backfills any capability ALL_CAPABILITIES gained since this
+ * deployment's table was first created (e.g. a new tool added in a later
+ * release), so admin isn't left missing it just because the table already
+ * had rows from before that tool existed.
  */
 export async function loadGrantsFromDb(): Promise<void> {
   const db = getPool();
@@ -46,24 +51,26 @@ export async function loadGrantsFromDb(): Promise<void> {
     `SELECT username, capability FROM capability_grants;`
   );
 
-  if (rows.length === 0) {
-    // Fresh install: persist the admin bootstrap grants so they're the
-    // actual source of truth from here on (an operator could revoke one).
-    for (const capability of ALL_CAPABILITIES) {
-      await db.query(
-        `INSERT INTO capability_grants (username, capability, granted_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`,
-        ["admin", capability, "system"]
-      );
-    }
-    observation.logTelemetry("info", "Permissions", "Fresh capability_grants table — seeded admin defaults.");
-    return;
-  }
-
   grants.clear();
   for (const row of rows) {
     if (!grants.has(row.username)) grants.set(row.username, new Set());
     grants.get(row.username)!.add(row.capability);
   }
+
+  const adminGrants = grants.get("admin") ?? new Set<string>();
+  const missing = ALL_CAPABILITIES.filter(c => !adminGrants.has(c));
+  if (missing.length > 0) {
+    for (const capability of missing) {
+      await db.query(
+        `INSERT INTO capability_grants (username, capability, granted_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`,
+        ["admin", capability, "system"]
+      );
+      adminGrants.add(capability);
+    }
+    grants.set("admin", adminGrants);
+    observation.logTelemetry("info", "Permissions", `Backfilled admin grant(s) for: ${missing.join(", ")}.`);
+  }
+
   observation.logTelemetry("info", "Permissions", `Loaded ${rows.length} persisted capability grant(s) from Postgres.`);
 }
 
