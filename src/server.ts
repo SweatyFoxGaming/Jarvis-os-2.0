@@ -214,6 +214,97 @@ app.post("/api/settings/offline", validateApiKey, (req: any, res: any) => {
   res.json({ status: "success", offline: kernel.offlineMode });
 });
 
+app.get("/api/settings", validateApiKey, (req: any, res: any) => {
+  const kernel = MindKernel.getInstance();
+  res.json({
+    offline: kernel.offlineMode,
+    localLlmEndpoint: kernel.localLlmEndpoint,
+    localModelName: kernel.localModelName,
+    localApiKey: kernel.localApiKey,
+    llmMode: kernel.llmMode
+  });
+});
+
+app.post("/api/settings", validateApiKey, (req: any, res: any) => {
+  const { offline, localLlmEndpoint, localModelName, localApiKey, llmMode } = req.body;
+  const kernel = MindKernel.getInstance();
+  
+  if (offline !== undefined) kernel.offlineMode = !!offline;
+  if (localLlmEndpoint !== undefined) kernel.localLlmEndpoint = localLlmEndpoint;
+  if (localModelName !== undefined) kernel.localModelName = localModelName;
+  if (localApiKey !== undefined) kernel.localApiKey = localApiKey;
+  if (llmMode !== undefined) kernel.llmMode = llmMode;
+  
+  observation.logTelemetry(
+    "info", 
+    "System", 
+    `System settings updated: offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}`
+  );
+  
+  res.json({
+    status: "success",
+    offline: kernel.offlineMode,
+    localLlmEndpoint: kernel.localLlmEndpoint,
+    localModelName: kernel.localModelName,
+    localApiKey: kernel.localApiKey,
+    llmMode: kernel.llmMode
+  });
+});
+
+app.post("/api/settings/test-local-llm", validateApiKey, async (req: any, res: any) => {
+  const { endpoint, model, apiKey } = req.body;
+  if (!endpoint) {
+    return res.status(400).json({ success: false, message: "Missing endpoint URL" });
+  }
+
+  observation.logTelemetry("info", "Diagnostics", `Testing local LLM connection: endpoint=${endpoint}, model=${model}`);
+
+  let targetUrl = endpoint;
+  if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/generate') && !targetUrl.endsWith('/api/chat')) {
+    if (targetUrl.endsWith('/v1') || targetUrl.endsWith('/v1/')) {
+      targetUrl = targetUrl.replace(/\/$/, '') + '/chat/completions';
+    } else {
+      targetUrl = targetUrl.replace(/\/$/, '') + '/v1/chat/completions';
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s timeout
+
+    const response = await fetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "Authorization": `Bearer ${apiKey}` } : {})
+      },
+      body: JSON.stringify({
+        model: model || "llama3",
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      return res.json({ success: true, status: response.status });
+    } else {
+      const text = await response.text();
+      return res.json({ 
+        success: false, 
+        message: `HTTP Status ${response.status}: ${text.substring(0, 100) || "Empty response body"}` 
+      });
+    }
+  } catch (err: any) {
+    return res.json({ 
+      success: false, 
+      message: `Connection failed: ${err.message || err}. Make sure Ollama/LM Studio is running and port is correct.` 
+    });
+  }
+});
+
 // ---------- Pass 5, 6 & 7: Observation Platform Exposes API ----------
 
 app.get("/api/observation/metrics", validateApiKey, (req, res) => {
@@ -393,62 +484,199 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 
   try {
     const localEngine = LocalCognitiveEngine.getInstance();
-    if (ai && !kernel.offlineMode) {
-      observation.incrementMetric("geminiApiCalls");
-      kernel.updateState({
-        currentThought: "Executing Research",
-        executiveStatus: "Executing",
-        activeCapability: "Gemini LLM Generation"
-      }, workspace, observation);
-
-      let responseStream;
-      const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
-      let lastStreamError = null;
-
-      for (const modelName of chatModels) {
-        try {
-          observation.logTelemetry("info", "Cognition", `Attempting chat stream with model: ${modelName}`);
-          responseStream = await ai.models.generateContentStream({
-            model: modelName,
-            contents: message,
-            config: {
-              systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm.",
-            }
-          });
-          break; // successfully initialized the stream
-        } catch (err: any) {
-          lastStreamError = err;
-          observation.logTelemetry("warn", "Cognition", `Model ${modelName} stream initiation failed. Error: ${err.message || err}`);
-        }
-      }
-
-      if (responseStream) {
-        for await (const chunk of responseStream) {
-          if (chunk.text) {
-            fullReply += chunk.text;
-            res.write(`data: ${chunk.text}\n\n`);
-          }
-        }
+    
+    // We will decide which strategy to execute based on kernel.llmMode and kernel.offlineMode
+    let success = false;
+    
+    // 1. Determine execution order based on mode & offline state
+    const executionChain: string[] = [];
+    
+    if (kernel.offlineMode) {
+      if (kernel.llmMode === "strictly-online") {
+        executionChain.push("Gemini");
+      } else if (kernel.llmMode === "strictly-local") {
+        executionChain.push("LocalLLM");
+      } else if (kernel.llmMode === "online-first") {
+        executionChain.push("LocalLLM");
       } else {
-        observation.logTelemetry("warn", "Cognition", "All online models failed. Transitioning to Local Cognitive Simulator.");
-        throw lastStreamError || new Error("All stream models failed");
+        // default local-first
+        executionChain.push("LocalLLM");
       }
     } else {
-      // Offline Local Cognitive Simulator mode
-      kernel.updateState({
-        currentThought: "Executing Research",
-        executiveStatus: "Executing",
-        activeCapability: "Local Cognitive Simulator"
-      }, workspace, observation);
+      if (kernel.llmMode === "strictly-online") {
+        executionChain.push("Gemini");
+      } else if (kernel.llmMode === "strictly-local") {
+        executionChain.push("LocalLLM");
+      } else if (kernel.llmMode === "online-first") {
+        executionChain.push("Gemini", "LocalLLM");
+      } else {
+        // local-first (default)
+        executionChain.push("LocalLLM", "Gemini");
+      }
+    }
+    
+    // Always append simulated as final fallback
+    executionChain.push("Simulated");
 
-      const stats = observation.getMetrics();
-      const simulatedResponse = localEngine.generateResponse(message, workspace, stats.system);
+    // Execute the chain
+    for (const step of executionChain) {
+      if (success) break;
       
-      const words = simulatedResponse.split(" ");
-      for (const word of words) {
-        fullReply += word + " ";
-        res.write(`data: ${word} \n\n`);
-        await new Promise((resolve) => setTimeout(resolve, 40));
+      if (step === "LocalLLM") {
+        try {
+          observation.logTelemetry("info", "Cognition", `Attempting Local LLM generation: endpoint=${kernel.localLlmEndpoint}, model=${kernel.localModelName}`);
+          kernel.updateState({
+            currentThought: "Querying Local LLM",
+            executiveStatus: "Executing",
+            activeCapability: `Local LLM (${kernel.localModelName})`
+          }, workspace, observation);
+          
+          let targetUrl = kernel.localLlmEndpoint;
+          if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/generate') && !targetUrl.endsWith('/api/chat')) {
+            if (targetUrl.endsWith('/v1') || targetUrl.endsWith('/v1/')) {
+              targetUrl = targetUrl.replace(/\/$/, '') + '/chat/completions';
+            } else {
+              targetUrl = targetUrl.replace(/\/$/, '') + '/v1/chat/completions';
+            }
+          }
+          
+          const formattedMessages = workspace.userContext.history.map(msg => ({
+            role: msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : 'user'),
+            content: msg.content
+          }));
+          
+          const response = await fetch(targetUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(kernel.localApiKey ? { "Authorization": `Bearer ${kernel.localApiKey}` } : {})
+            },
+            body: JSON.stringify({
+              model: kernel.localModelName,
+              messages: [
+                {
+                  role: "system",
+                  content: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth."
+                },
+                ...formattedMessages
+              ],
+              stream: true
+            }),
+            signal: AbortSignal.timeout(10000)
+          });
+          
+          if (!response.ok) {
+            throw new Error(`Local LLM returned status: ${response.status}`);
+          }
+          
+          const decoder = new TextDecoder("utf-8");
+          let buffer = "";
+          
+          for await (const chunk of response.body as any) {
+            buffer += decoder.decode(chunk, { stream: true });
+            let lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            
+            for (const line of lines) {
+              let trimmed = line.trim();
+              if (!trimmed) continue;
+              
+              if (trimmed.startsWith("data: ")) {
+                trimmed = trimmed.slice(6).trim();
+              }
+              if (trimmed === "[DONE]") continue;
+              
+              try {
+                const parsed = JSON.parse(trimmed);
+                let text = parsed.choices?.[0]?.delta?.content || "";
+                if (!text && parsed.message?.content) {
+                  text = parsed.message.content;
+                }
+                if (!text && parsed.response) {
+                  text = parsed.response;
+                }
+                if (text) {
+                  fullReply += text;
+                  res.write(`data: ${text}\n\n`);
+                }
+              } catch (err) {
+                // partial line
+              }
+            }
+          }
+          
+          success = true;
+          observation.logTelemetry("info", "Cognition", "Local LLM content streaming completed successfully.");
+        } catch (err: any) {
+          observation.logTelemetry("warn", "Cognition", `Local LLM generation failed: ${err.message || err}`);
+        }
+      }
+      
+      else if (step === "Gemini") {
+        if (ai) {
+          try {
+            observation.incrementMetric("geminiApiCalls");
+            kernel.updateState({
+              currentThought: "Querying Gemini AI",
+              executiveStatus: "Executing",
+              activeCapability: "Gemini LLM Generation"
+            }, workspace, observation);
+            
+            let responseStream;
+            const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+            let lastStreamError = null;
+            
+            for (const modelName of chatModels) {
+              try {
+                observation.logTelemetry("info", "Cognition", `Attempting chat stream with model: ${modelName}`);
+                responseStream = await ai.models.generateContentStream({
+                  model: modelName,
+                  contents: message,
+                  config: {
+                    systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm.",
+                  }
+                });
+                break;
+              } catch (err: any) {
+                lastStreamError = err;
+                observation.logTelemetry("warn", "Cognition", `Model ${modelName} stream initiation failed. Error: ${err.message || err}`);
+              }
+            }
+            
+            if (responseStream) {
+              for await (const chunk of responseStream) {
+                if (chunk.text) {
+                  fullReply += chunk.text;
+                  res.write(`data: ${chunk.text}\n\n`);
+                }
+              }
+              success = true;
+            } else {
+              throw lastStreamError || new Error("All stream models failed");
+            }
+          } catch (err: any) {
+            observation.logTelemetry("warn", "Cognition", `Gemini generation failed: ${err.message || err}`);
+          }
+        }
+      }
+      
+      else if (step === "Simulated") {
+        kernel.updateState({
+          currentThought: "Running Local Simulation",
+          executiveStatus: "Executing",
+          activeCapability: "Local Cognitive Simulator"
+        }, workspace, observation);
+        
+        const stats = observation.getMetrics();
+        const simulatedResponse = localEngine.generateResponse(message, workspace, stats.system);
+        
+        const words = simulatedResponse.split(" ");
+        for (const word of words) {
+          fullReply += word + " ";
+          res.write(`data: ${word} \n\n`);
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        success = true;
       }
     }
 

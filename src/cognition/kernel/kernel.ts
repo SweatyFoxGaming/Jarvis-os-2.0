@@ -19,6 +19,10 @@ export class MindKernel {
   public dialogue = new InternalDialogue();
   public synchronizer = new SynchronizationEngine();
   public offlineMode = false;
+  public localLlmEndpoint = "http://localhost:11434";
+  public localModelName = "llama3";
+  public localApiKey = "";
+  public llmMode = "local-first";
 
   private constructor() {}
 

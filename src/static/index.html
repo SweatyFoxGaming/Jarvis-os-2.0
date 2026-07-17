@@ -182,6 +182,14 @@
                 </svg>
                 <span class="text-xs font-mono tracking-wider font-semibold">LEARNING</span>
             </button>
+
+            <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4 text-pink-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <circle cx="12" cy="12" r="3" stroke-width="1.5" />
+                </svg>
+                <span class="text-xs font-mono tracking-wider font-semibold">SETTINGS</span>
+            </button>
         </nav>
         
         <!-- Admin Link -->
@@ -550,20 +558,82 @@
                     </div>
                 </div>
             </div>
-
             <!-- ================= SUB-PANEL 7: CONFIGURATION ================= -->
             <div id="view-settings" class="view-pane hidden space-y-6">
-                <div class="max-w-xl bg-surface/50 border border-white/5 p-6 rounded-2xl space-y-4">
-                    <h3 class="font-bold text-sm tracking-widest uppercase border-b border-white/5 pb-2">SYSTEM CONFIG PANEL</h3>
-                    
-                    <div class="space-y-2">
-                        <label class="text-[10px] font-mono text-secondary tracking-wider block">X-API-KEY (JARVIS AUTH VECTOR)</label>
-                        <input type="text" id="api-key-input" placeholder="Enter key (defaults to 'admin')..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- Column 1: Core System Security and Config -->
+                    <div class="bg-surface/50 border border-white/5 p-6 rounded-3xl space-y-5 relative">
+                        <div class="absolute top-0 right-0 w-8 h-8 border-t border-r border-primary/20 rounded-tr-3xl"></div>
+                        <div class="absolute bottom-0 left-0 w-8 h-8 border-b border-l border-primary/20 rounded-bl-3xl"></div>
+                        
+                        <div class="flex justify-between items-center border-b border-white/5 pb-3">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase">SECURITY & DIAGNOSTICS</h3>
+                                <p class="text-[9px] text-secondary/50 font-mono">SYS_CORE_SECURITY_ENVELOPE</p>
+                            </div>
+                            <span class="text-[10px] font-mono text-primary bg-primary/5 px-2 py-0.5 border border-primary/10 rounded">SYSTEM</span>
+                        </div>
+                        
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-mono text-secondary tracking-wider block">X-API-KEY (JARVIS AUTH VECTOR)</label>
+                            <input type="text" id="api-key-input" placeholder="Enter key (defaults to 'admin')..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                        </div>
+
+                        <button onclick="runLocalDiagnostics()" class="w-full py-3 bg-primary/5 hover:bg-primary/10 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">RUN DIAGNOSTIC_SUITE</button>
                     </div>
 
-                    <button onclick="runLocalDiagnostics()" class="w-full py-3 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">RUN GENERAL DIAGNOSTICS</button>
+                    <!-- Column 2: Local LLM Configuration -->
+                    <div class="bg-surface/50 border border-white/5 p-6 rounded-3xl space-y-5 relative">
+                        <div class="absolute top-0 left-0 w-8 h-8 border-t border-l border-primary/20 rounded-tl-3xl"></div>
+                        <div class="absolute bottom-0 right-0 w-8 h-8 border-b border-r border-primary/20 rounded-br-3xl"></div>
+
+                        <div class="flex justify-between items-center border-b border-white/5 pb-3">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase">LOCAL LLM SYNC MATRIX</h3>
+                                <p class="text-[9px] text-secondary/50 font-mono">INTELLIGENCE_INTEGRATION_PIPELINE</p>
+                            </div>
+                            <span class="text-[10px] font-mono text-pink-400 bg-pink-400/5 px-2 py-0.5 border border-pink-400/10 rounded">COGNITIVE</span>
+                        </div>
+
+                        <div class="space-y-4">
+                            <!-- LLM mode priority selector -->
+                            <div class="space-y-2">
+                                <label class="text-[10px] font-mono text-secondary tracking-wider block">COGNITIVE ROUTING MODE</label>
+                                <select id="llm-mode-select" class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white transition-all">
+                                    <option value="local-first">Local-First (with Online Fallback)</option>
+                                    <option value="strictly-local">Strictly Local (Fully Offline-First)</option>
+                                    <option value="online-first">Online-First (with Local Fallback)</option>
+                                    <option value="strictly-online">Strictly Online (Gemini-Only)</option>
+                                </select>
+                            </div>
+
+                            <!-- LLM Endpoint input -->
+                            <div class="space-y-2">
+                                <label class="text-[10px] font-mono text-secondary tracking-wider block">LOCAL LLM API ENDPOINT</label>
+                                <input type="text" id="local-endpoint-input" placeholder="e.g. http://localhost:11434" class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                                <span class="text-[8px] font-mono text-secondary/40 block">Works with Ollama, LM Studio, vLLM, KoboldCPP & OpenAI-compatible servers.</span>
+                            </div>
+
+                            <!-- LLM Model Name input -->
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="space-y-2">
+                                    <label class="text-[10px] font-mono text-secondary tracking-wider block">MODEL NAME</label>
+                                    <input type="text" id="local-model-input" placeholder="e.g. llama3" class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                                </div>
+                                <div class="space-y-2">
+                                    <label class="text-[10px] font-mono text-secondary tracking-wider block">API KEY (OPTIONAL)</label>
+                                    <input type="password" id="local-key-input" placeholder="Bearer Token..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                                </div>
+                            </div>
+
+                            <div class="flex gap-4 pt-2">
+                                <button onclick="testLocalLlmConnection()" class="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/10 text-secondary hover:text-white font-bold tracking-widest uppercase text-[10px] rounded-xl transition-all font-mono">TEST_CONN</button>
+                                <button onclick="saveSystemSettings()" class="flex-1 py-3 bg-pink-500/10 hover:bg-pink-500/20 border border-pink-500/20 text-pink-400 hover:text-pink-300 font-bold tracking-widest uppercase text-[10px] rounded-xl transition-all font-mono">SAVE_MATRIX</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            </div>
+            </div>>
 
         </main>
     </div>
@@ -1354,6 +1424,7 @@
         if (tabId === 'workspace') refreshWorkspaceSnapshot();
         if (tabId === 'memory') loadPendingMemories();
         if (tabId === 'learning') loadLearningDashboard();
+        if (tabId === 'settings') loadSystemSettings();
     }
 
     // 6. API SYNCHRONIZATIONS
@@ -1845,6 +1916,97 @@
         } catch {}
     }
 
+    async function loadSystemSettings() {
+        const headers = { 'X-API-Key': CURRENT_API_KEY };
+        try {
+            const res = await fetch('/api/settings', { headers });
+            if (res.ok) {
+                const data = await res.json();
+                document.getElementById('api-key-input').value = CURRENT_API_KEY;
+                document.getElementById('llm-mode-select').value = data.llmMode || "local-first";
+                document.getElementById('local-endpoint-input').value = data.localLlmEndpoint || "http://localhost:11434";
+                document.getElementById('local-model-input').value = data.localModelName || "llama3";
+                document.getElementById('local-key-input').value = data.localApiKey || "";
+                updateOfflineUIState(data.offline);
+            }
+        } catch (err) {
+            console.error("Failed to load settings:", err);
+        }
+    }
+
+    async function saveSystemSettings() {
+        const apiKeyInput = document.getElementById('api-key-input').value.trim();
+        if (apiKeyInput) {
+            CURRENT_API_KEY = apiKeyInput;
+        }
+
+        const headers = { 
+            'X-API-Key': CURRENT_API_KEY,
+            'Content-Type': 'application/json'
+        };
+        const body = {
+            llmMode: document.getElementById('llm-mode-select').value,
+            localLlmEndpoint: document.getElementById('local-endpoint-input').value.trim(),
+            localModelName: document.getElementById('local-model-input').value.trim(),
+            localApiKey: document.getElementById('local-key-input').value.trim()
+        };
+
+        try {
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body)
+            });
+            if (res.ok) {
+                addNotification("Cognitive Sync Matrix updated.", "success");
+                speakText("Local first configuration updated successfully.");
+            } else {
+                addNotification("Failed to save matrix configuration.", "danger");
+            }
+        } catch (err) {
+            addNotification("Failed to transmit config update.", "danger");
+        }
+    }
+
+    async function testLocalLlmConnection() {
+        const endpoint = document.getElementById('local-endpoint-input').value.trim();
+        const model = document.getElementById('local-model-input').value.trim();
+        const apiKey = document.getElementById('local-key-input').value.trim();
+
+        if (!endpoint) {
+            addNotification("Local endpoint is required.", "warning");
+            return;
+        }
+
+        addNotification("Pinging cognitive matrix...", "primary");
+
+        const headers = { 
+            'X-API-Key': CURRENT_API_KEY,
+            'Content-Type': 'application/json'
+        };
+
+        try {
+            const res = await fetch('/api/settings/test-local-llm', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ endpoint, model, apiKey })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success) {
+                    addNotification(`Connected: model "${model}" active.`, "success");
+                    speakText("Cognitive matrix online. Model connection verified.");
+                } else {
+                    addNotification(`Probe failed: ${data.message}`, "danger");
+                }
+            } else {
+                addNotification(`HTTP error during diagnostic: ${res.statusText}`, "danger");
+            }
+        } catch (err) {
+            addNotification(`Connection error: ${err.message}`, "danger");
+        }
+    }
+
     // SIDEBAR CONTROLLERS
     let sidebarCollapsed = false;
     function toggleSidebar() {
@@ -2088,6 +2250,7 @@
         switchTab('dashboard');
         loadLiveSystemData();
         loadMindKernelData();
+        loadSystemSettings();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
     });
