@@ -1,103 +1,183 @@
-# Vision: where Jarvis OS could go from here
+# Vision
 
-A proposal, not a spec — written after a full-repo security/architecture review
-(2026-07-17) that fixed the immediate problems and found the codebase in decent
-shape underneath them: a real Express app, a real (if shallow) test suite, and
-now a real Postgres instance and working GitHub/email/TTS integrations. The
-question this doc answers: if "Jarvis" means the thing everyone actually pictures
-— a capable, proactive personal AI, not a chat window with a dashboard — what's
-the honest path from here to there?
+> **Jarvis is an Autonomous Intelligence Operating System designed to become the
+> trusted executive partner for every user.**
+>
+> Unlike traditional AI assistants that simply answer questions or execute
+> commands, Jarvis is built to understand, reason, plan, and act with purpose.
+> It continuously learns from experience, remembers what matters, coordinates
+> specialized capabilities, and makes intelligent decisions while presenting
+> itself as a single, unified intelligence.
+>
+> Our vision is to create an operating system where artificial intelligence
+> moves beyond conversation and becomes a true partner — capable of managing
+> knowledge, orchestrating complex workflows, anticipating needs, and helping
+> people achieve more with confidence and clarity.
+>
+> Every architectural decision is guided by four principles:
+>
+> - **One Intelligence** — The user interacts with a single entity: Jarvis.
+>   Internal complexity remains invisible.
+> - **Executive Thinking** — Jarvis observes, reasons, plans, delegates,
+>   executes, and learns before acting.
+> - **Continuous Learning** — Every interaction strengthens Jarvis, transforming
+>   information into lasting knowledge and better decisions.
+> - **Human-Centered Design** — Powerful intelligence delivered through a calm,
+>   intuitive, and trustworthy experience.
+>
+> Jarvis is not being built as another chatbot. It is being engineered as the
+> foundation for a new generation of autonomous intelligence — an operating
+> system that grows alongside its user and becomes an indispensable partner for
+> work, creativity, decision-making, and everyday life.
 
-## The gap between "chat" and "assistant"
+The vision statement above is the project owner's own, unedited. Everything below
+is an honest read of the current codebase (as of the 2026-07-17 security/architecture
+review and the fixes that followed it) against these four principles — where they
+hold up, where they don't yet, and what closes the gap.
 
-Right now, every feature in this app is **reactive and narrated**: you send a
-message, something plans a response (sometimes a real LLM, sometimes a template),
-and it tells you what it *would* do. Nothing acts on your behalf, nothing runs on
-its own schedule, and nothing remembers you beyond a flat list of pending records.
-That's the actual distance between what's here and "Jarvis" — not model quality,
-not UI polish. Closing it is four separate, buildable pieces of work.
+## Current state vs. the four principles
 
-## 1. Give the executive real hands — tool-calling, not narration
+**One Intelligence** — partially true, and thin under inspection. `/api/chat` is
+a single entry point with one streaming response, so at the surface it reads as
+one entity. But the internals aren't invisible: Settings exposes
+`llmMode: local-first/online-first/strictly-local/strictly-online` as something
+the *user* configures, and the Executive Board, Long-Term Learning, and Memory
+systems each have their own disconnected API surface and UI tab. Confirmed by
+reading the code: `/api/chat` never calls the executive planner, the learning
+engine, or the memory store. They're four separate features today, not
+sub-processes of one orchestrating mind.
 
-`POST /api/executive/run` currently decomposes an objective into steps and
-describes what each step *would* do (see `README.md` → "Known limitations"). The
-pieces to make it real already exist as of this pass: `src/integrations/github.ts`,
-`email.ts`, and `tts.ts` are working, callable functions. The missing piece is a
-tool-calling loop: give the LLM (Gemini already supports function calling; most
-local models via Ollama do too) a manifest of these integrations as callable
-tools, let it choose and invoke them, and feed results back in. That turns
-"[Coding Swarm — planned, not executed] Would write templates" into an assistant
-that actually opens the PR.
+**Executive Thinking** (observe → reason → plan → delegate → execute → learn) —
+2 of 6 verbs are real, 1 is real-but-disconnected, 3 don't exist yet:
+- *Observe*: real (`MindKernel`/`CognitiveWorkspace` state), scoped to
+  conversation text only — no file, calendar, or system awareness.
+- *Reason*: real when a local LLM or Gemini is configured; canned keyword-matched
+  templates otherwise (`src/cognition/local_engine.ts` — the out-of-the-box
+  default state, not a rare fallback).
+- *Plan*: real step decomposition exists (`src/execution/autonomous_executive.ts`),
+  but lives behind a separate endpoint (`/api/executive/run`) — Jarvis doesn't
+  decide mid-conversation that something needs planning.
+- *Delegate*: doesn't exist. No mechanism routes a plan step to an actual
+  capability.
+- *Execute*: doesn't exist. The "Specialist Swarm" now honestly reports
+  `"planned, not executed"` (fixed this pass — it previously claimed a
+  fabricated "Green Compile"). Nothing in the codebase writes a file, calls an
+  API, or takes an action on its own initiative.
+- *Learn, automatically*: doesn't exist. `learningEngine.optimizeWorkflow` /
+  `logMistake` / `updateStylePreference` are only ever called from the dedicated
+  `/api/learning/*` routes — never from `/api/chat`. Learning only happens if
+  something external explicitly calls those endpoints by hand.
 
-This is the single highest-leverage change in this list — everything below
-assumes an executive that can act, not just plan.
+**Continuous Learning** — the largest gap. "Every interaction strengthens
+Jarvis" implies an automatic loop; there isn't one. The memory store's only
+`INSERT` path is a one-time seed of 3 demo records — nothing turns a real
+conversation into a new memory. Learning entries now persist correctly to disk
+(fixed this pass) but nothing writes to them automatically, and nothing reads
+them back into a future response either — style preferences are stored and
+displayable, never consulted when generating one.
 
-**Guardrail that has to ship alongside it:** a permission/capability model.
-Extend the audit log (already real, already working) into a grant system —
-"Jarvis may create GitHub issues" is an explicit, revocable, logged permission,
-not an implicit consequence of setting `GITHUB_TOKEN`. Don't ship tool-calling
-without this; an executive that can act and can't be scoped is the fastest way
-to regret this list.
+**Human-Centered Design** ("confidence and clarity") — the UI itself is calm
+and polished; that part holds up. The confidence score meant to deliver
+"clarity" is fabricated: `memoryConfidence: ai ? 0.98 : 0.8, toolConfidence: 1.0`
+— fixed inputs keyed only on whether a Gemini key is configured, not a
+measurement of what actually happened in the request. Before this pass it was
+worse (claiming successful builds that never ran, described above); it's now
+honestly labeled where fixable, but a hardcoded number still isn't the real
+signal the vision calls for.
 
-## 2. Give it real memory — the database already paid for this
+**Bottom line:** the current build is closer to *a well-built chat console with
+several disconnected demo panels wearing the names of an executive AI system*
+than to the partner described above. That's not a knock on what's here — auth,
+persistence, a real multi-backend chat loop, telemetry, and working GitHub/email/TTS
+integrations are genuinely solid foundations as of this pass — it's an honest
+distance reading so the next work is aimed at the real gap: **delegation,
+execution, and an automatic learning/memory loop**, not more surface area.
 
-`docker-compose.yml` runs `pgvector/pgvector:pg16` — a vector database — and as
-of this pass, the app finally talks to it. But `src/data/memory-repo.ts` uses it
-as a plain relational table; the pending-records "memory" is a flat approve/reject
-queue, not retrieval. The natural next step: embed conversation turns and
-approved facts (via Gemini's embedding endpoint, or a local embedding model
-through Ollama), store the vectors in a `memory_embeddings` table, and have chat
-retrieve semantically relevant history before responding instead of relying on
-the fixed 50-entry in-memory buffer in `workspace.ts`. This is what turns "Jarvis
-forgets everything on restart" into "Jarvis remembers what you told it three
-weeks ago" — and the infrastructure for it is already running, unused.
+## What closes the gap, mapped to the four principles
 
-## 3. Give it a clock — proactive, not just reactive
+### 1. One Intelligence → one orchestration loop
+Replace four independent API surfaces (chat / executive / learning / memory)
+with one: `/api/chat` internally decides when to consult memory, invoke
+planning, delegate to a capability, and record what it learned — the seams
+disappear because there's one loop, not because the UI hides four of them.
+Also pull the LLM-backend choice (local/cloud/simulated) behind the curtain as
+an implementation detail rather than a setting the user manages.
 
-Everything today waits for a chat message. A scheduler (even a simple in-process
-cron via `node-cron`, or a proper job queue if this ever needs to survive
-multi-instance deployment) is what lets Jarvis check your email and summarize
-what's urgent, post a morning briefing, or watch a GitHub repo for CI failures
-without being asked. `/api/notifications` already exists as an endpoint — right
-now it's a stub returning an empty array; a scheduler is what gives it something
-real to report.
+### 2. Executive Thinking → real delegation and execution
+The single highest-leverage change: a tool-calling loop. Gemini supports
+function calling; most local models via Ollama do too. Give the LLM a manifest
+of the working integrations (`src/integrations/github.ts`, `email.ts`, `tts.ts`)
+as callable tools, let it choose and invoke them, feed results back in. That
+turns "[Coding Swarm — planned, not executed]" into an assistant that actually
+opens the PR.
 
-## 4. Give it ears — voice input is currently not implemented at all
+**Ships together with this, not after it:** a permission/capability model.
+Extend the audit log (already real) into a grant system — "Jarvis may create
+GitHub issues" is an explicit, revocable, logged permission, not an implicit
+consequence of setting `GITHUB_TOKEN`. An executive that can act and can't be
+scoped is the fastest way to lose the trust the vision is named after.
 
-TTS (speech out) is real as of this pass. Speech *in* is not: `/api/voice-input`
-returns a canned string telling you to configure `GEMINI_API_KEY` — there's no
-speech-to-text anywhere in the codebase. Whisper (local, via a small Python
-sidecar or `whisper.cpp`) or a cloud STT API closes this loop and makes the
-`/mind` voice-console UI (which already has a working conversational interface)
-actually voice-driven instead of text-only with a voice-shaped UI around it.
+### 3. Continuous Learning → close the write *and* read loop
+Two halves, both currently missing:
+- **Write**: after each `/api/chat` turn, automatically extract what's worth
+  remembering and what was learned, instead of requiring a manual API call.
+- **Read**: actually consult that stored state (style preferences, past
+  mistakes, prior workflows) when generating the *next* response. Recording
+  without reading isn't learning, it's logging.
 
-## Prerequisite fix: sessions
+Real memory belongs here too: `docker-compose.yml` runs `pgvector/pgvector:pg16`
+— a vector database — currently used as a plain relational table with zero
+embeddings. Embedding conversation turns and retrieving them semantically (via
+Gemini's embedding endpoint, or a local model through Ollama) is what turns
+"Jarvis forgets everything past the last 50 messages" into "Jarvis remembers
+what you told it three weeks ago" — and the infrastructure for it is already
+running, unused.
 
+### 4. Human-Centered Design → a confidence signal that means something
+Replace the fixed-input confidence formula with one derived from something
+real: retrieval quality, tool-call success/failure, model-reported certainty.
+"Clarity" isn't served by a number that doesn't move.
+
+### Prerequisite underneath all four: sessions
 `MindKernel`, `ObservationPlatform`, and `CognitiveWorkspace` are process-wide
-singletons — two people talking to this Jarvis at once currently interleave into
-the same conversation history and the same kernel state. None of the above (a
-scheduler running proactive tasks, a real permission model, semantic memory)
-holds together well until state is scoped per session/user rather than global.
-This is unglamorous and should happen early, not last — retrofitting it after
-building scheduling/memory/tool-calling on top of global state is much more
-expensive than doing it first.
+singletons — two people talking to this Jarvis right now would interleave into
+the same conversation history and kernel state. "Trusted executive partner for
+**every user**" is architecturally impossible until state is scoped per
+session/user. This is unglamorous and belongs early: retrofitting it after
+building tool-calling, memory, and learning on top of global state costs far
+more than doing it first.
+
+### Also part of "anticipating needs," not yet started
+Everything above is still reactive — it waits for a chat message. A scheduler
+(even simple in-process cron, or a proper job queue if this ever needs to run
+across multiple instances) is what lets Jarvis check email, post a morning
+briefing, or flag a failing CI run without being asked. `/api/notifications`
+already exists as an endpoint; right now it's a stub returning an empty array.
+
+And voice: TTS (speech out) is real as of this pass; speech *in* is not —
+`/api/voice-input` returns a canned string, there's no speech-to-text anywhere
+in the codebase, despite the `/mind` console UI implying a voice-driven
+experience.
 
 ## What I'd deliberately not do
 
-Resurrect the old, larger architecture described in the archived docs
+Resurrect the older, larger architecture described in the archived docs
 (`docs/archive/` — a `ChiefOfStaff` scheduler, a department/agent hierarchy,
-`SecureMemoryStore`). That design was torn out for a reason this review couldn't
-fully reconstruct, and its replacement — a single Express app with focused
-modules — is actually easier to reason about and extend. The four items above
-get you further toward "a capable, proactive personal AI" by adding real
-capability to the current architecture than by rebuilding a more complex one
-that was already abandoned once.
+`SecureMemoryStore`). That design was torn out for a reason this review
+couldn't fully reconstruct, and its replacement — a single Express app with
+focused modules — is easier to reason about and extend. Every gap above closes
+by adding real capability to the current architecture, not by rebuilding a more
+complex one that was already abandoned once.
 
 ## Suggested order
 
-1. Session-scoped state (prerequisite, not visible to users, but everything
-   else compounds on top of it)
-2. Tool-calling executive + permission model (the biggest visible capability jump)
-3. Semantic memory via pgvector (makes every subsequent conversation better)
-4. Scheduler (turns "assistant" into "proactive assistant")
-5. Voice input (closes the loop the `/mind` UI already implies exists)
+1. **Session-scoped state** — invisible to users, but everything else compounds
+   on top of it; expensive to retrofit later.
+2. **Tool-calling executive + permission model** — the biggest visible jump
+   toward "delegates, executes."
+3. **Automatic learning/memory loop (write + read)** — makes every subsequent
+   conversation better; this is what "continuously learns" actually requires.
+4. **Real confidence signal** — cheap, and stops undermining trust in the
+   meantime.
+5. **Scheduler** — turns reactive into anticipatory.
+6. **Voice input** — closes the loop the `/mind` UI already implies exists.
