@@ -96,15 +96,20 @@
 <div id="app" class="h-full w-full flex relative z-10">
     
     <!-- 1. LEFT COGNITIVE RAIL (Presence Side-Deck) -->
-    <div class="w-72 bg-[#03050c] border-r border-white/5 flex flex-col p-5 gap-5 z-20 flex-shrink-0 relative overflow-hidden">
+    <div id="left-sidebar" class="w-72 bg-[#03050c] border-r border-white/5 flex flex-col p-5 gap-5 z-20 flex-shrink-0 relative overflow-hidden transition-all duration-300 ease-in-out">
         <!-- Sidebar Brand -->
         <div class="flex items-center justify-between border-b border-white/5 pb-4">
             <div class="flex flex-col">
                 <span class="text-[8px] text-secondary tracking-widest font-mono">COGNITIVE ARCHITECTURE</span>
                 <span class="text-md font-bold text-white tracking-[0.15em]">JARVIS CORE <span class="text-primary font-mono text-xs">v4.0</span></span>
             </div>
-            <div class="relative flex items-center">
+            <div class="flex items-center gap-2">
                 <div class="w-2.5 h-2.5 rounded-full bg-success animate-pulse shadow-[0_0_12px_rgba(52,211,153,0.4)]"></div>
+                <button onclick="toggleSidebar()" class="p-1 text-secondary hover:text-white hover:bg-white/5 rounded-md transition-all flex items-center justify-center" title="Collapse Sidebar">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                    </svg>
+                </button>
             </div>
         </div>
         
@@ -195,6 +200,11 @@
         <!-- Top Status HUD -->
         <header class="h-16 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0 glass-panel">
             <div class="flex items-center gap-4">
+                <button id="sidebar-expand-btn" onclick="toggleSidebar()" class="p-1.5 bg-card hover:bg-white/5 border border-white/10 rounded-lg text-secondary hover:text-white transition-all hidden" title="Expand Sidebar">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                    </svg>
+                </button>
                 <span class="px-2 py-0.5 rounded bg-primary/10 border border-primary/20 text-[9px] font-mono font-bold text-primary tracking-widest">[SYS_TRACE: SECURE]</span>
                 <span class="text-xs font-bold text-secondary font-mono">NODE_INDEX_CONNECTED</span>
             </div>
@@ -409,13 +419,18 @@
             <div id="view-conversation" class="view-pane hidden space-y-6">
                 <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
                     <!-- Dialogue Hub -->
-                    <div class="lg:col-span-3 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col">
+                    <div id="dialogue-hub-main" class="lg:col-span-3 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300">
                         <div class="p-4 border-b border-white/5 flex justify-between items-center glass-panel">
                             <div>
                                 <h3 class="font-bold text-xs tracking-widest uppercase">INTELLIGENT TELEMETRY STREAM</h3>
                                 <p class="text-[9px] text-secondary tracking-wide">Direct interfacing link with JARVIS</p>
                             </div>
-                            <span class="text-[9px] text-primary font-mono tracking-widest uppercase animate-pulse">STREAMING_ACTIVE</span>
+                            <div class="flex items-center gap-3">
+                                <span class="text-[9px] text-primary font-mono tracking-widest uppercase animate-pulse">STREAMING_ACTIVE</span>
+                                <button onclick="toggleTraceSidebar()" class="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-accent/30 text-secondary hover:text-accent rounded-lg text-[9px] font-mono transition-all uppercase font-semibold" title="Toggle Decision Trace Side Panel">
+                                    TRACE_PANEL
+                                </button>
+                            </div>
                         </div>
                         
                         <div id="chat-scroller" class="flex-1 overflow-y-auto p-5 space-y-4 font-mono">
@@ -430,7 +445,7 @@
                     </div>
 
                     <!-- Holographic Trace Sidebar -->
-                    <div class="lg:col-span-1 flex flex-col">
+                    <div id="decision-trace-sidebar" class="lg:col-span-1 flex flex-col transition-all duration-300">
                         <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex-1 flex flex-col h-[520px]">
                             <h3 class="font-bold text-xs tracking-widest uppercase mb-1">DECISION TRACE</h3>
                             <p class="text-[9px] text-secondary tracking-wide mb-3">Underlying computational profile</p>
@@ -697,13 +712,13 @@
         if (speechEnabled) {
             if (iconOn) iconOn.classList.remove('hidden');
             if (iconOff) iconOff.classList.add('hidden');
-            if (btn) btn.className = "p-1.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 hover:text-indigo-300 transition-all duration-300";
+            if (btn) btn.className = "p-2.5 rounded-full bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 hover:text-indigo-300 shadow-md transition-all duration-300";
             addNotification("Vocalization synthesis active.", "success");
             speakText("Vocalization matrix enabled.");
         } else {
             if (iconOn) iconOn.classList.add('hidden');
             if (iconOff) iconOff.classList.remove('hidden');
-            if (btn) btn.className = "p-1.5 rounded bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 transition-all duration-300";
+            if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 hover:bg-indigo-400/5 shadow-md transition-all duration-300";
             window.speechSynthesis.cancel();
             addNotification("Vocalization synthesis suspended.", "warning");
         }
@@ -721,7 +736,7 @@
                 video.srcObject = null;
                 video.classList.add('hidden');
             }
-            if (btn) btn.className = "p-1.5 rounded bg-white/5 border border-white/10 hover:border-primary/40 text-secondary hover:text-primary transition-all duration-300";
+            if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-primary/40 text-secondary hover:text-primary hover:bg-primary/5 shadow-md transition-all duration-300";
             addNotification("Visual sensor deactivated.", "warning");
             stopCameraMotionTracking();
         } else {
@@ -729,10 +744,10 @@
                 addNotification("Requesting visual sensor access...", "info");
                 cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 256, height: 256 } });
                 if (video) {
-                    video.srcObject = cameraStream;
-                    video.classList.remove('hidden');
+                     video.srcObject = cameraStream;
+                     video.classList.remove('hidden');
                 }
-                if (btn) btn.className = "p-1.5 rounded bg-primary/20 border border-primary/40 text-primary hover:text-primary transition-all duration-300";
+                if (btn) btn.className = "p-2.5 rounded-full bg-primary/20 border border-primary/40 text-primary hover:text-primary hover:bg-primary/5 shadow-md transition-all duration-300";
                 addNotification("Visual sensor online. Jarvis can now see you.", "success");
                 startCameraMotionTracking();
             } catch (err) {
@@ -1830,6 +1845,59 @@
         } catch {}
     }
 
+    // SIDEBAR CONTROLLERS
+    let sidebarCollapsed = false;
+    function toggleSidebar() {
+        sidebarCollapsed = !sidebarCollapsed;
+        const sidebar = document.getElementById('left-sidebar');
+        const expandBtn = document.getElementById('sidebar-expand-btn');
+        if (!sidebar) return;
+
+        if (sidebarCollapsed) {
+            sidebar.style.width = '0px';
+            sidebar.style.padding = '0px';
+            sidebar.style.borderRightWidth = '0px';
+            if (expandBtn) expandBtn.classList.remove('hidden');
+            localStorage.setItem('sidebar-collapsed', 'true');
+            addNotification("Sovereign Side-Deck hidden. Screen space maximized.", "info");
+        } else {
+            sidebar.style.width = '18rem'; // 288px (w-72)
+            sidebar.style.padding = '1.25rem'; // p-5
+            sidebar.style.borderRightWidth = '1px';
+            if (expandBtn) expandBtn.classList.add('hidden');
+            localStorage.removeItem('sidebar-collapsed');
+            addNotification("Sovereign Side-Deck restored.", "info");
+        }
+        
+        // Trigger a cytoscape layout redraw since the container size changed
+        if (typeof cy !== 'undefined' && cy) {
+            setTimeout(() => {
+                cy.resize();
+                cy.fit();
+            }, 300);
+        }
+    }
+
+    let traceSidebarCollapsed = false;
+    function toggleTraceSidebar() {
+        traceSidebarCollapsed = !traceSidebarCollapsed;
+        const sidebar = document.getElementById('decision-trace-sidebar');
+        const mainHub = document.getElementById('dialogue-hub-main');
+        if (!sidebar || !mainHub) return;
+
+        if (traceSidebarCollapsed) {
+            sidebar.classList.add('hidden');
+            mainHub.className = "lg:col-span-4 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+            localStorage.setItem('trace-sidebar-collapsed', 'true');
+            addNotification("Decision Trace panel minimized.", "info");
+        } else {
+            sidebar.classList.remove('hidden');
+            mainHub.className = "lg:col-span-3 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+            localStorage.removeItem('trace-sidebar-collapsed');
+            addNotification("Decision Trace panel restored.", "info");
+        }
+    }
+
     // 10. SLEEP CONTROLLERS
     let sleepModeActive = false;
     function triggerLocalSleep() {
@@ -1906,6 +1974,19 @@
     }, 4000);
 
     function syncDashboardViewConfig() {
+        if (localStorage.getItem('admin_show_hyper_graph') === null) {
+            localStorage.setItem('admin_show_hyper_graph', 'true');
+        }
+        if (localStorage.getItem('admin_show_dispatcher') === null) {
+            localStorage.setItem('admin_show_dispatcher', 'true');
+        }
+        if (localStorage.getItem('admin_show_thoughts') === null) {
+            localStorage.setItem('admin_show_thoughts', 'true');
+        }
+        if (localStorage.getItem('admin_show_debates') === null) {
+            localStorage.setItem('admin_show_debates', 'true');
+        }
+
         const showHyperGraph = localStorage.getItem('admin_show_hyper_graph') === 'true';
         const showDispatcher = localStorage.getItem('admin_show_dispatcher') === 'true';
         const showThoughts = localStorage.getItem('admin_show_thoughts') === 'true';
@@ -1979,6 +2060,31 @@
                 syncDashboardViewConfig();
             }
         });
+        
+        // Restore sidebar state if collapsed
+        if (localStorage.getItem('sidebar-collapsed') === 'true') {
+            sidebarCollapsed = true;
+            const sidebar = document.getElementById('left-sidebar');
+            const expandBtn = document.getElementById('sidebar-expand-btn');
+            if (sidebar) {
+                sidebar.style.width = '0px';
+                sidebar.style.padding = '0px';
+                sidebar.style.borderRightWidth = '0px';
+            }
+            if (expandBtn) expandBtn.classList.remove('hidden');
+        }
+
+        // Restore trace sidebar state if collapsed
+        if (localStorage.getItem('trace-sidebar-collapsed') === 'true') {
+            traceSidebarCollapsed = true;
+            const sidebar = document.getElementById('decision-trace-sidebar');
+            const mainHub = document.getElementById('dialogue-hub-main');
+            if (sidebar && mainHub) {
+                sidebar.classList.add('hidden');
+                mainHub.className = "lg:col-span-4 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+            }
+        }
+
         switchTab('dashboard');
         loadLiveSystemData();
         loadMindKernelData();
