@@ -3,8 +3,7 @@ import cors from "cors";
 import path from "path";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
-import { GoogleGenAI } from "@google/genai";
-import { CognitiveWorkspace } from "./cognition/workspace.js";
+import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
 import { ObservationPlatform } from "./observation/index.js";
 import { AutonomousExecutive } from "./execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
@@ -17,6 +16,11 @@ import * as tts from "./integrations/tts.js";
 import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
+import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
+import { TOOL_DECLARATIONS, executeTool } from "./execution/tools.js";
+import * as permissions from "./execution/permissions.js";
+import * as memoryStore from "./cognition/memory-store.js";
+import * as scheduler from "./execution/scheduler.js";
 
 dotenv.config();
 
@@ -61,7 +65,9 @@ const authLimiter = rateLimit({
 });
 
 // ---------- Platform Instances ----------
-const workspace = new CognitiveWorkspace();
+// Per-user conversational state lives in SessionState (src/cognition/session.ts),
+// fetched per-request via getSession(req.username) — not a shared global, so
+// concurrent users no longer interleave into the same thought/attention/dialogue.
 const observation = ObservationPlatform.getInstance();
 
 observation.startProfile("startup");
@@ -105,7 +111,7 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = new AutonomousExecutive(workspace, observation, ai);
+const executive = new AutonomousExecutive(observation, ai);
 const learningEngine = LongTermLearningEngine.getInstance();
 const executiveBoard = new ExecutiveBoard();
 
@@ -233,7 +239,8 @@ app.get("/api/status", validateApiKey, (req: any, res: any) => {
     disk: stats.system.diskUsagePercent,
     engine_ready: true,
     user: req.username,
-    offline_mode: kernel.offlineMode
+    offline_mode: kernel.offlineMode,
+    active_sessions: getActiveSessionCount()
   });
 });
 
@@ -366,20 +373,21 @@ app.get("/api/observation/audit", validateApiKey, (req, res) => {
   res.json(observation.getAuditLogs());
 });
 
-app.get("/api/cognition/workspace", validateApiKey, (req, res) => {
-  res.json(workspace.toSnapshot());
+app.get("/api/cognition/workspace", validateApiKey, (req: any, res: any) => {
+  const session = getSession(req.username);
+  res.json(session.workspace.toSnapshot());
 });
 
-app.get("/api/cognition/kernel", validateApiKey, (req, res) => {
-  const kernel = MindKernel.getInstance();
+app.get("/api/cognition/kernel", validateApiKey, (req: any, res: any) => {
+  const session = getSession(req.username);
   res.json({
-    state: kernel.getState(),
-    attention: kernel.attentionEngine.getCurrentAttention(),
-    thoughtStage: kernel.thoughtEngine.getStage(),
-    thoughtStages: kernel.thoughtEngine.getStages(),
-    dialogueHistory: kernel.dialogue.getHistory(),
-    summarizedDecision: kernel.dialogue.getSummarizedDecision(),
-    confidence: kernel.getState().confidence
+    state: session.getState(),
+    attention: session.attentionEngine.getCurrentAttention(),
+    thoughtStage: session.thoughtEngine.getStage(),
+    thoughtStages: session.thoughtEngine.getStages(),
+    dialogueHistory: session.dialogue.getHistory(),
+    summarizedDecision: session.dialogue.getSummarizedDecision(),
+    confidence: session.getState().confidence
   });
 });
 
@@ -391,7 +399,8 @@ app.post("/api/executive/run", validateApiKey, async (req: any, res: any) => {
   }
 
   try {
-    const report = await executive.executeObjective(objective);
+    const session = getSession(req.username);
+    const report = await executive.executeObjective(objective, session);
     res.json(report);
   } catch (error: any) {
     observation.logTelemetry("error", "Executive", `Objective execution failed: ${error.message}`);
@@ -503,17 +512,19 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   observation.incrementMetric("totalRequests");
 
   const kernel = MindKernel.getInstance();
+  const session = getSession(req.username);
+  const workspace = session.workspace;
 
   // Add message to conversation
   workspace.conversation.addMessage("user", message);
 
   // Update mind kernel state!
-  kernel.updateState({
+  session.updateState({
     currentThought: "Understanding Request",
     executiveStatus: "Thinking",
     currentPlan: ["Process user prompt"],
-    attentionTarget: kernel.attentionEngine.determineAttention({ userRequest: message })
-  }, workspace, observation);
+    attentionTarget: session.attentionEngine.determineAttention({ userRequest: message })
+  }, observation);
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -521,16 +532,34 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   res.setHeader("X-Accel-Buffering", "no");
 
   let fullReply = "";
+  let succeededStep: string | null = null;
+  let memoryHits: string[] = [];
+  const toolCallsExecuted: { name: string; ok: boolean }[] = [];
 
   try {
     const localEngine = LocalCognitiveEngine.getInstance();
-    
+
+    // Real memory retrieval (read side of "continuously learns") — best
+    // effort: recall() returns [] rather than throwing if no embedding
+    // provider is configured/reachable, so this never blocks the chat.
+    memoryHits = await memoryStore.recall(req.username, message, ai, kernel.localLlmEndpoint);
+    const memoryContext = memoryHits.length > 0
+      ? `\n\nRelevant things you remember about this user from past conversations:\n${memoryHits.map(m => `- ${m}`).join("\n")}`
+      : "";
+
+    const stylePrefs = learningEngine.getStylePreferences();
+    const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
+
+    const systemInstruction =
+      "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm."
+      + memoryContext + styleContext;
+
     // We will decide which strategy to execute based on kernel.llmMode and kernel.offlineMode
     let success = false;
-    
+
     // 1. Determine execution order based on mode & offline state
     const executionChain: string[] = [];
-    
+
     if (kernel.offlineMode) {
       if (kernel.llmMode === "strictly-online") {
         executionChain.push("Gemini");
@@ -554,23 +583,23 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
         executionChain.push("LocalLLM", "Gemini");
       }
     }
-    
+
     // Always append simulated as final fallback
     executionChain.push("Simulated");
 
     // Execute the chain
     for (const step of executionChain) {
       if (success) break;
-      
+
       if (step === "LocalLLM") {
         try {
           observation.logTelemetry("info", "Cognition", `Attempting Local LLM generation: endpoint=${kernel.localLlmEndpoint}, model=${kernel.localModelName}`);
-          kernel.updateState({
+          session.updateState({
             currentThought: "Querying Local LLM",
             executiveStatus: "Executing",
             activeCapability: `Local LLM (${kernel.localModelName})`
-          }, workspace, observation);
-          
+          }, observation);
+
           let targetUrl = kernel.localLlmEndpoint;
           if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/generate') && !targetUrl.endsWith('/api/chat')) {
             if (targetUrl.endsWith('/v1') || targetUrl.endsWith('/v1/')) {
@@ -579,137 +608,209 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
               targetUrl = targetUrl.replace(/\/$/, '') + '/v1/chat/completions';
             }
           }
-          
+
           const formattedMessages = workspace.userContext.history.map(msg => ({
             role: msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : 'user'),
             content: msg.content
           }));
-          
-          const response = await fetch(targetUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...(kernel.localApiKey ? { "Authorization": `Bearer ${kernel.localApiKey}` } : {})
-            },
-            body: JSON.stringify({
-              model: kernel.localModelName,
-              messages: [
-                {
-                  role: "system",
-                  content: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth."
-                },
-                ...formattedMessages
-              ],
-              stream: true
-            }),
-            signal: AbortSignal.timeout(10000)
-          });
-          
-          if (!response.ok) {
-            throw new Error(`Local LLM returned status: ${response.status}`);
-          }
-          
-          const decoder = new TextDecoder("utf-8");
-          let buffer = "";
-          
-          for await (const chunk of response.body as any) {
-            buffer += decoder.decode(chunk, { stream: true });
-            let lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-            
-            for (const line of lines) {
-              let trimmed = line.trim();
-              if (!trimmed) continue;
-              
-              if (trimmed.startsWith("data: ")) {
-                trimmed = trimmed.slice(6).trim();
-              }
-              if (trimmed === "[DONE]") continue;
-              
-              try {
-                const parsed = JSON.parse(trimmed);
-                let text = parsed.choices?.[0]?.delta?.content || "";
-                if (!text && parsed.message?.content) {
-                  text = parsed.message.content;
+
+          // Try once with tool declarations (some Ollama models support
+          // OpenAI-style tool calling); if the backend rejects the request
+          // outright for it (as most local models currently do), fall back
+          // to the plain streaming request below instead of failing the
+          // whole LocalLLM step.
+          let toolCallHandled = false;
+          try {
+            const toolProbe = await fetch(targetUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(kernel.localApiKey ? { "Authorization": `Bearer ${kernel.localApiKey}` } : {})
+              },
+              body: JSON.stringify({
+                model: kernel.localModelName,
+                messages: [{ role: "system", content: systemInstruction }, ...formattedMessages],
+                tools: TOOL_DECLARATIONS.map(fd => ({
+                  type: "function",
+                  function: { name: fd.name, description: fd.description, parameters: fd.parameters }
+                })),
+                stream: false
+              }),
+              signal: AbortSignal.timeout(15000)
+            });
+
+            if (toolProbe.ok) {
+              const toolData: any = await toolProbe.json();
+              const calls = toolData.choices?.[0]?.message?.tool_calls;
+              if (Array.isArray(calls) && calls.length > 0) {
+                for (const call of calls) {
+                  let args: Record<string, any> = {};
+                  try { args = JSON.parse(call.function?.arguments || "{}"); } catch {}
+                  const result = await executeTool(call.function?.name, args, req.username);
+                  toolCallsExecuted.push({ name: result.name, ok: result.ok });
                 }
-                if (!text && parsed.response) {
-                  text = parsed.response;
+                const content = toolData.choices?.[0]?.message?.content;
+                if (content) {
+                  for (const word of String(content).split(" ")) {
+                    fullReply += word + " ";
+                    res.write(`data: ${word} \n\n`);
+                  }
+                } else {
+                  fullReply = `Done — I ${toolCallsExecuted.filter(t => t.ok).length}/${toolCallsExecuted.length} tool call(s) completed.`;
+                  res.write(`data: ${fullReply}\n\n`);
                 }
-                if (text) {
-                  fullReply += text;
-                  res.write(`data: ${text}\n\n`);
-                }
-              } catch (err) {
-                // partial line
+                toolCallHandled = true;
+                success = true;
               }
             }
+          } catch {
+            // Model/backend doesn't support tools, or the probe failed —
+            // fall through to the plain streaming path below.
           }
-          
-          success = true;
+
+          if (!toolCallHandled) {
+            const response = await fetch(targetUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(kernel.localApiKey ? { "Authorization": `Bearer ${kernel.localApiKey}` } : {})
+              },
+              body: JSON.stringify({
+                model: kernel.localModelName,
+                messages: [
+                  { role: "system", content: systemInstruction },
+                  ...formattedMessages
+                ],
+                stream: true
+              }),
+              signal: AbortSignal.timeout(10000)
+            });
+
+            if (!response.ok) {
+              throw new Error(`Local LLM returned status: ${response.status}`);
+            }
+
+            const decoder = new TextDecoder("utf-8");
+            let buffer = "";
+
+            for await (const chunk of response.body as any) {
+              buffer += decoder.decode(chunk, { stream: true });
+              let lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+
+              for (const line of lines) {
+                let trimmed = line.trim();
+                if (!trimmed) continue;
+
+                if (trimmed.startsWith("data: ")) {
+                  trimmed = trimmed.slice(6).trim();
+                }
+                if (trimmed === "[DONE]") continue;
+
+                try {
+                  const parsed = JSON.parse(trimmed);
+                  let text = parsed.choices?.[0]?.delta?.content || "";
+                  if (!text && parsed.message?.content) {
+                    text = parsed.message.content;
+                  }
+                  if (!text && parsed.response) {
+                    text = parsed.response;
+                  }
+                  if (text) {
+                    fullReply += text;
+                    res.write(`data: ${text}\n\n`);
+                  }
+                } catch (err) {
+                  // partial line
+                }
+              }
+            }
+
+            success = true;
+          }
+
+          succeededStep = "LocalLLM";
           observation.logTelemetry("info", "Cognition", "Local LLM content streaming completed successfully.");
         } catch (err: any) {
           observation.logTelemetry("warn", "Cognition", `Local LLM generation failed: ${err.message || err}`);
         }
       }
-      
+
       else if (step === "Gemini") {
         if (ai) {
           try {
             observation.incrementMetric("geminiApiCalls");
-            kernel.updateState({
+            session.updateState({
               currentThought: "Querying Gemini AI",
               executiveStatus: "Executing",
               activeCapability: "Gemini LLM Generation"
-            }, workspace, observation);
-            
-            let responseStream;
+            }, observation);
+
+            // Real function-calling: Gemini can choose to invoke a tool
+            // (src/execution/tools.ts) with structured arguments it extracts
+            // from the conversation, gated by the caller's permission grants.
+            const contents: Content[] = [{ role: "user", parts: [{ text: message }] }];
             const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
-            let lastStreamError = null;
-            
-            for (const modelName of chatModels) {
-              try {
-                observation.logTelemetry("info", "Cognition", `Attempting chat stream with model: ${modelName}`);
-                responseStream = await ai.models.generateContentStream({
-                  model: modelName,
-                  contents: message,
-                  config: {
-                    systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm.",
-                  }
+
+            let response = await generateContentWithFallback(ai, {
+              contents,
+              config: {
+                systemInstruction,
+                tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+              },
+            }, chatModels);
+
+            let calls: FunctionCall[] = response.functionCalls || [];
+            let guard = 0;
+            while (calls.length > 0 && guard < 3) {
+              guard++;
+              contents.push({ role: "model", parts: calls.map(c => ({ functionCall: c })) });
+
+              const responseParts = [];
+              for (const call of calls) {
+                const result = await executeTool(call.name || "", call.args || {}, req.username);
+                toolCallsExecuted.push({ name: result.name, ok: result.ok });
+                responseParts.push({
+                  functionResponse: {
+                    name: call.name,
+                    response: result.ok ? { output: result.output } : { error: result.error },
+                  },
                 });
-                break;
-              } catch (err: any) {
-                lastStreamError = err;
-                observation.logTelemetry("warn", "Cognition", `Model ${modelName} stream initiation failed. Error: ${err.message || err}`);
               }
+              contents.push({ role: "user", parts: responseParts });
+
+              response = await generateContentWithFallback(ai, {
+                contents,
+                config: { systemInstruction, tools: [{ functionDeclarations: TOOL_DECLARATIONS }] },
+              }, chatModels);
+              calls = response.functionCalls || [];
             }
-            
-            if (responseStream) {
-              for await (const chunk of responseStream) {
-                if (chunk.text) {
-                  fullReply += chunk.text;
-                  res.write(`data: ${chunk.text}\n\n`);
-                }
+
+            const finalText = response.text || "";
+            if (finalText) {
+              for (const word of finalText.split(" ")) {
+                fullReply += word + " ";
+                res.write(`data: ${word} \n\n`);
               }
               success = true;
-            } else {
-              throw lastStreamError || new Error("All stream models failed");
+              succeededStep = "Gemini";
             }
           } catch (err: any) {
             observation.logTelemetry("warn", "Cognition", `Gemini generation failed: ${err.message || err}`);
           }
         }
       }
-      
+
       else if (step === "Simulated") {
-        kernel.updateState({
+        session.updateState({
           currentThought: "Running Local Simulation",
           executiveStatus: "Executing",
           activeCapability: "Local Cognitive Simulator"
-        }, workspace, observation);
-        
+        }, observation);
+
         const stats = observation.getMetrics();
         const simulatedResponse = localEngine.generateResponse(message, workspace, stats.system);
-        
+
         const words = simulatedResponse.split(" ");
         for (const word of words) {
           fullReply += word + " ";
@@ -717,47 +818,68 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
           await new Promise((resolve) => setTimeout(resolve, 40));
         }
         success = true;
+        succeededStep = "Simulated";
       }
     }
 
     // Refinement/Reflection stage
-    kernel.updateState({
+    session.updateState({
       currentThought: "Preparing Response",
       executiveStatus: "Reflecting"
-    }, workspace, observation);
+    }, observation);
 
     workspace.conversation.addMessage("assistant", fullReply);
-    
+
+    // Automatic learning capture (write side of "continuously learns") — every
+    // real (non-simulated) exchange is remembered without a manual API call.
+    // Fire-and-forget: memoryStore already logs its own failures, and this
+    // must never block the response the user is waiting on.
+    if (fullReply && succeededStep && succeededStep !== "Simulated") {
+      memoryStore
+        .remember(req.username, `User asked: "${message}" — Jarvis replied: "${fullReply.slice(0, 500)}"`, ai, kernel.localLlmEndpoint)
+        .catch(() => {});
+    }
+
     const latency = performance.now() - startTime;
     observation.recordLatency(latency);
     observation.endProfile("chat_request");
 
-    const calculatedConfidence = kernel.confidenceModel.calculateOverallConfidence({
-      memoryConfidence: ai ? 0.98 : 0.8,
-      toolConfidence: 1.0,
-      validationConfidence: 1.0,
-      capabilityConfidence: ai ? 0.95 : 0.75,
+    // Real confidence: derived from what actually happened this turn — which
+    // backend answered, whether memory had anything relevant, whether any
+    // tool calls succeeded — instead of fixed inputs keyed only on "is a
+    // Gemini key set."
+    const toolSuccessRate = toolCallsExecuted.length === 0
+      ? 1.0
+      : toolCallsExecuted.filter(t => t.ok).length / toolCallsExecuted.length;
+    const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
+      memoryConfidence: memoryHits.length > 0 ? 0.95 : 0.7,
+      toolConfidence: toolSuccessRate,
+      validationConfidence: success ? 1.0 : 0.4,
+      capabilityConfidence: succeededStep === "Simulated" ? 0.5 : succeededStep ? 0.9 : 0.3,
       environmentConfidence: 1.0
     });
 
     // Finalize state to idle
-    kernel.updateState({
+    session.updateState({
       currentThought: "Idle",
       executiveStatus: "Idle",
       confidence: calculatedConfidence,
       activeCapability: null,
-      attentionTarget: kernel.attentionEngine.determineAttention({})
-    }, workspace, observation);
+      attentionTarget: session.attentionEngine.determineAttention({})
+    }, observation);
 
     // Pass 7: Build detailed Decision Trace
     const decisionTrace = {
       intent: `Answer user question: "${message.substring(0, 40)}${message.length > 40 ? '...' : ''}"`,
       goals: ["Process incoming message", "Maintain stable interactive dialogue"],
-      strategy: ai ? "Direct prompt submission to Gemini-3.5-Flash text stream" : "Local fallback string generation",
+      strategy: succeededStep ? `Answered via ${succeededStep}` : "No backend produced a reply",
       planner: ["Acknowledge token streams", "Update context caches", "Stream SSE data", "Register telemetry metrics"],
-      capabilitySelection: [ai ? "Gemini LLM Client" : "Simulated Response Engine"],
-      reasoning: `Decided to parse text and reply immediately to maintain a sub-second response time. Latency measured: ${latency.toFixed(1)} ms. Context size: ${workspace.conversation.history.length} events.`,
-      knowledgeUsed: workspace.knowledge.loadedFacts,
+      capabilitySelection: [
+        succeededStep || "None",
+        ...toolCallsExecuted.map(t => `Tool: ${t.name} (${t.ok ? "ok" : "failed"})`)
+      ],
+      reasoning: `Decided to parse text and reply immediately to maintain a sub-second response time. Latency measured: ${latency.toFixed(1)} ms. Context size: ${workspace.conversation.history.length} events. Memory hits: ${memoryHits.length}.`,
+      knowledgeUsed: [...workspace.knowledge.loadedFacts, ...memoryHits],
       executionResult: "Successfully flushed SSE token stream to client",
       reflection: `Latency of ${latency.toFixed(0)}ms was highly acceptable. Response quality matched Jarvis OS guidelines. No anomalies detected.`,
       confidence: calculatedConfidence / 100
@@ -772,20 +894,20 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 
   } catch (error: any) {
     observation.logTelemetry("error", "Executive", `Failed to complete chat stream: ${error.message}. Attempting local recovery.`);
-    
+
     if (!fullReply) {
       try {
         const localEngine = LocalCognitiveEngine.getInstance();
         const stats = observation.getMetrics();
         const fallbackMsg = localEngine.generateResponse(message, workspace, stats.system);
-        
+
         const words = fallbackMsg.split(" ");
         for (const word of words) {
           fullReply += word + " ";
           res.write(`data: ${word} \n\n`);
           await new Promise((resolve) => setTimeout(resolve, 40));
         }
-        
+
         res.write("data: [DONE]\n\n");
         res.end();
         return;
@@ -794,11 +916,11 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
       }
     }
 
-    kernel.updateState({
+    session.updateState({
       currentThought: "Idle",
       executiveStatus: "Idle",
-      attentionTarget: kernel.attentionEngine.determineAttention({ emergency: error.message })
-    }, workspace, observation);
+      attentionTarget: session.attentionEngine.determineAttention({ emergency: error.message })
+    }, observation);
     workspace.execution.updateStatus("error");
     res.write(`data: Error: ${error.message}\n\n`);
     res.write("data: [DONE]\n\n");
@@ -818,6 +940,7 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
   try {
     let reply = "";
     const kernel = MindKernel.getInstance();
+    const session = getSession(req.username);
     const localEngine = LocalCognitiveEngine.getInstance();
     if (ai && !kernel.offlineMode) {
       try {
@@ -832,11 +955,11 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
       } catch (err: any) {
         observation.logTelemetry("warn", "Cognition", `Online completion failed: ${err.message}. Reverting to local engine.`);
         const stats = observation.getMetrics();
-        reply = localEngine.generateResponse(userMsg, workspace, stats.system);
+        reply = localEngine.generateResponse(userMsg, session.workspace, stats.system);
       }
     } else {
       const stats = observation.getMetrics();
-      reply = localEngine.generateResponse(userMsg, workspace, stats.system);
+      reply = localEngine.generateResponse(userMsg, session.workspace, stats.system);
     }
 
     observation.recordLatency(Date.now() - startTime);
@@ -857,7 +980,8 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
 // Learn Endpoint
 app.post("/api/learn", validateApiKey, async (req: any, res: any) => {
   const { message } = req.body;
-  workspace.knowledge.addFact(`Learned from operator: ${message}`);
+  const session = getSession(req.username);
+  session.workspace.knowledge.addFact(`Learned from operator: ${message}`);
   observation.logTelemetry("info", "Cognition", `Dynamically learned new concept: "${message}"`);
   res.json({
     status: "success",
@@ -891,15 +1015,17 @@ app.get("/api/notifications/stream", validateApiKey, (req: any, res: any) => {
   });
 });
 
-app.get("/api/notifications", validateApiKey, (req, res) => {
+app.get("/api/notifications", validateApiKey, (req: any, res: any) => {
+  const items = scheduler.getNotifications(req.username);
   res.json({
-    notifications: [],
-    count: 0,
-    unread_count: 0,
+    notifications: items,
+    count: items.length,
+    unread_count: items.filter(n => !n.read).length,
   });
 });
 
-app.post("/api/notifications/mark_read", validateApiKey, (req, res) => {
+app.post("/api/notifications/mark_read", validateApiKey, (req: any, res: any) => {
+  scheduler.markAllRead(req.username);
   res.json({ status: "success" });
 });
 
@@ -1017,6 +1143,42 @@ app.post("/api/ecosystem/install", validateApiKey, (req, res) => {
 
 app.get("/api/ecosystem/plugins", validateApiKey, (req, res) => {
   res.json({ plugins: [] });
+});
+
+// ---------- Capability grants (permission model) ----------
+// Default-deny: a capability (github.issues.create, email.send, ...) only
+// works for a user once explicitly granted here. Only the admin key can
+// grant/revoke; any authenticated user can see their own grants.
+
+app.get("/api/permissions", validateApiKey, (req: any, res: any) => {
+  res.json({ username: req.username, grants: permissions.listGrants(req.username), available: permissions.ALL_CAPABILITIES });
+});
+
+app.post("/api/permissions/grant", validateApiKey, (req: any, res: any) => {
+  if (req.username !== "admin") {
+    return res.status(403).json({ error: "Only admin can grant capabilities" });
+  }
+  const { username, capability } = req.body;
+  if (!username || !capability) {
+    return res.status(400).json({ error: "username and capability are required" });
+  }
+  if (!(permissions.ALL_CAPABILITIES as readonly string[]).includes(capability)) {
+    return res.status(400).json({ error: `Unknown capability "${capability}"` });
+  }
+  permissions.grantCapability(username, capability, req.username);
+  res.json({ status: "success", username, grants: permissions.listGrants(username) });
+});
+
+app.post("/api/permissions/revoke", validateApiKey, (req: any, res: any) => {
+  if (req.username !== "admin") {
+    return res.status(403).json({ error: "Only admin can revoke capabilities" });
+  }
+  const { username, capability } = req.body;
+  if (!username || !capability) {
+    return res.status(400).json({ error: "username and capability are required" });
+  }
+  permissions.revokeCapability(username, capability, req.username);
+  res.json({ status: "success", username, grants: permissions.listGrants(username) });
 });
 
 // ---------- Integrations: GitHub / Email / TTS ----------
@@ -1146,4 +1308,15 @@ initDatabase().then(async (ready) => {
   app.listen(PORT, "0.0.0.0", () => {
     observation.logTelemetry("info", "System", `🚀 Jarvis OS Server running on http://localhost:${PORT}`);
   });
+
+  scheduler.startEmailWatchJob();
 });
+
+// Evict idle per-user session state (working memory, not persisted data) so
+// long-running deployments don't accumulate one SessionState per visitor forever.
+setInterval(() => {
+  const pruned = pruneIdleSessions();
+  if (pruned > 0) {
+    observation.logTelemetry("info", "System", `Pruned ${pruned} idle session(s). ${getActiveSessionCount()} active.`);
+  }
+}, 30 * 60 * 1000);

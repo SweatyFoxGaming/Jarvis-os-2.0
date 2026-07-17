@@ -147,17 +147,53 @@ session/user. This is unglamorous and belongs early: retrofitting it after
 building tool-calling, memory, and learning on top of global state costs far
 more than doing it first.
 
-### Also part of "anticipating needs," not yet started
-Everything above is still reactive — it waits for a chat message. A scheduler
-(even simple in-process cron, or a proper job queue if this ever needs to run
-across multiple instances) is what lets Jarvis check email, post a morning
-briefing, or flag a failing CI run without being asked. `/api/notifications`
-already exists as an endpoint; right now it's a stub returning an empty array.
+### Status update (implemented since the gap analysis above was written)
 
-And voice: TTS (speech out) is real as of this pass; speech *in* is not —
-`/api/voice-input` returns a canned string, there's no speech-to-text anywhere
-in the codebase, despite the `/mind` console UI implying a voice-driven
-experience.
+Everything in "What closes the gap" above has since been built and live-verified
+against the real Postgres/Docker/GitHub/IMAP infrastructure — not just unit-tested:
+
+- **Session-scoped state**: `src/cognition/session.ts`. Verified live — two
+  concurrent users' conversations no longer interleave.
+- **Tool-calling + permission model**: `src/execution/tools.ts` /
+  `permissions.ts`, wired into `/api/chat`'s Gemini branch (and attempted,
+  with graceful fallback, on local models). Verified live end-to-end: denied
+  without a grant, executes a real GitHub API call with one. The one part
+  *not* independently verified in this environment is the LLM's own decision
+  to invoke a tool, since no `GEMINI_API_KEY` was configured to test against
+  and the local model available here doesn't support tool calling.
+- **Automatic learning/memory loop**: `src/cognition/memory-store.ts`, backed
+  by a real `pgvector` table (`CREATE EXTENSION vector` succeeded live).
+  Every non-simulated chat turn is embedded and stored; future turns retrieve
+  by similarity. Requires a working embedding provider to actually produce
+  results — see the note below, this is currently blocked in this environment
+  by the same Ollama bind-address issue as chat.
+- **Real confidence signal**: `/api/chat` now computes confidence from which
+  backend actually answered, whether memory had hits, and tool-call success
+  rate — verified live returning different values (84% on a simulated-path
+  reply, not the old fixed ~95-100%).
+- **Scheduler**: `src/execution/scheduler.ts`. A real job (`email-watch`)
+  polls the configured IMAP mailbox every 5 minutes and pushes a notification
+  on new mail — verified live against the real Gmail account in `.env`
+  (~5s per IMAP fetch, confirmed firing on schedule).
+
+**Correction to the original version of this doc**: it claimed speech-to-text
+"doesn't exist anywhere in the codebase." That was wrong — `/api/voice-input`
+already calls Gemini's multimodal API to transcribe audio for real when
+`GEMINI_API_KEY` is set. The actual gap is narrower: there's no *local/offline*
+STT (e.g. Whisper) to match the local-first chat pattern, so voice input
+degrades to a canned string in the default (no-cloud-key) configuration. Not
+built in this pass — it needs a new dependency (a Whisper model or sidecar)
+that would be irresponsible to add without being able to verify it runs
+cleanly in the target Docker image.
+
+**Newly discovered, blocking local LLM entirely in this environment**: Ollama
+on the host binds to `127.0.0.1:11434` only. No container — regardless of the
+`host.docker.internal` mapping already in `docker-compose.yml` — can reach a
+loopback-only bind. This blocks local chat *and* local embeddings, live-verified
+via `docker exec ... fetch(...)` returning connection-refused. Fix is
+`OLLAMA_HOST=0.0.0.0` plus an Ollama restart (see README's Quickstart) — a
+host-level change intentionally left for the operator to decide on, since it
+changes what's reachable on the host's network.
 
 ## What I'd deliberately not do
 
@@ -169,15 +205,14 @@ focused modules — is easier to reason about and extend. Every gap above closes
 by adding real capability to the current architecture, not by rebuilding a more
 complex one that was already abandoned once.
 
-## Suggested order
+## What's left
 
-1. **Session-scoped state** — invisible to users, but everything else compounds
-   on top of it; expensive to retrofit later.
-2. **Tool-calling executive + permission model** — the biggest visible jump
-   toward "delegates, executes."
-3. **Automatic learning/memory loop (write + read)** — makes every subsequent
-   conversation better; this is what "continuously learns" actually requires.
-4. **Real confidence signal** — cheap, and stops undermining trust in the
-   meantime.
-5. **Scheduler** — turns reactive into anticipatory.
-6. **Voice input** — closes the loop the `/mind` UI already implies exists.
+1. **Local/offline STT** (Whisper) — the one item from the original list not
+   yet built; see the correction above.
+2. **Fix the Ollama bind address** on the host (operator decision, one line +
+   a restart) — unblocks local chat and local embeddings at once.
+3. **Persist capability grants to Postgres** — currently in-memory, reset on
+   restart; noted as a known limitation in the README.
+4. **Extend automatic learning capture beyond memory** — style/mistake
+   learning is still only written via explicit `/api/learning/*` calls, not
+   automatically inferred from a conversation the way memory now is.

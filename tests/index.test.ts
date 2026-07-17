@@ -5,6 +5,7 @@
  */
 
 import { CognitiveWorkspace } from "../src/cognition/workspace.js";
+import { SessionState } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/observation/index.js";
 import { AutonomousExecutive } from "../src/execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/cognition/long_term_learning.js";
@@ -168,11 +169,11 @@ registerTest("Cognitive 2.0", "Working memory compartment cells validation", () 
 
 // ---------- 7. Autonomous Executive Tests ----------
 registerTest("Executive 2.0", "Autonomous executive 5-stage pipeline validation", async () => {
-  const ws = new CognitiveWorkspace();
+  const session = new SessionState();
   const obs = ObservationPlatform.getInstance();
-  const exec = new AutonomousExecutive(ws, obs, null); // Run in simulated mode
+  const exec = new AutonomousExecutive(obs, null); // Run in simulated mode
 
-  const report = await exec.executeObjective("Deploy microservices orchestrator");
+  const report = await exec.executeObjective("Deploy microservices orchestrator", session);
 
   if (report.status !== "success") {
     throw new Error("Autonomous Executive: Execution status mismatch");
@@ -180,10 +181,10 @@ registerTest("Executive 2.0", "Autonomous executive 5-stage pipeline validation"
   if (report.totalStepsExecuted !== 4) {
     throw new Error("Autonomous Executive: Core steps count mismatch");
   }
-  if (ws.mission.status !== "completed") {
+  if (session.workspace.mission.status !== "completed") {
     throw new Error("Autonomous Executive: Mission status did not resolve to 'completed'");
   }
-  if (ws.mission.progressPercent !== 100) {
+  if (session.workspace.mission.progressPercent !== 100) {
     throw new Error("Autonomous Executive: Mission progress percent did not resolve to 100%");
   }
 });

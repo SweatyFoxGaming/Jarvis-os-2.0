@@ -56,23 +56,50 @@ relying on anything not listed in "What's implemented."
 3. **Open the console:** `http://localhost:8000` (main console), `/admin`
    (operator panel), `/mind` (cognitive state graph).
 
-4. **Local LLM chat:** if you have [Ollama](https://ollama.com) running on your host
-   machine, Jarvis reaches it automatically via `host.docker.internal:11434` — no
-   extra config needed. Change the endpoint/model in the Settings tab if yours runs
-   elsewhere; it's saved to `data/settings.json` and survives restarts.
+4. **Local LLM chat:** the container is networked to reach a host-run Ollama at
+   `host.docker.internal:11434` — but Ollama also needs to be listening on more
+   than just loopback for that connection to succeed. If Ollama was installed
+   with defaults, it binds to `127.0.0.1` only, which no container (Docker's
+   `host.docker.internal` mapping included) can reach — you'll see chat fall
+   through to the simulated response and `[WARN] [Memory] Local embedding
+   request errored: fetch failed` in the logs. Fix: set `OLLAMA_HOST=0.0.0.0`
+   for the Ollama service and restart it (e.g. `sudo systemctl edit ollama`,
+   add `Environment="OLLAMA_HOST=0.0.0.0"`, `sudo systemctl restart ollama`)
+   — this exposes Ollama beyond localhost, so only do it on a machine where
+   that's acceptable. Change the endpoint/model in the Settings tab if yours
+   runs elsewhere; it's saved to `data/settings.json` and survives restarts.
 
 ## What's implemented
 
 - **Chat**, with a three-tier fallback chain: your local LLM → `GEMINI_API_KEY` (if
   set) → a canned offline reply generator (keyword-matched templates, not a model —
-  see "Known limitations").
+  see "Known limitations"). Each turn retrieves relevant semantic memory and applies
+  your learned style preferences before generating a reply.
+- **Sessions**: conversational state (current thought, attention, dialogue) is scoped
+  per authenticated user — two people talking to Jarvis at once no longer interleave
+  into the same state (`src/cognition/session.ts`).
+- **Real delegation**: when Gemini is configured, chat supports function-calling
+  against real capabilities (GitHub, email, TTS) — the model extracts structured
+  arguments from the conversation and the server executes them for real, gated by a
+  default-deny permission grant system (`GET/POST /api/permissions*`). Local-model
+  tool-calling is attempted opportunistically and falls back cleanly when the model
+  doesn't support it (most don't yet).
+- **Semantic memory**: every real (non-simulated) chat turn is embedded and stored in
+  Postgres/pgvector, then retrieved by similarity on future turns — requires an
+  embedding provider to actually be reachable (Gemini, or a local Ollama instance
+  with an embedding model *and* `--embeddings` support); degrades to no-op, not a
+  crash, when neither is available.
 - **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
   with bcrypt-hashed passwords, both backed by Postgres.
 - **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.
 - **Observation**: real CPU/disk/memory metrics, telemetry log, audit ledger, decision
   traces — all bounded in-memory buffers, viewable in `/admin`.
 - **Long-term learning**: coding style preferences, cached workflow steps, and a
-  mistake log — persisted to disk (`data/learning.json`), not reset on restart.
+  mistake log — persisted to disk (`data/learning.json`), not reset on restart, and
+  consulted (style preferences) when generating chat replies.
+- **Confidence**: computed per-turn from what actually happened (which backend
+  answered, whether memory had relevant hits, whether tool calls succeeded) instead
+  of fixed inputs.
 - **Memory review queue**: a pending-records approval flow, backed by Postgres.
 - **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
   read via IMAP), and text-to-speech — each gated behind its own env vars and
@@ -98,10 +125,17 @@ None of this is a security issue — it's worth knowing before you rely on it:
   canned phrasing, not a language model. It's the default reply path whenever no
   local LLM and no `GEMINI_API_KEY` are reachable — i.e. out of the box, until you
   point it at Ollama or set a cloud key.
-- A handful of files under `src/` (`bridge/synapse.py`, `execution/planner.py`,
-  `infrastructure/health.py`) are unused fragments from a prior design and are not
-  imported by anything that runs. `src/desktop/` is a separate, optional
-  pywebview/Electron launcher, not part of the Docker/API path.
+- A couple of files under `src/` (`bridge/synapse.py`, `infrastructure/health.py`)
+  are unused fragments from a prior design and are not imported by anything that
+  runs. `src/desktop/` is a separate, optional pywebview launcher, not part of the
+  Docker/API path.
+- **Capability grants are in-memory, not persisted** — they reset on restart (the
+  admin default re-seeds itself; anyone else granted a capability needs it granted
+  again). Durable storage is a natural next step once there's a UI to manage grants.
+- **Tool-calling delegation only fires through `/api/chat`** — `/api/executive/run`'s
+  free-text objective planner stays plan-only on purpose (see its own doc comment):
+  invoking GitHub/email actions needs structured arguments an LLM extracts from real
+  conversation, not keyword-matched from a plan string.
 
 ## Testing
 

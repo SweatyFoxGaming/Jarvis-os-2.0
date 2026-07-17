@@ -1,7 +1,7 @@
-import { CognitiveWorkspace } from "../cognition/workspace.js";
 import { ObservationPlatform } from "../observation/index.js";
 import { GoogleGenAI } from "@google/genai";
 import { MindKernel } from "../cognition/kernel/kernel.js";
+import { SessionState } from "../cognition/session.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
@@ -14,57 +14,60 @@ import { MindKernel } from "../cognition/kernel/kernel.js";
  * 5. Receive result
  * 6. Update Mind Kernel
  * 7. Return response
- * 
- * It manages continuous proactive operations through the central Mind Kernel.
+ *
+ * This planner decomposes a free-text objective into steps (via Gemini when
+ * available) and narrates them — it does not execute anything itself. Real
+ * delegation to a capability (GitHub/email/TTS) requires structured arguments
+ * (owner/repo/title, to/subject/body, ...) that a free-text objective doesn't
+ * reliably contain; that's handled by real Gemini function-calling in the
+ * /api/chat path instead (src/execution/tools.ts), where the model extracts
+ * those arguments directly from the conversation. Keeping this planner honest
+ * about that boundary (see `simulated`/`buildVerification` below) beats
+ * guessing a repo/recipient from keyword matches on a plan string.
  */
 export class AutonomousExecutive {
-  private workspace: CognitiveWorkspace;
   private observation: ObservationPlatform;
   private ai: GoogleGenAI | null;
-  private kernel: MindKernel;
 
-  constructor(workspace: CognitiveWorkspace, observation: ObservationPlatform, ai: GoogleGenAI | null) {
-    this.workspace = workspace;
+  constructor(observation: ObservationPlatform, ai: GoogleGenAI | null) {
     this.observation = observation;
     this.ai = ai;
-    this.kernel = MindKernel.getInstance();
   }
 
-  /**
-   * Executes a high-level objective autonomously via the Mind Kernel
-   */
-  public async executeObjective(objective: string): Promise<any> {
+  public async executeObjective(objective: string, session: SessionState): Promise<any> {
+    const kernel = MindKernel.getInstance();
+    const workspace = session.workspace;
+
     this.observation.logTelemetry("info", "Executive", `Coordinator: Initiating Autonomous Objective: "${objective}"`);
-    
-    // Initialise Internal Dialogue for board debate evaluation
-    this.kernel.dialogue.clear();
-    this.kernel.dialogue.recordTurn("CEO", `We have received a new high-level objective: "${objective}". Let's decompose and coordinate execution.`);
-    this.kernel.dialogue.recordTurn("Architect", "We should decompose this into 4 clean sequential targets for safety and structure.");
-    this.kernel.dialogue.recordTurn("Security", "Confirming sandbox parameters are active. No third-party network bypasses allowed.");
+
+    session.dialogue.clear();
+    session.dialogue.recordTurn("CEO", `We have received a new high-level objective: "${objective}". Let's decompose and coordinate execution.`);
+    session.dialogue.recordTurn("Architect", "We should decompose this into 4 clean sequential targets for safety and structure.");
+    session.dialogue.recordTurn("Security", "This planner does not execute — structured delegation happens through chat function-calling instead.");
 
     // --- STAGE 1: Decompose Objective ---
-    this.kernel.updateState({
+    session.updateState({
       currentMission: objective,
       currentThought: "Understanding Request",
       executiveStatus: "Thinking",
-      attentionTarget: this.kernel.attentionEngine.determineAttention({ userRequest: objective }),
-    }, this.workspace, this.observation);
-    
-    this.workspace.mission.progressPercent = 10;
-    this.workspace.mission.status = "in_progress";
-    await this.delay(1000);
+      attentionTarget: session.attentionEngine.determineAttention({ userRequest: objective }),
+    }, this.observation);
+
+    workspace.mission.progressPercent = 10;
+    workspace.mission.status = "in_progress";
+    await this.delay(300);
 
     // --- STAGE 2: Formulate Goals ---
-    this.kernel.updateState({
+    session.updateState({
       currentGoal: `Autonomous Fullfillment: ${objective}`,
       currentThought: "Searching Memory",
       executiveStatus: "Planning",
-      attentionTarget: this.kernel.attentionEngine.determineAttention({ activeGoal: `Autonomous Fullfillment: ${objective}` }),
-    }, this.workspace, this.observation);
-    
-    this.workspace.mission.progressPercent = 30;
-    this.workspace.mission.status = "in_progress";
-    await this.delay(1000);
+      attentionTarget: session.attentionEngine.determineAttention({ activeGoal: `Autonomous Fullfillment: ${objective}` }),
+    }, this.observation);
+
+    workspace.mission.progressPercent = 30;
+    workspace.mission.status = "in_progress";
+    await this.delay(300);
 
     // --- STAGE 3: Proactive Task Creation ---
     let tasks = [
@@ -74,7 +77,7 @@ export class AutonomousExecutive {
       `Run regression suite and verify QA standards`
     ];
 
-    if (this.ai && !this.kernel.offlineMode) {
+    if (this.ai && !kernel.offlineMode) {
       try {
         const response = await this.ai.models.generateContent({
           model: "gemini-3.5-flash",
@@ -91,39 +94,38 @@ export class AutonomousExecutive {
       }
     }
 
-    this.kernel.updateState({
+    session.updateState({
       currentPlan: tasks,
       currentThought: "Planning",
       executiveStatus: "Planning",
-      attentionTarget: this.kernel.attentionEngine.determineAttention({ hasIncompletePlan: true }),
-    }, this.workspace, this.observation);
+      attentionTarget: session.attentionEngine.determineAttention({ hasIncompletePlan: true }),
+    }, this.observation);
 
-    this.workspace.mission.progressPercent = 50;
-    this.workspace.mission.status = "in_progress";
-    await this.delay(1000);
+    workspace.mission.progressPercent = 50;
+    workspace.mission.status = "in_progress";
+    await this.delay(300);
 
-    // --- STAGE 4: Specialist Assembly ---
-    this.kernel.updateState({
+    // --- STAGE 4: Specialist Assembly (narrated, not executed — see class doc) ---
+    session.updateState({
       currentThought: "Executing Research",
       executiveStatus: "Executing",
       activeCapability: "Specialist Swarm Assembler",
-    }, this.workspace, this.observation);
+    }, this.observation);
 
-    this.workspace.mission.progressPercent = 75;
-    this.workspace.mission.status = "in_progress";
+    workspace.mission.progressPercent = 75;
+    workspace.mission.status = "in_progress";
 
     const swarmLog: string[] = [];
-    
+
     for (let i = 0; i < tasks.length; i++) {
       const step = tasks[i];
-      this.workspace.plan.currentStepIndex = i;
-      
-      const fileTarget = `src/execution/autonomous_step_${i + 1}.ts`;
-      this.kernel.updateState({
-        attentionTarget: this.kernel.attentionEngine.determineAttention({ emergency: null, userRequest: step }),
-      }, this.workspace, this.observation);
-      this.workspace.attention.focusOn(fileTarget);
-      
+      workspace.plan.currentStepIndex = i;
+
+      session.updateState({
+        attentionTarget: session.attentionEngine.determineAttention({ emergency: null, userRequest: step }),
+      }, this.observation);
+      workspace.attention.focusOn(step);
+
       // Narrated planning output only — no code is actually written, compiled,
       // or tested here. See `simulated`/`buildVerification` on the final report.
       let swarmResult = "";
@@ -136,16 +138,16 @@ export class AutonomousExecutive {
       } else {
         swarmResult = `[QA/Verification Swarm — planned, not executed] Would run the test harness.`;
       }
-      
-      this.workspace.capabilities.recordResult({ step, outcome: "success", summary: swarmResult });
-      this.observation.logTelemetry("info", "Executive", `[Stage 4: Swarm Dispatch] Step ${i + 1} completed by specialist swarm.`);
+
+      workspace.capabilities.recordResult({ step, outcome: "success", summary: swarmResult });
+      this.observation.logTelemetry("info", "Executive", `[Stage 4: Swarm Dispatch] Step ${i + 1} narrated by specialist swarm.`);
       swarmLog.push(swarmResult);
-      await this.delay(1200);
+      await this.delay(200);
     }
 
     // --- STAGE 5: Output Aggregation & QA ---
-    this.kernel.dialogue.recordTurn("QA", "All specialist swarms returned green exit statuses. Output is compliant.");
-    this.kernel.dialogue.recordTurn("Decision", `Objective "${objective}" successfully completed.`);
+    session.dialogue.recordTurn("QA", "All specialist swarms returned narrated (non-executed) plans.");
+    session.dialogue.recordTurn("Decision", `Objective "${objective}" successfully planned.`);
 
     const finalReport = {
       objective,
@@ -154,12 +156,14 @@ export class AutonomousExecutive {
       swarmOutcomes: swarmLog,
       // This coordinator decomposes and narrates a plan (optionally via Gemini
       // for the step breakdown) — it does not write files, run a compiler, or
-      // execute tests. Callers should not treat this as a real build/QA result.
+      // execute tests. For real capability execution with structured
+      // arguments, use /api/chat, which supports Gemini function-calling
+      // against src/execution/tools.ts.
       simulated: true,
       buildVerification: "NOT PERFORMED — no code was written, compiled, or tested."
     };
 
-    const calculatedConfidence = this.kernel.confidenceModel.calculateOverallConfidence({
+    const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
       memoryConfidence: 1.0,
       toolConfidence: 1.0,
       validationConfidence: 1.0,
@@ -167,32 +171,31 @@ export class AutonomousExecutive {
       environmentConfidence: 1.0
     });
 
-    this.kernel.updateState({
+    session.updateState({
       currentThought: "Preparing Response",
       executiveStatus: "Idle",
       activeCapability: null,
       confidence: calculatedConfidence,
-      attentionTarget: this.kernel.attentionEngine.determineAttention({}),
-    }, this.workspace, this.observation);
+      attentionTarget: session.attentionEngine.determineAttention({}),
+    }, this.observation);
 
-    this.workspace.mission.progressPercent = 100;
-    this.workspace.mission.status = "completed";
+    workspace.mission.progressPercent = 100;
+    workspace.mission.status = "completed";
 
-    this.workspace.capabilities.recordResult(finalReport);
-    this.workspace.plan.updateStatus("idle");
-    this.workspace.attention.clearFocus();
+    workspace.capabilities.recordResult(finalReport);
+    workspace.plan.updateStatus("idle");
+    workspace.attention.clearFocus();
 
-    // Log detailed Decision Trace via the Synchronized Platform State
     this.observation.recordDecisionTrace({
       intent: `Autonomous Execution: "${objective}"`,
       goals: [`Complete: ${objective}`, "Decompose goals autonomously", "Assemble specialist swarms"],
       strategy: "Multi-stage Autonomous executive pattern",
       planner: tasks,
       capabilitySelection: ["Specialist Swarm Assembler", "QA/Verification Swarm"],
-      reasoning: `Successfully completed all 5 stages of autonomous execution. Swarms reported zero anomalies. Final QA compile is healthy. Confidence: ${calculatedConfidence}%.`,
-      knowledgeUsed: this.workspace.userContext.loadedFacts,
-      executionResult: `Completed ${objective}. Status: SUCCESS`,
-      reflection: "Autonomous coordinator loop ran with peak efficiency using Mind Kernel.",
+      reasoning: `Completed all 5 stages of planning. Swarms narrated their intended steps without executing them. Confidence: ${calculatedConfidence}%.`,
+      knowledgeUsed: workspace.userContext.loadedFacts,
+      executionResult: `Planned ${objective}. Status: SUCCESS (planning only)`,
+      reflection: "Executive coordinator loop ran via SessionState; no capability was actually invoked.",
       confidence: calculatedConfidence / 100
     });
 

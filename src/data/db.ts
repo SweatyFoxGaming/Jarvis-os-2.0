@@ -49,6 +49,32 @@ async function createSchema(): Promise<void> {
   `);
 }
 
+// Kept separate from createSchema(): the pgvector extension requires a
+// privilege the connecting role might not have (depends on how Postgres was
+// provisioned), and semantic memory failing to initialize shouldn't block
+// users/api_keys/memory_records, which don't need it.
+let vectorReady = false;
+
+async function createVectorSchema(): Promise<void> {
+  const db = getPool();
+  await db.query(`CREATE EXTENSION IF NOT EXISTS vector;`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS memory_embeddings (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      content TEXT NOT NULL,
+      embedding vector(768),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS memory_embeddings_username_idx ON memory_embeddings(username);`);
+  vectorReady = true;
+}
+
+export function isVectorReady(): boolean {
+  return vectorReady;
+}
+
 /**
  * Retries because the "postgres" container may still be accepting connections
  * when this process starts, even with depends_on in docker-compose.yml
@@ -59,6 +85,16 @@ export async function initDatabase(retries = 5, delayMs = 2000): Promise<boolean
     try {
       await createSchema();
       observation.logTelemetry("info", "Database", "Postgres schema verified/initialized.");
+      try {
+        await createVectorSchema();
+        observation.logTelemetry("info", "Database", "pgvector schema ready — semantic memory enabled.");
+      } catch (vecErr: any) {
+        observation.logTelemetry(
+          "warn",
+          "Database",
+          `pgvector setup failed (${vecErr.message}) — semantic memory disabled, everything else unaffected.`
+        );
+      }
       return true;
     } catch (err: any) {
       observation.logTelemetry(
