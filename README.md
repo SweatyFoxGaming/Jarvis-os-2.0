@@ -61,10 +61,12 @@ relying on anything not listed in "What's implemented."
    ```bash
    docker compose up -d --build
    ```
-   This starts four containers: `api` (the app, ports 8000 and 3000), `postgres`
+   This starts five containers: `api` (the app, ports 8000 and 3000), `postgres`
    (pgvector image, used for users/memory persistence), `tts` (text-to-speech, port
-   5051), and `llama-cpp` (serves your GGUF model). `./start.sh` does the same thing
-   and opens a browser tab. First boot pulls/loads the model, which can take a minute.
+   5051), `llama-cpp` (serves your GGUF model), and `whisper-cpp` (offline speech-to-
+   text — a real ~142MB whisper-base.en model ships inside that image, no separate
+   download needed). `./start.sh` does the same thing and opens a browser tab. First
+   boot pulls/loads the model, which can take a minute.
 
 4. **Open the console:** `http://localhost:3000` (main console), `/admin`
    (operator panel), `/mind` (cognitive state graph). Port 8000 (the FastAPI
@@ -88,7 +90,13 @@ relying on anything not listed in "What's implemented."
   semantic memory and applies your learned style preferences before generating a
   reply. CPU inference of even a small (2-3B) local model is genuinely slow —
   live-measured at 90-130 seconds for a short reply on a modest machine — not a
-  bug, just the tradeoff of offline-first, CPU-only local inference.
+  bug, just the tradeoff of offline-first, CPU-only local inference. A message
+  that looks like it needs a real tool (GitHub, email, ...) is routed to Gemini
+  first when it's available, rather than to the local model — which has no tool
+  access and, left to answer such a request itself, was observed fabricating a
+  plausible-sounding result instead of admitting it couldn't act. If forced into
+  strictly-local mode (or Gemini isn't configured), the local model is told
+  explicitly it has no tool access and to say so rather than invent an answer.
 - **Sessions**: conversational state (current thought, attention, dialogue) is scoped
   per authenticated user — two people talking to Jarvis at once no longer interleave
   into the same state (`src/cognition/session.ts`). Conversation history specifically
@@ -117,7 +125,15 @@ relying on anything not listed in "What's implemented."
   traces — all bounded in-memory buffers, viewable in `/admin`.
 - **Long-term learning**: coding style preferences, cached workflow steps, and a
   mistake log — persisted to disk (`data/learning.json`), not reset on restart, and
-  consulted (style preferences) when generating chat replies.
+  consulted (style preferences) when generating chat replies. Written automatically
+  too: after every real chat turn, a lightweight Gemini reflection call judges
+  whether the exchange actually revealed a style preference or a genuine
+  mistake+fix, and only then writes it — not a manual `/api/learning/*` call
+  required for either.
+- **Speech-to-text**: Gemini's multimodal API when configured; otherwise a real
+  local `whisper-cpp` service (`docker-compose.yml`) with a genuine bundled
+  whisper-base.en model, entirely offline. Falls back to a canned string only if
+  neither is reachable.
 - **Confidence**: computed per-turn from what actually happened (which backend
   answered, whether memory had relevant hits, whether tool calls succeeded) instead
   of fixed inputs.

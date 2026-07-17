@@ -13,6 +13,7 @@ import { LocalCognitiveEngine } from "./cognition/local_engine.js";
 import * as github from "./integrations/github.js";
 import * as emailIntegration from "./integrations/email.js";
 import * as tts from "./integrations/tts.js";
+import * as whisper from "./integrations/whisper.js";
 import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
@@ -489,12 +490,21 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
       observation.logTelemetry("info", "Sensors", `Voice transcription completed: "${transcription}"`);
       res.json({ transcription });
     } else {
-      // Simulation/Offline mode
-      const simText = kernel.offlineMode 
-        ? "Notice: Voice input was captured, but I am operating in Offline Mode, sir."
-        : "Simulated speech transcription: Please configure your GEMINI_API_KEY to activate neural voice listening.";
-      observation.logTelemetry("warn", "Sensors", "Running transcription in simulation/offline mode.");
-      res.json({ transcription: simText });
+      // Offline-first path: a real local whisper-cpp service, matching the
+      // local-first chat pattern, instead of going straight to a canned
+      // string. Only falls back to the simulated text below if whisper-cpp
+      // itself is unreachable/not configured.
+      try {
+        const transcription = await whisper.transcribeAudio(audio, mimeType || "audio/webm");
+        observation.logTelemetry("info", "Sensors", `Offline (whisper-cpp) transcription completed: "${transcription}"`);
+        res.json({ transcription });
+      } catch (whisperErr: any) {
+        observation.logTelemetry("warn", "Sensors", `Offline transcription unavailable: ${whisperErr.message}`);
+        const simText = kernel.offlineMode
+          ? "Notice: Voice input was captured, but offline speech-to-text isn't reachable right now, sir."
+          : "Simulated speech transcription: Please configure your GEMINI_API_KEY, or ensure the whisper-cpp service is running, to activate voice listening.";
+        res.json({ transcription: simText });
+      }
     }
   } catch (error: any) {
     observation.logTelemetry("error", "Sensors", `Voice transcription failed: ${error.message}`);
