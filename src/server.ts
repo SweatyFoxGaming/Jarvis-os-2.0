@@ -10,6 +10,9 @@ import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
 import { ExecutiveBoard } from "./execution/executive_board.js";
 import { MindKernel } from "./cognition/kernel/kernel.js";
 import { LocalCognitiveEngine } from "./cognition/local_engine.js";
+import * as github from "./integrations/github.js";
+import * as emailIntegration from "./integrations/email.js";
+import * as tts from "./integrations/tts.js";
 
 dotenv.config();
 
@@ -210,6 +213,7 @@ app.post("/api/settings/offline", validateApiKey, (req: any, res: any) => {
   const { offline } = req.body;
   const kernel = MindKernel.getInstance();
   kernel.offlineMode = !!offline;
+  kernel.persistSettings();
   observation.logTelemetry("info", "System", `Offline Mode changed to: ${kernel.offlineMode}`);
   res.json({ status: "success", offline: kernel.offlineMode });
 });
@@ -234,7 +238,9 @@ app.post("/api/settings", validateApiKey, (req: any, res: any) => {
   if (localModelName !== undefined) kernel.localModelName = localModelName;
   if (localApiKey !== undefined) kernel.localApiKey = localApiKey;
   if (llmMode !== undefined) kernel.llmMode = llmMode;
-  
+
+  kernel.persistSettings();
+
   observation.logTelemetry(
     "info", 
     "System", 
@@ -959,6 +965,103 @@ app.post("/api/ecosystem/install", validateApiKey, (req, res) => {
 
 app.get("/api/ecosystem/plugins", validateApiKey, (req, res) => {
   res.json({ plugins: [] });
+});
+
+// ---------- Integrations: GitHub / Email / TTS ----------
+
+const handleIntegrationError = (res: any, err: any) => {
+  const status = typeof err?.status === "number" ? err.status : 500;
+  observation.logTelemetry("warn", "Integrations", `Request failed: ${err?.message || err}`);
+  res.status(status).json({ error: err?.message || "Integration request failed" });
+};
+
+app.get("/api/integrations/github/repo", validateApiKey, async (req: any, res: any) => {
+  const { owner, repo, path: filePath, ref } = req.query;
+  if (!owner || !repo) return res.status(400).json({ error: "owner and repo are required" });
+  try {
+    const data = filePath
+      ? await github.getFileContent(owner, repo, filePath, ref)
+      : await github.getRepo(owner, repo);
+    res.json(data);
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/github/issues", validateApiKey, async (req: any, res: any) => {
+  const { owner, repo, title, body, labels } = req.body;
+  if (!owner || !repo || !title) return res.status(400).json({ error: "owner, repo and title are required" });
+  try {
+    res.json(await github.createIssue(owner, repo, title, body, labels));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/github/issues/:number/comments", validateApiKey, async (req: any, res: any) => {
+  const { owner, repo, body } = req.body;
+  if (!owner || !repo || !body) return res.status(400).json({ error: "owner, repo and body are required" });
+  try {
+    res.json(await github.commentOnIssue(owner, repo, Number(req.params.number), body));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/github/pulls", validateApiKey, async (req: any, res: any) => {
+  const { owner, repo, title, head, base, body } = req.body;
+  if (!owner || !repo || !title || !head || !base) {
+    return res.status(400).json({ error: "owner, repo, title, head and base are required" });
+  }
+  try {
+    res.json(await github.createPullRequest(owner, repo, title, head, base, body));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.get("/api/integrations/github/pulls", validateApiKey, async (req: any, res: any) => {
+  const { owner, repo, number, state } = req.query;
+  if (!owner || !repo) return res.status(400).json({ error: "owner and repo are required" });
+  try {
+    const data = number
+      ? await github.getPullRequest(owner, repo, Number(number))
+      : await github.listPullRequests(owner, repo, state);
+    res.json(data);
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/email/send", validateApiKey, async (req: any, res: any) => {
+  const { to, subject, text, html } = req.body;
+  if (!to || !subject || !text) return res.status(400).json({ error: "to, subject and text are required" });
+  try {
+    res.json(await emailIntegration.sendEmail(to, subject, text, html));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.get("/api/integrations/email/messages", validateApiKey, async (req: any, res: any) => {
+  const limit = req.query.limit ? Number(req.query.limit) : 10;
+  try {
+    res.json(await emailIntegration.fetchRecentMessages(limit));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/tts/speak", validateApiKey, async (req: any, res: any) => {
+  const { text, voice, model } = req.body;
+  if (!text) return res.status(400).json({ error: "text is required" });
+  try {
+    const { audio, contentType } = await tts.synthesizeSpeech(text, { voice, model });
+    res.setHeader("Content-Type", contentType);
+    res.send(audio);
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
 });
 
 // ---------- Static Files Serving ----------

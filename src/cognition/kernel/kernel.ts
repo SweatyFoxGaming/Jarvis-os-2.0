@@ -7,6 +7,7 @@ import { InternalDialogue } from "./dialogue.js";
 import { SynchronizationEngine } from "./synchronization.js";
 import { CognitiveWorkspace } from "../workspace.js";
 import { ObservationPlatform } from "../../observation/index.js";
+import { loadSettings, saveSettings } from "./settings-store.js";
 
 export class MindKernel {
   private static instance: MindKernel | null = null;
@@ -19,12 +20,37 @@ export class MindKernel {
   public dialogue = new InternalDialogue();
   public synchronizer = new SynchronizationEngine();
   public offlineMode = false;
-  public localLlmEndpoint = "http://localhost:11434";
+  // "localhost" would resolve to the container itself, not the Docker host —
+  // host.docker.internal (mapped via extra_hosts in docker-compose.yml) reaches
+  // a local LLM (e.g. Ollama) running on the host machine.
+  public localLlmEndpoint = "http://host.docker.internal:11434";
   public localModelName = "llama3";
   public localApiKey = "";
   public llmMode = "local-first";
 
-  private constructor() {}
+  private constructor() {
+    this.loadPersistedSettings();
+  }
+
+  private loadPersistedSettings(): void {
+    const persisted = loadSettings();
+    if (!persisted) return;
+    if (persisted.offlineMode !== undefined) this.offlineMode = persisted.offlineMode;
+    if (persisted.localLlmEndpoint !== undefined) this.localLlmEndpoint = persisted.localLlmEndpoint;
+    if (persisted.localModelName !== undefined) this.localModelName = persisted.localModelName;
+    if (persisted.localApiKey !== undefined) this.localApiKey = persisted.localApiKey;
+    if (persisted.llmMode !== undefined) this.llmMode = persisted.llmMode;
+  }
+
+  public persistSettings(): void {
+    saveSettings({
+      offlineMode: this.offlineMode,
+      localLlmEndpoint: this.localLlmEndpoint,
+      localModelName: this.localModelName,
+      localApiKey: this.localApiKey,
+      llmMode: this.llmMode,
+    });
+  }
 
   public static getInstance(): MindKernel {
     if (!MindKernel.instance) {

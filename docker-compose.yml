@@ -15,4 +15,31 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+    # Lets the container reach services on the host (e.g. a local Ollama instance
+    # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - tts
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: jarvis-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - /mnt/jarvis_home/postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  tts:
+    image: travisvn/openai-edge-tts:latest
+    container_name: jarvis-tts
+    environment:
+      - API_KEY=${TTS_API_KEY}
+    ports:
+      - "5051:5050"
     restart: unless-stopped
