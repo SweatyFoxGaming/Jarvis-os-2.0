@@ -17,7 +17,7 @@ import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
-import { TOOL_DECLARATIONS, executeTool } from "./execution/tools.js";
+import { TOOL_DECLARATIONS, executeTool, looksToolShaped } from "./execution/tools.js";
 import * as permissions from "./execution/permissions.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./execution/scheduler.js";
@@ -550,9 +550,21 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
     const stylePrefs = learningEngine.getStylePreferences();
     const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
 
-    const systemInstruction =
+    const baseSystemInstruction =
       "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm."
       + memoryContext + styleContext;
+
+    // The Gemini branch genuinely has tool access (declared via `tools` in
+    // its request config below), so its prompt stays as-is. The local model
+    // never gets tools wired in (see the latency/no-payoff note further
+    // down) — without this, it was observed live fabricating plausible
+    // GitHub/email answers instead of admitting it can't act, which is a
+    // trust hazard worse than no answer at all. This addendum makes the
+    // boundary explicit so it declines and points the user at online mode
+    // instead of inventing a result.
+    const systemInstruction = baseSystemInstruction;
+    const localSystemInstruction = baseSystemInstruction +
+      "\n\nImportant: you are currently running as a local, fully offline model with no access to GitHub, email, or any other external tool or live data source. If the user asks you to look something up, send something, or take an action that would require one of those, say plainly that you don't have that capability while running locally, and suggest switching to online mode (Gemini) if they'd like it done for real. Never invent a plausible-sounding result for an action you did not actually perform.";
 
     // We will decide which strategy to execute based on kernel.llmMode and kernel.offlineMode
     let success = false;
@@ -582,6 +594,24 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
         // local-first (default)
         executionChain.push("LocalLLM", "Gemini");
       }
+    }
+
+    // A tool-shaped request ("check that GitHub repo", "send an email...")
+    // sent to the local model is exactly the fabrication risk the honest
+    // local prompt above is a safety net for — but the better outcome is to
+    // not need that net at all. When Gemini is actually available and the
+    // user hasn't explicitly forced strictly-local, prefer it first so the
+    // request gets real capability instead of an honest decline.
+    if (
+      ai &&
+      kernel.llmMode !== "strictly-local" &&
+      looksToolShaped(message) &&
+      executionChain[0] === "LocalLLM" &&
+      executionChain.includes("Gemini")
+    ) {
+      const idx = executionChain.indexOf("Gemini");
+      executionChain.splice(idx, 1);
+      executionChain.unshift("Gemini");
     }
 
     // Always append simulated as final fallback
@@ -636,7 +666,7 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
               body: JSON.stringify({
                 model: kernel.localModelName,
                 messages: [
-                  { role: "system", content: systemInstruction },
+                  { role: "system", content: localSystemInstruction },
                   ...formattedMessages
                 ],
                 stream: true

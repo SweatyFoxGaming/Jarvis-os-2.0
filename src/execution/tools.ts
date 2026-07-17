@@ -117,3 +117,26 @@ export async function executeTool(name: string, args: Record<string, any>, usern
     return { name, ok: false, error: err.message || String(err) };
   }
 }
+
+// Keyword triggers per tool, not a single flat list — makes it obvious which
+// tool a match implies and keeps this in sync with TOOL_DECLARATIONS by
+// construction rather than a second hand-maintained list drifting from it.
+const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
+  github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
+  github_create_issue: ["github", "issue", "repo", "repository"],
+  send_email: ["email", "e-mail", "send mail", "inbox"],
+  speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
+};
+
+/**
+ * Heuristic only — used to decide *routing* (prefer a backend that can
+ * actually fulfill the request), never to decide whether to execute a tool.
+ * Real execution always goes through Gemini's own function-calling decision
+ * plus the permission grant in executeTool(); this just avoids sending an
+ * obviously tool-shaped request to a backend (the local model) that's known
+ * to fabricate an answer instead of admitting it has no tool access.
+ */
+export function looksToolShaped(message: string): boolean {
+  const lower = message.toLowerCase();
+  return Object.values(TOOL_TRIGGER_WORDS).some(words => words.some(w => lower.includes(w)));
+}
