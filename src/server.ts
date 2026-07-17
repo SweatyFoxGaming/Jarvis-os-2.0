@@ -21,6 +21,7 @@ import { TOOL_DECLARATIONS, executeTool, looksToolShaped } from "./execution/too
 import * as permissions from "./execution/permissions.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./execution/scheduler.js";
+import { reflectAndLearn } from "./cognition/reflection.js";
 
 dotenv.config();
 
@@ -840,6 +841,13 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
       memoryStore
         .remember(req.username, `User asked: "${message}" — Jarvis replied: "${fullReply.slice(0, 500)}"`, ai, kernel.localLlmEndpoint)
         .catch(() => {});
+
+      // Write side of style/mistake learning — see reflection.ts. Needs
+      // Gemini specifically (structured JSON output), independent of which
+      // backend actually answered the user.
+      if (ai) {
+        reflectAndLearn(ai, message, fullReply).catch(() => {});
+      }
     }
 
     const latency = performance.now() - startTime;
