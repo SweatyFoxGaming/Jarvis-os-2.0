@@ -18,6 +18,7 @@ export class MindKernel {
   public executiveTracker = new ExecutiveStateTracker();
   public dialogue = new InternalDialogue();
   public synchronizer = new SynchronizationEngine();
+  public offlineMode = false;
 
   private constructor() {}
 

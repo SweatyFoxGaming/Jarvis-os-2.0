@@ -144,21 +144,27 @@ export class ObservationPlatform {
   // ---------- 4. Diagnostics & 5. Health ----------
   public runDiagnostics() {
     const issues: string[] = [];
-    const status = {
-      gemini_client: process.env.GEMINI_API_KEY ? "healthy" : "simulated",
+    const isGeminiAvailable = !!process.env.GEMINI_API_KEY;
+    const metrics = this.getMetrics();
+    const status = isGeminiAvailable ? "Healthy" : "Simulated";
+
+    const componentStatus = {
+      gemini_client: isGeminiAvailable ? "healthy" : "simulated",
       memory_store: "healthy",
       static_files: "healthy",
     };
 
-    if (!process.env.GEMINI_API_KEY) {
+    if (!isGeminiAvailable) {
       issues.push("GEMINI_API_KEY is not defined; system falling back to local simulation mode.");
     }
 
     return {
       timestamp: new Date(),
       status,
+      componentStatus,
       issues,
       engine_ready: true,
+      cpuUsagePercent: metrics.system.cpuUsagePercent,
     };
   }
 

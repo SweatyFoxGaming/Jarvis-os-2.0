@@ -74,7 +74,7 @@ export class AutonomousExecutive {
       `Run regression suite and verify QA standards`
     ];
 
-    if (this.ai) {
+    if (this.ai && !this.kernel.offlineMode) {
       try {
         const response = await this.ai.models.generateContent({
           model: "gemini-3.5-flash",

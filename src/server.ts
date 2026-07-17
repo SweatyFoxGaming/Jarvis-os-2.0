@@ -9,6 +9,7 @@ import { AutonomousExecutive } from "./execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
 import { ExecutiveBoard } from "./execution/executive_board.js";
 import { MindKernel } from "./cognition/kernel/kernel.js";
+import { LocalCognitiveEngine } from "./cognition/local_engine.js";
 
 dotenv.config();
 
@@ -189,13 +190,28 @@ app.post("/api/login", (req, res) => {
 // Status & Diagnostics
 app.get("/api/status", validateApiKey, (req: any, res: any) => {
   const stats = observation.getMetrics();
+  const kernel = MindKernel.getInstance();
   res.json({
     cpu: Math.round(stats.system.cpuUsagePercent * 10) / 10,
     ram_available_mb: stats.system.freeMemoryMb,
     disk: 38,
     engine_ready: true,
     user: req.username,
+    offline_mode: kernel.offlineMode
   });
+});
+
+app.get("/api/settings/offline", validateApiKey, (req: any, res: any) => {
+  const kernel = MindKernel.getInstance();
+  res.json({ offline: kernel.offlineMode });
+});
+
+app.post("/api/settings/offline", validateApiKey, (req: any, res: any) => {
+  const { offline } = req.body;
+  const kernel = MindKernel.getInstance();
+  kernel.offlineMode = !!offline;
+  observation.logTelemetry("info", "System", `Offline Mode changed to: ${kernel.offlineMode}`);
+  res.json({ status: "success", offline: kernel.offlineMode });
 });
 
 // ---------- Pass 5, 6 & 7: Observation Platform Exposes API ----------
@@ -310,7 +326,8 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
   observation.logTelemetry("info", "Sensors", `Received audio payload of type: ${mimeType || "unknown"}`);
 
   try {
-    if (ai) {
+    const kernel = MindKernel.getInstance();
+    if (ai && !kernel.offlineMode) {
       observation.incrementMetric("geminiApiCalls");
       
       const response = await generateContentWithFallback(ai, {
@@ -329,9 +346,11 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
       observation.logTelemetry("info", "Sensors", `Voice transcription completed: "${transcription}"`);
       res.json({ transcription });
     } else {
-      // Simulation mode
-      const simText = "Simulated speech transcription: Please configure your GEMINI_API_KEY to activate neural voice listening.";
-      observation.logTelemetry("warn", "Sensors", "Running transcription in simulation mode (No API Key).");
+      // Simulation/Offline mode
+      const simText = kernel.offlineMode 
+        ? "Notice: Voice input was captured, but I am operating in Offline Mode, sir."
+        : "Simulated speech transcription: Please configure your GEMINI_API_KEY to activate neural voice listening.";
+      observation.logTelemetry("warn", "Sensors", "Running transcription in simulation/offline mode.");
       res.json({ transcription: simText });
     }
   } catch (error: any) {
@@ -373,7 +392,8 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
   let fullReply = "";
 
   try {
-    if (ai) {
+    const localEngine = LocalCognitiveEngine.getInstance();
+    if (ai && !kernel.offlineMode) {
       observation.incrementMetric("geminiApiCalls");
       kernel.updateState({
         currentThought: "Executing Research",
@@ -392,7 +412,7 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
             model: modelName,
             contents: message,
             config: {
-              systemInstruction: "You are JARVIS V3, the Executive Mind of the Phoenix Intelligence Platform. Respond in a calm, helpful, intellectual tone.",
+              systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm.",
             }
           });
           break; // successfully initialized the stream
@@ -402,25 +422,27 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
         }
       }
 
-      if (!responseStream) {
-        throw lastStreamError || new Error("All chat stream models failed");
-      }
-
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          fullReply += chunk.text;
-          res.write(`data: ${chunk.text}\n\n`);
+      if (responseStream) {
+        for await (const chunk of responseStream) {
+          if (chunk.text) {
+            fullReply += chunk.text;
+            res.write(`data: ${chunk.text}\n\n`);
+          }
         }
+      } else {
+        observation.logTelemetry("warn", "Cognition", "All online models failed. Transitioning to Local Cognitive Simulator.");
+        throw lastStreamError || new Error("All stream models failed");
       }
     } else {
-      // Simulation mode
+      // Offline Local Cognitive Simulator mode
       kernel.updateState({
         currentThought: "Executing Research",
         executiveStatus: "Executing",
         activeCapability: "Local Cognitive Simulator"
       }, workspace, observation);
 
-      const simulatedResponse = `I have received your request: "${message}". I am operating in simulation mode. Once you configure process.env.GEMINI_API_KEY, I can connect to my fully cognitive deep reasoning system.`;
+      const stats = observation.getMetrics();
+      const simulatedResponse = localEngine.generateResponse(message, workspace, stats.system);
       
       const words = simulatedResponse.split(" ");
       for (const word of words) {
@@ -481,7 +503,29 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
     res.end();
 
   } catch (error: any) {
-    observation.logTelemetry("error", "Executive", `Failed to complete chat stream: ${error.message}`);
+    observation.logTelemetry("error", "Executive", `Failed to complete chat stream: ${error.message}. Attempting local recovery.`);
+    
+    if (!fullReply) {
+      try {
+        const localEngine = LocalCognitiveEngine.getInstance();
+        const stats = observation.getMetrics();
+        const fallbackMsg = localEngine.generateResponse(message, workspace, stats.system);
+        
+        const words = fallbackMsg.split(" ");
+        for (const word of words) {
+          fullReply += word + " ";
+          res.write(`data: ${word} \n\n`);
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      } catch (fallbackErr) {
+        // Double-fault
+      }
+    }
+
     kernel.updateState({
       currentThought: "Idle",
       executiveStatus: "Idle",
@@ -505,14 +549,26 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
   const startTime = Date.now();
   try {
     let reply = "";
-    if (ai) {
-      observation.incrementMetric("geminiApiCalls");
-      const response = await generateContentWithFallback(ai, {
-        contents: userMsg,
-      });
-      reply = response.text || "";
+    const kernel = MindKernel.getInstance();
+    const localEngine = LocalCognitiveEngine.getInstance();
+    if (ai && !kernel.offlineMode) {
+      try {
+        observation.incrementMetric("geminiApiCalls");
+        const response = await generateContentWithFallback(ai, {
+          contents: userMsg,
+          config: {
+            systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences.",
+          }
+        });
+        reply = response.text || "";
+      } catch (err: any) {
+        observation.logTelemetry("warn", "Cognition", `Online completion failed: ${err.message}. Reverting to local engine.`);
+        const stats = observation.getMetrics();
+        reply = localEngine.generateResponse(userMsg, workspace, stats.system);
+      }
     } else {
-      reply = `[Simulation] Acknowledged: ${userMsg}`;
+      const stats = observation.getMetrics();
+      reply = localEngine.generateResponse(userMsg, workspace, stats.system);
     }
 
     observation.recordLatency(Date.now() - startTime);

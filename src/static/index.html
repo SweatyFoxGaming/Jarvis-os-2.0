@@ -214,6 +214,12 @@
                     <span id="health-latency" class="text-success font-bold">0ms</span>
                 </div>
                 <div class="h-4 w-[1px] bg-white/10"></div>
+                <!-- Offline Mode Toggle -->
+                <button onclick="toggleOfflineMode()" id="btn-offline-toggle" class="flex items-center gap-1.5 px-3 py-1.5 bg-card border border-white/10 hover:border-amber-500/40 rounded-lg text-secondary hover:text-amber-500 font-semibold transition-all">
+                    <span id="offline-dot" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span id="offline-text">ONLINE</span>
+                </button>
+                <div class="h-4 w-[1px] bg-white/10"></div>
                 <!-- Sleep core -->
                 <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="flex items-center gap-1.5 px-3 py-1.5 bg-card border border-white/10 hover:border-primary/40 rounded-lg text-secondary hover:text-primary font-semibold transition-all">
                     <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1416,6 +1422,15 @@
                 document.getElementById('health-latency').textContent = `${metrics.counters.averageLatencyMs}ms`;
             }
 
+            // Status (including offline mode)
+            try {
+                const resStatus = await fetch('/api/status', { headers });
+                if (resStatus.ok) {
+                    const statusData = await resStatus.json();
+                    updateOfflineUIState(statusData.offline_mode);
+                }
+            } catch {}
+
             // Logs
             const resLogs = await fetch('/api/observation/telemetry', { headers });
             if (resLogs.ok) {
@@ -1764,6 +1779,52 @@
                             <p class="text-secondary text-[10px]">Fix: ${m.successfulFix}</p>
                         </div>
                     `).join('');
+                }
+            }
+        } catch {}
+    }
+
+    // OFFLINE MODE CONTROLLERS
+    let offlineModeActive = false;
+    function updateOfflineUIState(isOffline) {
+        offlineModeActive = isOffline;
+        const btn = document.getElementById('btn-offline-toggle');
+        const dot = document.getElementById('offline-dot');
+        const text = document.getElementById('offline-text');
+        if (!btn || !dot || !text) return;
+
+        if (offlineModeActive) {
+            dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
+            text.textContent = "OFFLINE_MODE";
+            btn.className = "flex items-center gap-1.5 px-3 py-1.5 bg-card border border-amber-500/30 hover:border-amber-500 rounded-lg text-amber-500 font-semibold transition-all";
+        } else {
+            dot.className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
+            text.textContent = "ONLINE";
+            btn.className = "flex items-center gap-1.5 px-3 py-1.5 bg-card border border-white/10 hover:border-primary/40 rounded-lg text-secondary hover:text-primary font-semibold transition-all";
+        }
+    }
+
+    async function toggleOfflineMode() {
+        const headers = { 
+            'X-API-Key': CURRENT_API_KEY,
+            'Content-Type': 'application/json'
+        };
+        try {
+            const nextState = !offlineModeActive;
+            const res = await fetch('/api/settings/offline', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ offline: nextState })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                updateOfflineUIState(data.offline);
+                if (data.offline) {
+                    addNotification("System entering Offline Intelligence mode.", "warning");
+                    speakText("Offline mode engaged. Using local neural matrix.");
+                } else {
+                    addNotification("System connected to cloud neural models.", "info");
+                    speakText("Cloud cognitive models connected.");
                 }
             }
         } catch {}
