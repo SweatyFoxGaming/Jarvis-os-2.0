@@ -4,8 +4,9 @@ import { ObservationPlatform } from "../observation/index.js";
 
 const observation = ObservationPlatform.getInstance();
 
-// Matches the `vector(768)` column in db.ts — text-embedding-004 defaults to
-// 768 dimensions, so this stays consistent whichever provider actually answers.
+// Matches the `vector(768)` column in db.ts — gemini-embedding-001 defaults
+// to 3072 dimensions, so outputDimensionality is pinned to 768 explicitly
+// below to stay consistent whichever provider actually answers.
 const EMBEDDING_DIMENSIONS = 768;
 
 /**
@@ -17,9 +18,13 @@ const EMBEDDING_DIMENSIONS = 768;
 export async function embedText(text: string, ai: GoogleGenAI | null, localEndpoint: string | null): Promise<number[] | null> {
   if (ai) {
     try {
+      // Confirmed live against the Gemini API's own model list — the older
+      // "text-embedding-004" name used here previously 404s on the current
+      // API version.
       const response = await ai.models.embedContent({
-        model: "text-embedding-004",
+        model: "gemini-embedding-001",
         contents: text,
+        config: { outputDimensionality: EMBEDDING_DIMENSIONS },
       });
       const values = response.embeddings?.[0]?.values;
       if (values && values.length > 0) return values;

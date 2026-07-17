@@ -66,8 +66,11 @@ relying on anything not listed in "What's implemented."
    5051), and `llama-cpp` (serves your GGUF model). `./start.sh` does the same thing
    and opens a browser tab. First boot pulls/loads the model, which can take a minute.
 
-4. **Open the console:** `http://localhost:8000` (main console), `/admin`
-   (operator panel), `/mind` (cognitive state graph).
+4. **Open the console:** `http://localhost:3000` (main console), `/admin`
+   (operator panel), `/mind` (cognitive state graph). Port 8000 (the FastAPI
+   gateway) only serves `/health`, `/props`, and `/api/*` — it doesn't proxy
+   the frontend, so opening it directly 404s. Live-verified: this is the
+   actual current behavior, not a typo carried over from an earlier draft.
 
 5. **Prefer a different local backend (e.g. Ollama) instead?** Change the endpoint/model
    in the Settings tab — it's saved to `data/settings.json` and survives restarts. One

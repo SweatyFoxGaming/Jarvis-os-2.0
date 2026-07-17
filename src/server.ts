@@ -728,7 +728,15 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
             let guard = 0;
             while (calls.length > 0 && guard < 3) {
               guard++;
-              contents.push({ role: "model", parts: calls.map(c => ({ functionCall: c })) });
+              // Echo back the model's own raw content (not a hand-built
+              // { functionCall } part) — Gemini attaches a thought_signature
+              // to each function-call part and rejects a follow-up request
+              // that's missing it (confirmed live: "Function call is missing
+              // a thought_signature..." / 400 INVALID_ARGUMENT).
+              const modelContent = response.candidates?.[0]?.content;
+              contents.push(modelContent && modelContent.parts?.length
+                ? { role: "model", parts: modelContent.parts }
+                : { role: "model", parts: calls.map(c => ({ functionCall: c })) });
 
               const responseParts = [];
               for (const call of calls) {

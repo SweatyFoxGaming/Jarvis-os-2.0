@@ -344,7 +344,10 @@ async function handleSend() {
 
             for (const line of lines) {
                 if (line.startsWith("data: ")) {
-                    const dataStr = line.slice(6).trim();
+                    // Only strip a trailing \r — a full .trim() ate the
+                    // trailing space each streamed word chunk ends with,
+                    // so replies rendered with no spaces between words.
+                    const dataStr = line.slice(6).replace(/\r$/, "");
                     if (dataStr === "[DONE]") break;
                     if (dataStr.startsWith("detail: ")) continue;
 
