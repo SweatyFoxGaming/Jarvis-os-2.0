@@ -968,11 +968,19 @@
     function startMicrophoneVisualizer(stream) {
         try {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            // Contexts created outside a synchronous user-gesture call stack
+            // (this runs after an awaited getUserMedia) start life 'suspended'
+            // per spec and never auto-resume — without this the analyser just
+            // keeps returning stale/zero data forever, so the waveform (and the
+            // "listening" feel) looks permanently dead even while recording.
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(e => console.warn("AudioContext resume failed: ", e));
+            }
             analyser = audioCtx.createAnalyser();
             analyser.fftSize = 32;
             audioSource = audioCtx.createMediaStreamSource(stream);
             audioSource.connect(analyser);
-            
+
             const bufferLength = analyser.frequencyBinCount;
             dataArray = new Uint8Array(bufferLength);
             visualizerActive = true;
@@ -995,6 +1003,11 @@
 
     // High Reliability Speech to Text utilizing Web Speech API first (offline, instant) and Gemini backend fallbacks
     let speechRecognitionActive = false;
+    // Distinguishes a user-requested stop from the browser auto-ending
+    // recognition after a phrase/pause — without this, every auto-end tore
+    // the whole mic session down and showed "Neural listening suspended.",
+    // making the toggle feel like it never stayed on.
+    let micStoppedIntentionally = false;
 
     async function toggleMicrophoneSensor() {
         if (micEnabled) {
@@ -1003,13 +1016,17 @@
         }
 
         addNotification("Initializing neural audio vectors...", "info");
-        
+        micStoppedIntentionally = false;
+
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SpeechRecognition) {
             try {
                 // Initialize local speech recognition for zero-latency offline-friendly operation
                 localSpeechRecognition = new SpeechRecognition();
-                localSpeechRecognition.continuous = false;
+                // continuous:true keeps recognition running across pauses instead
+                // of auto-ending after a single phrase (the onend handler below
+                // still restarts it as a safety net for browsers that end anyway).
+                localSpeechRecognition.continuous = true;
                 localSpeechRecognition.interimResults = false;
                 localSpeechRecognition.lang = 'en-US';
                 
@@ -1028,7 +1045,11 @@
                 };
                 
                 localSpeechRecognition.onresult = (event) => {
-                    const transcript = event.results[0][0].transcript;
+                    // With continuous:true, event.results accumulates across the
+                    // whole session — resultIndex points at the newly added
+                    // result, not index 0 (which would just replay the first
+                    // phrase ever heard forever).
+                    const transcript = event.results[event.resultIndex][0].transcript;
                     if (transcript && transcript.trim()) {
                         addNotification(`Heard: "${transcript}"`, "success");
                         const input = document.getElementById('chat-input') || document.getElementById('objective-input');
@@ -1061,20 +1082,28 @@
                         localSpeechRecognition = null;
                         speechRecognitionActive = false;
                         runServerSideRecorder();
-                    } else {
-                        addNotification("No speech detected. Stopped listening.", "warning");
-                        stopMicrophoneSensor();
                     }
+                    // 'no-speech' is expected during normal pauses in continuous
+                    // listening — ignored here so it doesn't kill the session;
+                    // onend (below) restarts recognition if it stops anyway.
                 };
-                
+
                 localSpeechRecognition.onend = () => {
                     speechRecognitionActive = false;
-                    // Reset UI only if we are actually stopping
-                    if (!speechRecognitionActive && micEnabled) {
+                    if (micStoppedIntentionally || !micEnabled) return;
+                    // Browser ended the session on its own (e.g. after a long
+                    // pause) even with continuous:true — restart transparently
+                    // so "Neural Listening" actually stays on until the user
+                    // explicitly toggles it off, instead of silently going dark.
+                    try {
+                        localSpeechRecognition.start();
+                        speechRecognitionActive = true;
+                    } catch (e) {
+                        console.warn("Failed to restart speech recognition: ", e);
                         stopMicrophoneSensor();
                     }
                 };
-                
+
                 localSpeechRecognition.start();
                 
             } catch (e) {
@@ -1185,6 +1214,7 @@
     }
 
     async function stopMicrophoneSensor() {
+        micStoppedIntentionally = true;
         micEnabled = false;
         visualizerActive = false;
         stopMicrophoneVisualizer();
