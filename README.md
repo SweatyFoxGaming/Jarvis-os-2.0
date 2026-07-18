@@ -144,6 +144,15 @@ relying on anything not listed in "What's implemented."
   answered, whether memory had relevant hits, whether tool calls succeeded) instead
   of fixed inputs.
 - **Memory review queue**: a pending-records approval flow, backed by Postgres.
+- **Self-analysis** (`/api/evolution/*`): real computed signals, not decoration —
+  architecture score from an actual parsed import graph and cycle detection,
+  quality from real `tsc`/TODO-marker output, performance from real observed
+  latency/error telemetry, security from a real hardcoded-secret and
+  dangerous-call pattern scan. Persisted to Postgres so `/trends` reflects real
+  history and `/forecast` does a real (naively linear, honestly labeled)
+  projection once at least 3 runs exist — otherwise it says so rather than
+  inventing a number. Goals (`/api/evolution/goals`) compare a real metric
+  against a real target.
 - **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
   read via IMAP), and text-to-speech — each gated behind its own env vars and
   degrading gracefully (clear error, not a crash) when unset.
