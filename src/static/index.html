@@ -1451,6 +1451,7 @@
 
     // 6. API SYNCHRONIZATIONS
     async function loadMindKernelData() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
             const res = await fetch('/api/cognition/kernel', { headers });
@@ -1518,9 +1519,10 @@
     }
 
     async function loadLiveSystemData() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
-            
+
             // System
             const resMetrics = await fetch('/api/observation/metrics', { headers });
             if (resMetrics.ok) {
