@@ -583,6 +583,26 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Command Execution: the single most consequential capability in this app.
+                     Jarvis only ever proposes; a host-side script only ever runs a command the
+                     user has explicitly approved by its exact text, once, here. -->
+                <div id="dashboard-command-execution" class="rounded-2xl p-5 w-full" style="background: linear-gradient(155deg, rgba(248,113,113,0.07), rgba(10,15,29,0.7)); backdrop-filter: blur(28px) saturate(140%); border: 1px solid rgba(248,113,113,0.15); box-shadow: inset 0 1px 1px rgba(255,255,255,0.04), 0 0 0 1px rgba(248,113,113,0.06), 0 12px 40px rgba(0,0,0,0.55);">
+                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-danger/10">
+                        <div>
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2 text-danger">
+                                <span class="w-1.5 h-1.5 rounded-full bg-danger animate-pulse"></span>
+                                COMMAND EXECUTION
+                            </h3>
+                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-lg">Jarvis can propose an exact shell command to run on this machine. Nothing runs until you read it here and explicitly approve it — every command needs its own fresh approval, and a host-side script (never this app's own process) is the only thing that ever actually runs it.</p>
+                        </div>
+                        <span id="command-pending-badge" class="px-2 py-0.5 rounded bg-danger/10 border border-danger/25 text-[8px] font-mono font-bold text-danger tracking-widest uppercase whitespace-nowrap flex-shrink-0">0 PENDING</span>
+                    </div>
+
+                    <div id="command-proposals-list" class="space-y-2">
+                        <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No commands proposed yet.</div>
+                    </div>
+                </div>
             </div>
 
             <!-- ================= SUB-PANEL 2: CHAT DIALOGUE SYSTEM ================= -->
@@ -2055,6 +2075,73 @@
         } catch {}
     }
 
+    const COMMAND_STATUS_STYLE = {
+        pending: { label: 'PENDING REVIEW', classes: 'border-danger/30 text-danger bg-danger/5' },
+        approved: { label: 'APPROVED — QUEUED', classes: 'border-warning/25 text-warning bg-warning/5' },
+        running: { label: 'RUNNING', classes: 'border-warning/25 text-warning bg-warning/5' },
+        executed: { label: 'EXECUTED', classes: 'border-success/25 text-success bg-success/5' },
+        failed: { label: 'FAILED', classes: 'border-danger/25 text-danger bg-danger/5' },
+        rejected: { label: 'REJECTED', classes: 'border-secondary/25 text-secondary bg-secondary/5' },
+    };
+
+    async function approveCommand(id) {
+        if (!confirm('Approve this exact command to run on the machine? This cannot be undone once it runs.')) return;
+        try {
+            const res = await authFetch(`/api/system/commands/${id}/approve`, {
+                method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) { addNotification("Command approved — a host-side script will run it shortly.", "warning"); loadCommandExecution(); }
+        } catch {}
+    }
+
+    async function rejectCommand(id) {
+        try {
+            const res = await authFetch(`/api/system/commands/${id}/reject`, {
+                method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) { addNotification("Command rejected.", "info"); loadCommandExecution(); }
+        } catch {}
+    }
+
+    async function loadCommandExecution() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const res = await authFetch('/api/system/commands', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) return;
+            const data = await res.json();
+            const commands = data.commands || [];
+
+            const pendingCount = commands.filter(c => c.status === 'pending').length;
+            document.getElementById('command-pending-badge').textContent = `${pendingCount} PENDING`;
+
+            const list = document.getElementById('command-proposals-list');
+            if (commands.length === 0) {
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No commands proposed yet.</div>`;
+                return;
+            }
+            list.innerHTML = commands.map(c => {
+                const style = COMMAND_STATUS_STYLE[c.status] || COMMAND_STATUS_STYLE.pending;
+                return `
+                    <div class="holo-chip border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase ${style.classes}">${style.label}</span>
+                            <span class="text-[8px] text-secondary font-mono">${new Date(c.created_at).toLocaleString()}</span>
+                        </div>
+                        <code class="text-[11px] text-white font-mono block mb-1.5 break-all">${escapeHtml(c.command)}</code>
+                        <p class="text-[10px] text-secondary leading-snug mb-1.5">${escapeHtml(c.reason)}</p>
+                        ${c.output ? `<pre class="text-[9px] text-secondary/80 font-mono bg-black/30 rounded p-2 mb-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-32 overflow-y-auto">${escapeHtml(c.output)}</pre>` : ''}
+                        ${c.status === 'pending' ? `
+                            <div class="flex gap-1.5">
+                                <button onclick="approveCommand(${c.id})" class="flex-1 px-1.5 py-1 bg-danger/10 hover:bg-danger/20 border border-danger/25 rounded text-[8px] font-mono font-bold text-danger uppercase tracking-widest">APPROVE &amp; RUN</button>
+                                <button onclick="rejectCommand(${c.id})" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">REJECT</button>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        } catch {}
+    }
+
     async function refreshWorkspaceSnapshot() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -2784,11 +2871,13 @@
         loadIdentityStream();
         loadFeatureRequests();
         loadSecurityOps();
+        loadCommandExecution();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
         setInterval(loadIdentityStream, 20000);
         setInterval(loadFeatureRequests, 20000);
         setInterval(loadSecurityOps, 20000);
+        setInterval(loadCommandExecution, 10000);
     });
 
     // Global Notification Badge
