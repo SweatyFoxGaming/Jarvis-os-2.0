@@ -38,6 +38,7 @@ import * as identity from "./cognition/identity.js";
 import * as identityRepo from "./data/identity-repo.js";
 import * as news from "./integrations/news.js";
 import * as webSearch from "./integrations/websearch.js";
+import * as featureRequestsRepo from "./data/feature-requests-repo.js";
 
 dotenv.config();
 
@@ -592,6 +593,7 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 
     const baseSystemInstruction =
       "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm."
+      + "\n\nIf the user asks for something you have no tool for, don't just decline or invent a fake result. Use search_web to research whether/how it could genuinely be built, then present a concrete, honest plan in conversation — what it would do, roughly how. Only after the user clearly approves building it, call queue_feature_request to hand it to a real human developer; you never write or execute code yourself. If they don't approve, or you're just discussing the idea, don't queue anything."
       + memoryContext + styleContext + identityContext;
 
     // The Gemini branch genuinely has tool access (declared via `tools` in
@@ -1162,6 +1164,37 @@ app.get("/api/identity/thoughts/history", validateApiKey, async (req: any, res: 
     res.json({ thoughts: await identityRepo.getRecentProactiveThoughts() });
   } catch (err: any) {
     res.json({ thoughts: [], error: err.message });
+  }
+});
+
+// ---------- Feature Requests ----------
+// The bridge between "asked Jarvis for it in chat" and "actually built by a
+// human developer" — see queue_feature_request in src/execution/tools.ts.
+// Jarvis only ever writes to this queue; it never writes or executes code.
+app.get("/api/feature-requests", validateApiKey, async (req: any, res: any) => {
+  try {
+    const status = req.query.status as featureRequestsRepo.FeatureRequestStatus | undefined;
+    res.json({ requests: await featureRequestsRepo.getFeatureRequests(status) });
+  } catch (err: any) {
+    res.json({ requests: [], error: err.message });
+  }
+});
+
+app.post("/api/feature-requests/:id/status", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "feature.propose")) {
+    return res.status(403).json({ error: 'Missing capability grant "feature.propose"' });
+  }
+  const { status } = req.body;
+  const valid: featureRequestsRepo.FeatureRequestStatus[] = ["queued", "in_progress", "shipped", "declined"];
+  if (!valid.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${valid.join(", ")}` });
+  }
+  try {
+    const updated = await featureRequestsRepo.updateFeatureRequestStatus(Number(req.params.id), status);
+    if (!updated) return res.status(404).json({ error: "Feature request not found" });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
