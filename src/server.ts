@@ -39,6 +39,7 @@ import * as identityRepo from "./data/identity-repo.js";
 import * as news from "./integrations/news.js";
 import * as webSearch from "./integrations/websearch.js";
 import * as featureRequestsRepo from "./data/feature-requests-repo.js";
+import * as securityRepo from "./data/security-repo.js";
 
 dotenv.config();
 
@@ -1192,6 +1193,134 @@ app.post("/api/feature-requests/:id/status", validateApiKey, async (req: any, re
   try {
     const updated = await featureRequestsRepo.updateFeatureRequestStatus(Number(req.params.id), status);
     if (!updated) return res.status(404).json({ error: "Feature request not found" });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Security Ops (human-gated) ----------
+// Jarvis observes and proposes here; it never applies anything itself.
+// Ingest routes are called by trusted host-side scanner scripts
+// (scripts/security/*.sh, run outside Docker via cron) using the same
+// INTERNAL_API_KEY as any other caller — no separate auth mechanism, no new
+// privileges for the chat-facing container.
+app.post("/api/security/ingest/devices", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.manage"' });
+  }
+  const devices = req.body.devices;
+  if (!Array.isArray(devices)) return res.status(400).json({ error: "devices must be an array" });
+  try {
+    let newCount = 0;
+    for (const d of devices) {
+      if (!d.mac || !d.ip) continue;
+      const { isNew } = await securityRepo.upsertNetworkDevice(d.mac, d.ip, d.hostname || null, d.vendor || null);
+      if (isNew) {
+        newCount++;
+        await securityRepo.addFinding(
+          "network_device",
+          "info",
+          `New device on network: ${d.hostname || d.vendor || d.mac}`,
+          `MAC ${d.mac} (${d.vendor || "unknown vendor"}) first seen at ${d.ip}. Acknowledge it in the dashboard if this is expected.`,
+          "network_scan"
+        );
+      }
+    }
+    res.json({ ingested: devices.length, newDevices: newCount });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/security/ingest/findings", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.manage"' });
+  }
+  const findings = req.body.findings;
+  if (!Array.isArray(findings)) return res.status(400).json({ error: "findings must be an array" });
+  try {
+    const created = [];
+    for (const f of findings) {
+      if (!f.category || !f.severity || !f.title || !f.description) continue;
+      const finding = await securityRepo.addFinding(f.category, f.severity, f.title, f.description, f.source || "host_scan");
+      if (f.proposedAction) {
+        await securityRepo.addProposal(finding.id, f.proposedAction, f.proposedCommand || null);
+      }
+      created.push(finding.id);
+    }
+    res.json({ created: created.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/security/devices", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ devices: await securityRepo.getNetworkDevices() });
+  } catch (err: any) {
+    res.json({ devices: [], error: err.message });
+  }
+});
+
+app.post("/api/security/devices/:mac/acknowledge", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.manage"' });
+  }
+  try {
+    const updated = await securityRepo.acknowledgeDevice(req.params.mac);
+    if (!updated) return res.status(404).json({ error: "Device not found" });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/security/findings", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ findings: await securityRepo.getFindings(req.query.status as securityRepo.FindingStatus | undefined) });
+  } catch (err: any) {
+    res.json({ findings: [], error: err.message });
+  }
+});
+
+app.post("/api/security/findings/:id/status", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.manage"' });
+  }
+  const { status } = req.body;
+  const valid: securityRepo.FindingStatus[] = ["open", "acknowledged", "resolved"];
+  if (!valid.includes(status)) return res.status(400).json({ error: `status must be one of: ${valid.join(", ")}` });
+  try {
+    const updated = await securityRepo.updateFindingStatus(Number(req.params.id), status);
+    if (!updated) return res.status(404).json({ error: "Finding not found" });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/security/proposals", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ proposals: await securityRepo.getProposals(req.query.status as securityRepo.ProposalStatus | undefined) });
+  } catch (err: any) {
+    res.json({ proposals: [], error: err.message });
+  }
+});
+
+// Approving/rejecting ONLY changes status — nothing here ever executes
+// proposed_command. Real execution, if the user wants it, is a manual step
+// they take themselves outside this app.
+app.post("/api/security/proposals/:id/status", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.manage"' });
+  }
+  const { status } = req.body;
+  const valid: securityRepo.ProposalStatus[] = ["pending", "approved", "rejected"];
+  if (!valid.includes(status)) return res.status(400).json({ error: `status must be one of: ${valid.join(", ")}` });
+  try {
+    const updated = await securityRepo.updateProposalStatus(Number(req.params.id), status);
+    if (!updated) return res.status(404).json({ error: "Proposal not found" });
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

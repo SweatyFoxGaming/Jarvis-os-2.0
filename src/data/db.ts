@@ -170,6 +170,53 @@ async function createSchema(): Promise<void> {
     );
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS feature_requests_status_idx ON feature_requests(status);`);
+
+  // Human-gated security ops — Jarvis observes and proposes, never applies.
+  // network_devices is populated by a host-side arp-scan run outside Docker
+  // (see scripts/security/network_scan.sh) — the api container stays on its
+  // isolated bridge network with no new privileges; only the scanner script,
+  // which has no chat/tool-calling exposure, ever touches the real LAN.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS network_devices (
+      mac_address TEXT PRIMARY KEY,
+      ip_address TEXT NOT NULL,
+      hostname TEXT,
+      vendor TEXT,
+      is_known BOOLEAN NOT NULL DEFAULT false,
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS security_findings (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS security_findings_status_idx ON security_findings(status);`);
+  // proposed_command is stored purely for transparency (shown to the user
+  // verbatim) — nothing in this codebase ever executes it. Approving a
+  // proposal only changes its status; running the actual command, if the
+  // user wants to, is a manual step they take themselves.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS remediation_proposals (
+      id SERIAL PRIMARY KEY,
+      finding_id INTEGER REFERENCES security_findings(id) ON DELETE CASCADE,
+      proposed_action TEXT NOT NULL,
+      proposed_command TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS remediation_proposals_status_idx ON remediation_proposals(status);`);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a
