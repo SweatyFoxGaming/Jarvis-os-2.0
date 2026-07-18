@@ -40,6 +40,7 @@ import * as news from "./integrations/news.js";
 import * as webSearch from "./integrations/websearch.js";
 import * as featureRequestsRepo from "./data/feature-requests-repo.js";
 import * as securityRepo from "./data/security-repo.js";
+import * as commandProposalsRepo from "./data/command-proposals-repo.js";
 
 dotenv.config();
 
@@ -1321,6 +1322,86 @@ app.post("/api/security/proposals/:id/status", validateApiKey, async (req: any, 
   try {
     const updated = await securityRepo.updateProposalStatus(Number(req.params.id), status);
     if (!updated) return res.status(404).json({ error: "Proposal not found" });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Command Execution (the single most consequential capability in
+// this codebase — see propose_command in src/execution/tools.ts, and
+// scripts/security/command_executor.sh, which is the ONLY thing that ever
+// actually runs a command, and only ever a HOST-side script, never this
+// chat-facing container). Every row requires the user's own fresh approval;
+// nothing here auto-approves or auto-executes anything. ----------
+app.get("/api/system/commands", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.execute")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.execute"' });
+  }
+  try {
+    res.json({ commands: await commandProposalsRepo.getCommandProposals(req.query.status as commandProposalsRepo.CommandProposalStatus | undefined) });
+  } catch (err: any) {
+    res.json({ commands: [], error: err.message });
+  }
+});
+
+app.post("/api/system/commands/:id/approve", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.execute")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.execute"' });
+  }
+  try {
+    const updated = await commandProposalsRepo.setCommandDecision(Number(req.params.id), "approved");
+    if (!updated) return res.status(404).json({ error: "Command not found or not pending" });
+    observation.logAuditEvent(req.username, "command_approved", "success", `#${updated.id}: ${updated.command}`);
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/system/commands/:id/reject", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.execute")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.execute"' });
+  }
+  try {
+    const updated = await commandProposalsRepo.setCommandDecision(Number(req.params.id), "rejected");
+    if (!updated) return res.status(404).json({ error: "Command not found or not pending" });
+    observation.logAuditEvent(req.username, "command_rejected", "success", `#${updated.id}: ${updated.command}`);
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Called only by the host-side executor script — atomically claims exactly
+// one approved command (approved -> running) so an overlapping executor run
+// can never pick up and run the same command twice.
+app.post("/api/system/commands/claim", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.execute")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.execute"' });
+  }
+  try {
+    const claimed = await commandProposalsRepo.claimApprovedCommand();
+    if (!claimed) return res.json({ command: null });
+    res.json({ command: claimed });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Called only by the host-side executor script, after it actually ran a
+// claimed command — reports the real output/exit code back.
+app.post("/api/system/ingest/command-result", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.execute")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.execute"' });
+  }
+  const { id, output, exitCode } = req.body;
+  if (typeof id !== "number" || typeof exitCode !== "number") {
+    return res.status(400).json({ error: "id (number) and exitCode (number) are required" });
+  }
+  try {
+    const updated = await commandProposalsRepo.recordCommandResult(id, output || "", exitCode);
+    if (!updated) return res.status(404).json({ error: "Command not found" });
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

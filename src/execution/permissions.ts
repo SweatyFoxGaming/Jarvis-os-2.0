@@ -35,6 +35,7 @@ export const ALL_CAPABILITIES = [
   "feature.propose",
   "security.read",
   "security.manage",
+  "system.execute",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

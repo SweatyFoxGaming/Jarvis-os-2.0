@@ -217,6 +217,31 @@ async function createSchema(): Promise<void> {
     );
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS remediation_proposals_status_idx ON remediation_proposals(status);`);
+
+  // Real command execution on the actual host — the single most consequential
+  // capability in this codebase, built only after an explicit conversation
+  // with the user about what "you have final say" means mechanically. Every
+  // row requires the user's own fresh approval (no standing/blanket trust,
+  // no auto-approval of anything) before scripts/security/command_executor.sh
+  // (a HOST-side script, never the chat-facing api container) will run it.
+  // 'approved' -> 'running' is an atomic claim (see claimApprovedCommand in
+  // command-proposals-repo.ts) so an overlapping executor run can't double-run
+  // the same command.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS command_proposals (
+      id SERIAL PRIMARY KEY,
+      command TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      requested_by TEXT NOT NULL,
+      output TEXT,
+      exit_code INTEGER,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      approved_at TIMESTAMPTZ,
+      executed_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_status_idx ON command_proposals(status);`);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a

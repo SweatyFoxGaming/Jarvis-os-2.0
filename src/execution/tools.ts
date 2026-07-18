@@ -16,6 +16,7 @@ import * as news from "../integrations/news.js";
 import * as webSearch from "../integrations/websearch.js";
 import * as featureRequestsRepo from "../data/feature-requests-repo.js";
 import * as securityRepo from "../data/security-repo.js";
+import * as commandProposalsRepo from "../data/command-proposals-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -44,6 +45,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   search_web: "web.search",
   queue_feature_request: "feature.propose",
   get_security_status: "security.read",
+  propose_command: "system.execute",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -241,6 +243,19 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       properties: {},
     },
   },
+  {
+    name: "propose_command",
+    description:
+      "Propose a specific shell command to run on the user's machine. This ONLY creates a proposal for the user to review in the dashboard — it never executes anything. Only call this when you have a concrete, specific command in mind and have explained to the user what it does and why; never propose a command the user hasn't discussed or wouldn't recognize.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        command: { type: Type.STRING, description: "The exact shell command to propose" },
+        reason: { type: Type.STRING, description: "Why this command, in plain terms the user can judge before approving" },
+      },
+      required: ["command", "reason"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -334,6 +349,12 @@ export async function executeTool(name: string, args: Record<string, any>, usern
           openFindings: findings.map(f => ({ id: f.id, severity: f.severity, title: f.title })),
           pendingProposals: proposals.map(p => ({ id: p.id, action: p.proposed_action })),
         };
+        break;
+      }
+      case "propose_command": {
+        const proposed = await commandProposalsRepo.addCommandProposal(args.command, args.reason, username);
+        observation.logAuditEvent(username, "command_proposed", "success", `"${args.command}" (id ${proposed.id})`);
+        output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval in the dashboard. Nothing runs until you approve it." };
         break;
       }
       default:

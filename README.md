@@ -297,6 +297,46 @@ pending proposals with their exact command and an approve/reject choice —
 also reachable via the `get_security_status` chat tool or
 `GET /api/security/devices`/`/findings`/`/proposals` directly.
 
+### Command execution — the single most consequential capability here
+
+Built only after an explicit conversation about what "you have final say"
+means mechanically. Jarvis can propose an exact shell command via the
+`propose_command` chat tool — this only ever writes a `pending` row to
+`command_proposals`; it never runs anything. A command only ever executes
+after **your own fresh approval** in the dashboard, one command at a time,
+with no standing/blanket trust — approving one command does not authorize
+any future one.
+
+Execution itself is deliberately a separate, host-side step
+(`scripts/security/command_executor.sh`), for the same reason as the
+network/host scanners: the chat-facing `api` container — the part most
+exposed to prompt injection or bad model output — never gains the ability
+to actually run commands, only to write a proposal. The executor:
+
+- Atomically **claims** one `approved` command at a time
+  (`POST /api/system/commands/claim`, `approved -> running` in one
+  `UPDATE ... RETURNING`) so an overlapping run can never execute the same
+  command twice, plus a `flock` guard against concurrent script instances.
+- Runs a defense-in-depth **safety denylist** first (catastrophic patterns
+  like `rm -rf /`, `mkfs.*`, writing directly to a raw disk device) — this
+  is not a substitute for reading the command before approving it, just a
+  last-resort backstop.
+- Executes with a timeout (`COMMAND_TIMEOUT`, default 60s), captures the
+  real combined stdout/stderr and exit code, and reports back via
+  `POST /api/system/ingest/command-result` — visible in the dashboard
+  alongside the original proposal.
+
+Run periodically via cron, e.g. every minute:
+
+```
+* * * * * /path/to/scripts/security/command_executor.sh >> /var/log/jarvis-command-executor.log 2>&1
+```
+
+`arp-scan` and the executor's own command execution both need real host
+privileges (raw sockets, and whatever the approved command itself needs) —
+neither is granted automatically by this repo; see the scripts' own
+comments for what to set up and why.
+
 ## Files/notes
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
