@@ -327,6 +327,12 @@
                 ...(options.headers || {})
             };
             const res = await fetch(endpoint, { ...options, headers });
+            if ((res.status === 401 || res.status === 403) && apiKey) {
+                // Invalid/stale key — disconnect instead of retrying it every
+                // 5s on the sync interval and spamming a toast each time.
+                showMessage('Your API key is invalid or expired — please reconnect.', 'danger');
+                disconnectAdminSession();
+            }
             if (!res.ok) {
                 const err = await res.text();
                 throw new Error(`HTTP ${res.status}: ${err}`);

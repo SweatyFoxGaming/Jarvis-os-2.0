@@ -704,6 +704,26 @@
     let CURRENT_TAB = "dashboard";
     let cy;
 
+    // Background polling used to retry an invalid/stale key forever — every
+    // 2-4s, silently, until someone noticed the server logs. Wrapping the
+    // pollers' fetches in this instead clears the bad key on the first 401/403
+    // so they stop hammering the server with it, and surfaces exactly one
+    // notification asking the user to re-enter their key (reset whenever a
+    // fresh key is actually saved, so a future real failure can notify again).
+    let authFailureNotified = false;
+    async function authFetch(url, opts = {}) {
+        const res = await fetch(url, opts);
+        if ((res.status === 401 || res.status === 403) && CURRENT_API_KEY) {
+            CURRENT_API_KEY = "";
+            sessionStorage.removeItem('admin_api_key');
+            if (!authFailureNotified) {
+                authFailureNotified = true;
+                addNotification("Your API key is invalid or expired — please re-enter it in Settings.", "danger");
+            }
+        }
+        return res;
+    }
+
     // Untrusted strings (chat text, memory content, telemetry/audit messages,
     // LLM output) must never go into innerHTML unescaped — this is the one
     // choke point every dynamic innerHTML template in this file routes through.
@@ -1517,7 +1537,7 @@
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
-            const res = await fetch('/api/cognition/kernel', { headers });
+            const res = await authFetch('/api/cognition/kernel', { headers });
             if (res.ok) {
                 const data = await res.json();
                 
@@ -1587,7 +1607,7 @@
             const headers = { 'X-API-Key': CURRENT_API_KEY };
 
             // System
-            const resMetrics = await fetch('/api/observation/metrics', { headers });
+            const resMetrics = await authFetch('/api/observation/metrics', { headers });
             if (resMetrics.ok) {
                 const metrics = await resMetrics.json();
                 document.getElementById('health-cpu').textContent = `${Math.round(metrics.system.cpuUsagePercent)}%`;
@@ -1597,7 +1617,7 @@
 
             // Status (including offline mode)
             try {
-                const resStatus = await fetch('/api/status', { headers });
+                const resStatus = await authFetch('/api/status', { headers });
                 if (resStatus.ok) {
                     const statusData = await resStatus.json();
                     updateOfflineUIState(statusData.offline_mode);
@@ -1605,7 +1625,7 @@
             } catch {}
 
             // Logs
-            const resLogs = await fetch('/api/observation/telemetry', { headers });
+            const resLogs = await authFetch('/api/observation/telemetry', { headers });
             if (resLogs.ok) {
                 const logs = await resLogs.json();
                 const logPane = document.getElementById('telemetry-log-pane');
@@ -1626,7 +1646,7 @@
             }
 
             // Audit
-            const resAudit = await fetch('/api/observation/audit', { headers });
+            const resAudit = await authFetch('/api/observation/audit', { headers });
             if (resAudit.ok) {
                 const audits = await resAudit.json();
                 const auditPane = document.getElementById('audit-trail-pane');
@@ -1643,7 +1663,7 @@
             }
 
             // Mission Goal
-            const resWorkspace = await fetch('/api/cognition/workspace', { headers });
+            const resWorkspace = await authFetch('/api/cognition/workspace', { headers });
             if (resWorkspace.ok) {
                 const ws = await resWorkspace.json();
                 document.getElementById('goal-name').textContent = (ws.goal.activeGoal || 'Align system with human preferences').toUpperCase();
@@ -1666,7 +1686,7 @@
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
 
-            const resReflections = await fetch('/api/identity/reflections', { headers });
+            const resReflections = await authFetch('/api/identity/reflections', { headers });
             if (resReflections.ok) {
                 const data = await resReflections.json();
                 const reflections = data.reflections || [];
@@ -1699,7 +1719,7 @@
                 }
             }
 
-            const resThoughts = await fetch('/api/identity/thoughts/history', { headers });
+            const resThoughts = await authFetch('/api/identity/thoughts/history', { headers });
             if (resThoughts.ok) {
                 const data = await resThoughts.json();
                 const latest = (data.thoughts || [])[0];
@@ -2102,7 +2122,7 @@
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to load
         const headers = { 'X-API-Key': CURRENT_API_KEY };
         try {
-            const res = await fetch('/api/settings', { headers });
+            const res = await authFetch('/api/settings', { headers });
             if (res.ok) {
                 const data = await res.json();
                 document.getElementById('api-key-input').value = CURRENT_API_KEY;
@@ -2122,6 +2142,7 @@
         if (apiKeyInput) {
             CURRENT_API_KEY = apiKeyInput;
             sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
+            authFailureNotified = false; // a fresh key deserves its own failure notice if it also turns out bad
         }
 
         const headers = { 
@@ -2303,6 +2324,7 @@
     document.getElementById('api-key-input').addEventListener('change', (e) => {
         CURRENT_API_KEY = e.target.value.trim();
         sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
+        authFailureNotified = false; // a fresh key deserves its own failure notice if it also turns out bad
         addNotification("Authorization vector changed.");
     });
 
