@@ -3,6 +3,8 @@ import { ObservationPlatform } from "../observation/index.js";
 import * as emailIntegration from "../integrations/email.js";
 import * as briefing from "./briefing.js";
 import * as briefingRepo from "../data/briefing-repo.js";
+import * as identity from "../cognition/identity.js";
+import * as identityRepo from "../data/identity-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -109,5 +111,29 @@ export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 
     if (result.itemCount > 0) {
       pushNotification("admin", result.text, result.items.some(i => i.urgency === "high") ? "warning" : "info");
     }
+  });
+}
+
+/**
+ * The autonomous-initiative half of continuity-of-self — periodically
+ * synthesizes one genuine reflective thought from real recorded
+ * self-reflections (see cognition/identity.ts) and pushes it as a
+ * notification, so something resembling an ongoing internal life happens
+ * between conversations instead of only ever reacting to one. Honestly
+ * no-ops (no notification, nothing persisted) when there isn't enough real
+ * self-reflection history yet rather than fabricating a thought from
+ * nothing.
+ */
+export function startSelfReflectionJob(ai: GoogleGenAI | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
+  return registerJob("proactive-self-reflection", intervalMs, async () => {
+    if (!ai) return;
+    const result = await identity.generateProactiveThought(ai);
+    if (!result) return;
+    try {
+      await identityRepo.saveProactiveThought(result.content, result.basedOnCount);
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Identity", `Failed to persist proactive thought: ${err.message}`);
+    }
+    pushNotification("admin", result.content, "info");
   });
 }

@@ -11,6 +11,7 @@ import * as calendar from "../integrations/calendar.js";
 import * as briefing from "./briefing.js";
 import * as files from "../integrations/files.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
+import * as identity from "../cognition/identity.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -34,6 +35,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   read_file: "files.read",
   write_file: "files.write",
   query_knowledge_graph: "knowledge.read",
+  reflect_on_self: "identity.read",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -177,6 +179,16 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["query"],
     },
   },
+  {
+    name: "reflect_on_self",
+    description: "Recall genuine things you (Jarvis) have said, believed, or committed to in past conversations — real self-reflection, not fabricated introspection. Use this when the user asks what you've been thinking about, what you believe, or references something you said before.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "Optional topic to search within past self-reflections; omit for the most recent ones" },
+      },
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -238,6 +250,9 @@ export async function executeTool(name: string, args: Record<string, any>, usern
       case "query_knowledge_graph":
         output = { results: await knowledgeGraph.queryKnowledge(args.query) };
         break;
+      case "reflect_on_self":
+        output = { reflections: await identity.reflectOnSelf(args.query) };
+        break;
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -265,6 +280,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   read_file: ["read my", "open my note", "read the file", "read that note"],
   write_file: ["save this", "write this down", "save a note", "create a note", "write a note", "jot this down"],
   query_knowledge_graph: ["what do we know about", "what do you know about", "remind me about", "what did we decide about", "what have we discussed about"],
+  reflect_on_self: ["what have you been thinking", "what do you think about", "what do you believe", "have you thought about", "your opinion on", "what did you say about"],
 };
 
 /**

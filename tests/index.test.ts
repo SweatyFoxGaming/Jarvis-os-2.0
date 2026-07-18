@@ -14,6 +14,7 @@ import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/
 import { executeTool } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
+import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
 
 interface TestResult {
   name: string;
@@ -513,6 +514,29 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
   } finally {
     delete process.env.JARVIS_FILES_DIR_MOUNT;
     fsSync.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------- Identity (Continuity of Self) Tests ----------
+registerTest("Identity", "buildIdentityContext degrades cleanly when Postgres isn't reachable", async () => {
+  // This test process never calls initDatabase(), so there's no live
+  // Postgres connection here — buildIdentityContext must return "" rather
+  // than throw or block the chat system-instruction it's spliced into.
+  const context = await buildIdentityContext();
+  if (context !== "") {
+    throw new Error(`Identity: expected empty context with no DB, got: "${context}"`);
+  }
+});
+
+registerTest("Identity", "generateProactiveThought never fabricates a thought when there's no real history", async () => {
+  // Same no-live-DB environment as above. The DB read fails first (before
+  // the fake ai client below would ever be touched), so this also proves
+  // the function fails toward "no thought" rather than throwing and taking
+  // down the scheduler job that calls it.
+  const fakeAi = {} as any;
+  const result = await generateProactiveThought(fakeAi);
+  if (result !== null) {
+    throw new Error("Identity: expected null (no real history to draw from), got a fabricated result");
   }
 });
 

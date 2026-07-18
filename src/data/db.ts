@@ -132,6 +132,24 @@ async function createSchema(): Promise<void> {
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS kg_entities_name_idx ON kg_entities(name);`);
   await db.query(`CREATE INDEX IF NOT EXISTS kg_facts_entity_idx ON kg_facts(entity_id);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS self_reflections (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      source_excerpt TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS self_reflections_created_idx ON self_reflections(created_at);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS proactive_thoughts (
+      id SERIAL PRIMARY KEY,
+      content TEXT NOT NULL,
+      based_on_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a
