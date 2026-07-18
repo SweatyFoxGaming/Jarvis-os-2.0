@@ -5,9 +5,16 @@
 
 const INPUT_SAMPLE_RATE = 16000; // what Gemini's Live API expects on input
 const OUTPUT_SAMPLE_RATE = 24000; // what Gemini's Live API returns on output
+// Gemini's Live API wants periodic snapshots for visual context, not literal
+// video framerate — 1/sec is Google's own guidance and keeps bandwidth sane.
+const VIDEO_FRAME_INTERVAL_MS = 1000;
 
 let ws = null;
 let micStream = null;
+let cameraStream = null;
+let videoFrameInterval = null;
+let captureVideoEl = null;
+let captureCanvas = null;
 let inputAudioContext = null;
 let outputAudioContext = null;
 let scriptProcessor = null;
@@ -75,6 +82,53 @@ function playAudioChunk(arrayBuffer) {
   nextPlayTime = startAt + audioBuffer.duration;
 }
 
+// Best-effort — a genuine continuous video feed for the duration of the
+// session, not a one-off snapshot, but never blocks voice from starting if
+// the camera is denied/unavailable. Frames stream as JSON text messages
+// (see live-voice.ts) rather than binary, since they're infrequent enough
+// (1/sec) that the base64 overhead doesn't matter and it keeps the binary
+// channel unambiguously audio-only.
+async function startCameraStreaming() {
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+  } catch (err) {
+    console.warn("Camera unavailable for voice session, continuing audio-only: ", err);
+    return;
+  }
+
+  captureVideoEl = document.createElement("video");
+  captureVideoEl.srcObject = cameraStream;
+  captureVideoEl.muted = true;
+  captureVideoEl.playsInline = true;
+  await captureVideoEl.play();
+
+  captureCanvas = document.createElement("canvas");
+
+  videoFrameInterval = setInterval(() => {
+    if (!active || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (captureVideoEl.readyState !== captureVideoEl.HAVE_ENOUGH_DATA) return;
+    captureCanvas.width = captureVideoEl.videoWidth || 320;
+    captureCanvas.height = captureVideoEl.videoHeight || 240;
+    const ctx = captureCanvas.getContext("2d");
+    ctx.drawImage(captureVideoEl, 0, 0, captureCanvas.width, captureCanvas.height);
+    const dataUrl = captureCanvas.toDataURL("image/jpeg", 0.7);
+    ws.send(JSON.stringify({ type: "video", data: dataUrl.split(",")[1] }));
+  }, VIDEO_FRAME_INTERVAL_MS);
+}
+
+function stopCameraStreaming() {
+  if (videoFrameInterval) {
+    clearInterval(videoFrameInterval);
+    videoFrameInterval = null;
+  }
+  if (cameraStream) {
+    cameraStream.getTracks().forEach((t) => t.stop());
+    cameraStream = null;
+  }
+  captureVideoEl = null;
+  captureCanvas = null;
+}
+
 export async function startVoiceSession() {
   if (active) return;
   const apiKey = getApiKey();
@@ -99,7 +153,7 @@ export async function startVoiceSession() {
   ws = new WebSocket(`${protocol}//${location.host}/ws/voice?apiKey=${encodeURIComponent(apiKey)}`);
   ws.binaryType = "arraybuffer";
 
-  ws.onopen = () => {
+  ws.onopen = async () => {
     setStatus("Connected — listening…", "live");
     active = true;
 
@@ -118,6 +172,8 @@ export async function startVoiceSession() {
       const pcm16 = floatTo16BitPCM(downsampled);
       ws.send(pcm16);
     };
+
+    await startCameraStreaming();
   };
 
   ws.onmessage = (event) => {
@@ -174,4 +230,5 @@ export function stopVoiceSession() {
     outputAudioContext.close();
     outputAudioContext = null;
   }
+  stopCameraStreaming();
 }
