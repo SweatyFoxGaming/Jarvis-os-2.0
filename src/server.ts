@@ -24,6 +24,8 @@ import * as permissions from "./execution/permissions.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./execution/scheduler.js";
 import { reflectAndLearn } from "./cognition/reflection.js";
+import { WebSocketServer } from "ws";
+import * as liveVoice from "./cognition/live-voice.js";
 
 dotenv.config();
 
@@ -1317,6 +1319,10 @@ app.get("/mind", (req, res) => {
   res.sendFile(path.join(staticDir, "mind.html"));
 });
 
+app.get("/voice", (req, res) => {
+  res.sendFile(path.join(staticDir, "voice.html"));
+});
+
 // Fallback to serving index.html for unknown routes (SPA style)
 app.get("*", (req, res) => {
   res.sendFile(path.join(staticDir, "index.html"));
@@ -1337,8 +1343,45 @@ initDatabase().then(async (ready) => {
       observation.logTelemetry("warn", "Database", `Failed to load capability grants: ${err.message}`);
     }
   }
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     observation.logTelemetry("info", "System", `🚀 Jarvis OS Server running on http://localhost:${PORT}`);
+  });
+
+  // ---------- Voice-native mode (Gemini Live API) ----------
+  // A continuous WebSocket audio stream, not a request/response round trip —
+  // see src/cognition/live-voice.ts. Auth via ?apiKey= query param since
+  // browser WebSocket clients can't attach a custom x-api-key header on the
+  // handshake; the key itself is the same secret already used everywhere
+  // else, just carried differently for this one connection type.
+  const voiceWss = new WebSocketServer({ server: httpServer, path: "/ws/voice" });
+  voiceWss.on("connection", async (ws, req) => {
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    const apiKey = url.searchParams.get("apiKey");
+
+    let username: string | null = null;
+    if (apiKey === ADMIN_API_KEY) {
+      username = "admin";
+    } else if (apiKey) {
+      try {
+        username = await usersRepo.getUsernameByApiKey(apiKey);
+      } catch (err: any) {
+        observation.logTelemetry("warn", "LiveVoice", `API key lookup failed: ${err.message}`);
+      }
+    }
+
+    if (!username) {
+      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid API key." }));
+      ws.close();
+      return;
+    }
+    if (!ai) {
+      ws.send(JSON.stringify({ type: "error", message: "Voice-native mode requires GEMINI_API_KEY to be configured." }));
+      ws.close();
+      return;
+    }
+
+    observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
+    await liveVoice.bridgeVoiceSession(ai, ws, username);
   });
 
   scheduler.startEmailWatchJob();
