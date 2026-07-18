@@ -36,6 +36,8 @@ import * as analyzer from "./evolution/analyzer.js";
 import * as evolutionRepo from "./data/evolution-repo.js";
 import * as identity from "./cognition/identity.js";
 import * as identityRepo from "./data/identity-repo.js";
+import * as news from "./integrations/news.js";
+import * as webSearch from "./integrations/websearch.js";
 
 dotenv.config();
 
@@ -1621,6 +1623,43 @@ app.post("/api/integrations/calendar/events", validateApiKey, async (req: any, r
   }
   try {
     res.json(await calendar.createEvent(summary, startISO, endISO, description));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+// ---------- News ----------
+app.get("/api/integrations/news/headlines", validateApiKey, async (req: any, res: any) => {
+  try {
+    const articles = await news.getTopHeadlines({
+      country: req.query.country as string | undefined,
+      category: req.query.category as string | undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    });
+    res.json({ articles });
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.get("/api/integrations/news/search", validateApiKey, async (req: any, res: any) => {
+  const q = req.query.q as string | undefined;
+  if (!q) return res.status(400).json({ error: "q is required" });
+  try {
+    const articles = await news.searchNews(q, req.query.limit ? Number(req.query.limit) : undefined);
+    res.json({ articles });
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+// ---------- Web Search ----------
+app.get("/api/integrations/websearch", validateApiKey, async (req: any, res: any) => {
+  const q = req.query.q as string | undefined;
+  if (!q) return res.status(400).json({ error: "q is required" });
+  try {
+    const results = await webSearch.webSearch(q, req.query.limit ? Number(req.query.limit) : undefined);
+    res.json({ results });
   } catch (err) {
     handleIntegrationError(res, err);
   }
