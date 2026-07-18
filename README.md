@@ -337,6 +337,33 @@ privileges (raw sockets, and whatever the approved command itself needs) —
 neither is granted automatically by this repo; see the scripts' own
 comments for what to set up and why.
 
+## Home security (local-only)
+
+The `homeassistant` service (`docker-compose.yml`) is the integration point
+for physical home security — cameras, door/window sensors, locks — chosen
+specifically over per-vendor cloud APIs (Ring/Nest/etc.) because it can talk
+to ONVIF/RTSP-capable cameras **directly over your LAN**, with no vendor
+cloud account and no data ever leaving your network:
+
+- No port forwarding, no Home Assistant Cloud/Nabu Casa subscription —
+  reachable only from inside your own network (`http://<host-ip>:8123`).
+- Cameras stream straight to this container over RTSP/ONVIF; the camera
+  hardware never talks to a manufacturer's servers.
+- `network_mode: host` is Home Assistant's own documented setup, needed for
+  mDNS/SSDP/ONVIF auto-discovery (a normal Docker bridge network wouldn't
+  pass that traffic through) — chosen explicitly over an isolated bridge for
+  that reason. This container has its own separate login and never receives
+  untrusted chat input directly, a different exposure profile from the `api`
+  service, which deliberately avoids this same LAN access.
+- When Jarvis integrates with it (not yet built), it will call Home
+  Assistant's local address only — never routed through Gemini or any other
+  cloud API — and anything that can actually *act* (unlock a door, arm/disarm
+  a system) follows the same human-gated pattern as command execution above:
+  Jarvis proposes, you approve, nothing runs automatically.
+
+Onboarding (admin account, adding cameras) happens in Home Assistant's own
+UI directly, since it requires your own credentials.
+
 ## Files/notes
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
