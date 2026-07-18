@@ -15,6 +15,11 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      # A single dedicated folder for Jarvis's file/notes tool — nothing
+      # outside it is ever reachable (see src/integrations/files.ts). Kept
+      # as its own mount, not nested under /app, so it's clearly separate
+      # from the repo itself.
+      - ${JARVIS_FILES_DIR}:/jarvis-files
     # Lets the container reach services on the host (e.g. a local Ollama instance
     # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
     extra_hosts:

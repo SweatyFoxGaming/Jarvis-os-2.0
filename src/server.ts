@@ -14,6 +14,8 @@ import * as github from "./integrations/github.js";
 import * as emailIntegration from "./integrations/email.js";
 import * as tts from "./integrations/tts.js";
 import * as whisper from "./integrations/whisper.js";
+import * as jarvisFiles from "./integrations/files.js";
+import * as calendar from "./integrations/calendar.js";
 import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
@@ -26,6 +28,10 @@ import * as scheduler from "./execution/scheduler.js";
 import { reflectAndLearn } from "./cognition/reflection.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./data/knowledge-graph-repo.js";
+import * as briefing from "./execution/briefing.js";
+import * as briefingRepo from "./data/briefing-repo.js";
+import * as analyzer from "./evolution/analyzer.js";
+import * as evolutionRepo from "./data/evolution-repo.js";
 
 dotenv.config();
 
@@ -92,6 +98,7 @@ if (process.env.GEMINI_API_KEY) {
 } else {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
+briefing.configureAi(ai);
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -1084,6 +1091,32 @@ app.get("/api/knowledge/entities", validateApiKey, async (req: any, res: any) =>
   }
 });
 
+// ---------- Proactive Briefing ----------
+// GET generates and returns one right now (on demand); the scheduled job in
+// scheduler.ts runs the same real synthesis on a timer without being asked.
+app.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
+  try {
+    const result = await briefing.generateBriefing(ai);
+    try {
+      await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Briefing", `Failed to persist on-demand briefing: ${err.message}`);
+    }
+    res.json(result);
+  } catch (err: any) {
+    observation.logTelemetry("error", "Briefing", `Briefing generation failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/briefing/history", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ briefings: await briefingRepo.getRecentBriefings() });
+  } catch (err: any) {
+    res.json({ briefings: [], error: err.message });
+  }
+});
+
 // Admin & Memory Endpoints — persisted in Postgres, see src/data/memory-repo.ts
 app.get("/api/memory/pending", validateApiKey, async (req: any, res: any) => {
   try {
@@ -1139,53 +1172,167 @@ app.get("/api/admin/consolidation/status", validateApiKey, async (req, res) => {
   });
 });
 
-// ---------- Evolution & Ecosystem (Stubs) ----------
-app.post("/api/evolution/analyze/architecture", validateApiKey, (req, res) => {
-  res.json({ analysis_id: "arch-1", score: 98, issues: [] });
+// ---------- Evolution: real self-analysis ----------
+// Every analysis below is computed from something actually measured (a
+// parsed import graph, real tsc/grep output, real telemetry, a real secret
+// pattern scan) and persisted to Postgres so /trends and /forecast reflect
+// real history — this used to be four endpoints returning the same
+// hardcoded { score: 98/99/95/100, issues: [] } no matter what.
+
+const ANALYZERS: Record<string, () => analyzer.AnalysisResult> = {
+  architecture: analyzer.analyzeArchitecture,
+  quality: analyzer.analyzeQuality,
+  performance: analyzer.analyzePerformance,
+  security: analyzer.analyzeSecurity,
+};
+
+function registerAnalysisRoute(type: string) {
+  app.post(`/api/evolution/analyze/${type}`, validateApiKey, async (req: any, res: any) => {
+    try {
+      const result = ANALYZERS[type]();
+      const stored = await evolutionRepo.saveAnalysis(type, result.score, result.issues);
+      res.json({ analysis_id: `${type}-${stored.id}`, score: result.score, issues: result.issues });
+    } catch (err: any) {
+      observation.logTelemetry("error", "Evolution", `${type} analysis failed: ${err.message}`);
+      res.status(500).json({ error: `${type} analysis failed: ${err.message}` });
+    }
+  });
+}
+for (const type of Object.keys(ANALYZERS)) registerAnalysisRoute(type);
+
+app.get("/api/evolution/recommendations", validateApiKey, async (req: any, res: any) => {
+  try {
+    const latest = await evolutionRepo.getLatestAnalysisPerType();
+    const severityRank: Record<string, number> = { high: 3, medium: 2, low: 1 };
+    const recommendations = latest
+      .flatMap(a => a.issues.map(issue => ({ type: a.analysis_type, ...issue })))
+      .sort((a, b) => (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0));
+    res.json({ recommendations });
+  } catch (err: any) {
+    res.json({ recommendations: [], error: err.message });
+  }
 });
 
-app.post("/api/evolution/analyze/quality", validateApiKey, (req, res) => {
-  res.json({ analysis_id: "qual-1", score: 99, issues: [] });
+app.get("/api/evolution/analyses", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ analyses: await evolutionRepo.getAllAnalyses() });
+  } catch (err: any) {
+    res.json({ analyses: [], error: err.message });
+  }
 });
 
-app.post("/api/evolution/analyze/performance", validateApiKey, (req, res) => {
-  res.json({ analysis_id: "perf-1", score: 95, issues: [] });
+app.get("/api/evolution/dependency-graph", validateApiKey, (req: any, res: any) => {
+  try {
+    res.json(analyzer.buildDependencyGraph());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, nodes: [], edges: [] });
+  }
 });
 
-app.post("/api/evolution/analyze/security", validateApiKey, (req, res) => {
-  res.json({ analysis_id: "sec-1", score: 100, issues: [] });
+app.get("/api/evolution/dashboard", validateApiKey, async (req: any, res: any) => {
+  try {
+    const latest = await evolutionRepo.getLatestAnalysisPerType();
+    const health_score = latest.length > 0
+      ? Math.round(latest.reduce((sum, a) => sum + a.score, 0) / latest.length)
+      : null;
+    const recommendations_pending = latest.reduce((sum, a) => sum + a.issues.length, 0);
+    res.json({
+      health_score,
+      recommendations_pending,
+      analyzed_categories: latest.map(a => a.analysis_type),
+      note: health_score === null ? "No analyses run yet — POST to /api/evolution/analyze/* first." : undefined,
+    });
+  } catch (err: any) {
+    res.json({ health_score: null, recommendations_pending: 0, error: err.message });
+  }
 });
 
-app.get("/api/evolution/recommendations", validateApiKey, (req, res) => {
-  res.json({ recommendations: [] });
+app.get("/api/evolution/trends", validateApiKey, async (req: any, res: any) => {
+  try {
+    const trends: Record<string, { score: number; created_at: Date }[]> = {};
+    for (const type of Object.keys(ANALYZERS)) {
+      trends[type] = await evolutionRepo.getTrend(type);
+    }
+    res.json({ trends });
+  } catch (err: any) {
+    res.json({ trends: {}, error: err.message });
+  }
 });
 
-app.get("/api/evolution/analyses", validateApiKey, (req, res) => {
-  res.json({ analyses: [] });
+app.get("/api/evolution/forecast", validateApiKey, async (req: any, res: any) => {
+  try {
+    const forecast: Record<string, any> = {};
+    for (const type of Object.keys(ANALYZERS)) {
+      const points = await evolutionRepo.getTrend(type);
+      if (points.length < 3) {
+        forecast[type] = { available: false, reason: `Need at least 3 analysis runs for a real trend projection (have ${points.length}).` };
+        continue;
+      }
+      // Real (simple) linear regression over run index vs score — not a
+      // fabricated number, and honestly labeled as a naive projection.
+      const n = points.length;
+      const xs = points.map((_, i) => i);
+      const ys = points.map(p => p.score);
+      const meanX = xs.reduce((a, b) => a + b, 0) / n;
+      const meanY = ys.reduce((a, b) => a + b, 0) / n;
+      const slope = xs.reduce((sum, x, i) => sum + (x - meanX) * (ys[i] - meanY), 0) /
+        Math.max(1e-9, xs.reduce((sum, x) => sum + (x - meanX) ** 2, 0));
+      const intercept = meanY - slope * meanX;
+      const nextScore = Math.max(0, Math.min(100, Math.round(intercept + slope * n)));
+      forecast[type] = { available: true, method: "linear-regression-naive", projectedNextScore: nextScore, trendDirection: slope > 0.5 ? "improving" : slope < -0.5 ? "declining" : "stable" };
+    }
+    res.json({ forecast });
+  } catch (err: any) {
+    res.json({ forecast: {}, error: err.message });
+  }
 });
 
-app.get("/api/evolution/dependency-graph", validateApiKey, (req, res) => {
-  res.json({ nodes: [], edges: [] });
+app.post("/api/evolution/recommendations/prioritize", validateApiKey, async (req: any, res: any) => {
+  try {
+    const latest = await evolutionRepo.getLatestAnalysisPerType();
+    const severityRank: Record<string, number> = { high: 3, medium: 2, low: 1 };
+    const recommendations = latest
+      .flatMap(a => a.issues.map(issue => ({ type: a.analysis_type, ...issue })))
+      .sort((a, b) => (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0));
+    res.json({ recommendations });
+  } catch (err: any) {
+    res.json({ recommendations: [], error: err.message });
+  }
 });
 
-app.get("/api/evolution/dashboard", validateApiKey, (req, res) => {
-  res.json({ health_score: 98, recommendations_pending: 0 });
+app.get("/api/evolution/goals", validateApiKey, async (req: any, res: any) => {
+  try {
+    const goals = await evolutionRepo.listGoals();
+    const metrics = observation.getMetrics().counters;
+    const latest = await evolutionRepo.getLatestAnalysisPerType();
+    const latestByType = Object.fromEntries(latest.map(a => [a.analysis_type, a.score]));
+
+    const goalsWithStatus = goals.map(g => {
+      let currentValue: number | null = null;
+      if (g.metric === "averageLatencyMs") currentValue = metrics.averageLatencyMs;
+      else if (g.metric === "errorsLogged") currentValue = metrics.errorsLogged;
+      else if (g.metric in latestByType) currentValue = latestByType[g.metric];
+
+      const met = currentValue === null ? null : g.comparator === "lte" ? currentValue <= g.target_value : currentValue >= g.target_value;
+      return { ...g, currentValue, met };
+    });
+    res.json({ goals: goalsWithStatus });
+  } catch (err: any) {
+    res.json({ goals: [], error: err.message });
+  }
 });
 
-app.get("/api/evolution/trends", validateApiKey, (req, res) => {
-  res.json({ trends: [] });
-});
-
-app.get("/api/evolution/forecast", validateApiKey, (req, res) => {
-  res.json({ forecast: [] });
-});
-
-app.post("/api/evolution/recommendations/prioritize", validateApiKey, (req, res) => {
-  res.json({ recommendations: [] });
-});
-
-app.get("/api/evolution/goals", validateApiKey, (req, res) => {
-  res.json({ goals: [] });
+app.post("/api/evolution/goals", validateApiKey, async (req: any, res: any) => {
+  const { metric, targetValue, comparator } = req.body;
+  if (!metric || typeof targetValue !== "number" || !["lte", "gte"].includes(comparator)) {
+    return res.status(400).json({ error: "metric, targetValue (number), and comparator ('lte'|'gte') are required" });
+  }
+  try {
+    const goal = await evolutionRepo.createGoal(metric, targetValue, comparator);
+    res.json({ status: "success", goal });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/ecosystem/discover", validateApiKey, (req, res) => {
@@ -1333,6 +1480,103 @@ app.post("/api/integrations/tts/speak", validateApiKey, async (req: any, res: an
   }
 });
 
+// ---------- Local Files/Notes (scoped to one dedicated folder) ----------
+app.get("/api/integrations/files/list", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json(await jarvisFiles.listFiles(req.query.path as string | undefined));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.get("/api/integrations/files/read", validateApiKey, async (req: any, res: any) => {
+  const { path: relPath } = req.query;
+  if (!relPath) return res.status(400).json({ error: "path is required" });
+  try {
+    res.json({ path: relPath, content: await jarvisFiles.readFile(relPath as string) });
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/files/write", validateApiKey, async (req: any, res: any) => {
+  const { path: relPath, content } = req.body;
+  if (!relPath || typeof content !== "string") {
+    return res.status(400).json({ error: "path and content are required" });
+  }
+  try {
+    res.json(await jarvisFiles.writeFile(relPath, content));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.delete("/api/integrations/files", validateApiKey, async (req: any, res: any) => {
+  const { path: relPath } = req.query;
+  if (!relPath) return res.status(400).json({ error: "path is required" });
+  try {
+    await jarvisFiles.deleteFile(relPath as string);
+    res.json({ status: "success" });
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+// ---------- Google Calendar (OAuth, one-time setup) ----------
+// GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI required — see README for how to
+// create these in Google Cloud. Deployment-wide, single-tenant, same as
+// GITHUB_TOKEN/EMAIL_* — not a per-registered-user OAuth flow.
+
+app.get("/api/integrations/calendar/auth-url", validateApiKey, (req: any, res: any) => {
+  try {
+    res.json({ url: calendar.getAuthUrl() });
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+// No validateApiKey: Google's redirect is the user's own browser navigating
+// here after consent, which can't attach an x-api-key header. The
+// authorization code itself (short-lived, tied to the registered redirect
+// URI and client secret) is what's actually being trusted here, same as any
+// standard OAuth callback.
+app.get("/api/integrations/calendar/callback", async (req: any, res: any) => {
+  const { code, error } = req.query;
+  if (error) {
+    return res.status(400).send(`<html><body>Google Calendar authorization denied: ${error}</body></html>`);
+  }
+  if (!code) {
+    return res.status(400).send("<html><body>Missing authorization code.</body></html>");
+  }
+  try {
+    await calendar.exchangeCodeForTokens(code);
+    res.send("<html><body>Google Calendar connected — you can close this tab.</body></html>");
+  } catch (err: any) {
+    observation.logTelemetry("error", "Integrations", `Calendar OAuth callback failed: ${err.message}`);
+    res.status(err.status || 500).send(`<html><body>Failed to connect Google Calendar: ${err.message}</body></html>`);
+  }
+});
+
+app.get("/api/integrations/calendar/events", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json(await calendar.listEvents(req.query.timeMinISO, req.query.timeMaxISO));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/calendar/events", validateApiKey, async (req: any, res: any) => {
+  const { summary, startISO, endISO, description } = req.body;
+  if (!summary || !startISO || !endISO) {
+    return res.status(400).json({ error: "summary, startISO, and endISO are required" });
+  }
+  try {
+    res.json(await calendar.createEvent(summary, startISO, endISO, description));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
 // ---------- Static Files Serving ----------
 const staticDir = path.join(process.cwd(), "src", "static");
 app.use(express.static(staticDir));
@@ -1370,6 +1614,7 @@ initDatabase().then(async (ready) => {
   });
 
   scheduler.startEmailWatchJob();
+  scheduler.startBriefingJob(ai);
 });
 
 // Evict idle per-user session state (working memory, not persisted data) so

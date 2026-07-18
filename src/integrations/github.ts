@@ -106,3 +106,14 @@ export async function listPullRequests(owner: string, repo: string, state: "open
 export async function getPullRequest(owner: string, repo: string, pullNumber: number) {
   return githubRequest(`/repos/${owner}/${repo}/pulls/${pullNumber}`);
 }
+
+/**
+ * Real GitHub notifications (review requests, mentions, assigned issues,
+ * ...) across every repo the token can see — no manually-configured "watch
+ * list" needed, unlike everything else in this file which is scoped to one
+ * repo per call. This is the real signal source for the proactive briefing
+ * job in src/execution/briefing.ts.
+ */
+export async function getNotifications(): Promise<any[]> {
+  return githubRequest(`/notifications?participating=true`);
+}

@@ -23,6 +23,11 @@ export const ALL_CAPABILITIES = [
   "email.read",
   "tts.speak",
   "executive.plan",
+  "calendar.read",
+  "calendar.write",
+  "briefing.read",
+  "files.read",
+  "files.write",
   "knowledge.read",
 ] as const;
 

@@ -6,6 +6,7 @@ import socket
 import time
 import json
 import logging
+import asyncio
 from typing import Any, Dict, List
 import urllib.request
 import urllib.error
@@ -276,7 +277,14 @@ async def health_check(request: Request):
     """Health check proxy with automatic fallback."""
     if is_node_running():
         try:
-            return make_proxy_request("/health", "GET", dict(request.headers))
+            # make_proxy_request is a blocking urllib call — run it in a
+            # worker thread so a slow/hung Express response (e.g. a 100+s
+            # local LLM generation, the documented normal case for this
+            # project) can't stall the single-worker asyncio event loop and
+            # freeze every other concurrent request through this gateway.
+            # Live-verified this was a real bug: a slow request in flight
+            # made even /api/status hang indefinitely for everyone else.
+            return await asyncio.to_thread(make_proxy_request, "/health", "GET", dict(request.headers))
         except Exception:
             pass
     return {"status": "up", "mode": "python-fallback", "engine_ready": True}
@@ -286,7 +294,7 @@ async def props_check(request: Request):
     """Props check proxy with automatic fallback."""
     if is_node_running():
         try:
-            return make_proxy_request("/props", "GET", dict(request.headers))
+            return await asyncio.to_thread(make_proxy_request, "/props", "GET", dict(request.headers))
         except Exception:
             pass
     return {"status": "up", "version": "1.8.0", "engine_ready": True}
@@ -295,15 +303,21 @@ async def props_check(request: Request):
 async def wildcard_api_proxy(path_name: str, request: Request):
     """Universal API router that proxies all requests to Node.js, falling back to simulated logic if unreachable."""
     body = await request.body()
-    
+
     # Try proxying to Express server
     if is_node_running():
         try:
-            return make_proxy_request(
-                path=request.url.path,
-                method=request.method,
-                headers=dict(request.headers),
-                body=body if body else None
+            forward_path = request.url.path
+            if request.url.query:
+                forward_path = f"{forward_path}?{request.url.query}"
+            # See health_check() above for why this runs in a thread rather
+            # than being called directly.
+            return await asyncio.to_thread(
+                make_proxy_request,
+                forward_path,
+                request.method,
+                dict(request.headers),
+                body if body else None
             )
         except Exception as e:
             logger.warning("[Gateway] Failed to proxy to Express backend. Falling back to python mock responses. Error: %s", e)
@@ -359,8 +373,7 @@ async def wildcard_api_proxy(path_name: str, request: Request):
             for word in sim_reply.split(" "):
                 yield f"data: {word} \n\n"
                 await asyncio.sleep(0.04)
-                
-        import asyncio
+
         return StreamingResponse(mock_stream(), media_type="text/event-stream")
 
     elif path == "/api/voice-input":

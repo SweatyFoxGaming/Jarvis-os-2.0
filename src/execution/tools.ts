@@ -7,6 +7,9 @@ import { hasGrant } from "./permissions.js";
 import { ObservationPlatform } from "../observation/index.js";
 import { AutonomousExecutive } from "./autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
+import * as calendar from "../integrations/calendar.js";
+import * as briefing from "./briefing.js";
+import * as files from "../integrations/files.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -24,6 +27,12 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   send_email: "email.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
+  calendar_list_events: "calendar.read",
+  calendar_create_event: "calendar.write",
+  get_briefing: "briefing.read",
+  list_files: "files.read",
+  read_file: "files.read",
+  write_file: "files.write",
   query_knowledge_graph: "knowledge.read",
 };
 
@@ -92,6 +101,72 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "calendar_list_events",
+    description: "List upcoming events on the user's Google Calendar within an optional time range.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        timeMinISO: { type: Type.STRING, description: "Optional ISO 8601 start of range; defaults to now" },
+        timeMaxISO: { type: Type.STRING, description: "Optional ISO 8601 end of range" },
+      },
+    },
+  },
+  {
+    name: "calendar_create_event",
+    description: "Create a new event on the user's Google Calendar.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        summary: { type: Type.STRING, description: "Event title" },
+        startISO: { type: Type.STRING, description: "ISO 8601 start datetime" },
+        endISO: { type: Type.STRING, description: "ISO 8601 end datetime" },
+        description: { type: Type.STRING, description: "Optional event description" },
+      },
+      required: ["summary", "startISO", "endISO"],
+    },
+  },
+  {
+    name: "get_briefing",
+    description: "Get a real, up-to-date briefing synthesized from connected sources (unread email, GitHub notifications) right now. Use this when the user asks what's new, what needs their attention, or for a status update.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "list_files",
+    description: "List files and folders in the user's dedicated Jarvis notes folder (or a subfolder within it).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative subfolder path, or omit for the top-level folder" },
+      },
+    },
+  },
+  {
+    name: "read_file",
+    description: "Read the contents of a text file in the user's dedicated Jarvis notes folder.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative path to the file within the notes folder" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_file",
+    description: "Write (create or overwrite) a text file in the user's dedicated Jarvis notes folder.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative path to the file within the notes folder" },
+        content: { type: Type.STRING, description: "The full text content to write" },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
     name: "query_knowledge_graph",
     description: "Reliably look up what's actually been recorded about a specific named person, project, tool, or decision from past conversations — a precise lookup by name, not a fuzzy search. Use this when the user asks 'what do we know about X' or references something discussed before by name.",
     parameters: {
@@ -140,6 +215,26 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
         break;
       }
+      case "calendar_list_events":
+        output = await calendar.listEvents(args.timeMinISO, args.timeMaxISO);
+        break;
+      case "calendar_create_event":
+        output = await calendar.createEvent(args.summary, args.startISO, args.endISO, args.description);
+        break;
+      case "get_briefing": {
+        const result = await briefing.generateBriefing(briefing.getConfiguredAi());
+        output = { text: result.text, itemCount: result.itemCount };
+        break;
+      }
+      case "list_files":
+        output = await files.listFiles(args.path);
+        break;
+      case "read_file":
+        output = { content: await files.readFile(args.path) };
+        break;
+      case "write_file":
+        output = await files.writeFile(args.path, args.content);
+        break;
       case "query_knowledge_graph":
         output = { results: await knowledgeGraph.queryKnowledge(args.query) };
         break;
@@ -163,6 +258,12 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   send_email: ["email", "e-mail", "send mail", "inbox"],
   speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
   decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
+  calendar_list_events: ["calendar", "schedule", "my agenda", "upcoming events", "what's on my"],
+  calendar_create_event: ["calendar", "schedule a", "book a", "add an event", "set up a meeting"],
+  get_briefing: ["briefing", "what's new", "whats new", "what do i need to know", "catch me up", "status update", "anything i need to know"],
+  list_files: ["my notes", "my files", "list files", "what files"],
+  read_file: ["read my", "open my note", "read the file", "read that note"],
+  write_file: ["save this", "write this down", "save a note", "create a note", "write a note", "jot this down"],
   query_knowledge_graph: ["what do we know about", "what do you know about", "remind me about", "what did we decide about", "what have we discussed about"],
 };
 
