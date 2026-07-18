@@ -998,6 +998,29 @@
         }
     }
 
+    // Genuine vision, not the cosmetic iris-follow tracking above: captures a
+    // real still frame for the model to actually see. Called automatically on
+    // every chat send once the camera sensor is on — Jarvis "seeing you" is a
+    // standing part of the conversation, not a separate manual action.
+    let captureCanvas = null;
+    function captureCameraFrame() {
+        if (!cameraStream) return null;
+        const video = document.getElementById('eye-camera');
+        if (!video || video.readyState !== video.HAVE_ENOUGH_DATA) return null;
+        try {
+            if (!captureCanvas) captureCanvas = document.createElement('canvas');
+            captureCanvas.width = video.videoWidth || 256;
+            captureCanvas.height = video.videoHeight || 256;
+            const ctx = captureCanvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+            const dataUrl = captureCanvas.toDataURL('image/jpeg', 0.85);
+            return dataUrl.split(',')[1]; // strip the "data:image/jpeg;base64," prefix
+        } catch (e) {
+            console.warn("Failed to capture camera frame: ", e);
+            return null;
+        }
+    }
+
     function trackMotionFrame() {
         if (!cameraTrackerActive || !cameraStream) return;
         
@@ -2013,6 +2036,9 @@
         appendChatMessage(text, 'user');
         addNotification("Broadcasting query vector...");
 
+        const frame = captureCameraFrame();
+        if (frame) addNotification("Visual snapshot attached — Jarvis can see this turn.", "info");
+
         try {
             const res = await fetch('/api/chat', {
                 method: 'POST',
@@ -2020,7 +2046,7 @@
                     'Content-Type': 'application/json',
                     'X-API-Key': CURRENT_API_KEY
                 },
-                body: JSON.stringify({ message: text })
+                body: JSON.stringify(frame ? { message: text, image: frame } : { message: text })
             });
 
             if (!res.ok) throw new Error();

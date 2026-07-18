@@ -107,6 +107,17 @@ relying on anything not listed in "What's implemented."
   plausible-sounding result instead of admitting it couldn't act. If forced into
   strictly-local mode (or Gemini isn't configured), the local model is told
   explicitly it has no tool access and to say so rather than invent an answer.
+- **Vision**: once the camera sensor is toggled on in the dashboard, every
+  chat turn automatically captures a fresh still frame and sends it to Gemini
+  alongside your message — genuine multimodal input, not the cosmetic
+  motion-tracking effect that drives the eye icon's gaze (that's separate,
+  purely visual). No per-message "analyze this" step needed; seeing you is a
+  standing part of the conversation for as long as the sensor stays on. Only
+  Gemini can actually process the image, so a message with a frame attached
+  routes there first even in local-first mode, the same way a tool-shaped
+  message does. Live-verified: sent a real generated test image (an orange
+  circle over a blue bar), got back an accurate description of exactly those
+  shapes/colors through the real `/api/chat` pipeline.
 - **Sessions**: conversational state (current thought, attention, dialogue) is scoped
   per authenticated user — two people talking to Jarvis at once no longer interleave
   into the same state (`src/cognition/session.ts`). Conversation history specifically
