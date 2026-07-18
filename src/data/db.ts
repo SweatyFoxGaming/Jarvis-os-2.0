@@ -67,6 +67,15 @@ async function createSchema(): Promise<void> {
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS conversation_history_username_idx ON conversation_history(username, created_at);`);
   await db.query(`
+    CREATE TABLE IF NOT EXISTS briefings (
+      id SERIAL PRIMARY KEY,
+      content TEXT NOT NULL,
+      item_count INTEGER NOT NULL DEFAULT 0,
+      items JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
     CREATE TABLE IF NOT EXISTS evolution_analyses (
       id SERIAL PRIMARY KEY,
       analysis_type TEXT NOT NULL,
