@@ -11,26 +11,28 @@
     <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"
         integrity="sha384-X7WMDD1lV+pn8w6J5+gz+4oe1KOb37V6QOOAFoNZHLuFqGfN3gKWUT5N7eiZewEo"
         crossorigin="anonymous"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
     <script>
         tailwind.config = {
             theme: {
                 extend: {
                     colors: {
-                        bg: '#040711',
+                        bg: '#020308',
                         surface: '#0A0F1D',
                         card: '#10172A',
+                        glass: '#0C1220',
                         primary: '#38BDF8',
-                        accent: '#818CF8',
+                        accent: '#A78BFA',
                         success: '#34D399',
                         warning: '#FBBF24',
                         danger: '#F87171',
                         text: '#F1F5F9',
-                        secondary: '#475569'
+                        secondary: '#5B6B8C'
                     },
                     fontFamily: {
                         sans: ['Space Grotesk', 'Inter', 'sans-serif'],
+                        display: ['Chakra Petch', 'Space Grotesk', 'sans-serif'],
                         mono: ['JetBrains Mono', 'monospace']
                     }
                 }
@@ -39,32 +41,63 @@
     </script>
     <style>
         ::-webkit-scrollbar { width: 3px; height: 3px; }
-        ::-webkit-scrollbar-track { background: rgba(4, 7, 17, 0.5); }
-        ::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.15); border-radius: 9px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(56, 189, 248, 0.3); }
+        ::-webkit-scrollbar-track { background: rgba(2, 3, 8, 0.5); }
+        ::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.2); border-radius: 9px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(167, 139, 250, 0.35); }
 
-        .glass-panel {
-            background: rgba(10, 15, 29, 0.75);
-            backdrop-filter: blur(25px);
-            -webkit-backdrop-filter: blur(25px);
-            border: 1px solid rgba(56, 189, 248, 0.08);
-            box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.02), 0 8px 32px rgba(0, 0, 0, 0.5);
+        /* Holographic glass — the panel language for this whole interface.
+           Heavier blur + low-opacity gradient tint reads as light/projection
+           rather than solid material; the border is a soft luminous glow
+           (box-shadow), not a hard material edge, so panels feel like they're
+           floating slightly in front of the background rather than sitting on it. */
+        .glass-panel, .holo-panel {
+            background: linear-gradient(155deg, rgba(56, 189, 248, 0.05), rgba(167, 139, 250, 0.03) 55%, rgba(10, 15, 29, 0.7));
+            backdrop-filter: blur(28px) saturate(140%);
+            -webkit-backdrop-filter: blur(28px) saturate(140%);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            box-shadow:
+                inset 0 1px 1px rgba(255, 255, 255, 0.04),
+                inset 0 0 40px rgba(56, 189, 248, 0.02),
+                0 0 0 1px rgba(56, 189, 248, 0.04),
+                0 12px 40px rgba(0, 0, 0, 0.55);
+            transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.45s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.45s ease;
         }
-        
+
+        /* Applied alongside .holo-panel on elements meant to feel like they're
+           physically floating at a different depth than their neighbors —
+           the "different z-depths" hover lift. Skipped on panels containing
+           their own scroll regions or dense live data, where a shifting
+           container reads as jittery rather than dimensional. */
+        .holo-lift:hover {
+            transform: translateY(-3px);
+            border-color: rgba(56, 189, 248, 0.18);
+            box-shadow:
+                inset 0 1px 1px rgba(255, 255, 255, 0.06),
+                inset 0 0 50px rgba(56, 189, 248, 0.04),
+                0 0 0 1px rgba(56, 189, 248, 0.1),
+                0 20px 60px rgba(0, 0, 0, 0.6),
+                0 0 40px rgba(56, 189, 248, 0.06);
+        }
+
+        @keyframes drift {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(3%, -4%) scale(1.05); }
+        }
         .glow-accent {
             position: absolute;
-            width: 350px;
-            height: 350px;
-            background: radial-gradient(circle, rgba(129, 140, 248, 0.06) 0%, transparent 70%);
+            width: 480px;
+            height: 480px;
+            background: radial-gradient(circle, rgba(167, 139, 250, 0.09) 0%, rgba(56, 189, 248, 0.04) 45%, transparent 72%);
             pointer-events: none;
-            filter: blur(40px);
+            filter: blur(60px);
+            animation: drift 22s ease-in-out infinite;
         }
 
         .grid-bg {
-            background-size: 50px 50px;
-            background-image: 
-                linear-gradient(to right, rgba(56, 189, 248, 0.01) 1px, transparent 1px),
-                linear-gradient(to bottom, rgba(56, 189, 248, 0.01) 1px, transparent 1px);
+            background-size: 56px 56px;
+            background-image:
+                linear-gradient(to right, rgba(56, 189, 248, 0.012) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(56, 189, 248, 0.012) 1px, transparent 1px);
         }
 
         @keyframes scanline {
@@ -75,9 +108,9 @@
             content: '';
             position: absolute;
             width: 100%;
-            height: 120px;
-            background: linear-gradient(to bottom, transparent, rgba(56, 189, 248, 0.02), transparent);
-            animation: scanline 8s infinite linear;
+            height: 160px;
+            background: linear-gradient(to bottom, transparent, rgba(56, 189, 248, 0.015), rgba(167, 139, 250, 0.01), transparent);
+            animation: scanline 9s infinite linear;
             top: 0; left: 0; pointer-events: none; z-index: 10;
         }
 
@@ -87,6 +120,38 @@
         }
         .scanning-laser {
             animation: scan 4s ease-in-out infinite;
+        }
+
+        /* Thin luminous rule used in place of solid border-white/5 dividers
+           inside glass panels, so internal seams read as light, not material. */
+        .holo-divider {
+            border-color: transparent;
+            background-image: linear-gradient(to right, transparent, rgba(56, 189, 248, 0.12), rgba(167, 139, 250, 0.08), transparent);
+            height: 1px;
+        }
+
+        .holo-text-glow {
+            text-shadow: 0 0 12px currentColor;
+        }
+
+        /* Lighter glass for small elements nested inside an already-blurred
+           holo-panel — a second heavy backdrop-blur here would compound and
+           muddy, so this is a flatter tint + thin luminous edge instead. */
+        .holo-chip {
+            background: linear-gradient(155deg, rgba(56, 189, 248, 0.06), rgba(10, 15, 29, 0.55));
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.03);
+        }
+
+        /* The centerpiece reads as a projection hanging in space rather than
+           a panel sitting on the page — a slow vertical drift is enough to
+           sell "hologram" without being distracting during real use. */
+        @keyframes hologram-float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+        .hologram-float {
+            animation: hologram-float 7s ease-in-out infinite;
         }
 
         #mind-graph {
@@ -106,7 +171,7 @@
         <div class="flex items-center justify-between border-b border-white/5 pb-4">
             <div class="flex flex-col">
                 <span class="text-[8px] text-secondary tracking-widest font-mono">COGNITIVE ARCHITECTURE</span>
-                <span class="text-md font-bold text-white tracking-[0.15em]">JARVIS CORE <span class="text-primary font-mono text-xs">v4.0</span></span>
+                <span class="text-md font-display font-bold text-white tracking-[0.15em] holo-text-glow">JARVIS CORE <span class="text-primary font-mono text-xs">v4.0</span></span>
             </div>
             <div class="flex items-center gap-2">
                 <div class="w-2.5 h-2.5 rounded-full bg-success animate-pulse shadow-[0_0_12px_rgba(52,211,153,0.4)]"></div>
@@ -264,8 +329,8 @@
             
             <!-- ================= SUB-PANEL 1: COGNITIVE OPERATING CONSOLE ================= -->
             <div id="view-dashboard" class="view-pane flex flex-col items-center justify-center min-h-[550px] relative space-y-8 py-10">
-                <!-- Big futuristic glowing frame around the centerpiece Quantum Eye -->
-                <div class="relative flex flex-col items-center justify-center p-12 bg-surface/20 border border-white/5 rounded-3xl shadow-[0_0_50px_rgba(56,189,248,0.03)] w-full max-w-xl transition-all duration-500 hover:border-primary/10">
+                <!-- Big futuristic glowing frame around the centerpiece Quantum Eye — a holographic projection floating in space, not a panel sitting on the page -->
+                <div class="hologram-float relative flex flex-col items-center justify-center p-12 rounded-3xl w-full max-w-xl transition-all duration-500" style="background: radial-gradient(circle at 50% 20%, rgba(167,139,250,0.06), rgba(10,15,29,0.35) 60%); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.07); box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), 0 0 90px rgba(56,189,248,0.08), 0 0 160px rgba(167,139,250,0.04);">
                     
                     <!-- Cyber Decorative Corner Lines -->
                     <div class="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-primary/20 rounded-tl-3xl"></div>
@@ -371,10 +436,10 @@
                 <!-- Graphical Matrix Panels -->
                 <div id="dashboard-secondary-grid" class="grid grid-cols-1 lg:grid-cols-12 gap-6 hidden">
                     <!-- Cytoscape Map -->
-                    <div id="dashboard-hyper-graph" class="lg:col-span-8 bg-surface/40 border border-white/5 rounded-2xl h-[480px] flex flex-col relative overflow-hidden">
+                    <div id="dashboard-hyper-graph" class="lg:col-span-8 holo-panel holo-lift rounded-2xl h-[480px] flex flex-col relative overflow-hidden">
                         <div class="p-4 border-b border-white/5 flex justify-between items-center z-10 glass-panel">
                             <div>
-                                <h3 class="font-bold text-xs tracking-widest uppercase">LIVING COGNITION HYPER-GRAPH</h3>
+                                <h3 class="font-display font-bold text-xs tracking-widest uppercase">LIVING COGNITION HYPER-GRAPH</h3>
                                 <p class="text-[9px] text-secondary tracking-wide">Real-time vector links across virtual nodes</p>
                             </div>
                             <button onclick="reinitGraph()" class="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[8px] font-mono tracking-widest font-semibold uppercase text-primary">REALIGN_MAP</button>
@@ -402,9 +467,9 @@
                     <!-- Core Controllers -->
                     <div id="dashboard-controllers" class="lg:col-span-4 flex flex-col gap-6">
                         <!-- Dispatcher -->
-                        <div id="dashboard-dispatcher" class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col justify-between h-[228px]">
+                        <div id="dashboard-dispatcher" class="holo-panel holo-lift p-5 rounded-2xl flex flex-col justify-between h-[228px]">
                             <div>
-                                <h3 class="font-bold text-xs tracking-widest uppercase mb-1">SOVEREIGN QUANTUM DISPATCH</h3>
+                                <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">SOVEREIGN QUANTUM DISPATCH</h3>
                                 <p class="text-[9px] text-secondary tracking-wide mb-3">Instruct the autonomous agent cluster directly</p>
                             </div>
                             
@@ -415,8 +480,8 @@
                         </div>
 
                         <!-- Thought steps -->
-                        <div id="dashboard-thoughts" class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[228px] overflow-hidden">
-                            <h3 class="font-bold text-xs tracking-widest uppercase mb-1">COGNITIVE FLOW STEPS</h3>
+                        <div id="dashboard-thoughts" class="holo-panel holo-lift p-5 rounded-2xl flex flex-col h-[228px] overflow-hidden">
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">COGNITIVE FLOW STEPS</h3>
                             <p class="text-[9px] text-secondary tracking-wide mb-2.5">Live state processing sequence</p>
                             
                             <div id="kernel-thought-stages" class="space-y-1.5 text-[10px] font-mono flex-1 overflow-y-auto pr-1"></div>
@@ -425,10 +490,10 @@
                 </div>
 
                 <!-- Debates -->
-                <div id="dashboard-debates" class="bg-surface/40 border border-white/5 p-5 rounded-2xl hidden">
+                <div id="dashboard-debates" class="holo-panel holo-lift p-5 rounded-2xl hidden">
                     <div class="flex justify-between items-center mb-3 pb-2 border-b border-white/5">
                         <div>
-                            <h3 class="font-bold text-xs tracking-widest uppercase">MULTI-AGENT DECISION DEBATE LOG</h3>
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase">MULTI-AGENT DECISION DEBATE LOG</h3>
                             <p class="text-[9px] text-secondary tracking-wide">Synthesizing consensus across specialized cognitive models</p>
                         </div>
                         <span class="px-2 py-0.5 rounded bg-warning/10 border border-warning/20 text-[8px] font-mono font-bold text-warning tracking-widest uppercase">DEBATING_ASSEMBLY</span>
@@ -439,10 +504,10 @@
                 </div>
 
                 <!-- Continuity of Self -->
-                <div id="dashboard-continuity" class="bg-surface/40 border border-white/5 rounded-2xl p-5 w-full">
+                <div id="dashboard-continuity" class="holo-panel holo-lift rounded-2xl p-5 w-full">
                     <div class="flex justify-between items-start mb-4 pb-3 border-b border-white/5">
                         <div>
-                            <h3 class="font-bold text-xs tracking-widest uppercase flex items-center gap-2">
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2">
                                 <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
                                 CONTINUITY OF SELF
                             </h3>
@@ -471,10 +536,10 @@
             <div id="view-conversation" class="view-pane hidden space-y-6">
                 <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
                     <!-- Dialogue Hub -->
-                    <div id="dialogue-hub-main" class="lg:col-span-3 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300">
+                    <div id="dialogue-hub-main" class="lg:col-span-3 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300">
                         <div class="p-4 border-b border-white/5 flex justify-between items-center glass-panel">
                             <div>
-                                <h3 class="font-bold text-xs tracking-widest uppercase">INTELLIGENT TELEMETRY STREAM</h3>
+                                <h3 class="font-display font-bold text-xs tracking-widest uppercase">INTELLIGENT TELEMETRY STREAM</h3>
                                 <p class="text-[9px] text-secondary tracking-wide">Direct interfacing link with JARVIS</p>
                             </div>
                             <div class="flex items-center gap-3">
@@ -498,8 +563,8 @@
 
                     <!-- Holographic Trace Sidebar -->
                     <div id="decision-trace-sidebar" class="lg:col-span-1 flex flex-col transition-all duration-300">
-                        <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex-1 flex flex-col h-[520px]">
-                            <h3 class="font-bold text-xs tracking-widest uppercase mb-1">DECISION TRACE</h3>
+                        <div class="holo-panel holo-lift p-5 rounded-2xl flex-1 flex flex-col h-[520px]">
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">DECISION TRACE</h3>
                             <p class="text-[9px] text-secondary tracking-wide mb-3">Underlying computational profile</p>
                             
                             <div id="float-trace-panel" class="text-secondary font-mono text-xs leading-relaxed space-y-3 flex-1 overflow-y-auto pr-1">
@@ -541,10 +606,10 @@
             <!-- ================= SUB-PANEL 5: TELEMETRY & OBSERVATION ================= -->
             <div id="view-observation" class="view-pane hidden space-y-6">
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div class="lg:col-span-2 bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[500px]">
+                    <div class="lg:col-span-2 holo-panel holo-lift p-5 rounded-2xl flex flex-col h-[500px]">
                         <div class="flex justify-between items-center mb-3 pb-2 border-b border-white/5">
                             <div>
-                                <h3 class="font-bold text-xs tracking-widest uppercase">HOST TELEMETRY STREAMS</h3>
+                                <h3 class="font-display font-bold text-xs tracking-widest uppercase">HOST TELEMETRY STREAMS</h3>
                                 <p class="text-[9px] text-secondary tracking-wide">Live sandboxed host process logs</p>
                             </div>
                             <button onclick="clearTelemetryLocal()" class="px-2 py-1 bg-white/5 border border-white/10 rounded-lg text-[8px] font-mono tracking-widest uppercase">CLEAR_STREAMS</button>
@@ -552,9 +617,9 @@
                         <div id="telemetry-log-pane" class="flex-1 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1 text-secondary pr-1"></div>
                     </div>
 
-                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[500px]">
+                    <div class="holo-panel holo-lift p-5 rounded-2xl flex flex-col h-[500px]">
                         <div class="mb-3 pb-2 border-b border-white/5">
-                            <h3 class="font-bold text-xs tracking-widest uppercase">LEDGER CONFORME</h3>
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase">LEDGER CONFORME</h3>
                             <p class="text-[9px] text-secondary tracking-wide">Immutable, append-only security logs</p>
                         </div>
                         <div id="audit-trail-pane" class="flex-1 overflow-y-auto font-mono text-[9px] leading-relaxed text-secondary space-y-2"></div>
@@ -565,38 +630,38 @@
             <!-- ================= SUB-PANEL 6: LONG TERM LEARNING ENGINE ================= -->
             <div id="view-learning" class="view-pane hidden space-y-6">
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[480px]">
-                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">PREFERENCE STYLE CACHE</h3>
+                    <div class="holo-panel holo-lift p-5 rounded-2xl flex flex-col h-[480px]">
+                        <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">PREFERENCE STYLE CACHE</h3>
                         <p class="text-[9px] text-secondary tracking-wide mb-3">Cached design parameters and developer styles</p>
                         
                         <div class="space-y-3 text-xs font-mono flex-1 overflow-y-auto pr-1">
-                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                            <div class="p-3 holo-chip rounded-xl">
                                 <span class="text-secondary block mb-0.5 text-[10px]">NAMING CONVENTION</span>
                                 <span id="pref-naming" class="text-white font-bold text-sm uppercase">snake_case</span>
                             </div>
-                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                            <div class="p-3 holo-chip rounded-xl">
                                 <span class="text-secondary block mb-0.5 text-[10px]">TAB INDENTATION</span>
                                 <span id="pref-tab" class="text-white font-bold text-sm uppercase">4 spaces</span>
                             </div>
-                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                            <div class="p-3 holo-chip rounded-xl">
                                 <span class="text-secondary block mb-0.5 text-[10px]">PREFERRED FRAMEWORK</span>
                                 <span id="pref-framework" class="text-white font-bold text-sm uppercase">Express (Node.js)</span>
                             </div>
-                            <div class="p-3 bg-card/60 border border-white/5 rounded-xl">
+                            <div class="p-3 holo-chip rounded-xl">
                                 <span class="text-secondary block mb-0.5 text-[10px]">ARCHITECTURE CONVENTIONS</span>
                                 <span id="pref-architecture" class="text-white font-bold text-sm uppercase">Decoupled-Contexts</span>
                             </div>
                         </div>
                     </div>
 
-                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[480px]">
-                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">OPTIMIZED PROCEDURAL PATHS</h3>
+                    <div class="holo-panel holo-lift p-5 rounded-2xl flex flex-col h-[480px]">
+                        <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">OPTIMIZED PROCEDURAL PATHS</h3>
                         <p class="text-[9px] text-secondary tracking-wide mb-3">Adapted workflow pathways</p>
                         <div id="workflow-optimized-list" class="space-y-2 font-mono text-xs text-secondary flex-1 overflow-y-auto pr-1"></div>
                     </div>
 
-                    <div class="bg-surface/40 border border-white/5 p-5 rounded-2xl flex flex-col h-[480px]">
-                        <h3 class="font-bold text-xs tracking-widest uppercase mb-1">RESOLVED EXCEPTIONS</h3>
+                    <div class="holo-panel holo-lift p-5 rounded-2xl flex flex-col h-[480px]">
+                        <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">RESOLVED EXCEPTIONS</h3>
                         <p class="text-[9px] text-secondary tracking-wide mb-3">Core anomaly mitigations index</p>
                         <div id="mistake-log-list" class="space-y-2 font-mono text-[10px] text-secondary flex-1 overflow-y-auto pr-1"></div>
                     </div>
@@ -612,7 +677,7 @@
                         
                         <div class="flex justify-between items-center border-b border-white/5 pb-3">
                             <div>
-                                <h3 class="font-bold text-xs tracking-widest uppercase">SECURITY & DIAGNOSTICS</h3>
+                                <h3 class="font-display font-bold text-xs tracking-widest uppercase">SECURITY & DIAGNOSTICS</h3>
                                 <p class="text-[9px] text-secondary/50 font-mono">SYS_CORE_SECURITY_ENVELOPE</p>
                             </div>
                             <span class="text-[10px] font-mono text-primary bg-primary/5 px-2 py-0.5 border border-primary/10 rounded">SYSTEM</span>
@@ -633,7 +698,7 @@
 
                         <div class="flex justify-between items-center border-b border-white/5 pb-3">
                             <div>
-                                <h3 class="font-bold text-xs tracking-widest uppercase">LOCAL LLM SYNC MATRIX</h3>
+                                <h3 class="font-display font-bold text-xs tracking-widest uppercase">LOCAL LLM SYNC MATRIX</h3>
                                 <p class="text-[9px] text-secondary/50 font-mono">INTELLIGENCE_INTEGRATION_PIPELINE</p>
                             </div>
                             <span class="text-[10px] font-mono text-pink-400 bg-pink-400/5 px-2 py-0.5 border border-pink-400/10 rounded">COGNITIVE</span>
@@ -1713,7 +1778,7 @@
                     stream.innerHTML = reflections.map(r => {
                         const style = REFLECTION_CATEGORY_STYLE[r.category] || REFLECTION_CATEGORY_STYLE.observation;
                         return `
-                            <div class="flex-none w-64 bg-card/60 border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
+                            <div class="flex-none w-64 holo-chip border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
                                 <div class="flex items-center justify-between mb-2">
                                     <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase ${style.classes}">${style.label}</span>
                                     <span class="text-[8px] text-secondary font-mono">${new Date(r.created_at).toLocaleTimeString()}</span>
@@ -2268,12 +2333,12 @@
 
         if (traceSidebarCollapsed) {
             sidebar.classList.add('hidden');
-            mainHub.className = "lg:col-span-4 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+            mainHub.className = "lg:col-span-4 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300";
             localStorage.setItem('trace-sidebar-collapsed', 'true');
             addNotification("Decision Trace panel minimized.", "info");
         } else {
             sidebar.classList.remove('hidden');
-            mainHub.className = "lg:col-span-3 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+            mainHub.className = "lg:col-span-3 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300";
             localStorage.removeItem('trace-sidebar-collapsed');
             addNotification("Decision Trace panel restored.", "info");
         }
@@ -2464,7 +2529,7 @@
             const mainHub = document.getElementById('dialogue-hub-main');
             if (sidebar && mainHub) {
                 sidebar.classList.add('hidden');
-                mainHub.className = "lg:col-span-4 bg-surface/40 border border-white/5 rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+                mainHub.className = "lg:col-span-4 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300";
             }
         }
 
