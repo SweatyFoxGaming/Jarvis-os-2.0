@@ -15,7 +15,10 @@ const LIVE_MODEL = "gemini-2.5-flash-native-audio-latest";
 const VOICE_SYSTEM_INSTRUCTION =
   "You are JARVIS, a highly sophisticated, warm, and brilliant AI companion. " +
   "This is a live spoken conversation — speak naturally and conversationally, " +
-  "with refined British poise. Keep replies reasonably concise, as in real speech.";
+  "with refined British poise. Keep replies reasonably concise, as in real speech. " +
+  "If the user's camera is on, you're also receiving a live video feed of them — " +
+  "reference what you genuinely see naturally when it's relevant, but don't narrate " +
+  "the video feed itself or mention it unprompted when it isn't.";
 
 /**
  * Bridges one browser WebSocket connection to one Gemini Live API session —
@@ -26,8 +29,13 @@ const VOICE_SYSTEM_INSTRUCTION =
  * out, as it's generated.
  *
  * Client -> server: raw 16-bit PCM binary WebSocket frames (16kHz mono, the
- * rate Gemini's Live API expects), or a JSON text frame {"type":"end"} when
- * the user stops talking.
+ * rate Gemini's Live API expects), a JSON text frame {"type":"end"} when the
+ * user stops talking, or a JSON text frame {"type":"video","data":"<base64
+ * jpeg>"} — a live camera frame sent periodically (~1/sec) for the whole
+ * duration of the session, not a one-off snapshot. Gemini's Live API accepts
+ * video the same way as audio (sendRealtimeInput({video: ...})), giving
+ * Jarvis genuine continuous visual context as a standing part of the same
+ * real-time conversation, for as long as the session and camera stay on.
  * Server -> client: raw 24kHz PCM binary frames (the rate Gemini's Live API
  * returns) for playback, or a JSON text frame {"type":"turnComplete"} /
  * {"type":"error", message} for control signals.
@@ -57,6 +65,10 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
         const msg = JSON.parse(data.toString());
         if (msg.type === "end") {
           liveSession.sendRealtimeInput({ audioStreamEnd: true });
+        } else if (msg.type === "video" && typeof msg.data === "string") {
+          liveSession.sendRealtimeInput({
+            video: { data: msg.data, mimeType: "image/jpeg" },
+          });
         }
       } catch {
         // Ignore malformed control messages rather than tearing down the session.
