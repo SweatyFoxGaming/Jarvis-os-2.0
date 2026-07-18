@@ -157,6 +157,15 @@ relying on anything not listed in "What's implemented."
   local `whisper-cpp` service (`docker-compose.yml`) with a genuine bundled
   whisper-base.en model, entirely offline. Falls back to a canned string only if
   neither is reachable.
+- **Voice-native mode** (`/voice`): a continuous, real-time spoken conversation via
+  Gemini's Live API (`src/cognition/live-voice.ts`) over a WebSocket
+  (`/ws/voice`) — raw PCM audio streamed both directions as it's generated,
+  not the record → transcribe → reply → synthesize round trip `/api/voice-input`
+  uses. Requires `GEMINI_API_KEY`. Live-verified end-to-end with real synthesized
+  speech in and real spoken audio back, through the actual server (not just the
+  SDK in isolation) — this surfaced and fixed a real race condition where audio
+  sent immediately on connect could be silently dropped before the server had
+  finished opening its own session with Gemini.
 - **Confidence**: computed per-turn from what actually happened (which backend
   answered, whether memory had relevant hits, whether tool calls succeeded) instead
   of fixed inputs.
