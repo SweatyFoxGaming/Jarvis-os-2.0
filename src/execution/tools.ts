@@ -7,6 +7,7 @@ import { hasGrant } from "./permissions.js";
 import { ObservationPlatform } from "../observation/index.js";
 import { AutonomousExecutive } from "./autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
+import * as calendar from "../integrations/calendar.js";
 import * as briefing from "./briefing.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -24,6 +25,8 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   send_email: "email.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
+  calendar_list_events: "calendar.read",
+  calendar_create_event: "calendar.write",
   get_briefing: "briefing.read",
 };
 
@@ -92,6 +95,31 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "calendar_list_events",
+    description: "List upcoming events on the user's Google Calendar within an optional time range.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        timeMinISO: { type: Type.STRING, description: "Optional ISO 8601 start of range; defaults to now" },
+        timeMaxISO: { type: Type.STRING, description: "Optional ISO 8601 end of range" },
+      },
+    },
+  },
+  {
+    name: "calendar_create_event",
+    description: "Create a new event on the user's Google Calendar.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        summary: { type: Type.STRING, description: "Event title" },
+        startISO: { type: Type.STRING, description: "ISO 8601 start datetime" },
+        endISO: { type: Type.STRING, description: "ISO 8601 end datetime" },
+        description: { type: Type.STRING, description: "Optional event description" },
+      },
+      required: ["summary", "startISO", "endISO"],
+    },
+  },
+  {
     name: "get_briefing",
     description: "Get a real, up-to-date briefing synthesized from connected sources (unread email, GitHub notifications) right now. Use this when the user asks what's new, what needs their attention, or for a status update.",
     parameters: {
@@ -137,6 +165,12 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
         break;
       }
+      case "calendar_list_events":
+        output = await calendar.listEvents(args.timeMinISO, args.timeMaxISO);
+        break;
+      case "calendar_create_event":
+        output = await calendar.createEvent(args.summary, args.startISO, args.endISO, args.description);
+        break;
       case "get_briefing": {
         const result = await briefing.generateBriefing(briefing.getConfiguredAi());
         output = { text: result.text, itemCount: result.itemCount };
@@ -162,6 +196,8 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   send_email: ["email", "e-mail", "send mail", "inbox"],
   speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
   decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
+  calendar_list_events: ["calendar", "schedule", "my agenda", "upcoming events", "what's on my"],
+  calendar_create_event: ["calendar", "schedule a", "book a", "add an event", "set up a meeting"],
   get_briefing: ["briefing", "what's new", "whats new", "what do i need to know", "catch me up", "status update", "anything i need to know"],
 };
 

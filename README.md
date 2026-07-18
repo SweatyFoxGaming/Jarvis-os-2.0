@@ -164,8 +164,10 @@ relying on anything not listed in "What's implemented."
   inventing a number. Goals (`/api/evolution/goals`) compare a real metric
   against a real target.
 - **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
-  read via IMAP), and text-to-speech — each gated behind its own env vars and
-  degrading gracefully (clear error, not a crash) when unset.
+  read via IMAP), text-to-speech, and Google Calendar (list/create events, real OAuth2
+  with automatic token refresh — see "Google Calendar setup" below) — each gated
+  behind its own env vars and degrading gracefully (clear error, not a crash) when
+  unset or not yet authorized.
 - **Executive planning / board review**: a request planner and a static proposal
   linter — see "Known limitations," they're both real but more modest than their
   names suggest.
@@ -196,6 +198,35 @@ None of this is a security issue — it's worth knowing before you rely on it:
   free-text objective planner stays plan-only on purpose (see its own doc comment):
   invoking GitHub/email actions needs structured arguments an LLM extracts from real
   conversation, not keyword-matched from a plan string.
+
+## Google Calendar setup
+
+Optional — chat, memory, and every other integration work without this. Calendar
+needs a real Google Cloud OAuth client, which only you can create (it requires a
+Google account and a one-time consent grant no server-side process can do on your
+behalf):
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create a
+   project (or reuse one) and enable the **Google Calendar API**
+   (APIs & Services → Library).
+2. Configure the **OAuth consent screen** (APIs & Services → OAuth consent screen).
+   For personal use, "External" + "Testing" mode is enough — add your own Google
+   account as a test user.
+3. Create an **OAuth client ID** (APIs & Services → Credentials → Create Credentials
+   → OAuth client ID), type **Web application**. Add an **Authorized redirect URI**
+   of `http://localhost:3000/api/integrations/calendar/callback` (must match
+   `GOOGLE_REDIRECT_URI` in `.env` exactly).
+4. Copy the generated **Client ID** and **Client Secret** into `.env` as
+   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, restart the stack.
+5. With the server running, open
+   `http://localhost:3000/api/integrations/calendar/auth-url` while sending your
+   `x-api-key` header (e.g. via a browser extension, or just `curl` and paste the
+   returned URL into a browser), approve access, and you'll land back on the
+   callback route with a "connected" confirmation. This is a one-time step — the
+   refresh token it stores in Postgres keeps working across restarts.
+
+Until step 5 is done, every calendar route/tool returns a clear "not configured" or
+"not authorized yet" error rather than failing silently or fabricating data.
 
 ## Testing
 

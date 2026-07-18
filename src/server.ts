@@ -14,6 +14,7 @@ import * as github from "./integrations/github.js";
 import * as emailIntegration from "./integrations/email.js";
 import * as tts from "./integrations/tts.js";
 import * as whisper from "./integrations/whisper.js";
+import * as calendar from "./integrations/calendar.js";
 import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
@@ -1445,6 +1446,61 @@ app.post("/api/integrations/tts/speak", validateApiKey, async (req: any, res: an
     const { audio, contentType } = await tts.synthesizeSpeech(text, { voice, model });
     res.setHeader("Content-Type", contentType);
     res.send(audio);
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+// ---------- Google Calendar (OAuth, one-time setup) ----------
+// GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI required — see README for how to
+// create these in Google Cloud. Deployment-wide, single-tenant, same as
+// GITHUB_TOKEN/EMAIL_* — not a per-registered-user OAuth flow.
+
+app.get("/api/integrations/calendar/auth-url", validateApiKey, (req: any, res: any) => {
+  try {
+    res.json({ url: calendar.getAuthUrl() });
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+// No validateApiKey: Google's redirect is the user's own browser navigating
+// here after consent, which can't attach an x-api-key header. The
+// authorization code itself (short-lived, tied to the registered redirect
+// URI and client secret) is what's actually being trusted here, same as any
+// standard OAuth callback.
+app.get("/api/integrations/calendar/callback", async (req: any, res: any) => {
+  const { code, error } = req.query;
+  if (error) {
+    return res.status(400).send(`<html><body>Google Calendar authorization denied: ${error}</body></html>`);
+  }
+  if (!code) {
+    return res.status(400).send("<html><body>Missing authorization code.</body></html>");
+  }
+  try {
+    await calendar.exchangeCodeForTokens(code);
+    res.send("<html><body>Google Calendar connected — you can close this tab.</body></html>");
+  } catch (err: any) {
+    observation.logTelemetry("error", "Integrations", `Calendar OAuth callback failed: ${err.message}`);
+    res.status(err.status || 500).send(`<html><body>Failed to connect Google Calendar: ${err.message}</body></html>`);
+  }
+});
+
+app.get("/api/integrations/calendar/events", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json(await calendar.listEvents(req.query.timeMinISO, req.query.timeMaxISO));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/calendar/events", validateApiKey, async (req: any, res: any) => {
+  const { summary, startISO, endISO, description } = req.body;
+  if (!summary || !startISO || !endISO) {
+    return res.status(400).json({ error: "summary, startISO, and endISO are required" });
+  }
+  try {
+    res.json(await calendar.createEvent(summary, startISO, endISO, description));
   } catch (err) {
     handleIntegrationError(res, err);
   }
