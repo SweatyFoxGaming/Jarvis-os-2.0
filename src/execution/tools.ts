@@ -14,6 +14,7 @@ import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import * as identity from "../cognition/identity.js";
 import * as news from "../integrations/news.js";
 import * as webSearch from "../integrations/websearch.js";
+import * as featureRequestsRepo from "../data/feature-requests-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -40,6 +41,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   reflect_on_self: "identity.read",
   get_news: "news.read",
   search_web: "web.search",
+  queue_feature_request: "feature.propose",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -215,6 +217,20 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["query"],
     },
   },
+  {
+    name: "queue_feature_request",
+    description:
+      "Queue a request for a genuinely new capability to be built by a human developer — use this ONLY after the user has explicitly approved building something you don't currently have a tool for (research it with search_web first, present a concrete plan, and wait for clear approval before calling this). You never write or execute code yourself; this hands the approved request to a real, reviewed development process.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING, description: "Short title for the requested capability" },
+        description: { type: Type.STRING, description: "What the user actually wants this to do, in their own words/intent" },
+        plan: { type: Type.STRING, description: "The concrete plan you researched and the user approved — what would need to be built, roughly how" },
+      },
+      required: ["title", "description", "plan"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -289,6 +305,14 @@ export async function executeTool(name: string, args: Record<string, any>, usern
       case "search_web":
         output = { results: await webSearch.webSearch(args.query) };
         break;
+      case "queue_feature_request": {
+        const queued = await featureRequestsRepo.addFeatureRequest(
+          args.title, args.description, null, args.plan, username
+        );
+        observation.logAuditEvent(username, "feature_request_queued", "success", `"${args.title}" (id ${queued.id})`);
+        output = { id: queued.id, status: queued.status };
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }

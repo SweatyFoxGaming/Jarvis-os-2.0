@@ -117,7 +117,18 @@ relying on anything not listed in "What's implemented."
   routes there first even in local-first mode, the same way a tool-shaped
   message does. Live-verified: sent a real generated test image (an orange
   circle over a blue bar), got back an accurate description of exactly those
-  shapes/colors through the real `/api/chat` pipeline.
+  shapes/colors through the real `/api/chat` pipeline. In voice-native mode
+  (`/voice`), this becomes a true continuous feed instead of per-message
+  snapshots — once you grant camera access, a frame streams to Gemini's Live
+  API roughly once per second for the whole call (`src/cognition/live-voice.ts`).
+- **Capability requests**: Jarvis never writes or executes code itself. When
+  you ask for something it has no tool for, it researches feasibility with
+  `search_web` and proposes a concrete plan in conversation instead of
+  declining or inventing a fake result — only once you explicitly approve
+  does it call `queue_feature_request`, handing the request to a real human
+  developer via the exact same reviewed build → test → PR → merge process
+  used for every feature in this repo. See the "CAPABILITY REQUESTS" panel
+  on the dashboard, or `GET /api/feature-requests`.
 - **Sessions**: conversational state (current thought, attention, dialogue) is scoped
   per authenticated user — two people talking to Jarvis at once no longer interleave
   into the same state (`src/cognition/session.ts`). Conversation history specifically

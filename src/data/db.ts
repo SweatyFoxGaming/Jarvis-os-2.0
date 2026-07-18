@@ -150,6 +150,26 @@ async function createSchema(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+  // Jarvis never writes or executes code itself — when a user asks for a
+  // capability that doesn't exist, it researches feasibility (real web
+  // search) and, only once the user explicitly approves building it, queues
+  // the request here for a human developer to actually implement. This
+  // table is that queue — the bridge between "asked for in chat" and
+  // "built in a real, reviewed dev session."
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS feature_requests (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      research_notes TEXT,
+      proposed_plan TEXT,
+      status TEXT NOT NULL DEFAULT 'queued',
+      requested_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS feature_requests_status_idx ON feature_requests(status);`);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a

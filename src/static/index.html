@@ -530,6 +530,24 @@
                         <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No genuine reflections recorded yet — they accumulate naturally as Jarvis forms real opinions in conversation.</div>
                     </div>
                 </div>
+
+                <!-- Feature Requests: the bridge from "asked Jarvis for it in chat" to "actually built" -->
+                <div id="dashboard-feature-requests" class="holo-panel holo-lift rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-white/5">
+                        <div>
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2">
+                                <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse"></span>
+                                CAPABILITY REQUESTS
+                            </h3>
+                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-md">When you ask Jarvis for something it can't yet do, it researches, proposes a plan, and — only with your approval — queues it here for a real developer to build. Jarvis never writes or runs code itself.</p>
+                        </div>
+                        <span id="feature-requests-count-badge" class="px-2 py-0.5 rounded bg-success/10 border border-success/20 text-[8px] font-mono font-bold text-success tracking-widest uppercase whitespace-nowrap flex-shrink-0">0 QUEUED</span>
+                    </div>
+
+                    <div id="feature-requests-list" class="space-y-2.5">
+                        <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">Nothing queued yet — ask Jarvis for something new and approve its plan to see it here.</div>
+                    </div>
+                </div>
             </div>
 
             <!-- ================= SUB-PANEL 2: CHAT DIALOGUE SYSTEM ================= -->
@@ -1838,6 +1856,47 @@
         } catch {}
     }
 
+    const FEATURE_REQUEST_STATUS_STYLE = {
+        queued: { label: 'QUEUED', classes: 'border-warning/25 text-warning bg-warning/5' },
+        in_progress: { label: 'IN PROGRESS', classes: 'border-primary/25 text-primary bg-primary/5' },
+        shipped: { label: 'SHIPPED', classes: 'border-success/25 text-success bg-success/5' },
+        declined: { label: 'DECLINED', classes: 'border-secondary/25 text-secondary bg-secondary/5' },
+    };
+
+    async function loadFeatureRequests() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await authFetch('/api/feature-requests', { headers });
+            if (!res.ok) return;
+            const data = await res.json();
+            const requests = data.requests || [];
+
+            const activeCount = requests.filter(r => r.status === 'queued' || r.status === 'in_progress').length;
+            document.getElementById('feature-requests-count-badge').textContent = `${activeCount} QUEUED`;
+
+            const list = document.getElementById('feature-requests-list');
+            if (requests.length === 0) {
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">Nothing queued yet — ask Jarvis for something new and approve its plan to see it here.</div>`;
+                return;
+            }
+            list.innerHTML = requests.map(r => {
+                const style = FEATURE_REQUEST_STATUS_STYLE[r.status] || FEATURE_REQUEST_STATUS_STYLE.queued;
+                return `
+                    <div class="holo-chip border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="font-display font-bold text-xs text-white">${escapeHtml(r.title)}</span>
+                            <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase whitespace-nowrap ${style.classes}">${style.label}</span>
+                        </div>
+                        <p class="text-[11px] text-text/80 leading-snug mb-1.5">${escapeHtml(r.description)}</p>
+                        ${r.proposed_plan ? `<p class="text-[10px] text-secondary font-mono leading-snug border-t border-white/5 pt-1.5">${escapeHtml(r.proposed_plan)}</p>` : ''}
+                        <span class="text-[8px] text-secondary font-mono mt-1.5 block">${new Date(r.created_at).toLocaleString()}</span>
+                    </div>
+                `;
+            }).join('');
+        } catch {}
+    }
+
     async function refreshWorkspaceSnapshot() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -2107,6 +2166,7 @@
             // Self-reflection extraction runs fire-and-forget server-side after
             // the reply completes — give it a moment before checking for a new entry.
             setTimeout(loadIdentityStream, 2500);
+            setTimeout(loadFeatureRequests, 500);
         } catch {
             addNotification("Dialogue transmission failure.", "danger");
         }
@@ -2564,9 +2624,11 @@
         loadMindKernelData();
         loadSystemSettings();
         loadIdentityStream();
+        loadFeatureRequests();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
         setInterval(loadIdentityStream, 20000);
+        setInterval(loadFeatureRequests, 20000);
     });
 
     // Global Notification Badge
