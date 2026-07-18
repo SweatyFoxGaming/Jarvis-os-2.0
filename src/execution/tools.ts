@@ -10,6 +10,7 @@ import { getSession } from "../cognition/session.js";
 import * as calendar from "../integrations/calendar.js";
 import * as briefing from "./briefing.js";
 import * as files from "../integrations/files.js";
+import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -32,6 +33,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   list_files: "files.read",
   read_file: "files.read",
   write_file: "files.write",
+  query_knowledge_graph: "knowledge.read",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -164,6 +166,17 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["path", "content"],
     },
   },
+  {
+    name: "query_knowledge_graph",
+    description: "Reliably look up what's actually been recorded about a specific named person, project, tool, or decision from past conversations — a precise lookup by name, not a fuzzy search. Use this when the user asks 'what do we know about X' or references something discussed before by name.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "The name (or partial name) of the entity to look up" },
+      },
+      required: ["query"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -222,6 +235,9 @@ export async function executeTool(name: string, args: Record<string, any>, usern
       case "write_file":
         output = await files.writeFile(args.path, args.content);
         break;
+      case "query_knowledge_graph":
+        output = { results: await knowledgeGraph.queryKnowledge(args.query) };
+        break;
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -248,6 +264,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   list_files: ["my notes", "my files", "list files", "what files"],
   read_file: ["read my", "open my note", "read the file", "read that note"],
   write_file: ["save this", "write this down", "save a note", "create a note", "write a note", "jot this down"],
+  query_knowledge_graph: ["what do we know about", "what do you know about", "remind me about", "what did we decide about", "what have we discussed about"],
 };
 
 /**

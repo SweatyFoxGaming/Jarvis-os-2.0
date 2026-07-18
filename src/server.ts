@@ -26,6 +26,8 @@ import * as permissions from "./execution/permissions.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./execution/scheduler.js";
 import { reflectAndLearn } from "./cognition/reflection.js";
+import * as knowledgeGraph from "./cognition/knowledge-graph.js";
+import * as knowledgeGraphRepo from "./data/knowledge-graph-repo.js";
 import * as briefing from "./execution/briefing.js";
 import * as briefingRepo from "./data/briefing-repo.js";
 import * as analyzer from "./evolution/analyzer.js";
@@ -871,6 +873,10 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
       // backend actually answered the user.
       if (ai) {
         reflectAndLearn(ai, message, fullReply).catch(() => {});
+        // Write side of the structured knowledge graph — see
+        // cognition/knowledge-graph.ts. A separate call/schema from
+        // reflection above so each stays focused on its own judgment call.
+        knowledgeGraph.extractAndStore(ai, message, fullReply).catch(() => {});
       }
     }
 
@@ -1061,6 +1067,28 @@ app.get("/api/notifications", validateApiKey, (req: any, res: any) => {
 app.post("/api/notifications/mark_read", validateApiKey, (req: any, res: any) => {
   scheduler.markAllRead(req.username);
   res.json({ status: "success" });
+});
+
+// ---------- Structured Knowledge Graph ----------
+// The reliable complement to pgvector similarity recall — a real
+// entity/fact/relationship lookup by name, not a "sounds like this" guess.
+app.get("/api/knowledge/search", validateApiKey, async (req: any, res: any) => {
+  const q = req.query.q as string | undefined;
+  if (!q) return res.status(400).json({ error: "q is required" });
+  try {
+    res.json({ results: await knowledgeGraph.queryKnowledge(q) });
+  } catch (err: any) {
+    observation.logTelemetry("warn", "KnowledgeGraph", `Search failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/knowledge/entities", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ entities: await knowledgeGraphRepo.listAllEntities() });
+  } catch (err: any) {
+    res.json({ entities: [], error: err.message });
+  }
 });
 
 // ---------- Proactive Briefing ----------

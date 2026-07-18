@@ -28,6 +28,7 @@ export const ALL_CAPABILITIES = [
   "briefing.read",
   "files.read",
   "files.write",
+  "knowledge.read",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
