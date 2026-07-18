@@ -7,6 +7,7 @@ import { hasGrant } from "./permissions.js";
 import { ObservationPlatform } from "../observation/index.js";
 import { AutonomousExecutive } from "./autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
+import * as files from "../integrations/files.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -23,6 +24,9 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   send_email: "email.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
+  list_files: "files.read",
+  read_file: "files.read",
+  write_file: "files.write",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -89,6 +93,39 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["objective"],
     },
   },
+  {
+    name: "list_files",
+    description: "List files and folders in the user's dedicated Jarvis notes folder (or a subfolder within it).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative subfolder path, or omit for the top-level folder" },
+      },
+    },
+  },
+  {
+    name: "read_file",
+    description: "Read the contents of a text file in the user's dedicated Jarvis notes folder.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative path to the file within the notes folder" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_file",
+    description: "Write (create or overwrite) a text file in the user's dedicated Jarvis notes folder.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative path to the file within the notes folder" },
+        content: { type: Type.STRING, description: "The full text content to write" },
+      },
+      required: ["path", "content"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -127,6 +164,15 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
         break;
       }
+      case "list_files":
+        output = await files.listFiles(args.path);
+        break;
+      case "read_file":
+        output = { content: await files.readFile(args.path) };
+        break;
+      case "write_file":
+        output = await files.writeFile(args.path, args.content);
+        break;
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -147,6 +193,9 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   send_email: ["email", "e-mail", "send mail", "inbox"],
   speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
   decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
+  list_files: ["my notes", "my files", "list files", "what files"],
+  read_file: ["read my", "open my note", "read the file", "read that note"],
+  write_file: ["save this", "write this down", "save a note", "create a note", "write a note", "jot this down"],
 };
 
 /**

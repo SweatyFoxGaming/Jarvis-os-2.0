@@ -460,6 +460,62 @@ registerTest("Scheduler", "registerJob ticks on an interval and survives a throw
   }
 });
 
+// ---------- Files/Notes Tests ----------
+// Runs against a real temp directory (not JARVIS_FILES_DIR) so the security
+// boundary itself — not just the happy path — has permanent regression
+// coverage, independent of any live-verification done in a given session.
+registerTest("Files", "scoped read/write/list stay within the root, and traversal is rejected", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpRoot = fsSync.mkdtempSync(path.join(os.tmpdir(), "jarvis-files-test-"));
+  process.env.JARVIS_FILES_DIR_MOUNT = tmpRoot;
+
+  // getRoot() reads process.env.JARVIS_FILES_DIR_MOUNT fresh on every call,
+  // so setting it above is enough — no need to re-import the module.
+  const files = await import("../src/integrations/files.js");
+
+  try {
+    await files.writeFile("note.txt", "hello jarvis");
+    const content = await files.readFile("note.txt");
+    if (content !== "hello jarvis") {
+      throw new Error(`Files: read back "${content}", expected "hello jarvis"`);
+    }
+
+    const listed = await files.listFiles();
+    if (!listed.some((f: any) => f.name === "note.txt")) {
+      throw new Error("Files: listFiles did not include the file just written");
+    }
+
+    let escaped = false;
+    try {
+      await files.readFile("../../../etc/passwd");
+      escaped = true;
+    } catch (err: any) {
+      if (!/escapes/.test(err.message)) throw new Error(`Files: wrong error for traversal attempt: ${err.message}`);
+    }
+    if (escaped) throw new Error("Files: a '../../../etc/passwd' path was NOT rejected — traversal protection failed");
+
+    let escapedAbsolute = false;
+    try {
+      await files.readFile("/etc/passwd");
+      escapedAbsolute = true;
+    } catch (err: any) {
+      if (!/escapes/.test(err.message)) throw new Error(`Files: wrong error for absolute-path attempt: ${err.message}`);
+    }
+    if (escapedAbsolute) throw new Error("Files: an absolute '/etc/passwd' path was NOT rejected");
+
+    await files.deleteFile("note.txt");
+    const afterDelete = await files.listFiles();
+    if (afterDelete.some((f: any) => f.name === "note.txt")) {
+      throw new Error("Files: deleteFile did not actually remove the file");
+    }
+  } finally {
+    delete process.env.JARVIS_FILES_DIR_MOUNT;
+    fsSync.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
