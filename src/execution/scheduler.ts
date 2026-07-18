@@ -1,5 +1,8 @@
+import type { GoogleGenAI } from "@google/genai";
 import { ObservationPlatform } from "../observation/index.js";
 import * as emailIntegration from "../integrations/email.js";
+import * as briefing from "./briefing.js";
+import * as briefingRepo from "../data/briefing-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -84,6 +87,27 @@ export function startEmailWatchJob(intervalMs = 5 * 60 * 1000): NodeJS.Timeout |
         "info"
       );
       lastSeenEmailUid = newest.uid;
+    }
+  });
+}
+
+/**
+ * The proactive briefing job — collects real signals (email, GitHub
+ * notifications), prioritizes them, synthesizes a readable summary, persists
+ * it, and pushes it as a notification. This is what makes something happen
+ * without a user sending a chat message first; every other capability in
+ * this codebase only runs in response to a request.
+ */
+export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
+  return registerJob("proactive-briefing", intervalMs, async () => {
+    const result = await briefing.generateBriefing(ai);
+    try {
+      await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Briefing", `Failed to persist briefing: ${err.message}`);
+    }
+    if (result.itemCount > 0) {
+      pushNotification("admin", result.text, result.items.some(i => i.urgency === "high") ? "warning" : "info");
     }
   });
 }
