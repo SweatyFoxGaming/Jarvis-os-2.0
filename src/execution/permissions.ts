@@ -29,6 +29,7 @@ export const ALL_CAPABILITIES = [
   "files.read",
   "files.write",
   "knowledge.read",
+  "identity.read",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

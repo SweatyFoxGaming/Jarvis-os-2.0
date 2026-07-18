@@ -141,6 +141,23 @@ relying on anything not listed in "What's implemented."
   relationships after every real chat turn — only when something was genuinely
   stated, never invented — and stores them in Postgres. Queryable via the
   `query_knowledge_graph` chat tool or `GET /api/knowledge/search?q=`.
+- **Continuity of self** (`src/cognition/identity.ts`): not a claim of actual sentience —
+  a real, structured record of things Jarvis itself said. After every real chat turn, a
+  Gemini call judges whether Jarvis's own reply genuinely contained an opinion it formed,
+  a commitment it made, or a notable realization/observation — empty on most turns, by
+  design, and never invented when nothing qualifies (`src/data/identity-repo.ts`,
+  `self_reflections` table in Postgres). Recent entries are read back into the system
+  prompt for every future turn (`buildIdentityContext`), so Jarvis's sense of continuity
+  comes from real past statements instead of a static persona string. A 6-hour scheduled
+  job (`startSelfReflectionJob`) synthesizes one genuine proactive thought from at least
+  3 stored reflections — a follow-up on a prior commitment, a connection between two
+  past opinions — and honestly returns nothing rather than fabricating introspection when
+  there isn't enough real history yet. Reachable mid-conversation as the `reflect_on_self`
+  chat tool ("what have you been thinking about?", "what do you believe?") and via
+  `GET /api/identity/reflections`, `/thought`, `/thoughts/history`. Live-verified through
+  the real `/api/chat` pipeline: a genuine opinion turn was auto-extracted and stored, and
+  a follow-up turn had Gemini's own function-calling select `reflect_on_self` and weave the
+  real stored opinions back into a coherent answer.
 - **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
   with bcrypt-hashed passwords, both backed by Postgres.
 - **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.

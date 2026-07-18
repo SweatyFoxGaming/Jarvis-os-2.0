@@ -34,6 +34,8 @@ import * as briefing from "./execution/briefing.js";
 import * as briefingRepo from "./data/briefing-repo.js";
 import * as analyzer from "./evolution/analyzer.js";
 import * as evolutionRepo from "./data/evolution-repo.js";
+import * as identity from "./cognition/identity.js";
+import * as identityRepo from "./data/identity-repo.js";
 
 dotenv.config();
 
@@ -576,9 +578,15 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
     const stylePrefs = learningEngine.getStylePreferences();
     const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
 
+    // Real continuity, not a static persona repeated unchanged every
+    // session — see src/cognition/identity.ts. Empty string when there's
+    // no genuine self-reflection history yet (fresh install, or too early
+    // in the relationship for this to have accumulated anything).
+    const identityContext = await identity.buildIdentityContext();
+
     const baseSystemInstruction =
       "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences. If asked about your state or system metrics, seamlessly integrate them with human-like charm."
-      + memoryContext + styleContext;
+      + memoryContext + styleContext + identityContext;
 
     // The Gemini branch genuinely has tool access (declared via `tools` in
     // its request config below), so its prompt stays as-is. The local model
@@ -879,6 +887,8 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
         knowledgeGraph.extractAndStore(ai, message, fullReply).catch(() => {});
+        // Write side of continuity-of-self — see cognition/identity.ts.
+        identity.extractSelfReflection(ai, message, fullReply).catch(() => {});
       }
     }
 
@@ -1090,6 +1100,43 @@ app.get("/api/knowledge/entities", validateApiKey, async (req: any, res: any) =>
     res.json({ entities: await knowledgeGraphRepo.listAllEntities() });
   } catch (err: any) {
     res.json({ entities: [], error: err.message });
+  }
+});
+
+// ---------- Continuity of Self ----------
+// Real, structured record of things Jarvis has genuinely said about itself
+// — not a claim of actual sentience (see docs/architecture/VISION.md), a
+// concrete mechanism for continuity across sessions instead of a static
+// hardcoded persona string.
+app.get("/api/identity/reflections", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ reflections: await identity.reflectOnSelf(req.query.q as string | undefined) });
+  } catch (err: any) {
+    res.json({ reflections: [], error: err.message });
+  }
+});
+
+// On-demand generation of a proactive thought (the scheduled job in
+// scheduler.ts runs the same real synthesis on a timer without being asked).
+app.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
+  if (!ai) return res.status(503).json({ error: "Requires GEMINI_API_KEY to be configured." });
+  try {
+    const result = await identity.generateProactiveThought(ai);
+    if (!result) {
+      return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
+    }
+    await identityRepo.saveProactiveThought(result.content, result.basedOnCount);
+    res.json({ available: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/identity/thoughts/history", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ thoughts: await identityRepo.getRecentProactiveThoughts() });
+  } catch (err: any) {
+    res.json({ thoughts: [], error: err.message });
   }
 });
 
@@ -1658,6 +1705,7 @@ initDatabase().then(async (ready) => {
 
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(ai);
+  scheduler.startSelfReflectionJob(ai);
 });
 
 // Evict idle per-user session state (working memory, not persisted data) so
