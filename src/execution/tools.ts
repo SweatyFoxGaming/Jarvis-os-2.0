@@ -8,6 +8,7 @@ import { ObservationPlatform } from "../observation/index.js";
 import { AutonomousExecutive } from "./autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
 import * as calendar from "../integrations/calendar.js";
+import * as briefing from "./briefing.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -26,6 +27,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   decompose_plan: "executive.plan",
   calendar_list_events: "calendar.read",
   calendar_create_event: "calendar.write",
+  get_briefing: "briefing.read",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -117,6 +119,14 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["summary", "startISO", "endISO"],
     },
   },
+  {
+    name: "get_briefing",
+    description: "Get a real, up-to-date briefing synthesized from connected sources (unread email, GitHub notifications) right now. Use this when the user asks what's new, what needs their attention, or for a status update.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -161,6 +171,11 @@ export async function executeTool(name: string, args: Record<string, any>, usern
       case "calendar_create_event":
         output = await calendar.createEvent(args.summary, args.startISO, args.endISO, args.description);
         break;
+      case "get_briefing": {
+        const result = await briefing.generateBriefing(briefing.getConfiguredAi());
+        output = { text: result.text, itemCount: result.itemCount };
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -183,6 +198,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
   calendar_list_events: ["calendar", "schedule", "my agenda", "upcoming events", "what's on my"],
   calendar_create_event: ["calendar", "schedule a", "book a", "add an event", "set up a meeting"],
+  get_briefing: ["briefing", "what's new", "whats new", "what do i need to know", "catch me up", "status update", "anything i need to know"],
 };
 
 /**

@@ -84,6 +84,16 @@ relying on anything not listed in "What's implemented."
 
 ## What's implemented
 
+- **Proactive briefing** (`GET /api/briefing`, `/api/briefing/history`): the one thing
+  in this codebase that happens without a chat message triggering it first. An hourly
+  scheduled job (`src/execution/scheduler.ts`) collects real signals (unread email via
+  IMAP, GitHub notifications via the real `/notifications` API — both best-effort,
+  one failing never blocks the other), prioritizes them with real urgency scoring
+  (a GitHub review request or a stale unread email ranks above a routine comment),
+  and synthesizes a short natural-language summary via Gemini when configured —
+  degrading to a plain prioritized list, not a canned string, when it isn't. Also
+  reachable mid-conversation as the `get_briefing` chat tool ("what's new today?").
+  History persists to Postgres.
 - **Chat**, with a three-tier fallback chain: your local `llama-cpp` model →
   `GEMINI_API_KEY` (if set) → a canned offline reply generator (keyword-matched
   templates, not a model — see "Known limitations"). Each turn retrieves relevant
@@ -144,6 +154,15 @@ relying on anything not listed in "What's implemented."
   answered, whether memory had relevant hits, whether tool calls succeeded) instead
   of fixed inputs.
 - **Memory review queue**: a pending-records approval flow, backed by Postgres.
+- **Self-analysis** (`/api/evolution/*`): real computed signals, not decoration —
+  architecture score from an actual parsed import graph and cycle detection,
+  quality from real `tsc`/TODO-marker output, performance from real observed
+  latency/error telemetry, security from a real hardcoded-secret and
+  dangerous-call pattern scan. Persisted to Postgres so `/trends` reflects real
+  history and `/forecast` does a real (naively linear, honestly labeled)
+  projection once at least 3 runs exist — otherwise it says so rather than
+  inventing a number. Goals (`/api/evolution/goals`) compare a real metric
+  against a real target.
 - **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
   read via IMAP), text-to-speech, and Google Calendar (list/create events, real OAuth2
   with automatic token refresh — see "Google Calendar setup" below) — each gated
