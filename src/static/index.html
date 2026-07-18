@@ -808,7 +808,14 @@
     }, true);
 
     // 2. MULTIMEDIA SENSORS & TRANSLATORS (Camera, STT, TTS)
-    let speechUtterance = null;
+    // window.speechSynthesis is unusable here — Chromium on Linux (both plain
+    // browser and Electron) reports zero voices and the 'voiceschanged' event
+    // never fires, regardless of espeak/speech-dispatcher being installed
+    // system-wide. Real audio comes from the already-working backend TTS
+    // service (/api/integrations/tts/speak -> the "tts" Docker container)
+    // instead, played back through a real <audio> element.
+    let currentAudioEl = null;
+    let isSpeakingNow = false;
     let speechEnabled = false;
     let micEnabled = false;
     let cameraStream = null;
@@ -864,7 +871,7 @@
             if (iconOn) iconOn.classList.add('hidden');
             if (iconOff) iconOff.classList.remove('hidden');
             if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 hover:bg-indigo-400/5 shadow-md transition-all duration-300";
-            window.speechSynthesis.cancel();
+            if (currentAudioEl) { currentAudioEl.pause(); isSpeakingNow = false; }
             addNotification("Vocalization synthesis suspended.", "warning");
         }
         updateSensorStatusLabel();
@@ -1261,25 +1268,32 @@
         updateSensorStatusLabel();
     }
 
-    function speakText(text) {
-        if (!speechEnabled) return;
+    async function speakText(text) {
+        if (!speechEnabled || !CURRENT_API_KEY) return;
         try {
-            window.speechSynthesis.cancel();
+            if (currentAudioEl) { currentAudioEl.pause(); URL.revokeObjectURL(currentAudioEl.src); }
+
             const cleanText = text
                 .replace(/<[^>]*>/g, '')
                 .replace(/\[[^\]]*\]/g, '')
                 .replace(/uuid:[a-f0-9-]+/gi, 'node')
-                .slice(0, 160);
-                
-            speechUtterance = new SpeechSynthesisUtterance(cleanText);
-            const voices = window.speechSynthesis.getVoices();
-            let voice = voices.find(v => v.name.includes("Google") && v.lang.startsWith("en"));
-            if (!voice) voice = voices.find(v => v.lang.startsWith("en"));
-            if (voice) speechUtterance.voice = voice;
-            
-            speechUtterance.rate = 1.0;
-            speechUtterance.pitch = 0.85;
-            window.speechSynthesis.speak(speechUtterance);
+                .slice(0, 500);
+            if (!cleanText.trim()) return;
+
+            const res = await authFetch('/api/integrations/tts/speak', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                body: JSON.stringify({ text: cleanText })
+            });
+            if (!res.ok) return; // TTS is optional polish — degrade silently, same as before
+
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            currentAudioEl = new Audio(url);
+            isSpeakingNow = true;
+            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); };
+            currentAudioEl.onerror = () => { isSpeakingNow = false; };
+            await currentAudioEl.play();
         } catch {}
     }
 
@@ -1321,7 +1335,7 @@
 
     function animateWaveform() {
         const bars = document.querySelectorAll('.wave-bar');
-        const isSpeaking = window.speechSynthesis.speaking;
+        const isSpeaking = isSpeakingNow;
         const status = document.getElementById('kernel-status')?.textContent || 'Idle';
         const isThinking = status === 'Thinking' || status === 'Executing' || status === 'Planning';
         
