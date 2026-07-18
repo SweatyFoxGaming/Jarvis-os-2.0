@@ -331,6 +331,11 @@
                             <span id="sensor-status-label" class="text-[10px] font-mono text-secondary uppercase tracking-[0.25em]">SENSORS STANDBY</span>
                         </div>
 
+                        <!-- Continuity ticker — the most recent genuine self-reflection, quietly surfaced -->
+                        <div id="identity-ticker" class="hidden text-center max-w-xs mx-auto -mt-2">
+                            <p id="identity-ticker-text" class="text-[10px] text-accent/60 font-mono italic tracking-wide leading-snug"></p>
+                        </div>
+
                         <!-- Big tactile Control Buttons -->
                         <div class="flex items-center justify-center gap-5">
                             <!-- Camera Button -->
@@ -430,6 +435,34 @@
                     </div>
                     <div id="internal-dialogue-pane" class="grid grid-cols-1 md:grid-cols-4 gap-4 overflow-x-auto">
                         <div class="text-secondary text-center col-span-4 py-6 text-xs uppercase tracking-widest font-mono opacity-50">Zero active deliberations. Transmit goals or prompt dialogue to trigger consensus loops.</div>
+                    </div>
+                </div>
+
+                <!-- Continuity of Self -->
+                <div id="dashboard-continuity" class="bg-surface/40 border border-white/5 rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-white/5">
+                        <div>
+                            <h3 class="font-bold text-xs tracking-widest uppercase flex items-center gap-2">
+                                <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
+                                CONTINUITY OF SELF
+                            </h3>
+                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-md">Real opinions, commitments &amp; realizations Jarvis has genuinely expressed, carried across conversations — grounded in stored history, never fabricated.</p>
+                        </div>
+                        <div class="flex items-center gap-2 flex-shrink-0">
+                            <span id="continuity-count-badge" class="px-2 py-0.5 rounded bg-accent/10 border border-accent/20 text-[8px] font-mono font-bold text-accent tracking-widest uppercase whitespace-nowrap">0 RECORDED</span>
+                            <button id="btn-reflect-now" title="Ask Jarvis to synthesize a genuine reflective thought from real history right now" class="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-accent/30 rounded-lg text-[8px] font-mono font-semibold uppercase tracking-widest text-secondary hover:text-accent transition-all whitespace-nowrap">REFLECT_NOW</button>
+                        </div>
+                    </div>
+
+                    <div id="proactive-thought-callout" class="hidden mb-4 p-4 rounded-xl bg-gradient-to-br from-accent/10 via-primary/5 to-transparent border border-accent/20 relative overflow-hidden">
+                        <div class="absolute inset-0 pointer-events-none" style="background: radial-gradient(circle at 15% 20%, rgba(129,140,248,0.12), transparent 60%);"></div>
+                        <span class="text-[8px] font-mono font-bold text-accent tracking-[0.2em] uppercase relative">Currently Reflecting</span>
+                        <p id="proactive-thought-text" class="text-sm text-text font-medium mt-1.5 leading-relaxed relative"></p>
+                        <span id="proactive-thought-basis" class="text-[9px] text-secondary font-mono mt-2 block relative"></span>
+                    </div>
+
+                    <div id="self-reflections-stream" class="flex gap-3 overflow-x-auto pb-1">
+                        <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No genuine reflections recorded yet — they accumulate naturally as Jarvis forms real opinions in conversation.</div>
                     </div>
                 </div>
             </div>
@@ -1591,6 +1624,68 @@
         } catch {}
     }
 
+    const REFLECTION_CATEGORY_STYLE = {
+        opinion: { label: 'OPINION', classes: 'border-primary/25 text-primary bg-primary/5' },
+        commitment: { label: 'COMMITMENT', classes: 'border-success/25 text-success bg-success/5' },
+        realization: { label: 'REALIZATION', classes: 'border-warning/25 text-warning bg-warning/5' },
+        observation: { label: 'OBSERVATION', classes: 'border-accent/25 text-accent bg-accent/5' }
+    };
+
+    async function loadIdentityStream() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+
+            const resReflections = await fetch('/api/identity/reflections', { headers });
+            if (resReflections.ok) {
+                const data = await resReflections.json();
+                const reflections = data.reflections || [];
+                document.getElementById('continuity-count-badge').textContent = `${reflections.length} RECORDED`;
+
+                const stream = document.getElementById('self-reflections-stream');
+                if (reflections.length === 0) {
+                    stream.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No genuine reflections recorded yet — they accumulate naturally as Jarvis forms real opinions in conversation.</div>`;
+                } else {
+                    stream.innerHTML = reflections.map(r => {
+                        const style = REFLECTION_CATEGORY_STYLE[r.category] || REFLECTION_CATEGORY_STYLE.observation;
+                        return `
+                            <div class="flex-none w-64 bg-card/60 border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
+                                <div class="flex items-center justify-between mb-2">
+                                    <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase ${style.classes}">${style.label}</span>
+                                    <span class="text-[8px] text-secondary font-mono">${new Date(r.created_at).toLocaleTimeString()}</span>
+                                </div>
+                                <p class="text-[11px] text-text/90 leading-snug">${escapeHtml(r.content)}</p>
+                            </div>
+                        `;
+                    }).join('');
+                }
+
+                const ticker = document.getElementById('identity-ticker');
+                if (reflections.length > 0) {
+                    document.getElementById('identity-ticker-text').textContent = `"${reflections[0].content}"`;
+                    ticker.classList.remove('hidden');
+                } else {
+                    ticker.classList.add('hidden');
+                }
+            }
+
+            const resThoughts = await fetch('/api/identity/thoughts/history', { headers });
+            if (resThoughts.ok) {
+                const data = await resThoughts.json();
+                const latest = (data.thoughts || [])[0];
+                const callout = document.getElementById('proactive-thought-callout');
+                if (latest) {
+                    document.getElementById('proactive-thought-text').textContent = latest.content;
+                    document.getElementById('proactive-thought-basis').textContent =
+                        `Grounded in ${latest.based_on_count} real self-reflection(s) · ${new Date(latest.created_at).toLocaleTimeString()}`;
+                    callout.classList.remove('hidden');
+                } else {
+                    callout.classList.add('hidden');
+                }
+            }
+        } catch {}
+    }
+
     async function refreshWorkspaceSnapshot() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -1726,6 +1821,32 @@
         }
     });
 
+    // 7b. ON-DEMAND SELF-REFLECTION
+    const btnReflectNow = document.getElementById('btn-reflect-now');
+    btnReflectNow.addEventListener('click', async () => {
+        if (!CURRENT_API_KEY) { addNotification("Set an API key in Settings first.", "warning"); return; }
+        btnReflectNow.disabled = true;
+        btnReflectNow.textContent = 'REFLECTING...';
+        try {
+            const res = await fetch('/api/identity/thought', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            const data = await res.json();
+            if (res.ok && data.available) {
+                AudioEngine.success();
+                addNotification("New genuine reflection synthesized.", "success");
+                loadIdentityStream();
+            } else if (res.ok) {
+                addNotification(data.reason || "Not enough history yet to reflect on.", "warning");
+            } else {
+                throw new Error(data.error || 'request failed');
+            }
+        } catch {
+            addNotification("Self-reflection synthesis disrupted.", "danger");
+        } finally {
+            btnReflectNow.disabled = false;
+            btnReflectNow.textContent = 'REFLECT_NOW';
+        }
+    });
+
     // 8. SSE DIALOGUE INTERFACE
     const chatScroller = document.getElementById('chat-scroller');
     const chatInput = document.getElementById('chat-input');
@@ -1828,6 +1949,9 @@
             speakText(fullText);
             loadMindKernelData();
             loadLiveSystemData();
+            // Self-reflection extraction runs fire-and-forget server-side after
+            // the reply completes — give it a moment before checking for a new entry.
+            setTimeout(loadIdentityStream, 2500);
         } catch {
             addNotification("Dialogue transmission failure.", "danger");
         }
@@ -1945,6 +2069,7 @@
     }
 
     async function loadSystemSettings() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to load
         const headers = { 'X-API-Key': CURRENT_API_KEY };
         try {
             const res = await fetch('/api/settings', { headers });
@@ -2281,8 +2406,10 @@
         loadLiveSystemData();
         loadMindKernelData();
         loadSystemSettings();
+        loadIdentityStream();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
+        setInterval(loadIdentityStream, 20000);
     });
 
     // Global Notification Badge
