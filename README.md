@@ -84,6 +84,16 @@ relying on anything not listed in "What's implemented."
 
 ## What's implemented
 
+- **Proactive briefing** (`GET /api/briefing`, `/api/briefing/history`): the one thing
+  in this codebase that happens without a chat message triggering it first. An hourly
+  scheduled job (`src/execution/scheduler.ts`) collects real signals (unread email via
+  IMAP, GitHub notifications via the real `/notifications` API — both best-effort,
+  one failing never blocks the other), prioritizes them with real urgency scoring
+  (a GitHub review request or a stale unread email ranks above a routine comment),
+  and synthesizes a short natural-language summary via Gemini when configured —
+  degrading to a plain prioritized list, not a canned string, when it isn't. Also
+  reachable mid-conversation as the `get_briefing` chat tool ("what's new today?").
+  History persists to Postgres.
 - **Chat**, with a three-tier fallback chain: your local `llama-cpp` model →
   `GEMINI_API_KEY` (if set) → a canned offline reply generator (keyword-matched
   templates, not a model — see "Known limitations"). Each turn retrieves relevant
@@ -124,6 +134,13 @@ relying on anything not listed in "What's implemented."
   bundled `llama-cpp` service doesn't serve embeddings by default (would need a
   second instance with `--embeddings` and an embedding-capable model) — this
   currently only lights up with `GEMINI_API_KEY` set.
+- **Structured knowledge graph**: the reliable complement to similarity-based semantic
+  memory — pgvector answers "what sounds like this," which is inherently
+  probabilistic; this answers "what do we actually know about X." A real Gemini
+  call (`src/cognition/knowledge-graph.ts`) extracts concrete entities, facts, and
+  relationships after every real chat turn — only when something was genuinely
+  stated, never invented — and stores them in Postgres. Queryable via the
+  `query_knowledge_graph` chat tool or `GET /api/knowledge/search?q=`.
 - **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
   with bcrypt-hashed passwords, both backed by Postgres.
 - **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.
@@ -153,9 +170,22 @@ relying on anything not listed in "What's implemented."
   answered, whether memory had relevant hits, whether tool calls succeeded) instead
   of fixed inputs.
 - **Memory review queue**: a pending-records approval flow, backed by Postgres.
+- **Self-analysis** (`/api/evolution/*`): real computed signals, not decoration —
+  architecture score from an actual parsed import graph and cycle detection,
+  quality from real `tsc`/TODO-marker output, performance from real observed
+  latency/error telemetry, security from a real hardcoded-secret and
+  dangerous-call pattern scan. Persisted to Postgres so `/trends` reflects real
+  history and `/forecast` does a real (naively linear, honestly labeled)
+  projection once at least 3 runs exist — otherwise it says so rather than
+  inventing a number. Goals (`/api/evolution/goals`) compare a real metric
+  against a real target.
 - **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
-  read via IMAP), and text-to-speech — each gated behind its own env vars and
-  degrading gracefully (clear error, not a crash) when unset.
+  read via IMAP), text-to-speech, local files/notes (`JARVIS_FILES_DIR`,
+  read/write/list/delete scoped to one dedicated folder — see "Files/notes" below),
+  and Google Calendar (list/create events, real OAuth2 with automatic token
+  refresh — see "Google Calendar setup" below) — each gated behind its own env
+  vars and degrading gracefully (clear error, not a crash) when unset or not yet
+  authorized.
 - **Executive planning / board review**: a request planner and a static proposal
   linter — see "Known limitations," they're both real but more modest than their
   names suggest.
@@ -186,6 +216,46 @@ None of this is a security issue — it's worth knowing before you rely on it:
   free-text objective planner stays plan-only on purpose (see its own doc comment):
   invoking GitHub/email actions needs structured arguments an LLM extracts from real
   conversation, not keyword-matched from a plan string.
+
+## Files/notes
+
+`JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
+read-write into the `api` container at `/jarvis-files` — the *only* folder
+`src/integrations/files.ts` can ever touch. Every path is resolved against that
+root and rejected if it would escape it (`list_files`/`read_file`/`write_file`
+chat tools, or `GET/POST/DELETE /api/integrations/files*` directly), gated by
+`files.read`/`files.write` capability grants like every other tool. The folder
+is created automatically if it doesn't exist — nothing to set up beyond
+pointing `JARVIS_FILES_DIR` somewhere you're happy for Jarvis to read and write.
+
+## Google Calendar setup
+
+Optional — chat, memory, and every other integration work without this. Calendar
+needs a real Google Cloud OAuth client, which only you can create (it requires a
+Google account and a one-time consent grant no server-side process can do on your
+behalf):
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create a
+   project (or reuse one) and enable the **Google Calendar API**
+   (APIs & Services → Library).
+2. Configure the **OAuth consent screen** (APIs & Services → OAuth consent screen).
+   For personal use, "External" + "Testing" mode is enough — add your own Google
+   account as a test user.
+3. Create an **OAuth client ID** (APIs & Services → Credentials → Create Credentials
+   → OAuth client ID), type **Web application**. Add an **Authorized redirect URI**
+   of `http://localhost:3000/api/integrations/calendar/callback` (must match
+   `GOOGLE_REDIRECT_URI` in `.env` exactly).
+4. Copy the generated **Client ID** and **Client Secret** into `.env` as
+   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, restart the stack.
+5. With the server running, open
+   `http://localhost:3000/api/integrations/calendar/auth-url` while sending your
+   `x-api-key` header (e.g. via a browser extension, or just `curl` and paste the
+   returned URL into a browser), approve access, and you'll land back on the
+   callback route with a "connected" confirmation. This is a one-time step — the
+   refresh token it stores in Postgres keeps working across restarts.
+
+Until step 5 is done, every calendar route/tool returns a clear "not configured" or
+"not authorized yet" error rather than failing silently or fabricating data.
 
 ## Testing
 
