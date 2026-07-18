@@ -84,6 +84,16 @@ relying on anything not listed in "What's implemented."
 
 ## What's implemented
 
+- **Proactive briefing** (`GET /api/briefing`, `/api/briefing/history`): the one thing
+  in this codebase that happens without a chat message triggering it first. An hourly
+  scheduled job (`src/execution/scheduler.ts`) collects real signals (unread email via
+  IMAP, GitHub notifications via the real `/notifications` API — both best-effort,
+  one failing never blocks the other), prioritizes them with real urgency scoring
+  (a GitHub review request or a stale unread email ranks above a routine comment),
+  and synthesizes a short natural-language summary via Gemini when configured —
+  degrading to a plain prioritized list, not a canned string, when it isn't. Also
+  reachable mid-conversation as the `get_briefing` chat tool ("what's new today?").
+  History persists to Postgres.
 - **Chat**, with a three-tier fallback chain: your local `llama-cpp` model →
   `GEMINI_API_KEY` (if set) → a canned offline reply generator (keyword-matched
   templates, not a model — see "Known limitations"). Each turn retrieves relevant

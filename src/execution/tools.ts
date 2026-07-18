@@ -7,6 +7,7 @@ import { hasGrant } from "./permissions.js";
 import { ObservationPlatform } from "../observation/index.js";
 import { AutonomousExecutive } from "./autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
+import * as briefing from "./briefing.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -23,6 +24,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   send_email: "email.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
+  get_briefing: "briefing.read",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -89,6 +91,14 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["objective"],
     },
   },
+  {
+    name: "get_briefing",
+    description: "Get a real, up-to-date briefing synthesized from connected sources (unread email, GitHub notifications) right now. Use this when the user asks what's new, what needs their attention, or for a status update.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -127,6 +137,11 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
         break;
       }
+      case "get_briefing": {
+        const result = await briefing.generateBriefing(briefing.getConfiguredAi());
+        output = { text: result.text, itemCount: result.itemCount };
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -147,6 +162,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   send_email: ["email", "e-mail", "send mail", "inbox"],
   speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
   decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
+  get_briefing: ["briefing", "what's new", "whats new", "what do i need to know", "catch me up", "status update", "anything i need to know"],
 };
 
 /**

@@ -24,6 +24,8 @@ import * as permissions from "./execution/permissions.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./execution/scheduler.js";
 import { reflectAndLearn } from "./cognition/reflection.js";
+import * as briefing from "./execution/briefing.js";
+import * as briefingRepo from "./data/briefing-repo.js";
 
 dotenv.config();
 
@@ -90,6 +92,7 @@ if (process.env.GEMINI_API_KEY) {
 } else {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
+briefing.configureAi(ai);
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -1056,6 +1059,32 @@ app.post("/api/notifications/mark_read", validateApiKey, (req: any, res: any) =>
   res.json({ status: "success" });
 });
 
+// ---------- Proactive Briefing ----------
+// GET generates and returns one right now (on demand); the scheduled job in
+// scheduler.ts runs the same real synthesis on a timer without being asked.
+app.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
+  try {
+    const result = await briefing.generateBriefing(ai);
+    try {
+      await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Briefing", `Failed to persist on-demand briefing: ${err.message}`);
+    }
+    res.json(result);
+  } catch (err: any) {
+    observation.logTelemetry("error", "Briefing", `Briefing generation failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/briefing/history", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json({ briefings: await briefingRepo.getRecentBriefings() });
+  } catch (err: any) {
+    res.json({ briefings: [], error: err.message });
+  }
+});
+
 // Admin & Memory Endpoints — persisted in Postgres, see src/data/memory-repo.ts
 app.get("/api/memory/pending", validateApiKey, async (req: any, res: any) => {
   try {
@@ -1342,6 +1371,7 @@ initDatabase().then(async (ready) => {
   });
 
   scheduler.startEmailWatchJob();
+  scheduler.startBriefingJob(ai);
 });
 
 // Evict idle per-user session state (working memory, not persisted data) so
