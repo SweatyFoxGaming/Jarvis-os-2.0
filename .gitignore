@@ -60,3 +60,6 @@ tmp/
 
 # Node dependencies
 node_modules/
+
+# Playwright MCP scratch output
+.playwright-mcp/
