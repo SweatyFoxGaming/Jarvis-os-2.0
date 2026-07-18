@@ -14,6 +14,7 @@ import * as github from "./integrations/github.js";
 import * as emailIntegration from "./integrations/email.js";
 import * as tts from "./integrations/tts.js";
 import * as whisper from "./integrations/whisper.js";
+import * as jarvisFiles from "./integrations/files.js";
 import * as calendar from "./integrations/calendar.js";
 import { initDatabase } from "./data/db.js";
 import * as usersRepo from "./data/users-repo.js";
@@ -1446,6 +1447,48 @@ app.post("/api/integrations/tts/speak", validateApiKey, async (req: any, res: an
     const { audio, contentType } = await tts.synthesizeSpeech(text, { voice, model });
     res.setHeader("Content-Type", contentType);
     res.send(audio);
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+// ---------- Local Files/Notes (scoped to one dedicated folder) ----------
+app.get("/api/integrations/files/list", validateApiKey, async (req: any, res: any) => {
+  try {
+    res.json(await jarvisFiles.listFiles(req.query.path as string | undefined));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.get("/api/integrations/files/read", validateApiKey, async (req: any, res: any) => {
+  const { path: relPath } = req.query;
+  if (!relPath) return res.status(400).json({ error: "path is required" });
+  try {
+    res.json({ path: relPath, content: await jarvisFiles.readFile(relPath as string) });
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.post("/api/integrations/files/write", validateApiKey, async (req: any, res: any) => {
+  const { path: relPath, content } = req.body;
+  if (!relPath || typeof content !== "string") {
+    return res.status(400).json({ error: "path and content are required" });
+  }
+  try {
+    res.json(await jarvisFiles.writeFile(relPath, content));
+  } catch (err) {
+    handleIntegrationError(res, err);
+  }
+});
+
+app.delete("/api/integrations/files", validateApiKey, async (req: any, res: any) => {
+  const { path: relPath } = req.query;
+  if (!relPath) return res.status(400).json({ error: "path is required" });
+  try {
+    await jarvisFiles.deleteFile(relPath as string);
+    res.json({ status: "success" });
   } catch (err) {
     handleIntegrationError(res, err);
   }

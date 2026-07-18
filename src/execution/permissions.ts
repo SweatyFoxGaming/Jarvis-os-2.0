@@ -26,6 +26,8 @@ export const ALL_CAPABILITIES = [
   "calendar.read",
   "calendar.write",
   "briefing.read",
+  "files.read",
+  "files.write",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

@@ -164,10 +164,12 @@ relying on anything not listed in "What's implemented."
   inventing a number. Goals (`/api/evolution/goals`) compare a real metric
   against a real target.
 - **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
-  read via IMAP), text-to-speech, and Google Calendar (list/create events, real OAuth2
-  with automatic token refresh — see "Google Calendar setup" below) — each gated
-  behind its own env vars and degrading gracefully (clear error, not a crash) when
-  unset or not yet authorized.
+  read via IMAP), text-to-speech, local files/notes (`JARVIS_FILES_DIR`,
+  read/write/list/delete scoped to one dedicated folder — see "Files/notes" below),
+  and Google Calendar (list/create events, real OAuth2 with automatic token
+  refresh — see "Google Calendar setup" below) — each gated behind its own env
+  vars and degrading gracefully (clear error, not a crash) when unset or not yet
+  authorized.
 - **Executive planning / board review**: a request planner and a static proposal
   linter — see "Known limitations," they're both real but more modest than their
   names suggest.
@@ -198,6 +200,17 @@ None of this is a security issue — it's worth knowing before you rely on it:
   free-text objective planner stays plan-only on purpose (see its own doc comment):
   invoking GitHub/email actions needs structured arguments an LLM extracts from real
   conversation, not keyword-matched from a plan string.
+
+## Files/notes
+
+`JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
+read-write into the `api` container at `/jarvis-files` — the *only* folder
+`src/integrations/files.ts` can ever touch. Every path is resolved against that
+root and rejected if it would escape it (`list_files`/`read_file`/`write_file`
+chat tools, or `GET/POST/DELETE /api/integrations/files*` directly), gated by
+`files.read`/`files.write` capability grants like every other tool. The folder
+is created automatically if it doesn't exist — nothing to set up beyond
+pointing `JARVIS_FILES_DIR` somewhere you're happy for Jarvis to read and write.
 
 ## Google Calendar setup
 
