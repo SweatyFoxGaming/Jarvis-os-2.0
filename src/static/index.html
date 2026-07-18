@@ -548,6 +548,41 @@
                         <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">Nothing queued yet — ask Jarvis for something new and approve its plan to see it here.</div>
                     </div>
                 </div>
+
+                <!-- Security Ops: human-gated. Jarvis observes and proposes; nothing here is ever auto-applied -->
+                <div id="dashboard-security-ops" class="holo-panel holo-lift rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-white/5">
+                        <div>
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2">
+                                <span class="w-1.5 h-1.5 rounded-full bg-danger animate-pulse"></span>
+                                SECURITY OPS
+                            </h3>
+                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-md">Real network device inventory and host vulnerability scans from a host-side scanner — never the api container itself. Nothing here is ever applied automatically; every fix is a proposal you review and run yourself.</p>
+                        </div>
+                        <span id="security-summary-badge" class="px-2 py-0.5 rounded bg-danger/10 border border-danger/20 text-[8px] font-mono font-bold text-danger tracking-widest uppercase whitespace-nowrap flex-shrink-0">0 OPEN</span>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                        <div>
+                            <span class="text-[8px] font-mono font-bold text-secondary tracking-widest uppercase block mb-2">Network Devices</span>
+                            <div id="security-devices-list" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                                <div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">No scan data yet.</div>
+                            </div>
+                        </div>
+                        <div>
+                            <span class="text-[8px] font-mono font-bold text-secondary tracking-widest uppercase block mb-2">Open Findings</span>
+                            <div id="security-findings-list" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                                <div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">No open findings.</div>
+                            </div>
+                        </div>
+                        <div>
+                            <span class="text-[8px] font-mono font-bold text-secondary tracking-widest uppercase block mb-2">Pending Proposals</span>
+                            <div id="security-proposals-list" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                                <div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">Nothing pending.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- ================= SUB-PANEL 2: CHAT DIALOGUE SYSTEM ================= -->
@@ -1897,6 +1932,129 @@
         } catch {}
     }
 
+    const SEVERITY_STYLE = {
+        critical: 'border-danger/25 text-danger bg-danger/5',
+        high: 'border-danger/25 text-danger bg-danger/5',
+        medium: 'border-warning/25 text-warning bg-warning/5',
+        low: 'border-primary/25 text-primary bg-primary/5',
+        info: 'border-secondary/25 text-secondary bg-secondary/5',
+    };
+
+    async function acknowledgeDevice(mac) {
+        try {
+            const res = await authFetch(`/api/security/devices/${encodeURIComponent(mac)}/acknowledge`, {
+                method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) { addNotification("Device acknowledged.", "success"); loadSecurityOps(); }
+        } catch {}
+    }
+
+    async function resolveFinding(id) {
+        try {
+            const res = await authFetch(`/api/security/findings/${id}/status`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                body: JSON.stringify({ status: 'resolved' })
+            });
+            if (res.ok) { addNotification("Finding marked resolved.", "success"); loadSecurityOps(); }
+        } catch {}
+    }
+
+    async function setProposalStatus(id, status) {
+        try {
+            const res = await authFetch(`/api/security/proposals/${id}/status`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                body: JSON.stringify({ status })
+            });
+            if (res.ok) {
+                addNotification(status === 'approved' ? "Proposal approved — run the command yourself to apply it." : "Proposal rejected.", status === 'approved' ? "success" : "warning");
+                loadSecurityOps();
+            }
+        } catch {}
+    }
+
+    async function loadSecurityOps() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+
+            const resDevices = await authFetch('/api/security/devices', { headers });
+            const resFindings = await authFetch('/api/security/findings?status=open', { headers });
+            const resProposals = await authFetch('/api/security/proposals?status=pending', { headers });
+
+            let unrecognizedCount = 0;
+            if (resDevices.ok) {
+                const data = await resDevices.json();
+                const devices = data.devices || [];
+                unrecognizedCount = devices.filter(d => !d.is_known).length;
+                const list = document.getElementById('security-devices-list');
+                if (devices.length === 0) {
+                    list.innerHTML = `<div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">No scan data yet.</div>`;
+                } else {
+                    list.innerHTML = devices.map(d => `
+                        <div class="holo-chip ${d.is_known ? 'border-white/5' : 'border-warning/25'} border rounded-lg p-2.5">
+                            <div class="flex items-center justify-between gap-2">
+                                <div class="min-w-0">
+                                    <span class="text-[10px] font-mono text-white block truncate">${escapeHtml(d.ip_address)} · ${escapeHtml(d.mac_address)}</span>
+                                    <span class="text-[9px] text-secondary block truncate">${escapeHtml(d.vendor || d.hostname || 'Unknown vendor')}</span>
+                                </div>
+                                ${d.is_known
+                                    ? `<span class="text-[8px] font-mono text-success uppercase tracking-widest whitespace-nowrap">KNOWN</span>`
+                                    : `<button onclick="acknowledgeDevice('${d.mac_address}')" class="px-1.5 py-0.5 bg-warning/10 hover:bg-warning/20 border border-warning/20 rounded text-[8px] font-mono font-bold text-warning uppercase tracking-widest whitespace-nowrap">ACK</button>`
+                                }
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            }
+
+            let openFindingsCount = 0;
+            if (resFindings.ok) {
+                const data = await resFindings.json();
+                const findings = data.findings || [];
+                openFindingsCount = findings.length;
+                const list = document.getElementById('security-findings-list');
+                if (findings.length === 0) {
+                    list.innerHTML = `<div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">No open findings.</div>`;
+                } else {
+                    list.innerHTML = findings.map(f => {
+                        const style = SEVERITY_STYLE[f.severity] || SEVERITY_STYLE.info;
+                        return `
+                            <div class="holo-chip border ${style.split(' ')[0]} rounded-lg p-2.5">
+                                <div class="flex items-center justify-between gap-2 mb-1">
+                                    <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase ${style}">${escapeHtml(f.severity)}</span>
+                                    <button onclick="resolveFinding(${f.id})" class="text-[8px] font-mono text-secondary hover:text-success uppercase tracking-widest whitespace-nowrap">RESOLVE</button>
+                                </div>
+                                <span class="text-[10px] text-white block leading-snug">${escapeHtml(f.title)}</span>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+
+            if (resProposals.ok) {
+                const data = await resProposals.json();
+                const proposals = data.proposals || [];
+                const list = document.getElementById('security-proposals-list');
+                if (proposals.length === 0) {
+                    list.innerHTML = `<div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">Nothing pending.</div>`;
+                } else {
+                    list.innerHTML = proposals.map(p => `
+                        <div class="holo-chip border-primary/20 border rounded-lg p-2.5">
+                            <span class="text-[10px] text-white block leading-snug mb-1">${escapeHtml(p.proposed_action)}</span>
+                            ${p.proposed_command ? `<code class="text-[9px] text-accent font-mono block mb-1.5 break-all">${escapeHtml(p.proposed_command)}</code>` : ''}
+                            <div class="flex gap-1.5">
+                                <button onclick="setProposalStatus(${p.id}, 'approved')" class="flex-1 px-1.5 py-1 bg-success/10 hover:bg-success/20 border border-success/20 rounded text-[8px] font-mono font-bold text-success uppercase tracking-widest">APPROVE</button>
+                                <button onclick="setProposalStatus(${p.id}, 'rejected')" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">REJECT</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            }
+
+            document.getElementById('security-summary-badge').textContent = `${openFindingsCount + unrecognizedCount} OPEN`;
+        } catch {}
+    }
+
     async function refreshWorkspaceSnapshot() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -2625,10 +2783,12 @@
         loadSystemSettings();
         loadIdentityStream();
         loadFeatureRequests();
+        loadSecurityOps();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
         setInterval(loadIdentityStream, 20000);
         setInterval(loadFeatureRequests, 20000);
+        setInterval(loadSecurityOps, 20000);
     });
 
     // Global Notification Badge

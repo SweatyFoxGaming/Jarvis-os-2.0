@@ -33,6 +33,8 @@ export const ALL_CAPABILITIES = [
   "news.read",
   "web.search",
   "feature.propose",
+  "security.read",
+  "security.manage",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

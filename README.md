@@ -262,6 +262,41 @@ None of this is a security issue — it's worth knowing before you rely on it:
   invoking GitHub/email actions needs structured arguments an LLM extracts from real
   conversation, not keyword-matched from a plan string.
 
+## Security ops (human-gated)
+
+Jarvis observes and proposes; it never applies anything to your network or
+host itself. Two host-side scripts (`scripts/security/`) do the actual
+scanning — deliberately **outside** Docker, so the chat-facing `api`
+container (the part most exposed to prompt injection or bad model output)
+never gains new network privileges to do this:
+
+- **`network_scan.sh`** — `arp-scan`s your real LAN (needs root/`CAP_NET_RAW`),
+  posts the device list to `POST /api/security/ingest/devices`. A MAC seen
+  for the first time gets both a device row and a real "new device" finding;
+  an already-known device just gets its `last_seen` refreshed.
+- **`host_scan.sh`** — real checks against the actual host: pending `apt`
+  security updates, SSH root-login config, listening ports reachable beyond
+  localhost. Posts to `POST /api/security/ingest/findings`. Any finding can
+  carry a proposed remediation — the exact command is stored and shown to
+  you verbatim, but **nothing in this codebase ever executes it**. Approving
+  a proposal only flips its status; running the command, if you want it, is
+  a manual step you take yourself.
+
+Both scripts read `INTERNAL_API_KEY` straight from `.env` (same key as
+everything else — no separate secret to manage) and need `arp-scan`/`nmap`
+installed (`apt install arp-scan nmap`). Run periodically via cron, e.g.:
+
+```
+*/15 * * * * /path/to/scripts/security/network_scan.sh >> /var/log/jarvis-network-scan.log 2>&1
+0 6 * * *    /path/to/scripts/security/host_scan.sh    >> /var/log/jarvis-host-scan.log 2>&1
+```
+
+The "SECURITY OPS" dashboard panel shows the live device inventory (with a
+one-click acknowledge for anything new), open findings by severity, and
+pending proposals with their exact command and an approve/reject choice —
+also reachable via the `get_security_status` chat tool or
+`GET /api/security/devices`/`/findings`/`/proposals` directly.
+
 ## Files/notes
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted

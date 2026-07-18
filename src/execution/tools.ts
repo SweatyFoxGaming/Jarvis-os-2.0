@@ -15,6 +15,7 @@ import * as identity from "../cognition/identity.js";
 import * as news from "../integrations/news.js";
 import * as webSearch from "../integrations/websearch.js";
 import * as featureRequestsRepo from "../data/feature-requests-repo.js";
+import * as securityRepo from "../data/security-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -42,6 +43,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   get_news: "news.read",
   search_web: "web.search",
   queue_feature_request: "feature.propose",
+  get_security_status: "security.read",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -231,6 +233,14 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["title", "description", "plan"],
     },
   },
+  {
+    name: "get_security_status",
+    description: "Get the real current network/system security status: unrecognized devices on the network, open security findings, and pending remediation proposals awaiting approval. Use this when the user asks about network security, unknown devices, or vulnerabilities.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -313,6 +323,19 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = { id: queued.id, status: queued.status };
         break;
       }
+      case "get_security_status": {
+        const [devices, findings, proposals] = await Promise.all([
+          securityRepo.getNetworkDevices(),
+          securityRepo.getFindings("open"),
+          securityRepo.getProposals("pending"),
+        ]);
+        output = {
+          unrecognizedDevices: devices.filter(d => !d.is_known).map(d => ({ mac: d.mac_address, ip: d.ip_address, vendor: d.vendor })),
+          openFindings: findings.map(f => ({ id: f.id, severity: f.severity, title: f.title })),
+          pendingProposals: proposals.map(p => ({ id: p.id, action: p.proposed_action })),
+        };
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -343,6 +366,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   reflect_on_self: ["what have you been thinking", "what do you think about", "what do you believe", "have you thought about", "your opinion on", "what did you say about"],
   get_news: ["news", "headlines", "what's happening in", "current events", "latest on"],
   search_web: ["search the web", "search for", "look up", "google", "find out about", "what's the latest"],
+  get_security_status: ["network security", "unknown device", "unrecognized device", "vulnerabilit", "security findings", "is my network safe"],
 };
 
 /**
