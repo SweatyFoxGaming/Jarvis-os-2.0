@@ -12,6 +12,8 @@ import * as briefing from "./briefing.js";
 import * as files from "../integrations/files.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import * as identity from "../cognition/identity.js";
+import * as news from "../integrations/news.js";
+import * as webSearch from "../integrations/websearch.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -36,6 +38,8 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   write_file: "files.write",
   query_knowledge_graph: "knowledge.read",
   reflect_on_self: "identity.read",
+  get_news: "news.read",
+  search_web: "web.search",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -189,6 +193,28 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       },
     },
   },
+  {
+    name: "get_news",
+    description: "Get real current news headlines, optionally on a specific topic. Use this when the user asks what's happening in the news, for a topic-specific news search, or current events.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "Optional topic/keyword to search news for; omit for general top headlines" },
+        category: { type: Type.STRING, description: "Optional category for top headlines: business, entertainment, general, health, science, sports, technology" },
+      },
+    },
+  },
+  {
+    name: "search_web",
+    description: "Search the live web for real, current results — use this for anything requiring up-to-date information you wouldn't already know (current events, prices, recent releases, documentation, anything time-sensitive).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "The search query" },
+      },
+      required: ["query"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -253,6 +279,16 @@ export async function executeTool(name: string, args: Record<string, any>, usern
       case "reflect_on_self":
         output = { reflections: await identity.reflectOnSelf(args.query) };
         break;
+      case "get_news": {
+        const articles = args.query
+          ? await news.searchNews(args.query)
+          : await news.getTopHeadlines({ category: args.category });
+        output = { articles };
+        break;
+      }
+      case "search_web":
+        output = { results: await webSearch.webSearch(args.query) };
+        break;
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -281,6 +317,8 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   write_file: ["save this", "write this down", "save a note", "create a note", "write a note", "jot this down"],
   query_knowledge_graph: ["what do we know about", "what do you know about", "remind me about", "what did we decide about", "what have we discussed about"],
   reflect_on_self: ["what have you been thinking", "what do you think about", "what do you believe", "have you thought about", "your opinion on", "what did you say about"],
+  get_news: ["news", "headlines", "what's happening in", "current events", "latest on"],
+  search_web: ["search the web", "search for", "look up", "google", "find out about", "what's the latest"],
 };
 
 /**

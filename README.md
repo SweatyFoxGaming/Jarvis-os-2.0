@@ -199,10 +199,14 @@ relying on anything not listed in "What's implemented."
 - **Integrations**: GitHub (read repo/file, create issues/PRs), email (send via SMTP,
   read via IMAP), text-to-speech, local files/notes (`JARVIS_FILES_DIR`,
   read/write/list/delete scoped to one dedicated folder — see "Files/notes" below),
-  and Google Calendar (list/create events, real OAuth2 with automatic token
-  refresh — see "Google Calendar setup" below) — each gated behind its own env
-  vars and degrading gracefully (clear error, not a crash) when unset or not yet
-  authorized.
+  Google Calendar (list/create events, real OAuth2 with automatic token
+  refresh — see "Google Calendar setup" below), news (`NEWS_API_KEY` — real
+  headlines and topic search via newsapi.org, `get_news` chat tool or
+  `GET /api/integrations/news/headlines`/`/search`), and live web search
+  (`BRAVE_API_KEY` — real current results via Brave's Search API, `search_web`
+  chat tool or `GET /api/integrations/websearch`) — each gated behind its own
+  env vars and degrading gracefully (clear error, not a crash) when unset or
+  not yet authorized.
 - **Executive planning / board review**: a request planner and a static proposal
   linter — see "Known limitations," they're both real but more modest than their
   names suggest.

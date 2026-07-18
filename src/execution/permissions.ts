@@ -30,6 +30,8 @@ export const ALL_CAPABILITIES = [
   "files.write",
   "knowledge.read",
   "identity.read",
+  "news.read",
+  "web.search",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
