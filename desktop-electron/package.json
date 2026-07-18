@@ -1,0 +1,33 @@
+{
+  "name": "jarvis-os-desktop",
+  "version": "1.0.0",
+  "description": "Native desktop shell for Jarvis OS — wraps the locally running Docker-hosted dashboard in a real window instead of a browser tab.",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.jarvisos.desktop",
+    "productName": "Jarvis OS",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "loading.html"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
+    }
+  }
+}

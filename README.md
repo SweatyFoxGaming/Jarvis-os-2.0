@@ -227,8 +227,10 @@ None of this is a security issue — it's worth knowing before you rely on it:
   no longer the out-of-the-box default the way it used to be with a host-run Ollama.
 - A couple of files under `src/` (`bridge/synapse.py`, `infrastructure/health.py`)
   are unused fragments from a prior design and are not imported by anything that
-  runs. `src/desktop/` is a separate, optional pywebview launcher, not part of the
-  Docker/API path.
+  runs. `src/desktop/app.py` is an older, separate pywebview launcher attempt that
+  tries to spawn its own copy of the server directly on the host rather than
+  pointing at the Docker stack — superseded by `desktop-electron/` (see "Desktop
+  app" below), which does the latter and is the maintained path going forward.
 - **Tool-calling delegation only fires through `/api/chat`** — `/api/executive/run`'s
   free-text objective planner stays plan-only on purpose (see its own doc comment):
   invoking GitHub/email actions needs structured arguments an LLM extracts from real
@@ -244,6 +246,28 @@ chat tools, or `GET/POST/DELETE /api/integrations/files*` directly), gated by
 `files.read`/`files.write` capability grants like every other tool. The folder
 is created automatically if it doesn't exist — nothing to set up beyond
 pointing `JARVIS_FILES_DIR` somewhere you're happy for Jarvis to read and write.
+
+## Desktop app
+
+`desktop-electron/` wraps the dashboard in a real native window instead of a
+browser tab — mainly useful for microphone access, since a dedicated window
+has no browser-profile history of a previously-blocked mic permission to get
+stuck on. It does not run its own copy of the server: the Docker stack
+(`docker compose up -d`) must already be running at `localhost:3000` — the app
+polls for it on launch, shows a connecting screen while it waits, and a clear
+"isn't reachable" screen with the exact command to run if it times out.
+
+```bash
+cd desktop-electron
+npm install
+npm start              # run directly
+npm run build           # produce an installable .deb / .AppImage (Linux)
+```
+
+Microphone/camera permission requests are auto-granted only for the app's own
+`localhost:3000` origin (`session.setPermissionRequestHandler` in `main.js`) —
+this window never navigates anywhere else, so there's no broader exposure from
+that.
 
 ## Google Calendar setup
 
