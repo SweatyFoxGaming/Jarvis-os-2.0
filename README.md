@@ -124,6 +124,13 @@ relying on anything not listed in "What's implemented."
   bundled `llama-cpp` service doesn't serve embeddings by default (would need a
   second instance with `--embeddings` and an embedding-capable model) — this
   currently only lights up with `GEMINI_API_KEY` set.
+- **Structured knowledge graph**: the reliable complement to similarity-based semantic
+  memory — pgvector answers "what sounds like this," which is inherently
+  probabilistic; this answers "what do we actually know about X." A real Gemini
+  call (`src/cognition/knowledge-graph.ts`) extracts concrete entities, facts, and
+  relationships after every real chat turn — only when something was genuinely
+  stated, never invented — and stores them in Postgres. Queryable via the
+  `query_knowledge_graph` chat tool or `GET /api/knowledge/search?q=`.
 - **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
   with bcrypt-hashed passwords, both backed by Postgres.
 - **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.

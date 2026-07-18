@@ -66,6 +66,35 @@ async function createSchema(): Promise<void> {
     );
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS conversation_history_username_idx ON conversation_history(username, created_at);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kg_entities (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (name, entity_type)
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kg_facts (
+      id SERIAL PRIMARY KEY,
+      entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+      fact TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kg_relationships (
+      id SERIAL PRIMARY KEY,
+      from_entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+      to_entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+      relationship TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS kg_entities_name_idx ON kg_entities(name);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS kg_facts_entity_idx ON kg_facts(entity_id);`);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a

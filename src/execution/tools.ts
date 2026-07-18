@@ -7,6 +7,7 @@ import { hasGrant } from "./permissions.js";
 import { ObservationPlatform } from "../observation/index.js";
 import { AutonomousExecutive } from "./autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
+import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -23,6 +24,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   send_email: "email.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
+  query_knowledge_graph: "knowledge.read",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -89,6 +91,17 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["objective"],
     },
   },
+  {
+    name: "query_knowledge_graph",
+    description: "Reliably look up what's actually been recorded about a specific named person, project, tool, or decision from past conversations — a precise lookup by name, not a fuzzy search. Use this when the user asks 'what do we know about X' or references something discussed before by name.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "The name (or partial name) of the entity to look up" },
+      },
+      required: ["query"],
+    },
+  },
 ];
 
 export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
@@ -127,6 +140,9 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
         break;
       }
+      case "query_knowledge_graph":
+        output = { results: await knowledgeGraph.queryKnowledge(args.query) };
+        break;
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -147,6 +163,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   send_email: ["email", "e-mail", "send mail", "inbox"],
   speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
   decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
+  query_knowledge_graph: ["what do we know about", "what do you know about", "remind me about", "what did we decide about", "what have we discussed about"],
 };
 
 /**
