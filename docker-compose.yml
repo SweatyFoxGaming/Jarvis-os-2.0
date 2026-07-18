@@ -75,25 +75,3 @@ services:
     ports:
       - "5051:5050"
     restart: unless-stopped
-
-  # Home automation hub — the local-only integration point for physical home
-  # security (ONVIF/RTSP cameras, door/window sensors, locks) instead of
-  # Jarvis integrating with each vendor's cloud API separately. Nothing here
-  # ever leaves the LAN: no port forwarding, no Home Assistant Cloud/Nabu
-  # Casa subscription, cameras stream directly to this container over
-  # RTSP/ONVIF rather than through a manufacturer's servers. network_mode:
-  # host is Home Assistant's own documented setup (explicitly chosen over
-  # the isolated-bridge alternative) — it needs real LAN presence for
-  # mDNS/SSDP/ONVIF device discovery, which a normal Docker bridge network
-  # wouldn't pass through. This container never receives untrusted chat
-  # input directly and has its own separate login — a different exposure
-  # profile than the api service, which deliberately avoids this same access.
-  homeassistant:
-    image: ghcr.io/home-assistant/home-assistant:stable
-    container_name: jarvis-homeassistant
-    network_mode: host
-    volumes:
-      - /mnt/jarvis_home/homeassistant_config:/config
-    environment:
-      - TZ=${TZ:-UTC}
-    restart: unless-stopped
