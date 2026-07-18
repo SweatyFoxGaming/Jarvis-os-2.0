@@ -529,10 +529,14 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
 
 // Chat Streaming Endpoint (SSE)
 app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
-  const { message } = req.body;
+  const { message, image } = req.body;
   if (!message) {
     return res.status(400).json({ error: "Missing message" });
   }
+  // `image` (base64 JPEG, no data: prefix) is a live camera frame the
+  // frontend captures automatically on every send once the camera sensor is
+  // on — genuine vision as a standing part of the conversation, not a
+  // separate manual "analyze this" action. Only Gemini can actually see it.
 
   const startTime = performance.now();
   observation.startProfile("chat_request");
@@ -642,6 +646,21 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
       ai &&
       kernel.llmMode !== "strictly-local" &&
       looksToolShaped(message) &&
+      executionChain[0] === "LocalLLM" &&
+      executionChain.includes("Gemini")
+    ) {
+      const idx = executionChain.indexOf("Gemini");
+      executionChain.splice(idx, 1);
+      executionChain.unshift("Gemini");
+    }
+
+    // A live camera frame is only genuinely usable by Gemini's multimodal
+    // input — the local llama-cpp path has no vision support here. Same
+    // "don't let a backend fake capability it doesn't have" rule as above.
+    if (
+      ai &&
+      image &&
+      kernel.llmMode !== "strictly-local" &&
       executionChain[0] === "LocalLLM" &&
       executionChain.includes("Gemini")
     ) {
@@ -779,7 +798,11 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
             // Real function-calling: Gemini can choose to invoke a tool
             // (src/execution/tools.ts) with structured arguments it extracts
             // from the conversation, gated by the caller's permission grants.
-            const contents: Content[] = [{ role: "user", parts: [{ text: message }] }];
+            const messageParts: any[] = [{ text: message }];
+            if (image) {
+              messageParts.push({ inlineData: { mimeType: "image/jpeg", data: image } });
+            }
+            const contents: Content[] = [{ role: "user", parts: messageParts }];
             const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
 
             let response = await generateContentWithFallback(ai, {
