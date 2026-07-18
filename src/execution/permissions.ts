@@ -23,6 +23,8 @@ export const ALL_CAPABILITIES = [
   "email.read",
   "tts.speak",
   "executive.plan",
+  "calendar.read",
+  "calendar.write",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
