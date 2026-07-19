@@ -16,6 +16,15 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 
+// This machine's GPU (an old Kepler-generation card, running the open-source
+// nouveau driver since the proprietary NVIDIA driver dropped support for it)
+// has flaky 3D acceleration — live-observed a real GPU process crash
+// ("nouveau: kernel rejected pushbuf: No such device", exit_code=139).
+// Electron auto-respawns the GPU process and the app keeps working, but
+// there's no real need for hardware acceleration on what's just a dashboard
+// UI, so trading it for stability outright is the better default here.
+app.disableHardwareAcceleration();
+
 function checkServerReady() {
   return new Promise((resolve) => {
     const req = http.get(HEALTH_URL, (res) => {
