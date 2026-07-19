@@ -206,14 +206,8 @@
             </button>
         </nav>
 
-        <!-- Voice / Admin -->
+        <!-- Admin -->
         <div class="border-t border-white/5 pt-4 space-y-1">
-            <a href="/voice" target="_blank" class="group flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent w-full">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m-4 0h8M12 15a3 3 0 003-3V6a3 3 0 00-6 0v6a3 3 0 003 3z" />
-                </svg>
-                <span class="text-sm">Voice</span>
-            </a>
             <a href="/admin" target="_blank" class="group flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent w-full">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
@@ -828,6 +822,33 @@
     let cameraTrackerActive = false;
     let trackingLerpX = 0;
     let trackingLerpY = 0;
+    // Ambient-awareness state derived from the same motion-diff data above —
+    // a cheap proxy for "activity resumed after stillness" (32x32 pixel diff
+    // can't reliably tell "someone left" vs "someone is just sitting still",
+    // so this only claims the more honest half: noticing renewed activity).
+    let motionActiveStreak = 0;
+    let motionIdleStreak = 0;
+    let ambientPresenceState = 'idle';
+    let lastAmbientNudgeAt = 0;
+    const AMBIENT_NUDGE_COOLDOWN_MS = 120000;
+
+    // Always-on live voice+vision (Gemini Live API bridge) — see
+    // src/cognition/live-voice.ts. This is the default sensory experience:
+    // continuous mic + camera, not a click-to-talk/click-to-see toggle. Falls
+    // back to the browser-STT + per-message-snapshot pipeline further below
+    // only when this can't run (no GEMINI_API_KEY, or the socket fails).
+    const LIVE_INPUT_SAMPLE_RATE = 16000;
+    const LIVE_OUTPUT_SAMPLE_RATE = 24000;
+    const LIVE_VIDEO_FRAME_INTERVAL_MS = 1000;
+    let liveVoiceWs = null;
+    let liveVoiceActive = false;
+    let liveVoiceMuted = false;
+    let liveInputAudioCtx = null;
+    let liveOutputAudioCtx = null;
+    let liveScriptProcessor = null;
+    let liveNextPlayTime = 0;
+    let liveVideoFrameInterval = null;
+    let liveMicStream = null;
 
     function updateSensorStatusLabel() {
         const label = document.getElementById('sensor-status-label');
@@ -897,8 +918,17 @@
                 // a present assistant would notice you rather than requiring
                 // you to type first. A short delay lets the video element
                 // actually have a decoded frame ready for captureCameraFrame().
+                // Routed through whichever channel is actually live — the
+                // live voice WS if it's already up (so it comes as speech,
+                // not a redundant second text reply), the old text-chat
+                // trigger otherwise.
                 setTimeout(() => {
-                    triggerChatDialogue("[The camera just came on and you can now see the user. Acknowledge their presence naturally and briefly, the way you would if someone just walked into the room — don't announce that you're doing this or mention the camera itself.]");
+                    const hint = "[The camera just came on and you can now see the user. Acknowledge their presence naturally and briefly, the way you would if someone just walked into the room — don't announce that you're doing this or mention the camera itself.]";
+                    if (liveVoiceActive && liveVoiceWs?.readyState === WebSocket.OPEN) {
+                        liveVoiceWs.send(JSON.stringify({ type: 'ambient', hint }));
+                    } else {
+                        triggerChatDialogue(hint);
+                    }
                 }, 800);
             } catch (err) {
                 console.error("Camera access failed", err);
@@ -920,6 +950,18 @@
             motionCtx = motionCanvas.getContext('2d');
         }
         requestAnimationFrame(trackMotionFrame);
+    }
+
+    // Entry point for "always on" — camera and live voice both start
+    // themselves instead of waiting for a manual toggle click. Called once
+    // on load (if already logged in) and once a valid API key is first
+    // entered. The toggle buttons still work afterward as mute/off controls.
+    let sensorsAutoStarted = false;
+    async function initAlwaysOnSensors() {
+        if (sensorsAutoStarted || !CURRENT_API_KEY) return;
+        sensorsAutoStarted = true;
+        if (!cameraStream) await toggleCameraSensor();
+        await startLiveVoiceSession();
     }
 
     function stopCameraMotionTracking() {
@@ -954,21 +996,230 @@
         }
     }
 
+    // ---------- Always-on live voice + vision (Gemini Live API bridge) ----------
+
+    // Naive linear-interpolation resampler — audio quality isn't the point
+    // here, getting real speech recognized reliably is.
+    function downsampleTo16k(float32Samples, inputSampleRate) {
+        if (inputSampleRate === LIVE_INPUT_SAMPLE_RATE) return float32Samples;
+        const ratio = inputSampleRate / LIVE_INPUT_SAMPLE_RATE;
+        const outLength = Math.floor(float32Samples.length / ratio);
+        const result = new Float32Array(outLength);
+        for (let i = 0; i < outLength; i++) result[i] = float32Samples[Math.floor(i * ratio)];
+        return result;
+    }
+
+    function floatTo16BitPCM(float32Samples) {
+        const buffer = new ArrayBuffer(float32Samples.length * 2);
+        const view = new DataView(buffer);
+        for (let i = 0; i < float32Samples.length; i++) {
+            const s = Math.max(-1, Math.min(1, float32Samples[i]));
+            view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        }
+        return buffer;
+    }
+
+    // Schedules each incoming chunk back-to-back on the output AudioContext's
+    // timeline so playback stays gapless despite irregular network arrival.
+    function playLiveAudioChunk(arrayBuffer) {
+        const int16 = new Int16Array(arrayBuffer);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+
+        const audioBuffer = liveOutputAudioCtx.createBuffer(1, float32.length, LIVE_OUTPUT_SAMPLE_RATE);
+        audioBuffer.copyToChannel(float32, 0);
+
+        const source = liveOutputAudioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(liveOutputAudioCtx.destination);
+
+        const now = liveOutputAudioCtx.currentTime;
+        const startAt = Math.max(now, liveNextPlayTime);
+        source.start(startAt);
+        liveNextPlayTime = startAt + audioBuffer.duration;
+    }
+
+    // The real "always on" experience: a continuous bidirectional stream to
+    // Gemini's Live API — mic audio in, spoken audio back, plus the live
+    // camera feed (via captureCameraFrame(), the same one typed chat uses),
+    // instead of a click-to-talk record/transcribe/reply round trip. Falls
+    // back to the legacy browser-STT toggle (further below) if this can't
+    // run at all — e.g. no GEMINI_API_KEY configured server-side.
+    async function startLiveVoiceSession() {
+        if (liveVoiceActive || !CURRENT_API_KEY) return;
+
+        try {
+            liveMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+            console.warn("Microphone access denied, live voice can't start: ", err);
+            addNotification("Microphone access denied — falling back to click-to-talk.", "warning");
+            toggleMicrophoneSensor();
+            return;
+        }
+
+        liveInputAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        liveOutputAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        liveNextPlayTime = 0;
+
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        liveVoiceWs = new WebSocket(`${protocol}//${location.host}/ws/voice?apiKey=${encodeURIComponent(CURRENT_API_KEY)}`);
+        liveVoiceWs.binaryType = 'arraybuffer';
+
+        let everConnected = false;
+
+        liveVoiceWs.onopen = () => {
+            everConnected = true;
+            liveVoiceActive = true;
+            liveVoiceMuted = false;
+
+            const source = liveInputAudioCtx.createMediaStreamSource(liveMicStream);
+            liveScriptProcessor = liveInputAudioCtx.createScriptProcessor(4096, 1, 1);
+            source.connect(liveScriptProcessor);
+            liveScriptProcessor.connect(liveInputAudioCtx.destination);
+            liveScriptProcessor.onaudioprocess = (event) => {
+                if (!liveVoiceActive || liveVoiceMuted || liveVoiceWs.readyState !== WebSocket.OPEN) return;
+                const inputData = event.inputBuffer.getChannelData(0);
+                const downsampled = downsampleTo16k(inputData, liveInputAudioCtx.sampleRate);
+                liveVoiceWs.send(floatTo16BitPCM(downsampled));
+            };
+
+            liveVideoFrameInterval = setInterval(() => {
+                if (!liveVoiceActive || liveVoiceWs.readyState !== WebSocket.OPEN) return;
+                const frame = captureCameraFrame();
+                if (frame) liveVoiceWs.send(JSON.stringify({ type: 'video', data: frame }));
+            }, LIVE_VIDEO_FRAME_INTERVAL_MS);
+
+            micEnabled = true;
+            const pulseDot = document.getElementById('mic-pulse-dot');
+            const btn = document.getElementById('btn-mic-toggle');
+            if (pulseDot) pulseDot.classList.remove('hidden');
+            if (btn) btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
+            addNotification("Live voice link established. Always listening.", "success");
+            updateSensorStatusLabel();
+        };
+
+        liveVoiceWs.onmessage = (event) => {
+            if (event.data instanceof ArrayBuffer) {
+                playLiveAudioChunk(event.data);
+                return;
+            }
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'transcript' && msg.text) {
+                    if (chatScroller.textContent.includes('Nothing yet — ask Jarvis anything above.')) {
+                        chatScroller.innerHTML = '';
+                    }
+                    appendChatMessage(msg.text, msg.role === 'user' ? 'user' : 'assistant');
+                    if (msg.role === 'assistant') {
+                        loadMindKernelData();
+                        loadLiveSystemData();
+                        setTimeout(loadIdentityStream, 2500);
+                    }
+                } else if (msg.type === 'interrupted') {
+                    liveNextPlayTime = 0;
+                } else if (msg.type === 'error') {
+                    if (!everConnected) {
+                        // Never got a working session at all (e.g. no
+                        // GEMINI_API_KEY) — fall back to the legacy pipeline
+                        // rather than leaving "ears" silently off.
+                        addNotification(`Live voice unavailable (${msg.message}). Falling back to click-to-talk.`, "warning");
+                        stopLiveVoiceSession();
+                        toggleMicrophoneSensor();
+                    } else {
+                        addNotification(`Live voice error: ${msg.message}`, "danger");
+                    }
+                }
+            } catch {}
+        };
+
+        liveVoiceWs.onerror = () => {
+            if (!everConnected) {
+                addNotification("Live voice connection failed — falling back to click-to-talk.", "warning");
+                stopLiveVoiceSession();
+                toggleMicrophoneSensor();
+            }
+        };
+
+        liveVoiceWs.onclose = () => {
+            if (liveVoiceActive) stopLiveVoiceSession();
+        };
+    }
+
+    function stopLiveVoiceSession() {
+        liveVoiceActive = false;
+        if (liveVideoFrameInterval) { clearInterval(liveVideoFrameInterval); liveVideoFrameInterval = null; }
+        if (liveVoiceWs) {
+            if (liveVoiceWs.readyState === WebSocket.OPEN) {
+                try { liveVoiceWs.send(JSON.stringify({ type: 'end' })); } catch {}
+            }
+            liveVoiceWs.close();
+            liveVoiceWs = null;
+        }
+        if (liveScriptProcessor) { liveScriptProcessor.disconnect(); liveScriptProcessor = null; }
+        if (liveMicStream) { liveMicStream.getTracks().forEach(t => t.stop()); liveMicStream = null; }
+        if (liveInputAudioCtx) { liveInputAudioCtx.close(); liveInputAudioCtx = null; }
+        if (liveOutputAudioCtx) { liveOutputAudioCtx.close(); liveOutputAudioCtx = null; }
+
+        micEnabled = false;
+        const pulseDot = document.getElementById('mic-pulse-dot');
+        const btn = document.getElementById('btn-mic-toggle');
+        if (pulseDot) pulseDot.classList.add('hidden');
+        if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
+        updateSensorStatusLabel();
+    }
+
+    // A cheap, honest proxy for "someone's presence just became active
+    // again after a stretch of stillness" — a 32x32 pixel diff can't tell
+    // "left the room" from "sitting still", so this only claims the more
+    // reliable half. Sends a silent synthetic prompt through the live
+    // session rather than a separate notification, so Jarvis can react in
+    // the same natural, in-conversation way a present assistant would.
+    function maybeSendAmbientNudge(motionCount) {
+        const ACTIVE_THRESHOLD = 8;
+        const IDLE_STREAK_TO_ARM = 100;   // ~5s of stillness at 20fps before re-arming
+        const ACTIVE_STREAK_TO_FIRE = 15; // ~0.75s of sustained motion to trigger
+
+        if (motionCount > ACTIVE_THRESHOLD) {
+            motionActiveStreak++;
+            motionIdleStreak = 0;
+        } else {
+            motionIdleStreak++;
+            motionActiveStreak = 0;
+        }
+
+        if (motionIdleStreak >= IDLE_STREAK_TO_ARM) {
+            ambientPresenceState = 'idle';
+        }
+
+        if (ambientPresenceState === 'idle' && motionActiveStreak >= ACTIVE_STREAK_TO_FIRE) {
+            ambientPresenceState = 'active';
+            const now = Date.now();
+            if (liveVoiceActive && !liveVoiceMuted && liveVoiceWs?.readyState === WebSocket.OPEN
+                && now - lastAmbientNudgeAt > AMBIENT_NUDGE_COOLDOWN_MS) {
+                lastAmbientNudgeAt = now;
+                liveVoiceWs.send(JSON.stringify({
+                    type: 'ambient',
+                    hint: "[There's been renewed movement in view after a quiet stretch — if it's genuinely worth a brief, natural acknowledgment, say something short; otherwise stay silent.]"
+                }));
+            }
+        }
+    }
+
     function trackMotionFrame() {
         if (!cameraTrackerActive || !cameraStream) return;
-        
+
         const video = document.getElementById('eye-camera');
         if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
             try {
                 motionCtx.drawImage(video, 0, 0, 32, 32);
                 const frame = motionCtx.getImageData(0, 0, 32, 32);
                 const data = frame.data;
-                
+
                 if (prevFrameData) {
                     let sumX = 0;
                     let sumY = 0;
                     let count = 0;
-                    
+
                     for (let y = 0; y < 32; y++) {
                         for (let x = 0; x < 32; x++) {
                             const idx = (y * 32 + x) * 4;
@@ -983,18 +1234,20 @@
                             }
                         }
                     }
-                    
+
+                    maybeSendAmbientNudge(count);
+
                     if (count > 8) {
                         const avgX = sumX / count;
                         const avgY = sumY / count;
-                        
+
                         // Mirrored map to translation coordinate space (-12px to 12px range)
                         const targetX = -((avgX / 32) * 24 - 12);
                         const targetY = ((avgY / 32) * 24 - 12);
-                        
+
                         trackingLerpX += (targetX - trackingLerpX) * 0.12;
                         trackingLerpY += (targetY - trackingLerpY) * 0.12;
-                        
+
                         const iris = document.getElementById('quantum-iris');
                         if (iris) {
                             iris.style.transform = `translate(${trackingLerpX}px, ${trackingLerpY}px)`;
@@ -1058,6 +1311,25 @@
     let micStoppedIntentionally = false;
 
     async function toggleMicrophoneSensor() {
+        // When the live voice bridge is running, this button mutes/unmutes
+        // it rather than starting the separate legacy STT pipeline — "ears"
+        // are always on by default, this is just a privacy pause.
+        if (liveVoiceActive) {
+            liveVoiceMuted = !liveVoiceMuted;
+            const pulseDot = document.getElementById('mic-pulse-dot');
+            const btn = document.getElementById('btn-mic-toggle');
+            if (liveVoiceMuted) {
+                if (pulseDot) pulseDot.classList.add('hidden');
+                if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
+                addNotification("Live voice muted.", "warning");
+            } else {
+                if (pulseDot) pulseDot.classList.remove('hidden');
+                if (btn) btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
+                addNotification("Live voice unmuted.", "success");
+            }
+            return;
+        }
+
         if (micEnabled) {
             await stopMicrophoneSensor();
             return;
@@ -2632,6 +2904,7 @@
             CURRENT_API_KEY = apiKeyInput;
             sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
             authFailureNotified = false; // a fresh key deserves its own failure notice if it also turns out bad
+            initAlwaysOnSensors();
         }
 
         const headers = { 
@@ -2811,6 +3084,7 @@
         sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
         authFailureNotified = false; // a fresh key deserves its own failure notice if it also turns out bad
         addNotification("Authorization vector changed.");
+        initAlwaysOnSensors();
     });
 
     // Node mechanical random jitters
@@ -2949,6 +3223,7 @@
         loadSecurityOps();
         loadCommandExecution();
         loadProactiveNotifications();
+        initAlwaysOnSensors();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
         setInterval(loadIdentityStream, 20000);

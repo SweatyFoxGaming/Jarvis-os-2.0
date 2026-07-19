@@ -25,6 +25,7 @@ export function getConfiguredAi(): GoogleGenAI | null {
  */
 
 export interface PrioritizedItem {
+  id: string; // stable across runs (email UID / GitHub notification id) — lets a caller dedup against what it already notified about
   source: "email" | "github";
   urgency: "high" | "medium" | "low";
   summary: string;
@@ -76,6 +77,7 @@ export function prioritizeSignals(signals: RawSignals): PrioritizedItem[] {
     const ageHours = email.date ? (Date.now() - new Date(email.date).getTime()) / 3.6e6 : undefined;
     const stale = ageHours !== undefined && ageHours > 24;
     items.push({
+      id: `email:${email.uid}`,
       source: "email",
       urgency: stale ? "high" : "medium",
       summary: `"${email.subject || "(no subject)"}" from ${email.from?.[0] || "unknown"}${stale ? ` — unread ${Math.round(ageHours)}h` : ""}`,
@@ -86,6 +88,7 @@ export function prioritizeSignals(signals: RawSignals): PrioritizedItem[] {
   for (const n of signals.githubNotifications) {
     const urgency = GITHUB_REASON_URGENCY[n.reason] || "low";
     items.push({
+      id: `github:${n.id}`,
       source: "github",
       urgency,
       summary: `[${n.reason}] ${n.repository?.full_name || "unknown repo"}: "${n.subject?.title || "untitled"}"`,

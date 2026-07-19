@@ -107,20 +107,18 @@ relying on anything not listed in "What's implemented."
   plausible-sounding result instead of admitting it couldn't act. If forced into
   strictly-local mode (or Gemini isn't configured), the local model is told
   explicitly it has no tool access and to say so rather than invent an answer.
-- **Vision**: once the camera sensor is toggled on in the dashboard, every
-  chat turn automatically captures a fresh still frame and sends it to Gemini
-  alongside your message — genuine multimodal input, not the cosmetic
-  motion-tracking effect that drives the eye icon's gaze (that's separate,
-  purely visual). No per-message "analyze this" step needed; seeing you is a
-  standing part of the conversation for as long as the sensor stays on. Only
-  Gemini can actually process the image, so a message with a frame attached
-  routes there first even in local-first mode, the same way a tool-shaped
-  message does. Live-verified: sent a real generated test image (an orange
-  circle over a blue bar), got back an accurate description of exactly those
-  shapes/colors through the real `/api/chat` pipeline. In voice-native mode
-  (`/voice`), this becomes a true continuous feed instead of per-message
-  snapshots — once you grant camera access, a frame streams to Gemini's Live
-  API roughly once per second for the whole call (`src/cognition/live-voice.ts`).
+- **Vision**: the camera starts itself when the dashboard loads (see "Always-on
+  voice + vision" below) — no manual toggle needed, though the button still
+  works as a mute/off control. Every typed chat turn automatically captures a
+  fresh still frame and sends it to Gemini alongside your message — genuine
+  multimodal input, not the cosmetic motion-tracking effect that drives the
+  eye icon's gaze (that's separate, purely visual, and now also the signal
+  behind ambient presence nudges — see below). Only Gemini can actually
+  process the image, so a message with a frame attached routes there first
+  even in local-first mode, the same way a tool-shaped message does.
+  Live-verified: sent a real generated test image (an orange circle over a
+  blue bar), got back an accurate description of exactly those shapes/colors
+  through the real `/api/chat` pipeline.
 - **Capability requests**: Jarvis never writes or executes code itself. When
   you ask for something it has no tool for, it researches feasibility with
   `search_web` and proposes a concrete plan in conversation instead of
@@ -196,15 +194,35 @@ relying on anything not listed in "What's implemented."
   local `whisper-cpp` service (`docker-compose.yml`) with a genuine bundled
   whisper-base.en model, entirely offline. Falls back to a canned string only if
   neither is reachable.
-- **Voice-native mode** (`/voice`): a continuous, real-time spoken conversation via
-  Gemini's Live API (`src/cognition/live-voice.ts`) over a WebSocket
-  (`/ws/voice`) — raw PCM audio streamed both directions as it's generated,
-  not the record → transcribe → reply → synthesize round trip `/api/voice-input`
-  uses. Requires `GEMINI_API_KEY`. Live-verified end-to-end with real synthesized
-  speech in and real spoken audio back, through the actual server (not just the
-  SDK in isolation) — this surfaced and fixed a real race condition where audio
-  sent immediately on connect could be silently dropped before the server had
-  finished opening its own session with Gemini.
+- **Always-on voice + vision**: the dashboard's default experience, not an
+  opt-in mode — mic and camera both start themselves on load and stay live,
+  no click-to-talk button. Under the hood this is a continuous, real-time
+  spoken conversation via Gemini's Live API (`src/cognition/live-voice.ts`)
+  over a WebSocket (`/ws/voice`) — raw PCM audio streamed both directions as
+  it's generated, not the record → transcribe → reply → synthesize round trip
+  `/api/voice-input` uses. Spoken turns get real transcription
+  (`inputAudioTranscription`/`outputAudioTranscription`) rendered into the
+  same conversation view text chat uses, and are written through the exact
+  same memory/reflection/knowledge-graph/continuity-of-self pipeline as a
+  typed turn — voice and text share one identity and one memory, not two
+  disconnected personas wearing the same name. Tool-calling (GitHub, email,
+  TTS, planning, etc.) works over voice too, dispatched through the same
+  `executeTool()` `/api/chat` uses. Requires `GEMINI_API_KEY`; falls back
+  automatically to the browser-STT + per-message-snapshot pipeline above if
+  it isn't configured or the connection fails, so "ears" stay on either way.
+  Live-verified end-to-end with real synthesized speech in and real spoken
+  audio back, through the actual server (not just the SDK in isolation) —
+  this surfaced and fixed a real race condition where audio sent immediately
+  on connect could be silently dropped before the server had finished
+  opening its own session with Gemini.
+- **Ambient awareness**: the same motion-tracking canvas that drives the
+  cosmetic eye-follow effect also feeds a simple presence heuristic — sustained
+  motion after a stretch of stillness (a proxy for "someone's attention just
+  returned") sends a silent synthetic prompt into the live voice session, so
+  Jarvis can naturally acknowledge it if it's genuinely worth mentioning,
+  throttled to at most once every 2 minutes. Deliberately narrow: a 32x32
+  pixel diff can't reliably tell "left the room" from "sitting still," so this
+  only claims the more honest half.
 - **Confidence**: computed per-turn from what actually happened (which backend
   answered, whether memory had relevant hits, whether tool calls succeeded) instead
   of fixed inputs.
