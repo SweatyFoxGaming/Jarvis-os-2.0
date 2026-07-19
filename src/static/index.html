@@ -675,9 +675,16 @@
 <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
 <script>
-    // Shares sessionStorage with admin.html/mind.js so a key entered once
-    // carries over, and so a reload doesn't silently fall back to a guessable default.
-    let CURRENT_API_KEY = sessionStorage.getItem('admin_api_key') || "";
+    // Shares localStorage with admin.html/mind.js so a key entered once
+    // carries over, and so a reload doesn't silently fall back to a
+    // guessable default. localStorage rather than sessionStorage
+    // specifically so it survives a full app restart too, not just a page
+    // reload — sessionStorage is cleared whenever the underlying window/
+    // renderer session ends, which meant every full quit+relaunch of the
+    // desktop app (or closing and reopening a browser tab) demanded
+    // re-entering the key, breaking the "always on" experience it's
+    // otherwise built around.
+    let CURRENT_API_KEY = localStorage.getItem('admin_api_key') || "";
     let CURRENT_TAB = "home";
     let cy;
 
@@ -700,7 +707,7 @@
         // designed.
         if (res.status === 401 && CURRENT_API_KEY) {
             CURRENT_API_KEY = "";
-            sessionStorage.removeItem('admin_api_key');
+            localStorage.removeItem('admin_api_key');
             if (!authFailureNotified) {
                 authFailureNotified = true;
                 addNotification("Your API key is invalid or expired — please re-enter it in Settings.", "danger");
@@ -3083,7 +3090,7 @@
         const apiKeyInput = document.getElementById('api-key-input').value.trim();
         if (apiKeyInput) {
             CURRENT_API_KEY = apiKeyInput;
-            sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
+            localStorage.setItem('admin_api_key', CURRENT_API_KEY);
             authFailureNotified = false; // a fresh key deserves its own failure notice if it also turns out bad
             initAlwaysOnSensors();
         }
@@ -3262,7 +3269,7 @@
 
     document.getElementById('api-key-input').addEventListener('change', (e) => {
         CURRENT_API_KEY = e.target.value.trim();
-        sessionStorage.setItem('admin_api_key', CURRENT_API_KEY);
+        localStorage.setItem('admin_api_key', CURRENT_API_KEY);
         authFailureNotified = false; // a fresh key deserves its own failure notice if it also turns out bad
         addNotification("Authorization vector changed.");
         initAlwaysOnSensors();
