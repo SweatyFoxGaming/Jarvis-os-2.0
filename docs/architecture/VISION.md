@@ -215,3 +215,95 @@ more clearly scoped:
    service avoids this whole class of problem, which is why it's the default.
 3. **The free-text executive planner stays narration-only**, on purpose —
    see "What I'd deliberately not do" above.
+
+## Re-audit against the 2026-07-19 vision update
+
+The vision statement was rewritten (see top of this document) to a much
+larger 50-year scope: a "universal cognitive operating system" for
+individuals, businesses, and society, judged by trust earned rather than
+feature count, presenting one consistent identity across every future
+interface. This section maps that specific new framing against the current
+codebase, live-checked rather than assumed. The honest summary: what exists
+today is a solid, working foundation for a single person on a single
+machine — real memory, real tool delegation, a real human-gated trust model.
+The gap to the new statement's actual scale is large and mostly unaddressed;
+naming it precisely is more useful than describing it vaguely.
+
+**"Trusted... transparent, trustworthy, aligned with human goals."** Real,
+and the strongest part of the current system relative to this vision. Every
+consequential action (`propose_command`, `queue_feature_request`, security
+remediation proposals) goes through an explicit human-approval gate with no
+self-service bypass — verified this session, including a real mistake
+(self-approving a test command) that was caught and corrected rather than
+worked around. What's missing: there's no mechanism that *measures* trust —
+no outcome tracking of whether an approved action, a piece of advice, or a
+proposed plan actually turned out well. The per-turn "confidence score"
+(`src/server.ts`) reflects backend health and tool-call success, not
+decision quality. The vision explicitly says success should be measured by
+"the decisions it improves" — nothing today closes that loop.
+
+**"Understand, reason, learn, and collaborate with people over a
+lifetime."** Real, and further along than it looks from outside: the
+continuity-of-self system (`src/cognition/identity.ts`) extracts genuine
+self-reflections from conversations and feeds them back into future system
+prompts (`buildIdentityContext`), and semantic memory (`memory-store.ts`,
+pgvector-backed) recalls relevant past exchanges automatically. Both write
+paths are automatic, not manual-endpoint-only. The honest boundary: this is
+lifetime memory of *conversations*, not of outcomes, relationships, or
+goals tracked over time — there's no concept of a standing objective ("help
+me train for a marathon by October") that Jarvis checks in on across
+sessions without being re-prompted.
+
+**"A single, consistent intelligence" regardless of interface (text, voice,
+AR, robotics, future tech).** This is the clearest concrete gap found this
+pass. Text chat (`/api/chat`) builds its system prompt from memory +
+identity + style context every turn. Live voice mode
+(`src/cognition/live-voice.ts`) does not — `VOICE_SYSTEM_INSTRUCTION` is a
+static string with no call to `recall()`, `buildIdentityContext()`, or any
+style context at all. Concretely: something you told Jarvis in a text
+conversation is recalled the next time you type, but not the next time you
+speak. Today there are genuinely two personas wearing the same name, not
+one identity reachable through two interfaces. This is the most direct,
+fixable contradiction of the new vision's own words currently in the code.
+
+**"Universal cognitive operating system... orchestrating millions of
+capabilities."** Not started, and worth being precise about the distance:
+there are 18 real capabilities today (`src/execution/tools.ts`,
+`src/execution/permissions.ts`), each hand-written as its own `case` in one
+`switch` statement, each requiring a code change and a new PR to add. The
+`JARVIS_MARKETPLACE_URL` variable documented in `.env.example` is pure
+vestige — zero lines of code anywhere in `src/` read it, route to it, or
+present anything derived from it. Getting from 18 hand-coded tools toward
+"millions" isn't a matter of writing more tools faster; it needs a
+fundamentally different mechanism — third-party-registerable capabilities
+(the industry's converging answer here is something MCP-server-shaped:
+capabilities as independently deployable, independently reviewable services
+Jarvis calls out to, rather than functions compiled into this one repo).
+That's a real architectural fork, not a features backlog item, and hasn't
+been designed yet.
+
+**"Individuals, businesses, and society."** Today this is unambiguously a
+single-person, single-machine system: one shared `INTERNAL_API_KEY`-rooted
+auth model, one Postgres instance with no tenant/organization concept
+anywhere in the schema, security ops and command execution scoped to one
+physical machine's own network. Extending toward "businesses" or "society"
+means multi-tenancy, org-level permission boundaries, and shared-vs-private
+memory — none of which exist, and none of which are implied by anything
+built so far. This is the single largest scope gap between the current
+codebase and the new statement, and almost certainly the one to defer
+longest: building it before there's more than one real user would be
+solving a problem that doesn't exist yet, the same reasoning this document
+already applied to horizontally-scaled session state above.
+
+### If picking one next step
+
+Of everything above, unifying the identity/memory layer across text and
+voice is the smallest, most concretely scoped, and most directly
+contradicts the new vision's own language today — `live-voice.ts` already
+has a `username` in scope, and `recall()`/`buildIdentityContext()` already
+exist and are already async-callable; wiring them into
+`VOICE_SYSTEM_INSTRUCTION`'s construction is close to the shape of work
+already done for chat, not a new subsystem. The marketplace/capability-
+scaling and multi-tenancy gaps are real but are genuine design projects
+that deserve their own dedicated brainstorming pass, not a quick fix bolted
+onto this audit.
