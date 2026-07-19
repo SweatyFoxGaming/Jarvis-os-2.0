@@ -1209,7 +1209,27 @@
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SpeechRecognition) {
             try {
-                // Initialize local speech recognition for zero-latency offline-friendly operation
+                // NOTE: despite the name, this is NOT local/offline — Chrome's
+                // SpeechRecognition API streams audio to Google's own cloud
+                // speech service. Most Linux/Electron Chromium builds ship
+                // without the API key that service requires, in which case it
+                // hangs forever with ZERO events (not even onerror) — no
+                // "no-speech", no "network", nothing at all. The onerror-based
+                // fallback below can't catch that silence, so a startup
+                // timeout does: if onstart hasn't fired shortly after
+                // start(), this API is non-functional here and we fall back
+                // to the real local pipeline (whisper-cpp via /api/voice-input).
+                let sttDidStart = false;
+                const sttStartTimeout = setTimeout(() => {
+                    if (sttDidStart) return;
+                    console.warn("Browser speech recognition produced no events — falling back to local whisper-cpp pipeline.");
+                    addNotification("Cloud speech service unreachable. Using local transcription instead...", "warning");
+                    try { localSpeechRecognition.abort(); } catch (e) {}
+                    localSpeechRecognition = null;
+                    speechRecognitionActive = false;
+                    runServerSideRecorder();
+                }, 3000);
+
                 localSpeechRecognition = new SpeechRecognition();
                 // continuous:true keeps recognition running across pauses instead
                 // of auto-ending after a single phrase (the onend handler below
@@ -1219,6 +1239,8 @@
                 localSpeechRecognition.lang = 'en-US';
                 
                 localSpeechRecognition.onstart = () => {
+                    sttDidStart = true;
+                    clearTimeout(sttStartTimeout);
                     micEnabled = true;
                     speechRecognitionActive = true;
                     visualizerActive = true; // drives the audio wave animation locally
@@ -1263,6 +1285,7 @@
                 };
                 
                 localSpeechRecognition.onerror = (event) => {
+                    if (!localSpeechRecognition) return; // already fell back via the startup timeout
                     console.warn("Speech recognition error: ", event.error);
                     if (event.error !== 'no-speech') {
                         addNotification(`Local STT error (${event.error}). Falling back to backend pipeline...`, "warning");
@@ -1277,6 +1300,7 @@
                 };
 
                 localSpeechRecognition.onend = () => {
+                    if (!localSpeechRecognition) return; // already fell back via the startup timeout
                     speechRecognitionActive = false;
                     if (micStoppedIntentionally || !micEnabled) return;
                     // Browser ended the session on its own (e.g. after a long
