@@ -277,7 +277,7 @@
     <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
-        let apiKey = sessionStorage.getItem('admin_api_key') || '';
+        let apiKey = localStorage.getItem('admin_api_key') || '';
         let CURRENT_ADMIN_TAB = 'memory';
         let telemetryInterval = null;
 
@@ -347,7 +347,7 @@
                 return;
             }
             apiKey = key;
-            sessionStorage.setItem('admin_api_key', key);
+            localStorage.setItem('admin_api_key', key);
             
             authSection.classList.add('hidden');
             adminPanel.classList.remove('hidden');
@@ -363,7 +363,7 @@
         }
 
         function disconnectAdminSession() {
-            sessionStorage.removeItem('admin_api_key');
+            localStorage.removeItem('admin_api_key');
             apiKey = '';
             clearInterval(telemetryInterval);
             telemetryInterval = null;

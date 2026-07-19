@@ -2,13 +2,15 @@
  * Pass 10: Polishing frontend interaction & state synchronization for `/mind` route
  */
 
-// Shares the same sessionStorage key as admin.html so logging in once
-// carries over — never ship a real credential in static JS.
+// Shares the same localStorage key as admin.html/index.html so logging in
+// once carries over, including across a full app/browser restart (unlike
+// sessionStorage, which is cleared when that window's session ends) —
+// never ship a real credential in static JS.
 function getApiKey() {
-    let key = sessionStorage.getItem('admin_api_key');
+    let key = localStorage.getItem('admin_api_key');
     if (!key) {
         key = window.prompt('Enter your Jarvis API key:') || '';
-        if (key) sessionStorage.setItem('admin_api_key', key);
+        if (key) localStorage.setItem('admin_api_key', key);
     }
     return key;
 }
