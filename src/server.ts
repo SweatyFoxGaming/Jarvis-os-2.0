@@ -41,6 +41,8 @@ import * as webSearch from "./integrations/websearch.js";
 import * as featureRequestsRepo from "./data/feature-requests-repo.js";
 import * as securityRepo from "./data/security-repo.js";
 import * as commandProposalsRepo from "./data/command-proposals-repo.js";
+import * as pushRepo from "./data/push-subscriptions-repo.js";
+import * as push from "./integrations/push.js";
 
 dotenv.config();
 
@@ -1115,6 +1117,40 @@ app.get("/api/notifications", validateApiKey, (req: any, res: any) => {
 app.post("/api/notifications/mark_read", validateApiKey, (req: any, res: any) => {
   scheduler.markAllRead(req.username);
   res.json({ status: "success" });
+});
+
+// ---------- Web Push (PWA proactive notifications) ----------
+// The public key is not a secret (it's sent to browser push services by
+// design) — served unauthenticated so the client can subscribe before it
+// necessarily has a validated session.
+app.get("/api/push/vapid-public-key", (req: any, res: any) => {
+  const key = push.getVapidPublicKey();
+  if (!key) return res.status(503).json({ error: "Push notifications are not configured on this server." });
+  res.json({ publicKey: key });
+});
+
+app.post("/api/push/subscribe", validateApiKey, async (req: any, res: any) => {
+  const { endpoint, keys } = req.body?.subscription || {};
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    return res.status(400).json({ error: "A valid PushSubscription object is required." });
+  }
+  try {
+    await pushRepo.addSubscription(req.username, endpoint, keys.p256dh, keys.auth);
+    res.json({ status: "subscribed" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/push/unsubscribe", validateApiKey, async (req: any, res: any) => {
+  const { endpoint } = req.body || {};
+  if (!endpoint) return res.status(400).json({ error: "endpoint is required" });
+  try {
+    await pushRepo.removeSubscription(endpoint);
+    res.json({ status: "unsubscribed" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------- Structured Knowledge Graph ----------
