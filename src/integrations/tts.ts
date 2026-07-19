@@ -25,7 +25,11 @@ export async function synthesizeSpeech(
     },
     body: JSON.stringify({
       model: opts.model || "tts-1",
-      voice: opts.voice || "alloy",
+      // en-US-ChristopherNeural — a composed, authoritative male voice,
+      // matching the JARVIS persona better than the generic "alloy"
+      // default. This tts service (openai-edge-tts) accepts real Edge TTS
+      // voice IDs directly, not just the OpenAI alias names.
+      voice: opts.voice || "en-US-ChristopherNeural",
       input: text,
     }),
   });
