@@ -111,6 +111,20 @@ async function createWindow() {
     }
   });
 
+  // setPermissionRequestHandler above covers the async permission prompt
+  // getUserMedia() triggers, but Electron also runs a separate SYNCHRONOUS
+  // check for the same permission types (e.g. from navigator.permissions
+  // .query(), and on some Chromium versions as a precondition before the
+  // async request handler is even consulted) — Electron's own security
+  // guidance is to set both together. Leaving this unset was a real gap:
+  // it could deny camera/mic before the request handler above ever got a
+  // chance to grant it, surfacing as a generic "Visual sensor connection
+  // failed" / "Microphone access denied" in the dashboard regardless of
+  // what the request handler said.
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    return requestingOrigin.startsWith(SERVER_URL) && (permission === 'media' || permission === 'audioCapture' || permission === 'videoCapture');
+  });
+
   // Closing the window (the X button) hides it instead of quitting, so the
   // app keeps running in the tray — the standard tray-app pattern. Only the
   // tray's own "Quit" item (or the hotkey-driven equivalent) actually exits.
