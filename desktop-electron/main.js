@@ -16,6 +16,24 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 
+// Without this, closing the window (which hides it into the tray rather
+// than quitting — see the 'close' handler below) combined with launching
+// the app again later (double-clicking the desktop icon, a hotkey, a fresh
+// `launch.sh` run) spawns a completely separate second process tree instead
+// of reusing the one already running hidden. Live-observed this exact
+// failure mode: four separate Electron instances accumulated over a few
+// hours of testing, and the oldest one — still alive, still holding the
+// camera open from an earlier successful getUserMedia call — caused every
+// later instance's own camera request to fail with NotReadableError
+// ("already in use"), which had nothing to do with permissions or hardware
+// and everything to do with this app fighting itself over the same device.
+// requestSingleInstanceLock() makes a second launch attempt hand off to the
+// already-running instance (see 'second-instance' below) and exit instead.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+
 // This machine's GPU (an old Kepler-generation card, running the open-source
 // nouveau driver since the proprietary NVIDIA driver dropped support for it)
 // has flaky 3D acceleration — live-observed a real GPU process crash
@@ -188,6 +206,16 @@ ipcMain.on('notify', (event, { title, body }) => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+});
+
+// Fires in the already-running instance when a second launch attempt is
+// made (see requestSingleInstanceLock() above, which makes that second
+// attempt exit immediately instead of proceeding) — bring the existing
+// window forward instead of silently doing nothing, so a user who launches
+// the app again because they couldn't find its hidden tray icon still gets
+// a visible result.
+app.on('second-instance', () => {
+  showWindow();
 });
 
 app.on('window-all-closed', () => {
