@@ -122,7 +122,9 @@ export async function generateProactiveThought(ai: GoogleGenAI, minReflections =
         role: "user",
         parts: [{
           text:
-            "Below are real things you (Jarvis) have genuinely said, believed, or committed to across past conversations. " +
+            "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, " +
+            "addressing the user as \"sir\" where it reads naturally, not gushing. Below are real things you " +
+            "have genuinely said, believed, or committed to across past conversations. " +
             "Generate ONE specific, genuine reflective thought grounded in them — a follow-up on a prior commitment, a " +
             "connection you've noticed between them, or real curiosity that follows from them. Do not invent anything " +
             "beyond what's listed. If there's nothing substantive enough to reflect on, respond with an empty string.\n\n" +
