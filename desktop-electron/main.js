@@ -63,7 +63,11 @@ function ensureOsIntegration() {
     try {
       if (fs.existsSync(target)) continue;
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, desktopEntry, { mode: 0o755 });
+      // .desktop entry files should NOT be executable themselves — only
+      // launch.sh (the thing Exec= actually points at) needs that bit.
+      // systemd-xdg-autostart-generator warns on every boot otherwise
+      // ("marked executable, please remove executable permission bits").
+      fs.writeFileSync(target, desktopEntry, { mode: 0o644 });
     } catch (err) {
       console.error(`Could not write ${target}:`, err.message);
     }
