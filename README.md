@@ -215,6 +215,19 @@ relying on anything not listed in "What's implemented."
   this surfaced and fixed a real race condition where audio sent immediately
   on connect could be silently dropped before the server had finished
   opening its own session with Gemini.
+- **Wake-word gating**: without this, "always on" would mean every word
+  spoken anywhere near the mic gets sent to Gemini and treated as addressed
+  to Jarvis. A separate, continuous local speech-recognition instance
+  watches only for the trigger phrase ("jarvis") — mic audio keeps recording
+  regardless, but only forwards into the live session once armed, and stays
+  armed for a 12-second grace window (extended by each new exchange) so a
+  real back-and-forth doesn't need the wake word repeated every sentence.
+  If browser speech recognition isn't available or silently fails to
+  produce events (a real, documented issue on some Linux/Electron Chromium
+  builds — the reason the STT fallback pipeline above exists at all), this
+  fails open — arms permanently rather than leaving live voice unreachable
+  with no way to ever trigger it — and tells you plainly that wake-word
+  detection isn't available here.
 - **Ambient awareness**: the same motion-tracking canvas that drives the
   cosmetic eye-follow effect also feeds a simple presence heuristic — sustained
   motion after a stretch of stillness (a proxy for "someone's attention just
