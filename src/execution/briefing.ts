@@ -117,8 +117,10 @@ export async function synthesizeBriefing(ai: GoogleGenAI | null, items: Prioriti
         role: "user",
         parts: [{
           text:
-            "Write a short, warm, executive-style briefing paragraph (3-5 sentences) summarizing these prioritized items for the user. " +
-            "Lead with the highest-urgency items. Do not invent details not present below. " +
+            "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, " +
+            "addressing the user as \"sir\" where it reads naturally. Write a short briefing paragraph " +
+            "(3-5 sentences) summarizing these prioritized items, in that voice — concise and matter-of-fact, " +
+            "not gushing. Lead with the highest-urgency items. Do not invent details not present below. " +
             "If nothing is urgent, say so plainly rather than manufacturing urgency.\n\n" +
             items.map(i => `[${i.urgency}] (${i.source}) ${i.summary}`).join("\n"),
         }],

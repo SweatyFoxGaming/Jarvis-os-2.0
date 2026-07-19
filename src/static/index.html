@@ -1048,6 +1048,13 @@
                 if (btn) btn.className = "p-2.5 rounded-full bg-primary/20 border border-primary/40 text-primary hover:text-primary hover:bg-primary/5 shadow-md transition-all duration-300";
                 addNotification("Visual sensor online. Jarvis can now see you.", "success");
                 startCameraMotionTracking();
+                // Camera-driven presence: acknowledge unprompted, the same way
+                // a present assistant would notice you rather than requiring
+                // you to type first. A short delay lets the video element
+                // actually have a decoded frame ready for captureCameraFrame().
+                setTimeout(() => {
+                    triggerChatDialogue("[The camera just came on and you can now see the user. Acknowledge their presence naturally and briefly, the way you would if someone just walked into the room — don't announce that you're doing this or mention the camera itself.]");
+                }, 800);
             } catch (err) {
                 console.error("Camera access failed", err);
                 addNotification("Visual sensor connection failed.", "danger");
@@ -2146,6 +2153,36 @@
         } catch {}
     }
 
+    // Delivers what the backend's proactive jobs (hourly briefing, security
+    // scans, self-reflection — see src/execution/scheduler.ts) already
+    // generate and push via pushNotification(), but which nothing on the
+    // client ever surfaced until now: this is the one channel where Jarvis
+    // reaches the user instead of only ever answering when spoken to.
+    async function loadProactiveNotifications() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const res = await authFetch('/api/notifications', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) return;
+            const data = await res.json();
+            const unread = (data.notifications || []).filter(n => !n.read);
+            if (unread.length === 0) return;
+
+            for (const n of unread) {
+                addNotification(n.message, n.type === 'warning' ? 'warning' : 'primary');
+            }
+            // One combined utterance, not a separate speakText() call per item —
+            // it cancels any in-progress playback on each call, so a tight loop
+            // of calls would just cut each other off if more than one arrived
+            // in the same poll window.
+            speakText(unread.map(n => n.message).join('. '));
+
+            await authFetch('/api/notifications/mark_read', {
+                method: 'POST',
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+        } catch {}
+    }
+
     async function loadCommandExecution() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
@@ -2376,17 +2413,24 @@
         chatScroller.scrollTop = chatScroller.scrollHeight;
     }
 
-    async function triggerChatDialogue() {
-        const text = chatInput.value.trim();
+    // presetMessage: used for system-triggered turns (e.g. the camera coming
+    // on) that should reach the model exactly like a real message — genuine
+    // vision context, streamed reply, spoken aloud — but without a fake
+    // "user" bubble/toast for something the user didn't actually type.
+    async function triggerChatDialogue(presetMessage) {
+        const isPreset = typeof presetMessage === "string";
+        const text = (isPreset ? presetMessage : chatInput.value).trim();
         if (!text) return;
-        chatInput.value = '';
-        
+        if (!isPreset) chatInput.value = '';
+
         if (chatScroller.textContent.includes('Awaiting Dialogue stream') || chatScroller.textContent.includes('Console idle')) {
             chatScroller.innerHTML = '';
         }
 
-        appendChatMessage(text, 'user');
-        addNotification("Broadcasting query vector...");
+        if (!isPreset) {
+            appendChatMessage(text, 'user');
+            addNotification("Broadcasting query vector...");
+        }
 
         const frame = captureCameraFrame();
         if (frame) addNotification("Visual snapshot attached — Jarvis can see this turn.", "info");
@@ -2920,12 +2964,14 @@
         loadFeatureRequests();
         loadSecurityOps();
         loadCommandExecution();
+        loadProactiveNotifications();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
         setInterval(loadIdentityStream, 20000);
         setInterval(loadFeatureRequests, 20000);
         setInterval(loadSecurityOps, 20000);
         setInterval(loadCommandExecution, 10000);
+        setInterval(loadProactiveNotifications, 20000);
     });
 
     // Global Notification Badge
