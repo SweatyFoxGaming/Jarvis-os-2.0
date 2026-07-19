@@ -384,6 +384,41 @@ Microphone/camera permission requests are auto-granted only for the app's own
 this window never navigates anywhere else, so there's no broader exposure from
 that.
 
+**OS integration** — on first launch, the app writes two per-user XDG
+`.desktop` files (`~/.local/share/applications` for the app menu/taskbar,
+`~/.config/autostart` for login autostart) if they don't already exist —
+never overwritten on later launches, so any hand-edits survive. No sudo or
+system package install involved. Beyond that:
+
+- Closing the window hides it to the system tray instead of quitting; only
+  the tray's "Quit" item actually exits.
+- `Ctrl+Alt+J` is a global hotkey (works even when the window isn't focused)
+  that shows/focuses it.
+- Native OS notifications fire for the same events the in-app toasts already
+  cover (briefing updates, command proposals, security findings, feature
+  requests) — but only when the window isn't focused, since the toast is
+  already visible otherwise. `preload.js` exposes exactly one bridge call
+  for this (`window.jarvisDesktop.notify`), nothing else is reachable from
+  the page.
+
+**Starting the whole stack at boot, independent of login** —
+`deploy/jarvis-os.service` is a `systemd` unit that brings up the Docker
+stack the moment the machine reaches `multi-user.target`, before any
+graphical session or login. Install it once:
+
+```bash
+sudo cp deploy/jarvis-os.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now jarvis-os.service
+```
+
+Adjust `WorkingDirectory`/`COMPOSE_PROJECT_NAME` in the unit first if your
+checkout lives somewhere else, or if your containers were created under a
+different project name than `jarvis-os` — otherwise `docker compose up -d`
+will try to recreate everything under a new project and fail with a
+container-name conflict (hit and fixed once already; see the comment in the
+unit file for the exact check to run first).
+
 ## Google Calendar setup
 
 Optional — chat, memory, and every other integration work without this. Calendar
