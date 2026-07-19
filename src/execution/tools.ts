@@ -1,5 +1,6 @@
-import type { FunctionDeclaration } from "@google/genai";
+import type { FunctionDeclaration, GoogleGenAI } from "@google/genai";
 import { Type } from "@google/genai";
+import * as memoryStore from "../cognition/memory-store.js";
 import * as github from "../integrations/github.js";
 import * as emailIntegration from "../integrations/email.js";
 import * as tts from "../integrations/tts.js";
@@ -258,7 +259,13 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   },
 ];
 
-export async function executeTool(name: string, args: Record<string, any>, username: string): Promise<ToolCallResult> {
+export async function executeTool(
+  name: string,
+  args: Record<string, any>,
+  username: string,
+  ai: GoogleGenAI | null = null,
+  localEndpoint: string | null = null
+): Promise<ToolCallResult> {
   const requiredGrant = PERMISSION_BY_TOOL[name];
   if (!requiredGrant) {
     return { name, ok: false, error: `Unknown tool "${name}"` };
@@ -327,9 +334,25 @@ export async function executeTool(name: string, args: Record<string, any>, usern
         output = { articles };
         break;
       }
-      case "search_web":
-        output = { results: await webSearch.webSearch(args.query) };
+      case "search_web": {
+        const results = await webSearch.webSearch(args.query);
+        output = { results };
+        // Store the actual findings, not just a truncated mention that
+        // research happened — the automatic per-exchange memory capture in
+        // server.ts only keeps the first 500 chars of Jarvis's final reply,
+        // which loses most of what a real research result contains. Fire
+        // -and-forget: memoryStore already logs its own failures, and this
+        // must never block the tool response the user is waiting on.
+        if (results.length > 0) {
+          const summary = results
+            .map((r) => `- ${r.title} (${r.url})${r.description ? `: ${r.description}` : ""}`)
+            .join("\n");
+          memoryStore
+            .remember(username, `Research on "${args.query}":\n${summary}`, ai, localEndpoint)
+            .catch(() => {});
+        }
         break;
+      }
       case "queue_feature_request": {
         const queued = await featureRequestsRepo.addFeatureRequest(
           args.title, args.description, null, args.plan, username
