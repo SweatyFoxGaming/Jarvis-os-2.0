@@ -5,6 +5,7 @@ import * as briefing from "./briefing.js";
 import * as briefingRepo from "../data/briefing-repo.js";
 import * as identity from "../cognition/identity.js";
 import * as identityRepo from "../data/identity-repo.js";
+import * as push from "../integrations/push.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -25,6 +26,10 @@ export function pushNotification(username: string, message: string, type: Notifi
   while (list.length > MAX_NOTIFICATIONS_PER_USER) list.shift();
   notifications.set(username, list);
   observation.logTelemetry("info", "Scheduler", `Notification for "${username}": ${message}`);
+  // Fire-and-forget: reaches subscribed devices (phone, desktop browser)
+  // even when nobody has the dashboard open to poll for it — the whole
+  // point of this being a push rather than the existing in-app toast.
+  push.sendPushToUser(username, "Jarvis OS", message).catch(() => {});
 }
 
 export function getNotifications(username: string): Notification[] {

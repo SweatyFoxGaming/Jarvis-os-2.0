@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jarvis OS · Cognitive Command Console</title>
+    <title>Jarvis OS</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#050608">
+    <link rel="icon" href="/pwa/icon-256.png">
+    <link rel="apple-touch-icon" href="/pwa/icon-256.png">
     <!-- Tailwind's Play CDN JIT-compiles on every load, so it can't carry a
          static SRI hash and isn't meant for production (per Tailwind's own
          docs) — replacing it with a pinned build is a follow-up, not done here. -->
@@ -648,6 +652,13 @@
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <h3 class="font-display font-semibold text-sm text-white mb-1">Notifications</h3>
+                    <p class="text-sm text-secondary mb-4 max-w-xl">Install Jarvis as an app on this device and enable push notifications so proactive updates (briefings, security findings, reflections) reach you here even when this tab isn't open — including on your phone, once installed there too.</p>
+                    <button onclick="enablePushNotifications()" id="btn-enable-push" class="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Enable notifications on this device</button>
+                    <span id="push-status-text" class="text-[11px] text-secondary ml-3"></span>
                 </div>
             </div>
 
@@ -1560,7 +1571,7 @@
         if (tabId === 'workspace') refreshWorkspaceSnapshot();
         if (tabId === 'memory') loadPendingMemories();
         if (tabId === 'learning') loadLearningDashboard();
-        if (tabId === 'settings') loadSystemSettings();
+        if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); }
         if (tabId === 'calendar') loadCalendarEvents();
     }
 
@@ -2502,6 +2513,100 @@
         } catch {}
     }
 
+    // ---------- Web Push (PWA proactive notifications) ----------
+    // Standard conversion: pushManager.subscribe() requires the VAPID public
+    // key as a raw Uint8Array, not the base64url string the server hands out.
+    function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = atob(base64);
+        return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+    }
+
+    async function registerServiceWorker() {
+        if (!('serviceWorker' in navigator)) return null;
+        try {
+            return await navigator.serviceWorker.register('/sw.js');
+        } catch (e) {
+            console.warn("Service worker registration failed:", e);
+            return null;
+        }
+    }
+
+    async function updatePushStatusUI() {
+        const btn = document.getElementById('btn-enable-push');
+        const status = document.getElementById('push-status-text');
+        if (!btn || !status) return;
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+            status.textContent = "Not supported in this browser.";
+            btn.disabled = true;
+            return;
+        }
+        const reg = await navigator.serviceWorker.getRegistration();
+        const sub = reg ? await reg.pushManager.getSubscription() : null;
+        if (sub) {
+            btn.textContent = "Disable notifications on this device";
+            status.textContent = "Enabled on this device.";
+        } else {
+            btn.textContent = "Enable notifications on this device";
+            status.textContent = "";
+        }
+    }
+
+    async function enablePushNotifications() {
+        if (!CURRENT_API_KEY) { addNotification("Log in first.", "warning"); return; }
+        try {
+            const reg = await registerServiceWorker();
+            if (!reg) { addNotification("Service workers aren't supported here.", "danger"); return; }
+
+            const existing = await reg.pushManager.getSubscription();
+            if (existing) {
+                // Toggling off — real unsubscribe, both from the browser's
+                // push service and this server's stored record.
+                await authFetch('/api/push/unsubscribe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                    body: JSON.stringify({ endpoint: existing.endpoint })
+                });
+                await existing.unsubscribe();
+                addNotification("Notifications disabled on this device.", "info");
+                updatePushStatusUI();
+                return;
+            }
+
+            const permission = await Notification.requestPermission();
+            if (permission !== 'granted') {
+                addNotification("Notification permission was not granted.", "warning");
+                return;
+            }
+
+            const keyRes = await fetch('/api/push/vapid-public-key');
+            if (!keyRes.ok) { addNotification("Push notifications aren't configured on the server.", "danger"); return; }
+            const { publicKey } = await keyRes.json();
+
+            const subscription = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(publicKey)
+            });
+
+            const res = await authFetch('/api/push/subscribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                body: JSON.stringify({ subscription: subscription.toJSON() })
+            });
+            if (res.ok) {
+                addNotification("Notifications enabled on this device.", "success");
+            } else {
+                await subscription.unsubscribe();
+                addNotification("Couldn't register this device for notifications.", "danger");
+            }
+            updatePushStatusUI();
+        } catch (e) {
+            console.warn("Push subscription failed:", e);
+            addNotification("Couldn't enable notifications.", "danger");
+        }
+    }
+
     async function loadSystemSettings() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to load
         const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -2835,6 +2940,7 @@
         }
 
         switchTab('home');
+        registerServiceWorker();
         loadLiveSystemData();
         loadMindKernelData();
         loadSystemSettings();

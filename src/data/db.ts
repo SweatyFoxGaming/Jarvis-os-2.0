@@ -242,6 +242,21 @@ async function createSchema(): Promise<void> {
     );
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_status_idx ON command_proposals(status);`);
+
+  // Browser Push API subscriptions — one row per device/browser that's
+  // opted in, keyed by the endpoint URL itself (unique per subscription,
+  // not per user) since one user can have several devices subscribed at once.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS push_subscriptions_username_idx ON push_subscriptions(username);`);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a
