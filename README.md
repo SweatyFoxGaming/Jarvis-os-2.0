@@ -351,6 +351,38 @@ This keeps home-network-specific setup (topology, device names, what's
 connected) off GitHub entirely while still working locally with a plain
 `docker compose up -d`.
 
+## Remote access (phone/off-LAN)
+
+A `tailscale` sidecar service in `docker-compose.override.yml` joins Jarvis
+onto a private [Tailscale](https://tailscale.com) network using Tailscale's
+own hosted coordination service (not a self-hosted alternative — that would
+need a router port-forward to be reachable while off-LAN, which this avoids
+entirely). It exposes *only* the dashboard, not the rest of the home network:
+
+```
+tailscale serve --bg --https=443 http://api:3000
+```
+
+To reach Jarvis from your phone or laptop when away from home:
+
+1. Install the real Tailscale app (App Store / Play Store / tailscale.com/download).
+2. Log into the **same Tailscale account** used to approve the sidecar container
+   (check `docker exec jarvis-tailscale tailscale status` for the account/device list).
+3. Open the container's tailnet URL shown by
+   `docker exec jarvis-tailscale tailscale serve status` — something like
+   `https://jarvis-1.tail<xxxxx>.ts.net` — in a mobile browser, or "Add to
+   Home Screen" it as the PWA for a native-feeling app icon.
+
+Nothing here is reachable by anyone not logged into that Tailscale account —
+it isn't exposed to the public internet, and the sidecar has no route to any
+other device on the home LAN.
+
+**Note:** `docker compose` derives its project name from the current
+directory unless `COMPOSE_PROJECT_NAME` is set in `.env` — set it explicitly
+(e.g. `COMPOSE_PROJECT_NAME=jarvis-os`) so a checkout in a differently-named
+folder doesn't silently spin up a second, disconnected set of
+networks/volumes alongside the real stack.
+
 ## Files/notes
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
