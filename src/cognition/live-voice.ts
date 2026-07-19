@@ -1,6 +1,8 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import type WebSocket from "ws";
 import { ObservationPlatform } from "../observation/index.js";
+import { buildIdentityContext } from "./identity.js";
+import { LongTermLearningEngine } from "./long_term_learning.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -12,7 +14,7 @@ const observation = ObservationPlatform.getInstance();
 // bidiGenerateContent and used that instead of trusting the doc comment.
 const LIVE_MODEL = "gemini-2.5-flash-native-audio-latest";
 
-const VOICE_SYSTEM_INSTRUCTION =
+const VOICE_SYSTEM_INSTRUCTION_BASE =
   "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, " +
   "dryly witty, and quietly confident rather than warm or effusive. Address the " +
   "user as \"sir\" where it reads naturally, not in every sentence. This is a live " +
@@ -23,6 +25,23 @@ const VOICE_SYSTEM_INSTRUCTION =
   "If the user's camera is on, you're also receiving a live video feed of them — " +
   "reference what you genuinely see naturally when it's relevant, but don't narrate " +
   "the video feed itself or mention it unprompted when it isn't.";
+
+// Builds the same identity/style personalization chat gets (see
+// baseSystemInstruction in src/server.ts), so voice isn't a second, generic
+// persona wearing the same name. Deliberately NOT including semantic
+// memory recall() here, unlike chat — recall() searches against one
+// specific message's text, and a live voice session has no discrete
+// message at connection time (it's a continuous audio stream, not a
+// per-turn exchange) to search against. Recalling relevant past
+// conversations mid-utterance would need updating the Live API session's
+// instruction after connection, which isn't attempted here — an honest,
+// separate gap from the identity/style one this fixes.
+async function buildVoiceSystemInstruction(): Promise<string> {
+  const identityContext = await buildIdentityContext();
+  const stylePrefs = LongTermLearningEngine.getInstance().getStylePreferences();
+  const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
+  return VOICE_SYSTEM_INSTRUCTION_BASE + styleContext + identityContext;
+}
 
 /**
  * Bridges one browser WebSocket connection to one Gemini Live API session —
@@ -81,12 +100,14 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
   };
   clientSocket.on("message", handleClientMessage);
 
+  const systemInstruction = await buildVoiceSystemInstruction();
+
   try {
     liveSession = await ai.live.connect({
       model: LIVE_MODEL,
       config: {
         responseModalities: [Modality.AUDIO],
-        systemInstruction: VOICE_SYSTEM_INSTRUCTION,
+        systemInstruction,
         // "Charon" — documented by Google as an "Informative" voice; one of
         // the original prebuilt set, chosen for a composed, authoritative
         // tone matching the JARVIS persona over the SDK's unspecified default.
