@@ -946,7 +946,13 @@
                 }, 800);
             } catch (err) {
                 console.error("Camera access failed", err);
-                addNotification("Visual sensor connection failed.", "danger");
+                // err.name is the actual diagnostic signal here — e.g.
+                // NotFoundError (no camera device present), NotAllowedError
+                // (permission denied), NotReadableError (device already in
+                // use elsewhere) — surfaced directly instead of a generic
+                // message, so this doesn't require opening dev tools to
+                // diagnose.
+                addNotification(`Visual sensor connection failed: ${err.name || "unknown error"} — ${err.message || err}`, "danger");
             }
         }
         updateSensorStatusLabel();
@@ -1089,7 +1095,7 @@
             });
         } catch (err) {
             console.warn("Microphone access denied, live voice can't start: ", err);
-            addNotification("Microphone access denied — falling back to click-to-talk.", "warning");
+            addNotification(`Microphone access failed (${err.name || "unknown error"}: ${err.message || err}) — falling back to click-to-talk.`, "warning");
             toggleMicrophoneSensor();
             return;
         }
@@ -1706,7 +1712,7 @@
 
         } catch (e) {
             console.error("Microphone access failed: ", e);
-            addNotification("Aural sensor access denied or unsupported.", "danger");
+            addNotification(`Aural sensor access failed: ${e.name || "unknown error"} — ${e.message || e}`, "danger");
             await stopMicrophoneSensor();
         }
     }
