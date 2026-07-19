@@ -104,7 +104,17 @@ export function startEmailWatchJob(intervalMs = 5 * 60 * 1000): NodeJS.Timeout |
  * it, and pushes it as a notification. This is what makes something happen
  * without a user sending a chat message first; every other capability in
  * this codebase only runs in response to a request.
+ *
+ * Only the *notification* is gated on novelty — the persisted briefing
+ * record always reflects the full current state. Without this, the same
+ * still-unread email or still-open GitHub notification got renotified every
+ * single run (previously hourly) forever, since collectSignals() has no
+ * concept of "already reported" — that's a genuinely different concern from
+ * generateBriefing()'s job of answering "what's the current state" correctly
+ * for an on-demand /get_briefing chat request, which must keep seeing it.
  */
+let seenBriefingItemIds = new Set<string>();
+
 export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-briefing", intervalMs, async () => {
     const result = await briefing.generateBriefing(ai);
@@ -113,8 +123,16 @@ export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 
     } catch (err: any) {
       observation.logTelemetry("warn", "Briefing", `Failed to persist briefing: ${err.message}`);
     }
-    if (result.itemCount > 0) {
-      pushNotification("admin", result.text, result.items.some(i => i.urgency === "high") ? "warning" : "info");
+
+    const freshItems = result.items.filter(i => !seenBriefingItemIds.has(i.id));
+    // Replace (not just add to) the seen set with exactly this run's open
+    // item ids — self-prunes ids for anything no longer open (read,
+    // archived, marked done) instead of growing unbounded forever.
+    seenBriefingItemIds = new Set(result.items.map(i => i.id));
+
+    if (freshItems.length > 0) {
+      const freshText = await briefing.synthesizeBriefing(ai, freshItems, []);
+      pushNotification("admin", freshText, freshItems.some(i => i.urgency === "high") ? "warning" : "info");
     }
   });
 }

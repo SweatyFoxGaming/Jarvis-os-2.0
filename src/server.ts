@@ -2040,10 +2040,6 @@ app.get("/mind", (req, res) => {
   res.sendFile(path.join(staticDir, "mind.html"));
 });
 
-app.get("/voice", (req, res) => {
-  res.sendFile(path.join(staticDir, "voice.html"));
-});
-
 // Fallback to serving index.html for unknown routes (SPA style)
 app.get("*", (req, res) => {
   res.sendFile(path.join(staticDir, "index.html"));

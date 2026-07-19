@@ -2,7 +2,13 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import type WebSocket from "ws";
 import { ObservationPlatform } from "../observation/index.js";
 import { buildIdentityContext } from "./identity.js";
+import * as identity from "./identity.js";
 import { LongTermLearningEngine } from "./long_term_learning.js";
+import * as sessionRepo from "../data/session-repo.js";
+import * as memoryStore from "./memory-store.js";
+import { reflectAndLearn } from "./reflection.js";
+import * as knowledgeGraph from "./knowledge-graph.js";
+import { TOOL_DECLARATIONS, executeTool } from "../execution/tools.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -53,18 +59,65 @@ async function buildVoiceSystemInstruction(): Promise<string> {
  *
  * Client -> server: raw 16-bit PCM binary WebSocket frames (16kHz mono, the
  * rate Gemini's Live API expects), a JSON text frame {"type":"end"} when the
- * user stops talking, or a JSON text frame {"type":"video","data":"<base64
+ * user stops talking, a JSON text frame {"type":"video","data":"<base64
  * jpeg>"} — a live camera frame sent periodically (~1/sec) for the whole
- * duration of the session, not a one-off snapshot. Gemini's Live API accepts
- * video the same way as audio (sendRealtimeInput({video: ...})), giving
- * Jarvis genuine continuous visual context as a standing part of the same
- * real-time conversation, for as long as the session and camera stay on.
+ * duration of the session, not a one-off snapshot — or {"type":"ambient",
+ * "hint":"..."}, a silent synthetic prompt for client-detected presence
+ * changes (see the ambient-awareness client logic). Gemini's Live API
+ * accepts video the same way as audio (sendRealtimeInput({video: ...})),
+ * giving Jarvis genuine continuous visual context as a standing part of the
+ * same real-time conversation, for as long as the session and camera stay on.
  * Server -> client: raw 24kHz PCM binary frames (the rate Gemini's Live API
- * returns) for playback, or a JSON text frame {"type":"turnComplete"} /
- * {"type":"error", message} for control signals.
+ * returns) for playback; JSON text frames {"type":"turnComplete"} /
+ * {"type":"interrupted"} / {"type":"error", message} for control signals; or
+ * {"type":"transcript","role":"user"|"assistant","text":"..."} once a turn's
+ * transcription completes — the same transcript is persisted to
+ * conversation_history and run through memory/reflection/knowledge-graph/
+ * identity, so a spoken exchange leaves the same trace a typed one does.
+ * Tool calls (GitHub, email, TTS, planning, etc.) are dispatched
+ * server-side via the same executeTool() /api/chat uses — the client never
+ * sees a raw toolCall message, only its eventual effect on the conversation.
  */
 export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocket, username: string): Promise<void> {
   let liveSession: Awaited<ReturnType<typeof ai.live.connect>> | null = null;
+
+  // Accumulates each turn's transcription (arrives as incremental chunks,
+  // independent of modelTurn's own audio parts per the SDK's own doc
+  // comment) so it can be persisted and forwarded to the client as one
+  // complete line once turnComplete fires, instead of a stream of fragments.
+  let inputTranscriptBuffer = "";
+  let outputTranscriptBuffer = "";
+
+  // Flushes the current turn's transcript into the same write-side pipeline
+  // /api/chat uses (session history, semantic memory, style/mistake
+  // learning, knowledge graph, continuity-of-self) — without this, a spoken
+  // conversation would leave zero trace anywhere text chat's memory/learning
+  // draws from, making voice and text two disconnected personas again.
+  const flushTurn = () => {
+    const userText = inputTranscriptBuffer.trim();
+    const replyText = outputTranscriptBuffer.trim();
+    inputTranscriptBuffer = "";
+    outputTranscriptBuffer = "";
+    if (!userText && !replyText) return;
+
+    if (clientSocket.readyState === clientSocket.OPEN) {
+      if (userText) clientSocket.send(JSON.stringify({ type: "transcript", role: "user", text: userText }));
+      if (replyText) clientSocket.send(JSON.stringify({ type: "transcript", role: "assistant", text: replyText }));
+    }
+
+    if (userText) sessionRepo.appendMessage(username, "user", userText).catch(() => {});
+    if (replyText) {
+      sessionRepo.appendMessage(username, "assistant", replyText).catch(() => {});
+      if (userText) {
+        memoryStore
+          .remember(username, `User said (voice): "${userText}" — Jarvis replied: "${replyText.slice(0, 500)}"`, ai, null)
+          .catch(() => {});
+        reflectAndLearn(ai, userText, replyText).catch(() => {});
+        knowledgeGraph.extractAndStore(ai, userText, replyText).catch(() => {});
+        identity.extractSelfReflection(ai, userText, replyText).catch(() => {});
+      }
+    }
+  };
 
   // ai.live.connect() is a real network round trip (opens a WebSocket to
   // Google, does the setup handshake) — a client that starts streaming
@@ -92,6 +145,14 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
           liveSession.sendRealtimeInput({
             video: { data: msg.data, mimeType: "image/jpeg" },
           });
+        } else if (msg.type === "ambient" && typeof msg.hint === "string") {
+          // A silent synthetic turn — client-side motion detection noticed a
+          // presence change (someone entered/left frame) and asks Jarvis to
+          // react the way a present assistant naturally would, without the
+          // user having said anything. Real conversational turn, not a
+          // separate notification channel, so it can reference what's on
+          // screen via the same continuous video stream.
+          liveSession.sendClientContent({ turns: msg.hint, turnComplete: true });
         }
       } catch {
         // Ignore malformed control messages rather than tearing down the session.
@@ -112,12 +173,42 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
         // the original prebuilt set, chosen for a composed, authoritative
         // tone matching the JARVIS persona over the SDK's unspecified default.
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Charon" } } },
+        // Gives spoken turns real text, the same way /api/chat's request
+        // body already is text — without this, a voice conversation leaves
+        // no transcript for the dashboard or for the memory/learning write
+        // path below to work from.
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        // Same capability set text chat gets (src/server.ts) — spoken
+        // requests can invoke GitHub/email/TTS/planning/etc. exactly like a
+        // typed one, dispatched through the identical executeTool().
+        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
       },
       callbacks: {
         onopen: () => {
           observation.logTelemetry("info", "LiveVoice", `Live session opened for "${username}".`);
         },
-        onmessage: (message) => {
+        onmessage: async (message) => {
+          if (message.serverContent?.inputTranscription?.text) {
+            inputTranscriptBuffer += message.serverContent.inputTranscription.text;
+          }
+          if (message.serverContent?.outputTranscription?.text) {
+            outputTranscriptBuffer += message.serverContent.outputTranscription.text;
+          }
+
+          if (message.toolCall?.functionCalls?.length) {
+            for (const call of message.toolCall.functionCalls) {
+              const result = await executeTool(call.name || "", call.args || {}, username, ai, null);
+              liveSession?.sendToolResponse({
+                functionResponses: [{
+                  id: call.id,
+                  name: call.name,
+                  response: result.ok ? { output: result.output ?? null } : { error: result.error },
+                }],
+              });
+            }
+          }
+
           if (clientSocket.readyState !== clientSocket.OPEN) return;
           const parts = message.serverContent?.modelTurn?.parts || [];
           for (const part of parts) {
@@ -126,6 +217,7 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
             }
           }
           if (message.serverContent?.turnComplete) {
+            flushTurn();
             clientSocket.send(JSON.stringify({ type: "turnComplete" }));
           }
           if (message.serverContent?.interrupted) {
