@@ -851,7 +851,15 @@
     let authFailureNotified = false;
     async function authFetch(url, opts = {}) {
         const res = await fetch(url, opts);
-        if ((res.status === 401 || res.status === 403) && CURRENT_API_KEY) {
+        // Only a real 401 means "this key isn't valid at all" — the server
+        // now returns 401 exclusively for missing/unrecognized keys. A 403
+        // means the key IS valid but lacks one specific capability grant
+        // (e.g. a non-admin user's key hitting an admin-only panel like
+        // command execution) — that must stay scoped to whichever feature
+        // hit it, not wipe the whole session and break everything else
+        // (chat included) over a permission boundary that was working as
+        // designed.
+        if (res.status === 401 && CURRENT_API_KEY) {
             CURRENT_API_KEY = "";
             sessionStorage.removeItem('admin_api_key');
             if (!authFailureNotified) {

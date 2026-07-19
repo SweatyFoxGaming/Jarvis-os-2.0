@@ -164,8 +164,15 @@ const validateApiKey = async (req: any, res: any, next: any) => {
   }
   // Deliberately not logging the submitted key itself — it's the caller's
   // (possibly malicious) guess, not a secret worth persisting into telemetry.
+  // 401, not 403: this means "not authenticated at all" (bad/unrecognized
+  // credentials), which must stay distinct from the 403s below (a *valid*
+  // key missing one specific capability grant) — the client's authFetch
+  // treats these very differently (see index.html), and conflating them
+  // here previously caused a legitimate permission-403 from one panel (e.g.
+  // command execution, for a non-admin user) to wipe the entire session's
+  // API key, silently breaking unrelated features like chat.
   observation.logTelemetry("warn", "Security", "Access denied: Invalid API Key");
-  return res.status(403).json({ error: "Invalid API Key" });
+  return res.status(401).json({ error: "Invalid API Key" });
 };
 
 // ---------- Endpoints ----------
