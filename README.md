@@ -227,7 +227,12 @@ relying on anything not listed in "What's implemented."
   builds — the reason the STT fallback pipeline above exists at all), this
   fails open — arms permanently rather than leaving live voice unreachable
   with no way to ever trigger it — and tells you plainly that wake-word
-  detection isn't available here.
+  detection isn't available here. Also guards against Jarvis hearing
+  itself: an `isJarvisSpeaking()` check (covering both TTS notification
+  playback and live audio output) blocks mic-forwarding and wake-word
+  matching while Jarvis is actively talking — without it, its own spoken
+  notifications or replies could re-trigger the wake word or get forwarded
+  back to Gemini as if the user had said them.
 - **Ambient awareness**: the same motion-tracking canvas that drives the
   cosmetic eye-follow effect also feeds a simple presence heuristic — sustained
   motion after a stretch of stillness (a proxy for "someone's attention just

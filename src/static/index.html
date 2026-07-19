@@ -1053,6 +1053,22 @@
         liveNextPlayTime = startAt + audioBuffer.duration;
     }
 
+    // True while Jarvis's own voice is coming out of the speakers — either
+    // the plain TTS playback speakText() uses for notifications/text-chat
+    // replies, or the live Gemini audio scheduled above. Without this, the
+    // always-on mic picks up Jarvis's own speech: the wake-word listener can
+    // mishear "jarvis" inside Jarvis's own notification audio and re-trigger
+    // itself, and an armed session would forward Jarvis's own voice back to
+    // Gemini as if it were the user talking. echoCancellation on the
+    // getUserMedia constraints above helps but isn't a substitute — it only
+    // filters what our own live-audio pipeline hears, not the wake-word
+    // listener's separate capture, and isn't guaranteed complete anyway.
+    function isJarvisSpeaking() {
+        if (isSpeakingNow) return true;
+        if (liveOutputAudioCtx && liveNextPlayTime > liveOutputAudioCtx.currentTime) return true;
+        return false;
+    }
+
     // The real "always on" experience: a continuous bidirectional stream to
     // Gemini's Live API — mic audio in, spoken audio back, plus the live
     // camera feed (via captureCameraFrame(), the same one typed chat uses),
@@ -1063,7 +1079,14 @@
         if (liveVoiceActive || !CURRENT_API_KEY) return;
 
         try {
-            liveMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // echoCancellation/noiseSuppression help the browser filter out
+            // Jarvis's own speaker output from what it captures — a partial
+            // mitigation on its own (imperfect, and does nothing for the
+            // wake-word listener's separate capture below), which is why
+            // isJarvisSpeaking() gates both pipelines explicitly further down.
+            liveMicStream = await navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: true }
+            });
         } catch (err) {
             console.warn("Microphone access denied, live voice can't start: ", err);
             addNotification("Microphone access denied — falling back to click-to-talk.", "warning");
@@ -1091,7 +1114,7 @@
             source.connect(liveScriptProcessor);
             liveScriptProcessor.connect(liveInputAudioCtx.destination);
             liveScriptProcessor.onaudioprocess = (event) => {
-                if (!liveVoiceActive || liveVoiceMuted || !liveArmed || liveVoiceWs.readyState !== WebSocket.OPEN) return;
+                if (!liveVoiceActive || liveVoiceMuted || !liveArmed || isJarvisSpeaking() || liveVoiceWs.readyState !== WebSocket.OPEN) return;
                 const inputData = event.inputBuffer.getChannelData(0);
                 const downsampled = downsampleTo16k(inputData, liveInputAudioCtx.sampleRate);
                 liveVoiceWs.send(floatTo16BitPCM(downsampled));
@@ -1279,6 +1302,7 @@
         };
 
         wakeWordRecognition.onresult = (event) => {
+            if (isJarvisSpeaking()) return; // don't let Jarvis's own voice re-trigger the wake word
             const transcript = event.results[event.resultIndex][0].transcript.toLowerCase();
             if (transcript.includes(WAKE_WORD)) armLiveVoice();
         };
@@ -1343,7 +1367,7 @@
         if (ambientPresenceState === 'idle' && motionActiveStreak >= ACTIVE_STREAK_TO_FIRE) {
             ambientPresenceState = 'active';
             const now = Date.now();
-            if (liveVoiceActive && !liveVoiceMuted && liveVoiceWs?.readyState === WebSocket.OPEN
+            if (liveVoiceActive && !liveVoiceMuted && !isJarvisSpeaking() && liveVoiceWs?.readyState === WebSocket.OPEN
                 && now - lastAmbientNudgeAt > AMBIENT_NUDGE_COOLDOWN_MS) {
                 lastAmbientNudgeAt = now;
                 liveVoiceWs.send(JSON.stringify({
