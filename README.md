@@ -305,7 +305,11 @@ means mechanically. Jarvis can propose an exact shell command via the
 `command_proposals`; it never runs anything. A command only ever executes
 after **your own fresh approval** in the dashboard, one command at a time,
 with no standing/blanket trust — approving one command does not authorize
-any future one.
+any future one. Changed your mind after approving? A command still sitting
+in `approved` (not yet claimed by the executor) can be cancelled from the
+dashboard — this is the only way an `approved` row ever moves to `rejected`,
+and it atomically loses the race to a claim already in flight, so it can
+never cancel something that's actually started running.
 
 Execution itself is deliberately a separate, host-side step
 (`scripts/security/command_executor.sh`), for the same reason as the

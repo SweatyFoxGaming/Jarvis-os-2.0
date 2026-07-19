@@ -1373,6 +1373,24 @@ app.post("/api/system/commands/:id/reject", validateApiKey, async (req: any, res
   }
 });
 
+// Lets you back out of an already-approved command that hasn't run yet —
+// e.g. approved by mistake, or you changed your mind. Cannot touch a command
+// the executor has already claimed (cancelApprovedCommand only matches
+// status = 'approved'; claim() has already flipped it to 'running' by then).
+app.post("/api/system/commands/:id/cancel", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.execute")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.execute"' });
+  }
+  try {
+    const updated = await commandProposalsRepo.cancelApprovedCommand(Number(req.params.id));
+    if (!updated) return res.status(404).json({ error: "Command not found, not approved, or already claimed for execution" });
+    observation.logAuditEvent(req.username, "command_cancelled", "success", `#${updated.id}: ${updated.command}`);
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Called only by the host-side executor script — atomically claims exactly
 // one approved command (approved -> running) so an overlapping executor run
 // can never pick up and run the same command twice.

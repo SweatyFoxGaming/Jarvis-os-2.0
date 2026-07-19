@@ -57,6 +57,18 @@ export async function setCommandDecision(
   return rows[0] || null;
 }
 
+// approved -> rejected only, and only if the executor hasn't already claimed
+// it (claim flips it to 'running' first, atomically) — so cancelling here
+// can never race a command that's already started running.
+export async function cancelApprovedCommand(id: number): Promise<CommandProposal | null> {
+  const db = getPool();
+  const { rows } = await db.query(
+    `UPDATE command_proposals SET status = 'rejected' WHERE id = $1 AND status = 'approved' RETURNING *`,
+    [id]
+  );
+  return rows[0] || null;
+}
+
 // Atomically claims ONE approved command for execution (approved -> running)
 // in a single UPDATE...RETURNING — if two executor runs overlap, only one of
 // them gets a non-empty result back, so the same command can never run twice.

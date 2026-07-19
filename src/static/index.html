@@ -2103,6 +2103,17 @@
         } catch {}
     }
 
+    async function cancelCommand(id) {
+        if (!confirm('Cancel this approved command? It will not run (unless the executor already claimed it in the last moment).')) return;
+        try {
+            const res = await authFetch(`/api/system/commands/${id}/cancel`, {
+                method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) { addNotification("Command cancelled.", "info"); loadCommandExecution(); }
+            else { const body = await res.json().catch(() => ({})); addNotification(body.error || "Could not cancel — it may already be running.", "danger"); loadCommandExecution(); }
+        } catch {}
+    }
+
     async function loadCommandExecution() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
@@ -2134,6 +2145,11 @@
                             <div class="flex gap-1.5">
                                 <button onclick="approveCommand(${c.id})" class="flex-1 px-1.5 py-1 bg-danger/10 hover:bg-danger/20 border border-danger/25 rounded text-[8px] font-mono font-bold text-danger uppercase tracking-widest">APPROVE &amp; RUN</button>
                                 <button onclick="rejectCommand(${c.id})" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">REJECT</button>
+                            </div>
+                        ` : ''}
+                        ${c.status === 'approved' ? `
+                            <div class="flex gap-1.5">
+                                <button onclick="cancelCommand(${c.id})" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">CANCEL — DON'T RUN</button>
                             </div>
                         ` : ''}
                     </div>
