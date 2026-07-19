@@ -489,7 +489,7 @@ app.post("/api/executive/board/debate", validateApiKey, async (req: any, res: an
 
 // Voice Transcription Endpoint
 app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
-  const { audio, mimeType } = req.body;
+  const { audio, mimeType, forceOffline } = req.body;
   if (!audio) {
     return res.status(400).json({ error: "Missing audio payload" });
   }
@@ -498,7 +498,17 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
 
   try {
     const kernel = MindKernel.getInstance();
-    if (ai && !kernel.offlineMode) {
+    // forceOffline: for callers that poll continuously (e.g. client-side
+    // wake-word spotting, which records and transcribes a short clip every
+    // few seconds for as long as live voice is on) — routing that to Gemini
+    // would mean a real API call every few seconds indefinitely, just to
+    // check for one word. Local whisper-cpp is free and already always
+    // running; forcing it here regardless of the general online/offline
+    // preference is a narrower, correct choice for that specific caller,
+    // not a change to this endpoint's default behavior for anyone else
+    // (e.g. the click-to-talk fallback, which should still prefer Gemini's
+    // better accuracy for a real one-off dictated command).
+    if (ai && !kernel.offlineMode && !forceOffline) {
       observation.incrementMetric("geminiApiCalls");
       
       const response = await generateContentWithFallback(ai, {
