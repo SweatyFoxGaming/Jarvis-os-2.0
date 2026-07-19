@@ -307,7 +307,7 @@
 
                     <!-- Suggested prompts -->
                     <div id="home-suggested-prompts" class="flex flex-wrap items-center justify-center gap-2">
-                        <button onclick="askSuggestedPrompt('What&#39;s new since I last checked in?')" class="px-3.5 py-2 rounded-full border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all">What's new since I last checked in?</button>
+                        <button onclick="askSuggestedPrompt('What\'s new since I last checked in?')" class="px-3.5 py-2 rounded-full border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all">What's new since I last checked in?</button>
                         <button onclick="askSuggestedPrompt('Any security concerns I should know about?')" class="px-3.5 py-2 rounded-full border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all">Any security concerns?</button>
                         <button onclick="askSuggestedPrompt('Research something for me')" class="px-3.5 py-2 rounded-full border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all">Research something for me</button>
                     </div>
@@ -867,7 +867,9 @@
     const WAKE_WORD = 'jarvis';
     const WAKE_WORD_DISARM_MS = 12000;
     const WAKE_WORD_MAX_CONSECUTIVE_ERRORS = 3;
-    let wakeWordRecognition = null;
+    const WAKE_WORD_POLL_INTERVAL_MS = 3000;
+    let wakeWordPollActive = false;
+    let wakeWordMediaRecorder = null;
     let wakeWordStoppedIntentionally = false;
     let wakeWordConsecutiveErrors = 0;
     let liveArmed = false;
@@ -1277,101 +1279,122 @@
         updateMicButtonVisual();
     }
 
-    // A separate, continuous local speech-recognition instance dedicated to
-    // spotting the wake word — independent of the raw PCM stream already
-    // flowing to Gemini (that keeps recording regardless; this only decides
-    // when it's actually forwarded). Mirrors the same browser-API-reliability
-    // pattern already used by the legacy STT pipeline below: on some Linux/
-    // Electron Chromium builds, SpeechRecognition silently produces zero
-    // events rather than an error, so a startup timeout detects that and
-    // fails open (arms permanently) rather than leaving live voice
-    // unreachable with no way to ever trigger it.
+    // Wake-word spotting via the app's own local transcription pipeline
+    // (/api/voice-input, forceOffline: true -> whisper-cpp) instead of the
+    // browser's built-in SpeechRecognition — that depends on Chromium's
+    // bundled cloud speech backend, which is unreachable in Electron/many
+    // Linux builds (live-observed: both this listener and the legacy STT
+    // fallback below failed identically with a "network" error, never a
+    // one-off). Records a short clip from the same liveMicStream already
+    // captured for live voice, transcribes it locally, and checks for the
+    // wake word — repeating every WAKE_WORD_POLL_INTERVAL_MS for as long as
+    // live voice is on, unmuted, and not already armed (once armed, actual
+    // conversation flows through the live Gemini audio pipe directly, so
+    // there's nothing useful to transcribe here until it disarms again).
+    function blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+
     function startWakeWordListener() {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            console.warn("No browser speech recognition available — wake word detection disabled; live voice will respond to everything.");
-            addNotification("Wake word detection unavailable in this browser — live voice will respond to everything said near it.", "warning");
-            armLiveVoicePermanently();
+        wakeWordStoppedIntentionally = false;
+        wakeWordConsecutiveErrors = 0;
+        wakeWordPollActive = true;
+        scheduleWakeWordCycle();
+    }
+
+    function scheduleWakeWordCycle(delayMs) {
+        if (!wakeWordPollActive || wakeWordStoppedIntentionally || !liveVoiceActive || liveVoiceMuted) return;
+        setTimeout(() => {
+            if (!wakeWordPollActive || wakeWordStoppedIntentionally || !liveVoiceActive || liveVoiceMuted) return;
+            if (liveArmed || isJarvisSpeaking()) {
+                // Already in a live exchange, or Jarvis is talking — nothing
+                // useful to transcribe right now. Check back shortly rather
+                // than recording (and burning a transcription call on) audio
+                // that's either already handled live or is Jarvis's own voice.
+                scheduleWakeWordCycle(1000);
+                return;
+            }
+            recordWakeWordClip();
+        }, delayMs || 0);
+    }
+
+    function recordWakeWordClip() {
+        if (!liveMicStream) { scheduleWakeWordCycle(WAKE_WORD_POLL_INTERVAL_MS); return; }
+
+        let options = { mimeType: 'audio/webm;codecs=opus' };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'audio/webm' };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) options = {};
+
+        let recorder;
+        try {
+            recorder = new MediaRecorder(liveMicStream, options);
+        } catch (e) {
+            console.warn("Wake word: failed to create local recorder: ", e);
+            scheduleWakeWordCycle(WAKE_WORD_POLL_INTERVAL_MS);
             return;
         }
 
-        wakeWordStoppedIntentionally = false;
-        wakeWordConsecutiveErrors = 0;
-        let wakeWordDidStart = false;
-        const startupTimeout = setTimeout(() => {
-            if (wakeWordDidStart) return;
-            console.warn("Wake word listener produced no events — disabling wake-word gating for this session.");
-            addNotification("Wake word detection unavailable here — live voice will respond to everything said near it.", "warning");
-            try { wakeWordRecognition.abort(); } catch {}
-            wakeWordRecognition = null;
-            armLiveVoicePermanently();
-        }, 3000);
+        const chunks = [];
+        wakeWordMediaRecorder = recorder;
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
 
-        wakeWordRecognition = new SpeechRecognition();
-        wakeWordRecognition.continuous = true;
-        wakeWordRecognition.interimResults = false;
-        wakeWordRecognition.lang = 'en-US';
+        recorder.onstop = async () => {
+            wakeWordMediaRecorder = null;
+            if (!wakeWordPollActive || wakeWordStoppedIntentionally) return;
 
-        wakeWordRecognition.onstart = () => {
-            wakeWordDidStart = true;
-            clearTimeout(startupTimeout);
-        };
-
-        wakeWordRecognition.onresult = (event) => {
-            wakeWordConsecutiveErrors = 0; // a real result proves the pipeline actually works
-            if (isJarvisSpeaking()) return; // don't let Jarvis's own voice re-trigger the wake word
-            const transcript = event.results[event.resultIndex][0].transcript.toLowerCase();
-            if (transcript.includes(WAKE_WORD)) armLiveVoice();
-        };
-
-        wakeWordRecognition.onerror = (event) => {
-            if (!wakeWordRecognition) return; // already failed open via the startup timeout
-            if (event.error !== 'no-speech') {
+            try {
+                const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+                const base64 = await blobToBase64(blob);
+                const res = await authFetch('/api/voice-input', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                    body: JSON.stringify({ audio: base64, mimeType: blob.type, forceOffline: true })
+                });
+                if (res.ok) {
+                    wakeWordConsecutiveErrors = 0; // a real response proves the pipeline works
+                    const data = await res.json();
+                    const transcript = (data.transcription || '').toLowerCase();
+                    if (transcript.includes(WAKE_WORD) && !isJarvisSpeaking()) armLiveVoice();
+                } else {
+                    wakeWordConsecutiveErrors++;
+                }
+            } catch (e) {
                 wakeWordConsecutiveErrors++;
-                console.warn(`Wake word listener error (${wakeWordConsecutiveErrors}/${WAKE_WORD_MAX_CONSECUTIVE_ERRORS}): `, event.error);
+                console.warn(`Wake word transcription failed (${wakeWordConsecutiveErrors}/${WAKE_WORD_MAX_CONSECUTIVE_ERRORS}): `, e);
             }
-        };
 
-        wakeWordRecognition.onend = () => {
-            if (!wakeWordRecognition || wakeWordStoppedIntentionally || !liveVoiceActive) return;
             if (wakeWordConsecutiveErrors >= WAKE_WORD_MAX_CONSECUTIVE_ERRORS) {
-                // Repeated real errors (e.g. "network" — this browser's
-                // speech service is unreachable, a known issue on some
-                // Linux/Electron Chromium builds), not just an occasional
-                // hiccup: restarting forever here was a real bug, hammering
-                // the browser's speech service in a tight fail/restart loop
-                // (observed 172 times in one session) without ever actually
-                // working. Give up and fail open instead, same as the
-                // startup-timeout path.
-                console.warn("Wake word listener failed repeatedly — disabling wake-word gating for this session.");
+                // Real, repeated failures (server unreachable, whisper-cpp
+                // down) — stop polling and fail open rather than retrying
+                // forever, same principle as the old SpeechRecognition path.
+                console.warn("Wake word local transcription failed repeatedly — disabling wake-word gating for this session.");
                 addNotification("Wake word detection isn't working here — live voice will respond to everything said near it.", "warning");
-                wakeWordRecognition = null;
+                wakeWordPollActive = false;
                 armLiveVoicePermanently();
                 return;
             }
-            // Browser ended the session on its own (e.g. after a pause) —
-            // restart transparently so wake-word spotting stays on for as
-            // long as live voice itself is active.
-            try { wakeWordRecognition.start(); } catch (e) {
-                console.warn("Failed to restart wake word listener: ", e);
-            }
+
+            scheduleWakeWordCycle();
         };
 
-        try {
-            wakeWordRecognition.start();
-        } catch (e) {
-            console.warn("Failed to start wake word listener: ", e);
-            addNotification("Wake word detection failed to start — live voice will respond to everything said near it.", "warning");
-            armLiveVoicePermanently();
-        }
+        recorder.start();
+        setTimeout(() => {
+            if (recorder.state !== 'inactive') recorder.stop();
+        }, WAKE_WORD_POLL_INTERVAL_MS);
     }
 
     function stopWakeWordListener() {
         wakeWordStoppedIntentionally = true;
-        if (wakeWordRecognition) {
-            try { wakeWordRecognition.stop(); } catch {}
-            wakeWordRecognition = null;
+        wakeWordPollActive = false;
+        if (wakeWordMediaRecorder && wakeWordMediaRecorder.state !== 'inactive') {
+            try { wakeWordMediaRecorder.stop(); } catch {}
         }
+        wakeWordMediaRecorder = null;
     }
 
     // A cheap, honest proxy for "someone's presence just became active
