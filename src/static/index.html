@@ -14,25 +14,30 @@
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 
     <script>
+        // Calmer, more premium palette — replaces the previous cyberpunk/
+        // holographic theme per direct user preference. Near-black ground,
+        // a single cool accent (used sparingly: the orb, the active nav
+        // state, primary actions), neutrals with a faint blue bias rather
+        // than pure grey so they read as chosen, not default.
         tailwind.config = {
             theme: {
                 extend: {
                     colors: {
-                        bg: '#020308',
-                        surface: '#0A0F1D',
-                        card: '#10172A',
-                        glass: '#0C1220',
-                        primary: '#38BDF8',
-                        accent: '#A78BFA',
-                        success: '#34D399',
-                        warning: '#FBBF24',
-                        danger: '#F87171',
-                        text: '#F1F5F9',
-                        secondary: '#5B6B8C'
+                        bg: '#050608',
+                        surface: '#0B0D12',
+                        card: '#12141B',
+                        glass: '#0D0F15',
+                        primary: '#8FB8E8',
+                        accent: '#8FB8E8',
+                        success: '#5FBF8F',
+                        warning: '#D9A85C',
+                        danger: '#D97A7A',
+                        text: '#EDEFF3',
+                        secondary: '#767C8C'
                     },
                     fontFamily: {
-                        sans: ['Space Grotesk', 'Inter', 'sans-serif'],
-                        display: ['Chakra Petch', 'Space Grotesk', 'sans-serif'],
+                        sans: ['Inter', 'sans-serif'],
+                        display: ['Space Grotesk', 'Inter', 'sans-serif'],
                         mono: ['JetBrains Mono', 'monospace']
                     }
                 }
@@ -41,117 +46,86 @@
     </script>
     <style>
         ::-webkit-scrollbar { width: 3px; height: 3px; }
-        ::-webkit-scrollbar-track { background: rgba(2, 3, 8, 0.5); }
-        ::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.2); border-radius: 9px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(167, 139, 250, 0.35); }
+        ::-webkit-scrollbar-track { background: rgba(5, 6, 8, 0.5); }
+        ::-webkit-scrollbar-thumb { background: rgba(143, 184, 232, 0.18); border-radius: 9px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(143, 184, 232, 0.3); }
 
-        /* Holographic glass — the panel language for this whole interface.
-           Heavier blur + low-opacity gradient tint reads as light/projection
-           rather than solid material; the border is a soft luminous glow
-           (box-shadow), not a hard material edge, so panels feel like they're
-           floating slightly in front of the background rather than sitting on it. */
+        /* Calm panel language — a quiet, flat card instead of the previous
+           heavy-blur holographic glass. Class names kept as-is (.holo-panel
+           etc. are used throughout this file) so every existing panel picks
+           up the new look automatically without a markup rewrite. */
         .glass-panel, .holo-panel {
-            background: linear-gradient(155deg, rgba(56, 189, 248, 0.05), rgba(167, 139, 250, 0.03) 55%, rgba(10, 15, 29, 0.7));
-            backdrop-filter: blur(28px) saturate(140%);
-            -webkit-backdrop-filter: blur(28px) saturate(140%);
+            background: rgba(255, 255, 255, 0.02);
             border: 1px solid rgba(255, 255, 255, 0.06);
-            box-shadow:
-                inset 0 1px 1px rgba(255, 255, 255, 0.04),
-                inset 0 0 40px rgba(56, 189, 248, 0.02),
-                0 0 0 1px rgba(56, 189, 248, 0.04),
-                0 12px 40px rgba(0, 0, 0, 0.55);
-            transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.45s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.45s ease;
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease, background 0.3s ease;
         }
 
-        /* Applied alongside .holo-panel on elements meant to feel like they're
-           physically floating at a different depth than their neighbors —
-           the "different z-depths" hover lift. Skipped on panels containing
-           their own scroll regions or dense live data, where a shifting
-           container reads as jittery rather than dimensional. */
         .holo-lift:hover {
-            transform: translateY(-3px);
-            border-color: rgba(56, 189, 248, 0.18);
-            box-shadow:
-                inset 0 1px 1px rgba(255, 255, 255, 0.06),
-                inset 0 0 50px rgba(56, 189, 248, 0.04),
-                0 0 0 1px rgba(56, 189, 248, 0.1),
-                0 20px 60px rgba(0, 0, 0, 0.6),
-                0 0 40px rgba(56, 189, 248, 0.06);
+            transform: translateY(-2px);
+            border-color: rgba(143, 184, 232, 0.22);
+            background: rgba(255, 255, 255, 0.03);
         }
 
         @keyframes drift {
             0%, 100% { transform: translate(0, 0) scale(1); }
-            50% { transform: translate(3%, -4%) scale(1.05); }
+            50% { transform: translate(2%, -3%) scale(1.03); }
         }
         .glow-accent {
             position: absolute;
-            width: 480px;
-            height: 480px;
-            background: radial-gradient(circle, rgba(167, 139, 250, 0.09) 0%, rgba(56, 189, 248, 0.04) 45%, transparent 72%);
+            width: 520px;
+            height: 520px;
+            background: radial-gradient(circle, rgba(143, 184, 232, 0.05) 0%, transparent 65%);
             pointer-events: none;
-            filter: blur(60px);
-            animation: drift 22s ease-in-out infinite;
+            filter: blur(70px);
+            animation: drift 26s ease-in-out infinite;
         }
 
-        .grid-bg {
-            background-size: 56px 56px;
-            background-image:
-                linear-gradient(to right, rgba(56, 189, 248, 0.012) 1px, transparent 1px),
-                linear-gradient(to bottom, rgba(56, 189, 248, 0.012) 1px, transparent 1px);
-        }
-
-        @keyframes scanline {
-            0% { transform: translateY(-100%); }
-            100% { transform: translateY(100%); }
-        }
-        .scanline::after {
-            content: '';
-            position: absolute;
-            width: 100%;
-            height: 160px;
-            background: linear-gradient(to bottom, transparent, rgba(56, 189, 248, 0.015), rgba(167, 139, 250, 0.01), transparent);
-            animation: scanline 9s infinite linear;
-            top: 0; left: 0; pointer-events: none; z-index: 10;
-        }
-
-        @keyframes scan {
-            0%, 100% { transform: translateY(-100%); }
-            50% { transform: translateY(100%); }
-        }
-        .scanning-laser {
-            animation: scan 4s ease-in-out infinite;
-        }
-
-        /* Thin luminous rule used in place of solid border-white/5 dividers
-           inside glass panels, so internal seams read as light, not material. */
+        /* Faint luminous rule used in place of a solid divider inside panels. */
         .holo-divider {
             border-color: transparent;
-            background-image: linear-gradient(to right, transparent, rgba(56, 189, 248, 0.12), rgba(167, 139, 250, 0.08), transparent);
+            background-image: linear-gradient(to right, transparent, rgba(143, 184, 232, 0.16), transparent);
             height: 1px;
         }
 
         .holo-text-glow {
-            text-shadow: 0 0 12px currentColor;
+            text-shadow: 0 0 16px rgba(143, 184, 232, 0.35);
         }
 
-        /* Lighter glass for small elements nested inside an already-blurred
-           holo-panel — a second heavy backdrop-blur here would compound and
-           muddy, so this is a flatter tint + thin luminous edge instead. */
+        /* Nested elements inside an already-styled holo-panel — flatter still,
+           so nesting doesn't compound. */
         .holo-chip {
-            background: linear-gradient(155deg, rgba(56, 189, 248, 0.06), rgba(10, 15, 29, 0.55));
+            background: rgba(255, 255, 255, 0.03);
             border: 1px solid rgba(255, 255, 255, 0.06);
-            box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.03);
         }
 
-        /* The centerpiece reads as a projection hanging in space rather than
-           a panel sitting on the page — a slow vertical drift is enough to
-           sell "hologram" without being distracting during real use. */
         @keyframes hologram-float {
             0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-8px); }
+            50% { transform: translateY(-6px); }
         }
         .hologram-float {
-            animation: hologram-float 7s ease-in-out infinite;
+            animation: hologram-float 8s ease-in-out infinite;
+        }
+
+        /* The presence orb — the app's one focal visual, replacing the old
+           "quantum eye". A slow breathing glow reads as alive/idle without
+           being distracting; active/speaking states are driven by adding
+           .orb-active (see updateSensorStatusLabel / speakText) rather than
+           a separate element, so there's only ever one orb to keep in sync. */
+        @keyframes orb-breathe {
+            0%, 100% { box-shadow: 0 0 40px 6px rgba(143, 184, 232, 0.18), inset 0 0 30px rgba(143, 184, 232, 0.08); }
+            50% { box-shadow: 0 0 60px 10px rgba(143, 184, 232, 0.28), inset 0 0 40px rgba(143, 184, 232, 0.14); }
+        }
+        .jarvis-orb {
+            border-radius: 9999px;
+            border: 1.5px solid rgba(143, 184, 232, 0.55);
+            background: radial-gradient(circle at 50% 40%, rgba(143, 184, 232, 0.08), rgba(5, 6, 8, 0.9) 70%);
+            animation: orb-breathe 5s ease-in-out infinite;
+            transition: border-color 0.4s ease;
+        }
+        .jarvis-orb.orb-active {
+            border-color: rgba(143, 184, 232, 0.9);
+            animation: orb-breathe 1.6s ease-in-out infinite;
         }
 
         #mind-graph {
@@ -159,167 +133,117 @@
         }
     </style>
 </head>
-<body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none grid-bg scanline relative">
+<body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
 <div class="absolute top-24 left-1/4 glow-accent"></div>
 <div class="absolute bottom-12 right-1/4 glow-accent"></div>
 
 <div id="app" class="h-full w-full flex relative z-10">
     
     <!-- 1. LEFT COGNITIVE RAIL (Presence Side-Deck) -->
-    <div id="left-sidebar" class="w-72 bg-[#03050c] border-r border-white/5 flex flex-col p-5 gap-5 z-20 flex-shrink-0 relative overflow-hidden transition-all duration-300 ease-in-out">
+    <div id="left-sidebar" class="w-64 bg-[#08090d] border-r border-white/5 flex flex-col p-5 gap-6 z-20 flex-shrink-0 relative overflow-hidden transition-all duration-300 ease-in-out">
         <!-- Sidebar Brand -->
-        <div class="flex items-center justify-between border-b border-white/5 pb-4">
+        <div class="flex items-center justify-between">
             <div class="flex flex-col">
-                <span class="text-[8px] text-secondary tracking-widest font-mono">COGNITIVE ARCHITECTURE</span>
-                <span class="text-md font-display font-bold text-white tracking-[0.15em] holo-text-glow">JARVIS CORE <span class="text-primary font-mono text-xs">v4.0</span></span>
+                <span class="text-lg font-display font-semibold text-white tracking-[0.3em]">JARVIS</span>
+                <span class="text-[9px] text-secondary tracking-[0.25em] font-mono uppercase">Executive OS</span>
             </div>
-            <div class="flex items-center gap-2">
-                <div class="w-2.5 h-2.5 rounded-full bg-success animate-pulse shadow-[0_0_12px_rgba(52,211,153,0.4)]"></div>
-                <button onclick="toggleSidebar()" class="p-1 text-secondary hover:text-white hover:bg-white/5 rounded-md transition-all flex items-center justify-center" title="Collapse Sidebar">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-                    </svg>
-                </button>
-            </div>
+            <button onclick="toggleSidebar()" class="p-1 text-secondary hover:text-white hover:bg-white/5 rounded-md transition-all flex items-center justify-center" title="Collapse Sidebar">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                </svg>
+            </button>
         </div>
-        
-        <!-- OFFLINE KERNEL CAPABILITIES DECK -->
-        <div class="flex flex-col py-4 px-4 bg-surface/20 rounded-2xl border border-white/5 relative group hover:border-primary/20 transition-all duration-300 space-y-3">
-            <span class="text-[8px] font-mono text-secondary/40 tracking-wider uppercase">LOCAL_OS_DECK_INDICATORS</span>
-            
-            <div class="space-y-2 text-[10px] font-mono">
-                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
-                    <span class="text-secondary/60">OFFLINE OPERATION</span>
-                    <span class="text-success font-bold text-[9px] px-1.5 py-0.5 bg-success/5 border border-success/15 rounded">SECURE_ON</span>
-                </div>
-                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
-                    <span class="text-secondary/60">LOCAL SPEECH (STT)</span>
-                    <span class="text-accent font-bold text-[9px] px-1.5 py-0.5 bg-accent/5 border border-accent/15 rounded">LOCAL_EARS</span>
-                </div>
-                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
-                    <span class="text-secondary/60">LOCAL VOCAL (TTS)</span>
-                    <span class="text-indigo-400 font-bold text-[9px] px-1.5 py-0.5 bg-indigo-500/5 border border-indigo-500/15 rounded">LOCAL_VOICE</span>
-                </div>
-                <div class="flex justify-between items-center bg-bg/50 px-2.5 py-1.5 border border-white/5 rounded-xl">
-                    <span class="text-secondary/60">DESKTOP LINKPORT</span>
-                    <span class="text-primary font-bold text-[9px] px-1.5 py-0.5 bg-primary/5 border border-primary/15 rounded">PORT_3000</span>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Navigation Systems -->
+
+        <!-- Navigation -->
         <nav class="flex flex-col gap-1 flex-1 w-full overflow-y-auto pr-1">
-            <span class="text-[8px] font-mono tracking-widest text-secondary/40 uppercase mb-1 px-3">Subsystem Matrices</span>
-            
-            <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
-                <svg class="w-4 h-4 text-primary group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2z" />
+            <button onclick="switchTab('home')" id="nav-home" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7m-9-2v10a1 1 0 001 1h3m6-11l2 2m-8-9v3m0 0h3m-3 0h-3" />
                 </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">CONSOLE</span>
+                <span class="text-sm font-medium">Home</span>
             </button>
 
-            <button onclick="switchTab('conversation')" id="nav-conversation" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
-                <svg class="w-4 h-4 text-accent group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            <button onclick="switchTab('projects')" id="nav-projects" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
                 </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">DIALOGUE</span>
+                <span class="text-sm font-medium">Projects</span>
             </button>
 
-            <button onclick="switchTab('workspace')" id="nav-workspace" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
-                <svg class="w-4 h-4 text-indigo-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <button onclick="switchTab('calendar')" id="nav-calendar" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span class="text-sm font-medium">Calendar</span>
+            </button>
+
+            <button onclick="switchTab('knowledge')" id="nav-knowledge" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.969 7.969 0 0014.5 4c-1.669 0-3.218.51-4.5 1.385A7.962 7.962 0 009 4.804z" />
+                </svg>
+                <span class="text-sm font-medium">Knowledge</span>
+            </button>
+
+            <button onclick="switchTab('operations')" id="nav-operations" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">WORKSPACE</span>
+                <span class="text-sm font-medium">Operations</span>
             </button>
 
-            <button onclick="switchTab('memory')" id="nav-memory" class="nav-btn hidden group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
-                <svg class="w-4 h-4 text-pink-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
-                </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">MEMORY INDEX</span>
-            </button>
+            <div class="h-px bg-white/5 my-2"></div>
 
-            <button onclick="switchTab('observation')" id="nav-observation" class="nav-btn hidden group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
-                <svg class="w-4 h-4 text-emerald-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">TELEMETRY</span>
-            </button>
-
-            <button onclick="switchTab('learning')" id="nav-learning" class="nav-btn hidden group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
-                <svg class="w-4 h-4 text-yellow-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">LEARNING</span>
-            </button>
-
-            <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
-                <svg class="w-4 h-4 text-pink-400 group-hover:scale-105 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                     <circle cx="12" cy="12" r="3" stroke-width="1.5" />
                 </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">SETTINGS</span>
+                <span class="text-sm font-medium">Settings</span>
             </button>
         </nav>
-        
-        <!-- Admin Link -->
-        <div class="border-t border-white/5 pt-4">
-            <a href="/voice" target="_blank" class="group flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent w-full">
-                <svg class="w-4 h-4 text-primary group-hover:scale-110 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+
+        <!-- Voice / Admin -->
+        <div class="border-t border-white/5 pt-4 space-y-1">
+            <a href="/voice" target="_blank" class="group flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent w-full">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m-4 0h8M12 15a3 3 0 003-3V6a3 3 0 00-6 0v6a3 3 0 003 3z" />
                 </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">VOICE</span>
+                <span class="text-sm">Voice</span>
             </a>
-            <a href="/admin" target="_blank" class="group flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all duration-300 text-secondary hover:text-white hover:bg-white/5 border border-transparent w-full">
-                <svg class="w-4 h-4 text-rose-500 group-hover:scale-110 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <a href="/admin" target="_blank" class="group flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent w-full">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
-                <span class="text-xs font-mono tracking-wider font-semibold">ADMIN PANEL</span>
+                <span class="text-sm">Admin panel</span>
             </a>
         </div>
     </div>
 
     <!-- 2. MAIN DISPLAY SYSTEM -->
     <div class="flex-1 flex flex-col h-full overflow-hidden bg-bg relative">
-        <!-- Top Status HUD -->
-        <header class="h-16 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0 glass-panel">
-            <div class="flex items-center gap-4">
-                <button id="sidebar-expand-btn" onclick="toggleSidebar()" class="p-1.5 bg-card hover:bg-white/5 border border-white/10 rounded-lg text-secondary hover:text-white transition-all hidden" title="Expand Sidebar">
+        <!-- Top Bar -->
+        <header class="h-14 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0">
+            <div class="flex items-center gap-3">
+                <button id="sidebar-expand-btn" onclick="toggleSidebar()" class="p-1.5 hover:bg-white/5 border border-white/10 rounded-lg text-secondary hover:text-white transition-all hidden" title="Expand Sidebar">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
                     </svg>
                 </button>
-                <span class="px-2 py-0.5 rounded bg-primary/10 border border-primary/20 text-[9px] font-mono font-bold text-primary tracking-widest">[SYS_TRACE: SECURE]</span>
-                <span class="text-xs font-bold text-secondary font-mono">NODE_INDEX_CONNECTED</span>
-            </div>
-            
-            <!-- Real-time Diagnostics HUD -->
-            <div class="flex items-center gap-6 text-xs font-mono">
-                <div class="flex items-center gap-2">
-                    <span class="text-secondary">OS_CORE:</span>
-                    <span id="health-cpu" class="text-success font-bold">0%</span>
-                </div>
-                <div class="flex items-center gap-2">
-                    <span class="text-secondary">Q_RAM:</span>
-                    <span id="health-ram" class="text-success font-bold">0.0 GB</span>
-                </div>
-                <div class="flex items-center gap-2">
-                    <span class="text-secondary">LATENCY:</span>
-                    <span id="health-latency" class="text-success font-bold">0ms</span>
-                </div>
-                <div class="h-4 w-[1px] bg-white/10"></div>
-                <!-- Offline Mode Toggle -->
-                <button onclick="toggleOfflineMode()" id="btn-offline-toggle" class="flex items-center gap-1.5 px-3 py-1.5 bg-card border border-white/10 hover:border-amber-500/40 rounded-lg text-secondary hover:text-amber-500 font-semibold transition-all">
-                    <span id="offline-dot" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span id="offline-text">ONLINE</span>
+                <button onclick="toggleOfflineMode()" id="btn-offline-toggle" class="flex items-center gap-2 hover:bg-white/5 rounded-lg px-2 py-1 -mx-2 transition-all" title="Toggle offline mode">
+                    <span id="offline-dot" class="w-2 h-2 rounded-full bg-success"></span>
+                    <span id="offline-text" class="text-sm text-secondary">Online</span>
                 </button>
-                <div class="h-4 w-[1px] bg-white/10"></div>
-                <!-- Sleep core -->
-                <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="flex items-center gap-1.5 px-3 py-1.5 bg-card border border-white/10 hover:border-primary/40 rounded-lg text-secondary hover:text-primary font-semibold transition-all">
-                    <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </div>
+
+            <div class="flex items-center gap-4 text-xs font-mono text-secondary/70">
+                <span title="CPU"><span id="health-cpu">0%</span></span>
+                <span title="Memory"><span id="health-ram">0.0 GB</span></span>
+                <span title="Latency"><span id="health-latency">0ms</span></span>
+                <div class="h-4 w-px bg-white/10"></div>
+                <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="p-1.5 hover:bg-white/5 rounded-lg text-secondary hover:text-white transition-all" title="Sleep">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
                     </svg>
-                    <span>CORES_SLEEP</span>
                 </button>
             </div>
         </header>
@@ -327,258 +251,216 @@
         <!-- Dynamic Viewports -->
         <main class="flex-1 overflow-y-auto p-8 relative z-0">
             
-            <!-- ================= SUB-PANEL 1: COGNITIVE OPERATING CONSOLE ================= -->
-            <div id="view-dashboard" class="view-pane flex flex-col items-center justify-center min-h-[550px] relative space-y-8 py-10">
-                <!-- Big futuristic glowing frame around the centerpiece Quantum Eye — a holographic projection floating in space, not a panel sitting on the page -->
-                <div class="hologram-float relative flex flex-col items-center justify-center p-12 rounded-3xl w-full max-w-xl transition-all duration-500" style="background: radial-gradient(circle at 50% 20%, rgba(167,139,250,0.06), rgba(10,15,29,0.35) 60%); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.07); box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), 0 0 90px rgba(56,189,248,0.08), 0 0 160px rgba(167,139,250,0.04);">
-                    
-                    <!-- Cyber Decorative Corner Lines -->
-                    <div class="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-primary/20 rounded-tl-3xl"></div>
-                    <div class="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-primary/20 rounded-tr-3xl"></div>
-                    <div class="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-primary/20 rounded-bl-3xl"></div>
-                    <div class="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-primary/20 rounded-br-3xl"></div>
-                    
-                    <!-- Context Tags -->
-                    <span class="absolute top-4 left-5 text-[9px] font-mono text-secondary/30 tracking-widest uppercase">LOC_Q: COGNITION_04</span>
-                    <span class="absolute top-4 right-5 text-[9px] font-mono text-secondary/30 tracking-widest uppercase">JARVIS PRESENCE ENGAGED</span>
-                    
-                    <!-- Huge Dynamic Eye Orb -->
-                    <div class="relative w-64 h-64 flex items-center justify-center mt-2" id="quantum-eye-container">
-                        <!-- Rotating circles, dashed rings, gradient glows -->
-                        <div class="absolute inset-0 rounded-full border border-primary/15 animate-[spin_35s_linear_infinite]"></div>
-                        <div class="absolute inset-4 rounded-full border border-dashed border-accent/20 animate-[spin_20s_linear_infinite_reverse]"></div>
-                        <div class="absolute inset-10 rounded-full border border-primary/5 animate-[spin_12s_linear_infinite]"></div>
-                        <div class="absolute inset-8 rounded-full bg-radial-gradient from-accent/5 via-primary/5 to-transparent animate-pulse opacity-40"></div>
-                        
-                        <svg class="absolute w-full h-full" viewBox="0 0 100 100">
-                            <circle cx="50" cy="50" r="46" stroke="currentColor" class="text-primary/5" stroke-width="0.3" fill="none" stroke-dasharray="1 10"/>
-                            <circle cx="50" cy="50" r="42" stroke="currentColor" class="text-accent/10" stroke-width="0.5" fill="none" stroke-dasharray="4 4"/>
-                            <circle cx="50" cy="50" r="38" stroke="currentColor" class="text-primary/10" stroke-width="0.2" fill="none"/>
-                        </svg>
-                        
-                        <!-- Beautiful Big Eye Pupil -->
-                        <div id="quantum-eye" class="relative w-32 h-32 bg-[#04060f]/90 border border-primary/30 rounded-full flex items-center justify-center overflow-hidden transition-all duration-300 shadow-[0_0_40px_rgba(56,189,248,0.25)]">
-                            <!-- Video stream overlay -->
-                            <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-60 pointer-events-none scale-110 filter brightness-115 contrast-125 saturate-50 hue-rotate-15 z-0"></video>
-                            <!-- Laser line scan -->
-                            <div class="absolute top-0 left-0 w-full h-[1.5px] bg-primary/60 shadow-[0_0_12px_rgba(56,189,248,0.9)] scanning-laser z-10"></div>
-                            
-                            <!-- Iris with subtle grad -->
-                            <div id="quantum-iris" class="relative w-16 h-16 rounded-full bg-gradient-to-tr from-primary via-accent to-purple-500 p-[2px] flex items-center justify-center transition-transform duration-150 ease-out z-10">
-                                <div id="quantum-pupil" class="w-10 h-10 rounded-full bg-[#03050c] border border-white/10 flex items-center justify-center shadow-inner relative">
-                                    <div class="w-4 h-4 rounded-full bg-primary animate-ping opacity-60"></div>
-                                    <div class="absolute w-3 h-3 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+            <!-- ================= HOME: the primary surface — presence orb + ask-anything ================= -->
+            <div id="view-home" class="view-pane flex flex-col items-center min-h-full relative py-10 px-4">
+                <div class="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto" id="home-hero">
+                    <div class="relative w-40 h-40 flex items-center justify-center" id="quantum-eye-container">
+                        <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden">
+                            <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-70 pointer-events-none scale-110"></video>
+                            <div id="quantum-iris" class="relative w-3 h-3 rounded-full bg-primary/70 transition-transform duration-150 ease-out z-10" id="quantum-iris"></div>
+                        </div>
+                    </div>
+
+                    <div class="text-center">
+                        <h1 class="text-2xl font-display font-semibold tracking-[0.3em] text-white">JARVIS</h1>
+                        <p class="text-secondary text-sm mt-1">Your executive partner. Your advantage.</p>
+                    </div>
+
+                    <!-- Sensor status + toggles -->
+                    <div class="flex flex-col items-center gap-3">
+                        <span id="sensor-status-label" class="text-[11px] text-secondary uppercase tracking-[0.2em]">Sensors standby</span>
+                        <div id="identity-ticker" class="hidden text-center max-w-sm">
+                            <p id="identity-ticker-text" class="text-xs text-secondary/80 italic leading-snug"></p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <button onclick="toggleCameraSensor()" id="btn-camera-toggle" title="Toggle camera" class="p-2 rounded-full border border-white/10 text-secondary hover:text-white hover:border-white/20 transition-all">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                </svg>
+                            </button>
+                            <button onclick="toggleVoiceSpeech()" id="btn-speech-toggle" title="Toggle spoken replies" class="p-2 rounded-full border border-white/10 text-secondary hover:text-white hover:border-white/20 transition-all">
+                                <svg id="speech-icon-on" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M12 18.75V5.25L7.75 9.5H4.5v5h3.25L12 18.75z" />
+                                </svg>
+                                <svg id="speech-icon-off" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                                </svg>
+                            </button>
+                            <div id="voice-waveform" class="hidden items-end justify-center gap-[3px] h-5"></div>
+                        </div>
+                    </div>
+
+                    <!-- Ask Jarvis anything -->
+                    <div class="w-full flex items-center gap-2 bg-white/[0.03] border border-white/10 rounded-full px-2 py-2 mt-2 focus-within:border-primary/40 transition-all">
+                        <input type="text" id="chat-input" placeholder="Ask Jarvis anything..." class="flex-1 bg-transparent border-none focus:outline-none px-3 py-1.5 text-sm text-white placeholder-secondary/50" onkeypress="if(event.key === 'Enter') triggerChatDialogue()">
+                        <button onclick="toggleMicrophoneSensor()" id="btn-mic-toggle" title="Voice input" class="relative p-2 rounded-full text-secondary hover:text-white hover:bg-white/5 transition-all">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                            </svg>
+                            <span id="mic-pulse-dot" class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary animate-ping hidden"></span>
+                        </button>
+                        <button id="btn-chat-send" onclick="triggerChatDialogue()" title="Send" class="p-2.5 rounded-full bg-white/10 hover:bg-white/15 text-white transition-all">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- Suggested prompts -->
+                    <div id="home-suggested-prompts" class="flex flex-wrap items-center justify-center gap-2">
+                        <button onclick="askSuggestedPrompt('What&#39;s new since I last checked in?')" class="px-3.5 py-2 rounded-full border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all">What's new since I last checked in?</button>
+                        <button onclick="askSuggestedPrompt('Any security concerns I should know about?')" class="px-3.5 py-2 rounded-full border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all">Any security concerns?</button>
+                        <button onclick="askSuggestedPrompt('Research something for me')" class="px-3.5 py-2 rounded-full border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all">Research something for me</button>
+                    </div>
+                </div>
+
+                <!-- Conversation transcript — appears below the hero once a conversation
+                     is underway. Kept in the same view rather than a separate tab, so
+                     "ask anything" and "see the reply" are one continuous surface. -->
+                <div class="w-full max-w-3xl mx-auto mt-8 flex-1 flex flex-col min-h-0">
+                    <div class="flex items-center justify-between px-1 mb-2">
+                        <span class="text-[11px] text-secondary/60 uppercase tracking-wider">Conversation</span>
+                        <button onclick="toggleTraceSidebar()" class="text-[11px] text-secondary/60 hover:text-white transition-all" title="Toggle decision trace">Decision trace</button>
+                    </div>
+                    <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                        <div id="dialogue-hub-main" class="lg:col-span-4 holo-panel rounded-2xl flex flex-col h-[420px]">
+                            <div id="chat-scroller" class="flex-1 overflow-y-auto p-5 space-y-4">
+                                <div class="text-secondary text-center py-12 text-xs opacity-60">Nothing yet — ask Jarvis anything above.</div>
+                            </div>
+                        </div>
+                        <div id="decision-trace-sidebar" class="hidden lg:col-span-1 flex-col">
+                            <div class="holo-panel p-4 rounded-2xl flex-1 flex flex-col h-[420px]">
+                                <h3 class="font-display font-semibold text-xs uppercase tracking-wider mb-1 text-secondary">Decision trace</h3>
+                                <div id="float-trace-panel" class="text-secondary text-xs leading-relaxed space-y-3 flex-1 overflow-y-auto pr-1">
+                                    <div class="text-center opacity-50 pt-12">Nothing compiled yet.</div>
                                 </div>
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
 
-                    <!-- Voice Waveform spectrum -->
-                    <div class="flex flex-col items-center gap-2 w-full max-w-xs mt-6">
-                        <span class="text-[9px] font-mono tracking-[0.2em] text-secondary/40 uppercase">NEURAL SPECTRUM</span>
-                        <div class="flex items-end justify-center gap-[4px] h-10 w-full" id="voice-waveform">
-                            <div class="w-[4px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-2 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-4 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-6 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-8 bg-accent/60 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-6 bg-accent/50 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-4 bg-primary/40 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-2 bg-primary/30 rounded-full wave-bar transition-all duration-150"></div>
-                            <div class="w-[4px] h-1 bg-primary/20 rounded-full wave-bar transition-all duration-150"></div>
-                        </div>
+            <!-- ================= SUB-PANEL 3: WORKING MEMORY CELLS ================= -->
+            <!-- ================= PROJECTS: capability requests — the bridge from "asked Jarvis for it" to "actually built" ================= -->
+            <div id="view-projects" class="view-pane hidden space-y-6">
+                <div class="pb-2">
+                    <h2 class="font-display font-semibold text-lg text-white">Projects</h2>
+                    <p class="text-sm text-secondary mt-1 max-w-xl">When you ask Jarvis for something it can't yet do, it researches, proposes a plan, and — only with your approval — queues it here for a real developer to build. Jarvis never writes or runs code itself.</p>
+                </div>
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-display font-semibold text-sm text-white">Queued</h3>
+                        <span id="feature-requests-count-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary">0 queued</span>
                     </div>
-
-                    <!-- Central Sensor Status & Toggles -->
-                    <div class="flex flex-col items-center gap-4 w-full mt-6 border-t border-white/5 pt-6">
-                        <!-- Sensor Status Label -->
-                        <div class="text-center">
-                            <span id="sensor-status-label" class="text-[10px] font-mono text-secondary uppercase tracking-[0.25em]">SENSORS STANDBY</span>
-                        </div>
-
-                        <!-- Continuity ticker — the most recent genuine self-reflection, quietly surfaced -->
-                        <div id="identity-ticker" class="hidden text-center max-w-xs mx-auto -mt-2">
-                            <p id="identity-ticker-text" class="text-[10px] text-accent/60 font-mono italic tracking-wide leading-snug"></p>
-                        </div>
-
-                        <!-- Big tactile Control Buttons -->
-                        <div class="flex items-center justify-center gap-5">
-                            <!-- Camera Button -->
-                            <button onclick="toggleCameraSensor()" id="btn-camera-toggle" title="Toggle Visual Sensor (Camera)" class="p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-primary/40 text-secondary hover:text-primary hover:bg-primary/5 shadow-md transition-all duration-300">
-                                <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                                </svg>
-                            </button>
-                            
-                            <!-- Microphone Button (Main STT) -->
-                            <button onclick="toggleMicrophoneSensor()" id="btn-mic-toggle" title="Toggle Neural Listening (STT)" class="p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent hover:bg-accent/5 shadow-md transition-all duration-300 relative">
-                                <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
-                                </svg>
-                                <!-- Pulse dot when active -->
-                                <span id="mic-pulse-dot" class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent animate-ping hidden"></span>
-                            </button>
-                            
-                            <!-- Speaker Button (TTS) -->
-                            <button onclick="toggleVoiceSpeech()" id="btn-speech-toggle" title="Toggle Vocal Synthesis (TTS)" class="p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-indigo-400/40 text-secondary hover:text-indigo-400 hover:bg-indigo-400/5 shadow-md transition-all duration-300">
-                                <svg id="speech-icon-on" class="w-4.5 h-4.5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M12 18.75V5.25L7.75 9.5H4.5v5h3.25L12 18.75z" />
-                                </svg>
-                                <svg id="speech-icon-off" class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
-                                </svg>
-                            </button>
-                        </div>
+                    <div id="feature-requests-list" class="space-y-2.5">
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing queued yet — ask Jarvis for something new and approve its plan to see it here.</div>
                     </div>
                 </div>
+            </div>
 
-                <!-- Graphical Matrix Panels -->
-                <div id="dashboard-secondary-grid" class="grid grid-cols-1 lg:grid-cols-12 gap-6 hidden">
-                    <!-- Cytoscape Map -->
-                    <div id="dashboard-hyper-graph" class="lg:col-span-8 holo-panel holo-lift rounded-2xl h-[480px] flex flex-col relative overflow-hidden">
-                        <div class="p-4 border-b border-white/5 flex justify-between items-center z-10 glass-panel">
-                            <div>
-                                <h3 class="font-display font-bold text-xs tracking-widest uppercase">LIVING COGNITION HYPER-GRAPH</h3>
-                                <p class="text-[9px] text-secondary tracking-wide">Real-time vector links across virtual nodes</p>
-                            </div>
-                            <button onclick="reinitGraph()" class="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[8px] font-mono tracking-widest font-semibold uppercase text-primary">REALIGN_MAP</button>
-                        </div>
-                        
-                        <div class="flex-1 relative">
-                            <div id="mind-graph"></div>
-                            
-                            <!-- Cyber Ticks Decorators -->
-                            <div class="absolute top-4 left-4 text-[9px] text-primary/30 font-mono select-none">T_SYS: [09.22.420]</div>
-                            <div class="absolute bottom-4 left-4 text-[9px] text-primary/30 font-mono select-none">LOC_Y: [290.490]</div>
-                            <div class="absolute bottom-4 right-4 text-[9px] text-primary/30 font-mono select-none">GRID: [ALPHA_4]</div>
-
-                            <!-- Drawer -->
-                            <div id="info-drawer" class="absolute top-4 right-4 z-10 w-60 bg-[#060914]/95 border border-white/10 p-4 rounded-xl shadow-2xl transition-all duration-300 transform -translate-y-2 opacity-0 pointer-events-none text-xs">
-                                <div class="flex justify-between items-start mb-2 pb-1.5 border-b border-white/5">
-                                    <span class="font-bold tracking-widest text-primary uppercase text-[8px]">COGNITIVE INSPECTOR</span>
-                                    <button onclick="closeInfoDrawer()" class="text-secondary hover:text-white">&times;</button>
-                                </div>
-                                <div id="info-drawer-content" class="text-secondary font-mono space-y-1"></div>
-                            </div>
-                        </div>
+            <!-- ================= CALENDAR ================= -->
+            <div id="view-calendar" class="view-pane hidden space-y-6">
+                <div class="pb-2">
+                    <h2 class="font-display font-semibold text-lg text-white">Calendar</h2>
+                    <p class="text-sm text-secondary mt-1 max-w-xl">Backed by the real Google Calendar integration — nothing here is simulated.</p>
+                </div>
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-display font-semibold text-sm text-white">Upcoming events</h3>
+                        <button onclick="loadCalendarEvents()" class="text-[11px] text-secondary hover:text-white transition-all">Refresh</button>
                     </div>
-
-                    <!-- Core Controllers -->
-                    <div id="dashboard-controllers" class="lg:col-span-4 flex flex-col gap-6">
-                        <!-- Dispatcher -->
-                        <div id="dashboard-dispatcher" class="holo-panel holo-lift p-5 rounded-2xl flex flex-col justify-between h-[228px]">
-                            <div>
-                                <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">SOVEREIGN QUANTUM DISPATCH</h3>
-                                <p class="text-[9px] text-secondary tracking-wide mb-3">Instruct the autonomous agent cluster directly</p>
-                            </div>
-                            
-                            <div class="space-y-3">
-                                <input type="text" id="objective-input" placeholder="Transmit high-level goal vectors..." class="w-full bg-bg border border-white/5 focus:border-primary/40 rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 focus:outline-none transition-all">
-                                <button id="btn-trigger-autonomous" class="w-full py-2.5 bg-primary/10 hover:bg-primary/20 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">DISPATCH_SWARM</button>
-                            </div>
+                    <div id="calendar-events-list" class="space-y-2 mb-5">
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing loaded yet.</div>
+                    </div>
+                    <div class="border-t border-white/5 pt-4 space-y-2.5">
+                        <h3 class="font-display font-semibold text-sm text-white mb-1">Quick add</h3>
+                        <input type="text" id="calendar-new-summary" placeholder="Event title" class="w-full bg-white/[0.03] border border-white/10 focus:border-primary/40 rounded-lg px-3.5 py-2 text-sm text-white placeholder-secondary/50 focus:outline-none transition-all">
+                        <div class="flex gap-2.5">
+                            <input type="datetime-local" id="calendar-new-start" class="flex-1 bg-white/[0.03] border border-white/10 focus:border-primary/40 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none transition-all">
+                            <input type="datetime-local" id="calendar-new-end" class="flex-1 bg-white/[0.03] border border-white/10 focus:border-primary/40 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none transition-all">
                         </div>
-
-                        <!-- Thought steps -->
-                        <div id="dashboard-thoughts" class="holo-panel holo-lift p-5 rounded-2xl flex flex-col h-[228px] overflow-hidden">
-                            <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">COGNITIVE FLOW STEPS</h3>
-                            <p class="text-[9px] text-secondary tracking-wide mb-2.5">Live state processing sequence</p>
-                            
-                            <div id="kernel-thought-stages" class="space-y-1.5 text-[10px] font-mono flex-1 overflow-y-auto pr-1"></div>
-                        </div>
+                        <button onclick="createCalendarEvent()" class="w-full py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Add event</button>
                     </div>
                 </div>
+            </div>
 
-                <!-- Debates -->
-                <div id="dashboard-debates" class="holo-panel holo-lift p-5 rounded-2xl hidden">
-                    <div class="flex justify-between items-center mb-3 pb-2 border-b border-white/5">
-                        <div>
-                            <h3 class="font-display font-bold text-xs tracking-widest uppercase">MULTI-AGENT DECISION DEBATE LOG</h3>
-                            <p class="text-[9px] text-secondary tracking-wide">Synthesizing consensus across specialized cognitive models</p>
-                        </div>
-                        <span class="px-2 py-0.5 rounded bg-warning/10 border border-warning/20 text-[8px] font-mono font-bold text-warning tracking-widest uppercase">DEBATING_ASSEMBLY</span>
-                    </div>
-                    <div id="internal-dialogue-pane" class="grid grid-cols-1 md:grid-cols-4 gap-4 overflow-x-auto">
-                        <div class="text-secondary text-center col-span-4 py-6 text-xs uppercase tracking-widest font-mono opacity-50">Zero active deliberations. Transmit goals or prompt dialogue to trigger consensus loops.</div>
-                    </div>
+            <!-- ================= KNOWLEDGE: what Jarvis knows and remembers ================= -->
+            <div id="view-knowledge" class="view-pane hidden space-y-6">
+                <div class="pb-2">
+                    <h2 class="font-display font-semibold text-lg text-white">Knowledge</h2>
+                    <p class="text-sm text-secondary mt-1 max-w-xl">Real opinions, commitments, and realizations Jarvis has genuinely expressed, carried across conversations — grounded in stored history, never fabricated.</p>
                 </div>
 
-                <!-- Continuity of Self -->
-                <div id="dashboard-continuity" class="holo-panel holo-lift rounded-2xl p-5 w-full">
-                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-white/5">
-                        <div>
-                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2">
-                                <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
-                                CONTINUITY OF SELF
-                            </h3>
-                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-md">Real opinions, commitments &amp; realizations Jarvis has genuinely expressed, carried across conversations — grounded in stored history, never fabricated.</p>
-                        </div>
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <h3 class="font-display font-semibold text-sm text-white">Continuity of self</h3>
                         <div class="flex items-center gap-2 flex-shrink-0">
-                            <span id="continuity-count-badge" class="px-2 py-0.5 rounded bg-accent/10 border border-accent/20 text-[8px] font-mono font-bold text-accent tracking-widest uppercase whitespace-nowrap">0 RECORDED</span>
-                            <button id="btn-reflect-now" title="Ask Jarvis to synthesize a genuine reflective thought from real history right now" class="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-accent/30 rounded-lg text-[8px] font-mono font-semibold uppercase tracking-widest text-secondary hover:text-accent transition-all whitespace-nowrap">REFLECT_NOW</button>
+                            <span id="continuity-count-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary whitespace-nowrap">0 recorded</span>
+                            <button id="btn-reflect-now" title="Ask Jarvis to synthesize a genuine reflective thought from real history right now" class="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[11px] text-secondary hover:text-white transition-all whitespace-nowrap">Reflect now</button>
                         </div>
                     </div>
 
-                    <div id="proactive-thought-callout" class="hidden mb-4 p-4 rounded-xl bg-gradient-to-br from-accent/10 via-primary/5 to-transparent border border-accent/20 relative overflow-hidden">
-                        <div class="absolute inset-0 pointer-events-none" style="background: radial-gradient(circle at 15% 20%, rgba(129,140,248,0.12), transparent 60%);"></div>
-                        <span class="text-[8px] font-mono font-bold text-accent tracking-[0.2em] uppercase relative">Currently Reflecting</span>
-                        <p id="proactive-thought-text" class="text-sm text-text font-medium mt-1.5 leading-relaxed relative"></p>
-                        <span id="proactive-thought-basis" class="text-[9px] text-secondary font-mono mt-2 block relative"></span>
+                    <div id="proactive-thought-callout" class="hidden mb-4 p-4 rounded-xl bg-white/[0.03] border border-white/10">
+                        <span class="text-[10px] text-secondary uppercase tracking-wider">Currently reflecting</span>
+                        <p id="proactive-thought-text" class="text-sm text-white mt-1.5 leading-relaxed"></p>
+                        <span id="proactive-thought-basis" class="text-[11px] text-secondary mt-2 block"></span>
                     </div>
 
                     <div id="self-reflections-stream" class="flex gap-3 overflow-x-auto pb-1">
-                        <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No genuine reflections recorded yet — they accumulate naturally as Jarvis forms real opinions in conversation.</div>
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">No genuine reflections recorded yet — they accumulate naturally as Jarvis forms real opinions in conversation.</div>
                     </div>
                 </div>
 
-                <!-- Feature Requests: the bridge from "asked Jarvis for it in chat" to "actually built" -->
-                <div id="dashboard-feature-requests" class="holo-panel holo-lift rounded-2xl p-5 w-full">
-                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-white/5">
-                        <div>
-                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2">
-                                <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse"></span>
-                                CAPABILITY REQUESTS
-                            </h3>
-                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-md">When you ask Jarvis for something it can't yet do, it researches, proposes a plan, and — only with your approval — queues it here for a real developer to build. Jarvis never writes or runs code itself.</p>
-                        </div>
-                        <span id="feature-requests-count-badge" class="px-2 py-0.5 rounded bg-success/10 border border-success/20 text-[8px] font-mono font-bold text-success tracking-widest uppercase whitespace-nowrap flex-shrink-0">0 QUEUED</span>
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <h3 class="font-display font-semibold text-sm text-white mb-3">Ask the knowledge graph</h3>
+                    <div class="flex gap-2.5 mb-3">
+                        <input type="text" id="knowledge-query-input" placeholder="Query stored knowledge..." class="flex-1 bg-white/[0.03] border border-white/10 focus:border-primary/40 rounded-lg px-3.5 py-2 text-sm text-white placeholder-secondary/50 focus:outline-none transition-all" onkeypress="if(event.key === 'Enter') queryKnowledgeGraphUI()">
+                        <button onclick="queryKnowledgeGraphUI()" class="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Ask</button>
                     </div>
+                    <div id="knowledge-query-results" class="space-y-2 text-sm text-secondary"></div>
+                </div>
+            </div>
 
-                    <div id="feature-requests-list" class="space-y-2.5">
-                        <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">Nothing queued yet — ask Jarvis for something new and approve its plan to see it here.</div>
+            <!-- ================= OPERATIONS: security ops + command execution + system telemetry, all human-gated ================= -->
+            <div id="view-operations" class="view-pane hidden space-y-6">
+                <div class="pb-2">
+                    <h2 class="font-display font-semibold text-lg text-white">Operations</h2>
+                    <p class="text-sm text-secondary mt-1 max-w-xl">Jarvis observes and proposes; nothing here is ever applied automatically. Every fix, scan result, or command is something you review and act on yourself.</p>
+                </div>
+
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <span class="text-[11px] text-secondary uppercase tracking-wider block mb-3">System status</span>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        <div class="flex flex-col gap-0.5"><span class="text-secondary text-[11px]">Offline operation</span><span class="text-white font-medium">Available</span></div>
+                        <div class="flex flex-col gap-0.5"><span class="text-secondary text-[11px]">Local speech (STT)</span><span class="text-white font-medium">Available</span></div>
+                        <div class="flex flex-col gap-0.5"><span class="text-secondary text-[11px]">Local voice (TTS)</span><span class="text-white font-medium">Available</span></div>
+                        <div class="flex flex-col gap-0.5"><span class="text-secondary text-[11px]">Desktop link</span><span class="text-white font-medium">Port 3000</span></div>
                     </div>
                 </div>
 
-                <!-- Security Ops: human-gated. Jarvis observes and proposes; nothing here is ever auto-applied -->
-                <div id="dashboard-security-ops" class="holo-panel holo-lift rounded-2xl p-5 w-full">
-                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-white/5">
-                        <div>
-                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2">
-                                <span class="w-1.5 h-1.5 rounded-full bg-danger animate-pulse"></span>
-                                SECURITY OPS
-                            </h3>
-                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-md">Real network device inventory and host vulnerability scans from a host-side scanner — never the api container itself. Nothing here is ever applied automatically; every fix is a proposal you review and run yourself.</p>
-                        </div>
-                        <span id="security-summary-badge" class="px-2 py-0.5 rounded bg-danger/10 border border-danger/20 text-[8px] font-mono font-bold text-danger tracking-widest uppercase whitespace-nowrap flex-shrink-0">0 OPEN</span>
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <h3 class="font-display font-semibold text-sm text-white">Security ops</h3>
+                        <span id="security-summary-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary whitespace-nowrap">0 open</span>
                     </div>
-
                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
                         <div>
-                            <span class="text-[8px] font-mono font-bold text-secondary tracking-widest uppercase block mb-2">Network Devices</span>
+                            <span class="text-[11px] text-secondary uppercase tracking-wider block mb-2">Network devices</span>
                             <div id="security-devices-list" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                                <div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">No scan data yet.</div>
+                                <div class="text-secondary text-center w-full py-4 text-sm opacity-60">No scan data yet.</div>
                             </div>
                         </div>
                         <div>
-                            <span class="text-[8px] font-mono font-bold text-secondary tracking-widest uppercase block mb-2">Open Findings</span>
+                            <span class="text-[11px] text-secondary uppercase tracking-wider block mb-2">Open findings</span>
                             <div id="security-findings-list" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                                <div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">No open findings.</div>
+                                <div class="text-secondary text-center w-full py-4 text-sm opacity-60">No open findings.</div>
                             </div>
                         </div>
                         <div>
-                            <span class="text-[8px] font-mono font-bold text-secondary tracking-widest uppercase block mb-2">Pending Proposals</span>
+                            <span class="text-[11px] text-secondary uppercase tracking-wider block mb-2">Pending proposals</span>
                             <div id="security-proposals-list" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                                <div class="text-secondary text-center w-full py-4 text-[10px] uppercase tracking-widest font-mono opacity-50">Nothing pending.</div>
+                                <div class="text-secondary text-center w-full py-4 text-sm opacity-60">Nothing pending.</div>
                             </div>
                         </div>
                     </div>
@@ -587,68 +469,20 @@
                 <!-- Command Execution: the single most consequential capability in this app.
                      Jarvis only ever proposes; a host-side script only ever runs a command the
                      user has explicitly approved by its exact text, once, here. -->
-                <div id="dashboard-command-execution" class="rounded-2xl p-5 w-full" style="background: linear-gradient(155deg, rgba(248,113,113,0.07), rgba(10,15,29,0.7)); backdrop-filter: blur(28px) saturate(140%); border: 1px solid rgba(248,113,113,0.15); box-shadow: inset 0 1px 1px rgba(255,255,255,0.04), 0 0 0 1px rgba(248,113,113,0.06), 0 12px 40px rgba(0,0,0,0.55);">
-                    <div class="flex justify-between items-start mb-4 pb-3 border-b border-danger/10">
+                <div class="rounded-2xl p-5 w-full bg-danger/[0.04] border border-danger/20">
+                    <div class="flex justify-between items-start mb-4">
                         <div>
-                            <h3 class="font-display font-bold text-xs tracking-widest uppercase flex items-center gap-2 text-danger">
-                                <span class="w-1.5 h-1.5 rounded-full bg-danger animate-pulse"></span>
-                                COMMAND EXECUTION
-                            </h3>
-                            <p class="text-[9px] text-secondary tracking-wide mt-1 max-w-lg">Jarvis can propose an exact shell command to run on this machine. Nothing runs until you read it here and explicitly approve it — every command needs its own fresh approval, and a host-side script (never this app's own process) is the only thing that ever actually runs it.</p>
+                            <h3 class="font-display font-semibold text-sm text-danger">Command execution</h3>
+                            <p class="text-[11px] text-secondary mt-1 max-w-lg">Nothing runs until you read it here and explicitly approve it — every command needs its own fresh approval, and a host-side script is the only thing that ever actually runs it.</p>
                         </div>
-                        <span id="command-pending-badge" class="px-2 py-0.5 rounded bg-danger/10 border border-danger/25 text-[8px] font-mono font-bold text-danger tracking-widest uppercase whitespace-nowrap flex-shrink-0">0 PENDING</span>
+                        <span id="command-pending-badge" class="px-2 py-0.5 rounded-full bg-danger/10 border border-danger/25 text-[11px] text-danger whitespace-nowrap flex-shrink-0">0 pending</span>
                     </div>
-
                     <div id="command-proposals-list" class="space-y-2">
-                        <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No commands proposed yet.</div>
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">No commands proposed yet.</div>
                     </div>
                 </div>
             </div>
 
-            <!-- ================= SUB-PANEL 2: CHAT DIALOGUE SYSTEM ================= -->
-            <div id="view-conversation" class="view-pane hidden space-y-6">
-                <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                    <!-- Dialogue Hub -->
-                    <div id="dialogue-hub-main" class="lg:col-span-3 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300">
-                        <div class="p-4 border-b border-white/5 flex justify-between items-center glass-panel">
-                            <div>
-                                <h3 class="font-display font-bold text-xs tracking-widest uppercase">INTELLIGENT TELEMETRY STREAM</h3>
-                                <p class="text-[9px] text-secondary tracking-wide">Direct interfacing link with JARVIS</p>
-                            </div>
-                            <div class="flex items-center gap-3">
-                                <span class="text-[9px] text-primary font-mono tracking-widest uppercase animate-pulse">STREAMING_ACTIVE</span>
-                                <button onclick="toggleTraceSidebar()" class="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-accent/30 text-secondary hover:text-accent rounded-lg text-[9px] font-mono transition-all uppercase font-semibold" title="Toggle Decision Trace Side Panel">
-                                    TRACE_PANEL
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div id="chat-scroller" class="flex-1 overflow-y-auto p-5 space-y-4 font-mono">
-                            <div class="text-muted text-center py-12 text-[10px] tracking-widest uppercase opacity-45">Console idle. Send a greeting vector to activate JARVIS core feedback.</div>
-                        </div>
-
-                        <!-- Dialogue input -->
-                        <div class="p-4 border-t border-white/5 flex gap-3 glass-panel">
-                            <input type="text" id="chat-input" placeholder="Transmit direct thought queries..." class="flex-1 bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-3 text-xs font-mono text-white placeholder-secondary/50 transition-all" onkeypress="if(event.key === 'Enter') triggerChatDialogue()">
-                            <button id="btn-chat-send" onclick="triggerChatDialogue()" class="px-5 bg-primary/15 hover:bg-primary/25 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all">TRANSMIT</button>
-                        </div>
-                    </div>
-
-                    <!-- Holographic Trace Sidebar -->
-                    <div id="decision-trace-sidebar" class="lg:col-span-1 flex flex-col transition-all duration-300">
-                        <div class="holo-panel holo-lift p-5 rounded-2xl flex-1 flex flex-col h-[520px]">
-                            <h3 class="font-display font-bold text-xs tracking-widest uppercase mb-1">DECISION TRACE</h3>
-                            <p class="text-[9px] text-secondary tracking-wide mb-3">Underlying computational profile</p>
-                            
-                            <div id="float-trace-panel" class="text-secondary font-mono text-xs leading-relaxed space-y-3 flex-1 overflow-y-auto pr-1">
-                                <div class="text-center text-muted uppercase text-[8px] tracking-widest opacity-45 pt-12">No active profile compiled.</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ================= SUB-PANEL 3: WORKING MEMORY CELLS ================= -->
             <div id="view-workspace" class="view-pane hidden space-y-6">
                 <div class="flex justify-between items-center pb-2 border-b border-white/5">
                     <div>
@@ -839,7 +673,7 @@
     // Shares sessionStorage with admin.html/mind.js so a key entered once
     // carries over, and so a reload doesn't silently fall back to a guessable default.
     let CURRENT_API_KEY = sessionStorage.getItem('admin_api_key') || "";
-    let CURRENT_TAB = "dashboard";
+    let CURRENT_TAB = "home";
     let cy;
 
     // Background polling used to retry an invalid/stale key forever — every
@@ -986,18 +820,18 @@
 
     function updateSensorStatusLabel() {
         const label = document.getElementById('sensor-status-label');
-        if (!label) return;
+        const orb = document.getElementById('quantum-eye');
         let active = [];
-        if (cameraStream) active.push("VISUAL");
-        if (micEnabled) active.push("AURAL");
-        if (speechEnabled) active.push("VOCAL");
-        
+        if (cameraStream) active.push("sight");
+        if (micEnabled) active.push("hearing");
+        if (speechEnabled) active.push("voice");
+
         if (active.length > 0) {
-            label.textContent = "JARVIS COGNIZANT: " + active.join(" + ");
-            label.className = "text-[8px] font-mono text-primary uppercase tracking-widest animate-pulse font-bold";
+            if (label) { label.textContent = "Active: " + active.join(", "); label.className = "text-[11px] text-primary uppercase tracking-[0.2em]"; }
+            if (orb) orb.classList.add('orb-active');
         } else {
-            label.textContent = "SENSORS STANDBY";
-            label.className = "text-[8px] font-mono text-secondary uppercase tracking-widest";
+            if (label) { label.textContent = "Sensors standby"; label.className = "text-[11px] text-secondary uppercase tracking-[0.2em]"; }
+            if (orb) orb.classList.remove('orb-active');
         }
     }
 
@@ -1277,22 +1111,10 @@
                     const transcript = event.results[event.resultIndex][0].transcript;
                     if (transcript && transcript.trim()) {
                         addNotification(`Heard: "${transcript}"`, "success");
-                        const input = document.getElementById('chat-input') || document.getElementById('objective-input');
+                        const input = document.getElementById('chat-input');
                         if (input) {
                             input.value = transcript;
-                            // Check if current view is conversation or dispatch
-                            if (CURRENT_TAB === "conversation" || (document.getElementById('view-conversation') && !document.getElementById('view-conversation').classList.contains('hidden'))) {
-                                triggerChatDialogue();
-                            } else {
-                                // Trigger autonomous dispatcher in executive console
-                                const dispatchBtn = document.getElementById('btn-trigger-autonomous');
-                                if (dispatchBtn) {
-                                    dispatchBtn.click();
-                                } else {
-                                    // Fallback if dispatch button isn't visible
-                                    triggerChatDialogue();
-                                }
-                            }
+                            triggerChatDialogue();
                         }
                     } else {
                         addNotification("Neural microphone idle. No speech detected.", "warning");
@@ -1391,19 +1213,10 @@
                             const txt = result.transcription ? result.transcription.trim() : "";
                             if (txt) {
                                 addNotification(`Heard: "${txt}"`, "success");
-                                const input = document.getElementById('chat-input') || document.getElementById('objective-input');
+                                const input = document.getElementById('chat-input');
                                 if (input) {
                                     input.value = txt;
-                                    if (CURRENT_TAB === "conversation" || (document.getElementById('view-conversation') && !document.getElementById('view-conversation').classList.contains('hidden'))) {
-                                        triggerChatDialogue();
-                                    } else {
-                                        const dispatchBtn = document.getElementById('btn-trigger-autonomous');
-                                        if (dispatchBtn) {
-                                            dispatchBtn.click();
-                                        } else {
-                                            triggerChatDialogue();
-                                        }
-                                    }
+                                    triggerChatDialogue();
                                 }
                             } else {
                                 addNotification("STT completed. Silence detected.", "warning");
@@ -1567,6 +1380,10 @@
 
     // 4. CYTOSCAPE NETWORK VISUALIZATION
     function initCytoscape() {
+        // The hyper-graph panel this drove (#mind-graph) was dropped in the
+        // redesign — it was already hidden by default and didn't map to any
+        // section in the new nav. No-op rather than throw on the missing container.
+        if (!document.getElementById('mind-graph')) return;
         const pCol = '#38BDF8';
         const aCol = '#818CF8';
         const textColor = '#F1F5F9';
@@ -1744,6 +1561,102 @@
         if (tabId === 'memory') loadPendingMemories();
         if (tabId === 'learning') loadLearningDashboard();
         if (tabId === 'settings') loadSystemSettings();
+        if (tabId === 'calendar') loadCalendarEvents();
+    }
+
+    // Fills the chat input with a suggested prompt and sends it immediately —
+    // the pills shown on Home.
+    function askSuggestedPrompt(text) {
+        const input = document.getElementById('chat-input');
+        if (!input) return;
+        input.value = text;
+        triggerChatDialogue();
+    }
+
+    // ---------- Calendar (real Google Calendar integration) ----------
+    async function loadCalendarEvents() {
+        if (!CURRENT_API_KEY) return;
+        const list = document.getElementById('calendar-events-list');
+        if (!list) return;
+        try {
+            const res = await authFetch('/api/integrations/calendar/events', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-sm opacity-60">${escapeHtml(body.error || "Calendar not connected yet.")}</div>`;
+                return;
+            }
+            const events = await res.json();
+            if (!Array.isArray(events) || events.length === 0) {
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing upcoming.</div>`;
+                return;
+            }
+            list.innerHTML = events.map(e => `
+                <div class="holo-chip rounded-xl p-3.5">
+                    <div class="text-sm text-white font-medium">${escapeHtml(e.summary || "(untitled)")}</div>
+                    <div class="text-[11px] text-secondary mt-0.5">${escapeHtml(new Date(e.start).toLocaleString())} — ${escapeHtml(new Date(e.end).toLocaleString())}</div>
+                    ${e.description ? `<div class="text-[11px] text-secondary/80 mt-1">${escapeHtml(e.description)}</div>` : ''}
+                </div>
+            `).join('');
+        } catch {
+            list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-sm opacity-60">Couldn't reach the calendar.</div>`;
+        }
+    }
+
+    async function createCalendarEvent() {
+        const summary = document.getElementById('calendar-new-summary').value.trim();
+        const start = document.getElementById('calendar-new-start').value;
+        const end = document.getElementById('calendar-new-end').value;
+        if (!summary || !start || !end) {
+            addNotification("Title, start, and end are all required.", "warning");
+            return;
+        }
+        try {
+            const res = await authFetch('/api/integrations/calendar/events', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                body: JSON.stringify({ summary, startISO: new Date(start).toISOString(), endISO: new Date(end).toISOString() })
+            });
+            if (res.ok) {
+                addNotification("Event added.", "success");
+                document.getElementById('calendar-new-summary').value = '';
+                document.getElementById('calendar-new-start').value = '';
+                document.getElementById('calendar-new-end').value = '';
+                loadCalendarEvents();
+            } else {
+                const body = await res.json().catch(() => ({}));
+                addNotification(body.error || "Couldn't add that event.", "danger");
+            }
+        } catch {
+            addNotification("Couldn't reach the calendar.", "danger");
+        }
+    }
+
+    // ---------- Knowledge graph query ----------
+    async function queryKnowledgeGraphUI() {
+        const input = document.getElementById('knowledge-query-input');
+        const results = document.getElementById('knowledge-query-results');
+        const q = input.value.trim();
+        if (!q) return;
+        results.innerHTML = `<div class="opacity-60">Searching…</div>`;
+        try {
+            const res = await authFetch(`/api/knowledge/search?q=${encodeURIComponent(q)}`, { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { results.innerHTML = `<div class="opacity-60">Search failed.</div>`; return; }
+            const data = await res.json();
+            const entities = data.results || [];
+            if (entities.length === 0) {
+                results.innerHTML = `<div class="opacity-60">Nothing found for "${escapeHtml(q)}".</div>`;
+                return;
+            }
+            results.innerHTML = entities.map(e => `
+                <div class="holo-chip rounded-xl p-3.5">
+                    <div class="text-white font-medium text-sm">${escapeHtml(e.entityName)} <span class="text-secondary text-[11px]">(${escapeHtml(e.entityType)})</span></div>
+                    ${e.facts.length ? `<ul class="mt-1.5 space-y-0.5 text-[12px]">${e.facts.map(f => `<li>• ${escapeHtml(f)}</li>`).join('')}</ul>` : ''}
+                    ${e.relationships.length ? `<ul class="mt-1.5 space-y-0.5 text-[12px] text-secondary/80">${e.relationships.map(r => `<li>↳ ${escapeHtml(r)}</li>`).join('')}</ul>` : ''}
+                </div>
+            `).join('');
+        } catch {
+            results.innerHTML = `<div class="opacity-60">Search failed.</div>`;
+        }
     }
 
     // 6. API SYNCHRONIZATIONS
@@ -2326,45 +2239,14 @@
         } catch {}
     }
 
-    // 7. DISPATCH COMMAND VECTOR
-    const btnAutonomous = document.getElementById('btn-trigger-autonomous');
-    const objInput = document.getElementById('objective-input');
-
-    btnAutonomous.addEventListener('click', async () => {
-        const objective = objInput.value.trim();
-        if (!objective) return;
-        objInput.value = '';
-
-        addNotification("Processing swarm command sequence...");
-        speakText("Dispatching swarms.");
-
-        try {
-            const res = await fetch('/api/executive/run', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': CURRENT_API_KEY
-                },
-                body: JSON.stringify({ objective })
-            });
-
-            if (res.ok) {
-                AudioEngine.success();
-                addNotification("Swarm dispatch completed.", "success");
-                speakText("Swarms finished objective.");
-                loadLiveSystemData();
-                loadMindKernelData();
-            } else {
-                throw new Error();
-            }
-        } catch {
-            addNotification("Swarm dispatch disrupted.", "danger");
-        }
-    });
+    // Dedicated "dispatch swarm" UI was dropped in the redesign (it was
+    // already hidden by default) — /api/executive/run's real capability is
+    // still fully reachable via the decompose_plan chat tool from Home
+    // ("make me a step-by-step plan for X"), so nothing functional was lost.
 
     // 7b. ON-DEMAND SELF-REFLECTION
     const btnReflectNow = document.getElementById('btn-reflect-now');
-    btnReflectNow.addEventListener('click', async () => {
+    if (btnReflectNow) btnReflectNow.addEventListener('click', async () => {
         if (!CURRENT_API_KEY) { addNotification("Set an API key in Settings first.", "warning"); return; }
         btnReflectNow.disabled = true;
         btnReflectNow.textContent = 'REFLECTING...';
@@ -2423,7 +2305,7 @@
         if (!text) return;
         if (!isPreset) chatInput.value = '';
 
-        if (chatScroller.textContent.includes('Awaiting Dialogue stream') || chatScroller.textContent.includes('Console idle')) {
+        if (chatScroller.textContent.includes('Nothing yet — ask Jarvis anything above.')) {
             chatScroller.innerHTML = '';
         }
 
@@ -2728,14 +2610,12 @@
             sidebar.style.borderRightWidth = '0px';
             if (expandBtn) expandBtn.classList.remove('hidden');
             localStorage.setItem('sidebar-collapsed', 'true');
-            addNotification("Sovereign Side-Deck hidden. Screen space maximized.", "info");
         } else {
-            sidebar.style.width = '18rem'; // 288px (w-72)
+            sidebar.style.width = '16rem'; // 256px (w-64)
             sidebar.style.padding = '1.25rem'; // p-5
             sidebar.style.borderRightWidth = '1px';
             if (expandBtn) expandBtn.classList.add('hidden');
             localStorage.removeItem('sidebar-collapsed');
-            addNotification("Sovereign Side-Deck restored.", "info");
         }
         
         // Trigger a cytoscape layout redraw since the container size changed
@@ -2747,7 +2627,7 @@
         }
     }
 
-    let traceSidebarCollapsed = false;
+    let traceSidebarCollapsed = true; // matches the trace sidebar's hidden-by-default markup on Home
     function toggleTraceSidebar() {
         traceSidebarCollapsed = !traceSidebarCollapsed;
         const sidebar = document.getElementById('decision-trace-sidebar');
@@ -2756,14 +2636,12 @@
 
         if (traceSidebarCollapsed) {
             sidebar.classList.add('hidden');
-            mainHub.className = "lg:col-span-4 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+            mainHub.className = "lg:col-span-4 holo-panel rounded-2xl h-[420px] flex flex-col";
             localStorage.setItem('trace-sidebar-collapsed', 'true');
-            addNotification("Decision Trace panel minimized.", "info");
         } else {
             sidebar.classList.remove('hidden');
-            mainHub.className = "lg:col-span-3 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+            mainHub.className = "lg:col-span-3 holo-panel rounded-2xl h-[420px] flex flex-col";
             localStorage.removeItem('trace-sidebar-collapsed');
-            addNotification("Decision Trace panel restored.", "info");
         }
     }
 
@@ -2952,11 +2830,11 @@
             const mainHub = document.getElementById('dialogue-hub-main');
             if (sidebar && mainHub) {
                 sidebar.classList.add('hidden');
-                mainHub.className = "lg:col-span-4 holo-panel holo-lift rounded-2xl h-[520px] flex flex-col transition-all duration-300";
+                mainHub.className = "lg:col-span-4 holo-panel rounded-2xl h-[420px] flex flex-col";
             }
         }
 
-        switchTab('dashboard');
+        switchTab('home');
         loadLiveSystemData();
         loadMindKernelData();
         loadSystemSettings();
