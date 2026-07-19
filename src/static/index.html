@@ -850,6 +850,20 @@
     let liveVideoFrameInterval = null;
     let liveMicStream = null;
 
+    // Wake-word gating — without this, every word spoken near the mic gets
+    // sent to Gemini and treated as addressed to Jarvis. A separate,
+    // continuous local speech-recognition instance (not the raw PCM stream
+    // above, which keeps flowing to Gemini regardless) watches only for the
+    // trigger phrase; actual audio only forwards into the live session once
+    // "armed", and stays armed for a grace window so a real back-and-forth
+    // doesn't need the wake word repeated every sentence.
+    const WAKE_WORD = 'jarvis';
+    const WAKE_WORD_DISARM_MS = 12000;
+    let wakeWordRecognition = null;
+    let wakeWordStoppedIntentionally = false;
+    let liveArmed = false;
+    let liveDisarmTimer = null;
+
     function updateSensorStatusLabel() {
         const label = document.getElementById('sensor-status-label');
         const orb = document.getElementById('quantum-eye');
@@ -1077,7 +1091,7 @@
             source.connect(liveScriptProcessor);
             liveScriptProcessor.connect(liveInputAudioCtx.destination);
             liveScriptProcessor.onaudioprocess = (event) => {
-                if (!liveVoiceActive || liveVoiceMuted || liveVoiceWs.readyState !== WebSocket.OPEN) return;
+                if (!liveVoiceActive || liveVoiceMuted || !liveArmed || liveVoiceWs.readyState !== WebSocket.OPEN) return;
                 const inputData = event.inputBuffer.getChannelData(0);
                 const downsampled = downsampleTo16k(inputData, liveInputAudioCtx.sampleRate);
                 liveVoiceWs.send(floatTo16BitPCM(downsampled));
@@ -1090,11 +1104,9 @@
             }, LIVE_VIDEO_FRAME_INTERVAL_MS);
 
             micEnabled = true;
-            const pulseDot = document.getElementById('mic-pulse-dot');
-            const btn = document.getElementById('btn-mic-toggle');
-            if (pulseDot) pulseDot.classList.remove('hidden');
-            if (btn) btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
-            addNotification("Live voice link established. Always listening.", "success");
+            startWakeWordListener();
+            updateMicButtonVisual();
+            addNotification(`Live voice link established. Say "${WAKE_WORD}" to talk.`, "success");
             updateSensorStatusLabel();
         };
 
@@ -1115,6 +1127,9 @@
                         loadLiveSystemData();
                         setTimeout(loadIdentityStream, 2500);
                     }
+                    resetLiveDisarmTimer(); // active exchange — keep the window open
+                } else if (msg.type === 'turnComplete') {
+                    resetLiveDisarmTimer();
                 } else if (msg.type === 'interrupted') {
                     liveNextPlayTime = 0;
                 } else if (msg.type === 'error') {
@@ -1147,6 +1162,8 @@
 
     function stopLiveVoiceSession() {
         liveVoiceActive = false;
+        stopWakeWordListener();
+        disarmLiveVoice();
         if (liveVideoFrameInterval) { clearInterval(liveVideoFrameInterval); liveVideoFrameInterval = null; }
         if (liveVoiceWs) {
             if (liveVoiceWs.readyState === WebSocket.OPEN) {
@@ -1166,6 +1183,138 @@
         if (pulseDot) pulseDot.classList.add('hidden');
         if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
         updateSensorStatusLabel();
+    }
+
+    // ---------- Wake-word gating ----------
+
+    function updateMicButtonVisual() {
+        const pulseDot = document.getElementById('mic-pulse-dot');
+        const btn = document.getElementById('btn-mic-toggle');
+        if (!btn) return;
+        if (liveVoiceMuted) {
+            if (pulseDot) pulseDot.classList.add('hidden');
+            btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
+        } else if (liveArmed) {
+            if (pulseDot) pulseDot.classList.remove('hidden');
+            btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
+        } else {
+            // Standing by for the wake word — visibly different from "actively
+            // conversing" so it's clear Jarvis isn't currently engaged, without
+            // looking fully off/muted either.
+            if (pulseDot) pulseDot.classList.add('hidden');
+            btn.className = "p-2.5 rounded-full bg-accent/5 border border-accent/20 text-accent/60 hover:text-accent transition-all duration-300 relative";
+        }
+    }
+
+    function resetLiveDisarmTimer() {
+        if (liveDisarmTimer) clearTimeout(liveDisarmTimer);
+        liveDisarmTimer = setTimeout(disarmLiveVoice, WAKE_WORD_DISARM_MS);
+    }
+
+    function armLiveVoice() {
+        if (!liveArmed) {
+            addNotification("Listening.", "success");
+        }
+        liveArmed = true;
+        updateMicButtonVisual();
+        resetLiveDisarmTimer();
+    }
+
+    function disarmLiveVoice() {
+        if (liveDisarmTimer) { clearTimeout(liveDisarmTimer); liveDisarmTimer = null; }
+        if (liveArmed) {
+            liveArmed = false;
+            updateMicButtonVisual();
+        }
+    }
+
+    // Used only when wake-word detection itself isn't available (no
+    // SpeechRecognition support, or it silently fails to produce events) —
+    // arms without a disarm timer, since there'd be no way to re-arm
+    // afterward. Falls back to today's "responds to everything" behavior
+    // rather than leaving live voice permanently, silently unreachable.
+    function armLiveVoicePermanently() {
+        if (liveDisarmTimer) { clearTimeout(liveDisarmTimer); liveDisarmTimer = null; }
+        liveArmed = true;
+        updateMicButtonVisual();
+    }
+
+    // A separate, continuous local speech-recognition instance dedicated to
+    // spotting the wake word — independent of the raw PCM stream already
+    // flowing to Gemini (that keeps recording regardless; this only decides
+    // when it's actually forwarded). Mirrors the same browser-API-reliability
+    // pattern already used by the legacy STT pipeline below: on some Linux/
+    // Electron Chromium builds, SpeechRecognition silently produces zero
+    // events rather than an error, so a startup timeout detects that and
+    // fails open (arms permanently) rather than leaving live voice
+    // unreachable with no way to ever trigger it.
+    function startWakeWordListener() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            console.warn("No browser speech recognition available — wake word detection disabled; live voice will respond to everything.");
+            addNotification("Wake word detection unavailable in this browser — live voice will respond to everything said near it.", "warning");
+            armLiveVoicePermanently();
+            return;
+        }
+
+        wakeWordStoppedIntentionally = false;
+        let wakeWordDidStart = false;
+        const startupTimeout = setTimeout(() => {
+            if (wakeWordDidStart) return;
+            console.warn("Wake word listener produced no events — disabling wake-word gating for this session.");
+            addNotification("Wake word detection unavailable here — live voice will respond to everything said near it.", "warning");
+            try { wakeWordRecognition.abort(); } catch {}
+            wakeWordRecognition = null;
+            armLiveVoicePermanently();
+        }, 3000);
+
+        wakeWordRecognition = new SpeechRecognition();
+        wakeWordRecognition.continuous = true;
+        wakeWordRecognition.interimResults = false;
+        wakeWordRecognition.lang = 'en-US';
+
+        wakeWordRecognition.onstart = () => {
+            wakeWordDidStart = true;
+            clearTimeout(startupTimeout);
+        };
+
+        wakeWordRecognition.onresult = (event) => {
+            const transcript = event.results[event.resultIndex][0].transcript.toLowerCase();
+            if (transcript.includes(WAKE_WORD)) armLiveVoice();
+        };
+
+        wakeWordRecognition.onerror = (event) => {
+            if (!wakeWordRecognition) return; // already failed open via the startup timeout
+            if (event.error !== 'no-speech') {
+                console.warn("Wake word listener error: ", event.error);
+            }
+        };
+
+        wakeWordRecognition.onend = () => {
+            if (!wakeWordRecognition || wakeWordStoppedIntentionally || !liveVoiceActive) return;
+            // Browser ended the session on its own (e.g. after a pause) —
+            // restart transparently so wake-word spotting stays on for as
+            // long as live voice itself is active.
+            try { wakeWordRecognition.start(); } catch (e) {
+                console.warn("Failed to restart wake word listener: ", e);
+            }
+        };
+
+        try {
+            wakeWordRecognition.start();
+        } catch (e) {
+            console.warn("Failed to start wake word listener: ", e);
+            addNotification("Wake word detection failed to start — live voice will respond to everything said near it.", "warning");
+            armLiveVoicePermanently();
+        }
+    }
+
+    function stopWakeWordListener() {
+        wakeWordStoppedIntentionally = true;
+        if (wakeWordRecognition) {
+            try { wakeWordRecognition.stop(); } catch {}
+            wakeWordRecognition = null;
+        }
     }
 
     // A cheap, honest proxy for "someone's presence just became active
@@ -1313,20 +1462,22 @@
     async function toggleMicrophoneSensor() {
         // When the live voice bridge is running, this button mutes/unmutes
         // it rather than starting the separate legacy STT pipeline — "ears"
-        // are always on by default, this is just a privacy pause.
+        // are always on by default, this is just a privacy pause. Muting
+        // stops the wake-word listener too (a genuine pause, not just
+        // "Gemini forwarding paused while a different Google speech service
+        // keeps listening") and unmuting returns to standby — the wake word
+        // still needs to be said again, same as after the disarm timeout.
         if (liveVoiceActive) {
             liveVoiceMuted = !liveVoiceMuted;
-            const pulseDot = document.getElementById('mic-pulse-dot');
-            const btn = document.getElementById('btn-mic-toggle');
             if (liveVoiceMuted) {
-                if (pulseDot) pulseDot.classList.add('hidden');
-                if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
+                disarmLiveVoice();
+                stopWakeWordListener();
                 addNotification("Live voice muted.", "warning");
             } else {
-                if (pulseDot) pulseDot.classList.remove('hidden');
-                if (btn) btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
-                addNotification("Live voice unmuted.", "success");
+                startWakeWordListener();
+                addNotification(`Live voice unmuted. Say "${WAKE_WORD}" to talk.`, "success");
             }
+            updateMicButtonVisual();
             return;
         }
 
