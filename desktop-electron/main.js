@@ -1,11 +1,20 @@
-const { app, BrowserWindow, session } = require('electron');
+const { app, BrowserWindow, session, Tray, Menu, globalShortcut, Notification, ipcMain, nativeImage } = require('electron');
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 const SERVER_URL = 'http://localhost:3000';
 const HEALTH_URL = 'http://localhost:3000/health';
 const POLL_INTERVAL_MS = 500;
 const POLL_TIMEOUT_MS = 30000;
+const HOTKEY = 'CommandOrControl+Alt+J';
+const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
+const LAUNCH_SCRIPT = path.join(__dirname, 'launch.sh');
+
+let mainWindow = null;
+let tray = null;
+let isQuitting = false;
 
 function checkServerReady() {
   return new Promise((resolve) => {
@@ -27,15 +36,51 @@ async function waitForServer(win) {
   return false;
 }
 
+// Writes the two per-user XDG .desktop files (app menu + autostart) if they
+// don't already exist yet — never overwrites, so a user's own edits to
+// either file survive every future launch. No sudo/system install involved;
+// both target directories are per-user and always writable.
+function ensureOsIntegration() {
+  const desktopEntry = [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=Jarvis OS',
+    'Comment=Jarvis OS desktop console',
+    `Exec="${LAUNCH_SCRIPT}"`,
+    `Icon=${ICON_PATH}`,
+    'Terminal=false',
+    'Categories=Utility;',
+    'X-GNOME-Autostart-enabled=true',
+    '',
+  ].join('\n');
+
+  const targets = [
+    path.join(os.homedir(), '.local', 'share', 'applications', 'jarvis-os.desktop'),
+    path.join(os.homedir(), '.config', 'autostart', 'jarvis-os.desktop'),
+  ];
+
+  for (const target of targets) {
+    try {
+      if (fs.existsSync(target)) continue;
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, desktopEntry, { mode: 0o755 });
+    } catch (err) {
+      console.error(`Could not write ${target}:`, err.message);
+    }
+  }
+}
+
 async function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     backgroundColor: '#04060f',
     title: 'Jarvis OS',
+    icon: ICON_PATH,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
@@ -53,24 +98,82 @@ async function createWindow() {
     }
   });
 
-  await win.loadFile(path.join(__dirname, 'loading.html'));
+  // Closing the window (the X button) hides it instead of quitting, so the
+  // app keeps running in the tray — the standard tray-app pattern. Only the
+  // tray's own "Quit" item (or the hotkey-driven equivalent) actually exits.
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
 
-  const ready = await waitForServer(win);
+  await mainWindow.loadFile(path.join(__dirname, 'loading.html'));
+
+  const ready = await waitForServer(mainWindow);
   if (ready) {
-    await win.loadURL(SERVER_URL);
+    await mainWindow.loadURL(SERVER_URL);
   } else {
-    await win.webContents.executeJavaScript(
+    await mainWindow.webContents.executeJavaScript(
       "document.getElementById('waiting').style.display='none'; document.getElementById('error').style.display='block';"
     );
   }
 }
 
-app.whenReady().then(createWindow);
+function showWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray() {
+  tray = new Tray(nativeImage.createFromPath(ICON_PATH));
+  tray.setToolTip('Jarvis OS');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show Jarvis', click: showWindow },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
+  ]));
+  tray.on('click', () => {
+    if (mainWindow && mainWindow.isVisible() && mainWindow.isFocused()) {
+      mainWindow.hide();
+    } else {
+      showWindow();
+    }
+  });
+}
+
+app.whenReady().then(async () => {
+  ensureOsIntegration();
+  await createWindow();
+  createTray();
+  globalShortcut.register(HOTKEY, showWindow);
+});
+
+// Only shown to a native OS notification if the window isn't focused — if
+// it is, the in-page toast (addNotification in index.html) is already
+// visible, so a native popup on top of it would just be a duplicate.
+ipcMain.on('notify', (event, { title, body }) => {
+  if (mainWindow && mainWindow.isFocused()) return;
+  if (!Notification.isSupported()) return;
+  new Notification({ title, body, icon: ICON_PATH }).show();
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+});
 
 app.on('window-all-closed', () => {
+  // Normally unreachable — the window hides rather than closes — but kept
+  // as a safety net in case something force-destroys it outside our control.
   app.quit();
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
 });
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  else showWindow();
 });

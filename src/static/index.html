@@ -2898,6 +2898,14 @@
 
     // Global Notification Badge
     function addNotification(msg, type = 'primary') {
+        // If running inside the Electron desktop shell, also fire a native
+        // OS notification — but only when the window isn't focused (main.js
+        // enforces this), since this same toast is already visible otherwise.
+        // A no-op in a plain browser tab, where window.jarvisDesktop doesn't exist.
+        if (window.jarvisDesktop) {
+            window.jarvisDesktop.notify("Jarvis OS", msg.replace(/<[^>]*>/g, ""));
+        }
+
         const container = document.getElementById('toast-container');
         const badge = document.createElement('div');
         

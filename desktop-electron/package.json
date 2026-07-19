@@ -20,14 +20,18 @@
     },
     "files": [
       "main.js",
-      "loading.html"
+      "preload.js",
+      "loading.html",
+      "launch.sh",
+      "assets/**/*"
     ],
     "linux": {
       "target": [
         "AppImage",
         "deb"
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "icon": "assets/icon.png"
     }
   }
 }
