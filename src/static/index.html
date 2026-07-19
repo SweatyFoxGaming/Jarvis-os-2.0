@@ -866,8 +866,10 @@
     // doesn't need the wake word repeated every sentence.
     const WAKE_WORD = 'jarvis';
     const WAKE_WORD_DISARM_MS = 12000;
+    const WAKE_WORD_MAX_CONSECUTIVE_ERRORS = 3;
     let wakeWordRecognition = null;
     let wakeWordStoppedIntentionally = false;
+    let wakeWordConsecutiveErrors = 0;
     let liveArmed = false;
     let liveDisarmTimer = null;
 
@@ -1294,6 +1296,7 @@
         }
 
         wakeWordStoppedIntentionally = false;
+        wakeWordConsecutiveErrors = 0;
         let wakeWordDidStart = false;
         const startupTimeout = setTimeout(() => {
             if (wakeWordDidStart) return;
@@ -1315,6 +1318,7 @@
         };
 
         wakeWordRecognition.onresult = (event) => {
+            wakeWordConsecutiveErrors = 0; // a real result proves the pipeline actually works
             if (isJarvisSpeaking()) return; // don't let Jarvis's own voice re-trigger the wake word
             const transcript = event.results[event.resultIndex][0].transcript.toLowerCase();
             if (transcript.includes(WAKE_WORD)) armLiveVoice();
@@ -1323,12 +1327,28 @@
         wakeWordRecognition.onerror = (event) => {
             if (!wakeWordRecognition) return; // already failed open via the startup timeout
             if (event.error !== 'no-speech') {
-                console.warn("Wake word listener error: ", event.error);
+                wakeWordConsecutiveErrors++;
+                console.warn(`Wake word listener error (${wakeWordConsecutiveErrors}/${WAKE_WORD_MAX_CONSECUTIVE_ERRORS}): `, event.error);
             }
         };
 
         wakeWordRecognition.onend = () => {
             if (!wakeWordRecognition || wakeWordStoppedIntentionally || !liveVoiceActive) return;
+            if (wakeWordConsecutiveErrors >= WAKE_WORD_MAX_CONSECUTIVE_ERRORS) {
+                // Repeated real errors (e.g. "network" — this browser's
+                // speech service is unreachable, a known issue on some
+                // Linux/Electron Chromium builds), not just an occasional
+                // hiccup: restarting forever here was a real bug, hammering
+                // the browser's speech service in a tight fail/restart loop
+                // (observed 172 times in one session) without ever actually
+                // working. Give up and fail open instead, same as the
+                // startup-timeout path.
+                console.warn("Wake word listener failed repeatedly — disabling wake-word gating for this session.");
+                addNotification("Wake word detection isn't working here — live voice will respond to everything said near it.", "warning");
+                wakeWordRecognition = null;
+                armLiveVoicePermanently();
+                return;
+            }
             // Browser ended the session on its own (e.g. after a pause) —
             // restart transparently so wake-word spotting stays on for as
             // long as live voice itself is active.
