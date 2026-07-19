@@ -337,6 +337,16 @@ privileges (raw sockets, and whatever the approved command itself needs) —
 neither is granted automatically by this repo; see the scripts' own
 comments for what to set up and why.
 
+## Local-only network integrations
+
+Anything that gives a container real presence on your home network (device
+discovery, physical security hubs, camera integrations) belongs in
+`docker-compose.override.yml`, not `docker-compose.yml` — it's gitignored
+and `docker compose` merges it in automatically, with no extra flag needed.
+This keeps home-network-specific setup (topology, device names, what's
+connected) off GitHub entirely while still working locally with a plain
+`docker compose up -d`.
+
 ## Files/notes
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted

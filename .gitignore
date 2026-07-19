@@ -25,6 +25,11 @@ logs/
 .env.local
 .env.*.local
 
+# Local-only Docker services (home network integrations, e.g. Home Assistant)
+# — deliberately never pushed to GitHub; auto-merged into docker-compose.yml
+# by `docker compose` without any extra flag.
+docker-compose.override.yml
+
 # Model files (large)
 models/*.gguf
 models/*.bin
