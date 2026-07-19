@@ -1,43 +1,50 @@
-# Vision
+# Jarvis 50-Year Vision
 
-> **Jarvis is an Autonomous Intelligence Operating System designed to become the
-> trusted executive partner for every user.**
->
-> Unlike traditional AI assistants that simply answer questions or execute
-> commands, Jarvis is built to understand, reason, plan, and act with purpose.
-> It continuously learns from experience, remembers what matters, coordinates
-> specialized capabilities, and makes intelligent decisions while presenting
-> itself as a single, unified intelligence.
->
-> Our vision is to create an operating system where artificial intelligence
-> moves beyond conversation and becomes a true partner — capable of managing
-> knowledge, orchestrating complex workflows, anticipating needs, and helping
-> people achieve more with confidence and clarity.
->
-> Every architectural decision is guided by four principles:
->
-> - **One Intelligence** — The user interacts with a single entity: Jarvis.
->   Internal complexity remains invisible.
-> - **Executive Thinking** — Jarvis observes, reasons, plans, delegates,
->   executes, and learns before acting.
-> - **Continuous Learning** — Every interaction strengthens Jarvis, transforming
->   information into lasting knowledge and better decisions.
-> - **Human-Centered Design** — Powerful intelligence delivered through a calm,
->   intuitive, and trustworthy experience.
->
-> Jarvis is not being built as another chatbot. It is being engineered as the
-> foundation for a new generation of autonomous intelligence — an operating
-> system that grows alongside its user and becomes an indispensable partner for
-> work, creativity, decision-making, and everyday life.
+## Building the World's Most Trusted Intelligence
 
-The vision statement above is the project owner's own, unedited. Everything
-below is an honest read of the current codebase against these four
-principles, current as of the 2026-07-17 "close every remaining gap" pass —
-this supersedes every earlier version of this document. Every claim below
-was live-verified against the real running Postgres/Docker/Gemini/GitHub/IMAP
-infrastructure this pass, not just read from source or unit-tested; where a
-claim is still qualified, the qualification is the honest boundary, not a gap
-in how it was checked.
+> Our vision is to create the world's most trusted autonomous intelligence—an
+> operating system that evolves from a personal executive into the cognitive
+> foundation for individuals, businesses, and society.
+>
+> Jarvis is being engineered to understand, reason, learn, and collaborate
+> with people over a lifetime. It will not simply answer questions or execute
+> commands; it will build knowledge, anticipate needs, coordinate complex
+> systems, and help people make better decisions while remaining transparent,
+> trustworthy, and aligned with human goals.
+>
+> As technology evolves, Jarvis will seamlessly integrate with new models,
+> devices, robots, digital environments, and future computing platforms
+> without losing its identity. Regardless of how users interact—through text,
+> voice, augmented reality, robotics, or technologies yet to be invented—they
+> will always experience a single, consistent intelligence.
+>
+> Our long-term ambition is to establish Jarvis as the universal cognitive
+> operating system: a platform capable of orchestrating millions of
+> capabilities, managing vast networks of knowledge, and empowering people and
+> organizations to solve problems that are impossible to tackle alone.
+>
+> Success will not be measured by the number of features Jarvis possesses, but
+> by the trust it earns, the decisions it improves, and the positive impact it
+> has on the lives of those who rely on it.
+>
+> Over the next fifty years, our mission is to transform artificial
+> intelligence from a reactive tool into a lifelong executive partner—one
+> that grows alongside humanity and helps shape a future where intelligence is
+> accessible, dependable, and designed to amplify human potential.
+
+The vision statement above is the project owner's own, unedited, updated
+2026-07-19. Everything below is an honest read of the current codebase,
+current as of the 2026-07-17 "close every remaining gap" pass — it predates
+this vision update and was written against a prior version of the statement
+above (organized around four named principles — One Intelligence, Executive
+Thinking, Continuous Learning, Human-Centered Design — that this revision no
+longer states in those exact terms, though the same substance carries
+through). The technical claims below are still accurate about the codebase
+itself; they just haven't been re-organized around this new statement's own
+framing yet. Every claim below was live-verified against the real running
+Postgres/Docker/Gemini/GitHub/IMAP infrastructure this pass, not just read
+from source or unit-tested; where a claim is still qualified, the
+qualification is the honest boundary, not a gap in how it was checked.
 
 ## Current state vs. the four principles
 
