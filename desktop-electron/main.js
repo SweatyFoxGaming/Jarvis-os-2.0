@@ -3,6 +3,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { execSync } = require('child_process');
 
 const SERVER_URL = 'http://localhost:3000';
 const HEALTH_URL = 'http://localhost:3000/health';
@@ -74,7 +75,7 @@ async function waitForServer(win) {
 // either file survive every future launch. No sudo/system install involved;
 // both target directories are per-user and always writable.
 function ensureOsIntegration() {
-  const desktopEntry = [
+  const menuEntry = [
     '[Desktop Entry]',
     'Type=Application',
     'Name=Jarvis OS',
@@ -83,27 +84,85 @@ function ensureOsIntegration() {
     `Icon=${ICON_PATH}`,
     'Terminal=false',
     'Categories=Utility;',
+    '',
+  ].join('\n');
+
+  // Passes --hidden so a login-triggered launch (see Task 1) doesn't show a
+  // window before the user asks to see it — this is the ONLY difference
+  // from menuEntry above.
+  const autostartEntry = [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=Jarvis OS',
+    'Comment=Jarvis OS desktop console',
+    `Exec="${LAUNCH_SCRIPT}" --hidden`,
+    `Icon=${ICON_PATH}`,
+    'Terminal=false',
+    'Categories=Utility;',
     'X-GNOME-Autostart-enabled=true',
     '',
   ].join('\n');
 
   const targets = [
-    path.join(os.homedir(), '.local', 'share', 'applications', 'jarvis-os.desktop'),
-    path.join(os.homedir(), '.config', 'autostart', 'jarvis-os.desktop'),
+    { file: path.join(os.homedir(), '.local', 'share', 'applications', 'jarvis-os.desktop'), content: menuEntry },
+    { file: path.join(os.homedir(), '.config', 'autostart', 'jarvis-os.desktop'), content: autostartEntry },
   ];
 
-  for (const target of targets) {
+  for (const { file, content } of targets) {
     try {
-      if (fs.existsSync(target)) continue;
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      // .desktop entry files should NOT be executable themselves — only
-      // launch.sh (the thing Exec= actually points at) needs that bit.
-      // systemd-xdg-autostart-generator warns on every boot otherwise
-      // ("marked executable, please remove executable permission bits").
-      fs.writeFileSync(target, desktopEntry, { mode: 0o644 });
+      if (fs.existsSync(file)) continue;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content, { mode: 0o644 });
     } catch (err) {
-      console.error(`Could not write ${target}:`, err.message);
+      console.error(`Could not write ${file}:`, err.message);
     }
+  }
+
+  ensureSystemdService();
+}
+
+// Real crash-restart supervision, complementing (not replacing) the XDG
+// autostart entry above. Autostart only fires once, at login — if this
+// process ever crashes afterward, nothing brings it back until the next
+// login without this. requestSingleInstanceLock() above already makes it
+// harmless for both this unit AND the XDG autostart entry to independently
+// try to launch at login (the second attempt just hands off to the first
+// and exits) — so this is additive, not a replacement.
+function ensureSystemdService() {
+  const unitDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+  const unitPath = path.join(unitDir, 'jarvis-os.service');
+  if (fs.existsSync(unitPath)) return;
+
+  try {
+    execSync('systemctl --user --version', { stdio: 'ignore' });
+  } catch {
+    console.log('[main] systemd --user not available; relying on XDG autostart only.');
+    return;
+  }
+
+  const unit = [
+    '[Unit]',
+    'Description=Jarvis OS Desktop',
+    'After=graphical-session.target',
+    '',
+    '[Service]',
+    `ExecStart="${LAUNCH_SCRIPT}" --hidden`,
+    'Restart=on-failure',
+    'RestartSec=5',
+    '',
+    '[Install]',
+    'WantedBy=graphical-session.target',
+    '',
+  ].join('\n');
+
+  try {
+    fs.mkdirSync(unitDir, { recursive: true });
+    fs.writeFileSync(unitPath, unit, { mode: 0o644 });
+    execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
+    execSync('systemctl --user enable --now jarvis-os.service', { stdio: 'ignore' });
+    console.log('[main] Installed and started jarvis-os.service (systemd --user).');
+  } catch (err) {
+    console.error('[main] Could not install systemd user service:', err.message);
   }
 }
 
