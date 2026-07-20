@@ -85,6 +85,19 @@ async function createSchema(): Promise<void> {
     );
   `);
   await db.query(`
+    CREATE TABLE IF NOT EXISTS objectives (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      description TEXT NOT NULL,
+      target_date DATE,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_checked_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS objectives_username_status_idx ON objectives(username, status);`);
+  await db.query(`
     CREATE TABLE IF NOT EXISTS evolution_analyses (
       id SERIAL PRIMARY KEY,
       analysis_type TEXT NOT NULL,

@@ -564,6 +564,49 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
   }
 });
 
+// ---------- Objectives Tests (no live Postgres in this test process) ----------
+import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/data/objectives-repo.js";
+
+registerTest("Objectives", "createObjective degrades cleanly when Postgres isn't reachable", async () => {
+  try {
+    await createObjective("test_user", "run a marathon", null);
+    throw new Error("Objectives: expected createObjective to reject without a live Postgres connection");
+  } catch (err: any) {
+    if (err.message?.includes("expected createObjective to reject")) throw err;
+    // Any other thrown error (connection refused/DNS failure) is the expected
+    // behavior in this no-DB test process — createObjective is a genuine
+    // write with no sensible fallback value, so it's allowed to reject; the
+    // read-side functions below are the ones required to degrade silently.
+  }
+});
+
+registerTest("Objectives", "listActiveObjectives degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listActiveObjectives("test_user");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Objectives: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Objectives", "updateObjectiveStatus degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await updateObjectiveStatus("test_user", 999999, "completed");
+  if (result !== false) {
+    throw new Error(`Objectives: expected false with no DB, got: ${result}`);
+  }
+});
+
+registerTest("Objectives", "collectDueObjectives degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await collectDueObjectives("test_user");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Objectives: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Objectives", "markCheckedIn never throws, even with no DB or an empty list", async () => {
+  await markCheckedIn([]);
+  await markCheckedIn([999999]);
+  // Reaching this line without an unhandled rejection is the assertion.
+});
+
 // ---------- Identity (Continuity of Self) Tests ----------
 registerTest("Identity", "buildIdentityContext degrades cleanly when Postgres isn't reachable", async () => {
   // This test process never calls initDatabase(), so there's no live
