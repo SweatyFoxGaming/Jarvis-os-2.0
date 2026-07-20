@@ -15,6 +15,7 @@ import { executeTool } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
+import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -790,6 +791,47 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
     throw new Error(`Server never became reachable on :3000/health: ${lastErr?.message || lastErr}`);
   } finally {
     if (child) child.kill();
+  }
+});
+
+// ---------- ConfidenceModel Tests (pure, no DB) ----------
+
+registerTest("Confidence", "calculateOverallConfidence matches today's 5-input average when outcomeConfidence is omitted", () => {
+  const model = new ConfidenceModel();
+  const result = model.calculateOverallConfidence({
+    memoryConfidence: 0.8,
+    toolConfidence: 1.0,
+    validationConfidence: 1.0,
+    capabilityConfidence: 0.9,
+    environmentConfidence: 1.0
+  });
+  const expected = Math.round(((0.8 + 1.0 + 1.0 + 0.9 + 1.0) / 5) * 100);
+  if (result !== expected) {
+    throw new Error(`Confidence: expected ${expected} with outcomeConfidence omitted, got ${result}`);
+  }
+});
+
+registerTest("Confidence", "calculateOverallConfidence factors outcomeConfidence in when provided", () => {
+  const model = new ConfidenceModel();
+  const result = model.calculateOverallConfidence({
+    memoryConfidence: 0.8,
+    toolConfidence: 1.0,
+    validationConfidence: 1.0,
+    capabilityConfidence: 0.9,
+    environmentConfidence: 1.0,
+    outcomeConfidence: 0.5
+  });
+  const expected = Math.round(((0.8 + 1.0 + 1.0 + 0.9 + 1.0 + 0.5) / 6) * 100);
+  if (result !== expected) {
+    throw new Error(`Confidence: expected ${expected} with outcomeConfidence 0.5, got ${result}`);
+  }
+});
+
+registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully empty input", () => {
+  const model = new ConfidenceModel();
+  const result = model.calculateOverallConfidence({});
+  if (result !== 100) {
+    throw new Error(`Confidence: expected 100 for an empty input, got ${result}`);
   }
 });
 

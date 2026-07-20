@@ -1062,12 +1062,14 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const toolSuccessRate = toolCallsExecuted.length === 0
       ? 1.0
       : toolCallsExecuted.filter(t => t.ok).length / toolCallsExecuted.length;
+    const recentOutcomeSuccessRate = await commandProposalsRepo.getRecentOutcomeSuccessRate();
     const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
       memoryConfidence: memoryHits.length > 0 ? 0.95 : 0.7,
       toolConfidence: toolSuccessRate,
       validationConfidence: success ? 1.0 : 0.4,
       capabilityConfidence: succeededStep === "Simulated" ? 0.5 : succeededStep ? 0.9 : 0.3,
-      environmentConfidence: 1.0
+      environmentConfidence: 1.0,
+      ...(recentOutcomeSuccessRate !== null ? { outcomeConfidence: recentOutcomeSuccessRate } : {})
     });
 
     // Finalize state to idle
