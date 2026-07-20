@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session, Tray, Menu, globalShortcut, Notification, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, session, Tray, Menu, globalShortcut, Notification, ipcMain, nativeImage, desktopCapturer } = require('electron');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
@@ -342,6 +342,25 @@ ipcMain.on('notify', (event, { title, body }) => {
   if (mainWindow && mainWindow.isFocused()) return;
   if (!Notification.isSupported()) return;
   new Notification({ title, body, icon: ICON_PATH }).show();
+});
+
+// One still image, not a stream — matches the explicit on-demand-only
+// design decision (see docs/superpowers/specs/2026-07-20-...design.md).
+ipcMain.handle('capture-screen', async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1920, height: 1080 },
+    });
+    if (!sources.length) return null;
+    // toJPEG returns a Buffer; strip to base64 only, matching the
+    // no-data-URL-prefix convention captureCameraFrame() already uses
+    // client-side for camera frames.
+    return sources[0].thumbnail.toJPEG(80).toString('base64');
+  } catch (err) {
+    console.error('[main] Screen capture failed:', err.message);
+    return null;
+  }
 });
 
 app.on('will-quit', () => {

@@ -6,4 +6,5 @@ const { contextBridge, ipcRenderer } = require('electron');
 // before this was added.
 contextBridge.exposeInMainWorld('jarvisDesktop', {
   notify: (title, body) => ipcRenderer.send('notify', { title, body }),
+  captureScreen: () => ipcRenderer.invoke('capture-screen'),
 });
