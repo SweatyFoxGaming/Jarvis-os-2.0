@@ -167,7 +167,24 @@ function ensureOsIntegration() {
 function ensureSystemdService() {
   const unitDir = path.join(os.homedir(), '.config', 'systemd', 'user');
   const unitPath = path.join(unitDir, 'jarvis-os.service');
-  if (fs.existsSync(unitPath)) return true;
+  const unitFileExists = fs.existsSync(unitPath);
+
+  if (unitFileExists) {
+    // The unit file existing on disk isn't proof it's actually wired up to
+    // fire at next login — a prior run could have written the file but then
+    // thrown on the `enable` call below (transient systemctl error,
+    // permissions blip, etc.), or something out-of-band could have disabled
+    // it since (e.g. a manual `systemctl --user disable` that leaves the
+    // file in place). Only trust "file exists" as "systemd owns
+    // login-launch" if it's genuinely enabled right now; otherwise fall
+    // through and retry enabling it below without rewriting the file.
+    try {
+      execSync('systemctl --user is-enabled jarvis-os.service', { stdio: 'ignore' });
+      return true;
+    } catch {
+      console.log('[main] jarvis-os.service unit file exists but is not enabled; retrying enable instead of trusting the stale file.');
+    }
+  }
 
   try {
     execSync('systemctl --user --version', { stdio: 'ignore' });
@@ -176,25 +193,33 @@ function ensureSystemdService() {
     return false;
   }
 
-  const unit = [
-    '[Unit]',
-    'Description=Jarvis OS Desktop',
-    'After=graphical-session.target',
-    '',
-    '[Service]',
-    `ExecStart="${LAUNCH_SCRIPT}" --hidden`,
-    'Restart=on-failure',
-    'RestartSec=5',
-    '',
-    '[Install]',
-    'WantedBy=graphical-session.target',
-    '',
-  ].join('\n');
+  if (!unitFileExists) {
+    const unit = [
+      '[Unit]',
+      'Description=Jarvis OS Desktop',
+      'After=graphical-session.target',
+      '',
+      '[Service]',
+      `ExecStart="${LAUNCH_SCRIPT}" --hidden`,
+      'Restart=on-failure',
+      'RestartSec=5',
+      '',
+      '[Install]',
+      'WantedBy=graphical-session.target',
+      '',
+    ].join('\n');
+
+    try {
+      fs.mkdirSync(unitDir, { recursive: true });
+      fs.writeFileSync(unitPath, unit, { mode: 0o644 });
+      execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
+    } catch (err) {
+      console.error('[main] Could not install systemd user service:', err.message);
+      return false;
+    }
+  }
 
   try {
-    fs.mkdirSync(unitDir, { recursive: true });
-    fs.writeFileSync(unitPath, unit, { mode: 0o644 });
-    execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
     // Deliberately `enable` only, NOT `enable --now`: this function only ever
     // runs from inside the app's own whenReady() — i.e. an instance is
     // already running — so `--now` would immediately start a second instance
@@ -206,7 +231,7 @@ function ensureSystemdService() {
     console.log('[main] Installed and enabled jarvis-os.service (systemd --user); will take effect at next login or crash restart, not immediately.');
     return true;
   } catch (err) {
-    console.error('[main] Could not install systemd user service:', err.message);
+    console.error('[main] Could not enable systemd user service:', err.message);
     return false;
   }
 }
