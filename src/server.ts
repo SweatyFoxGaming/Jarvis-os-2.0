@@ -1,6 +1,8 @@
 import express from "express";
+import helmet from "helmet";
 import cors from "cors";
 import path from "path";
+import crypto from "crypto";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
@@ -74,6 +76,48 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000,h
   .map((o) => o.trim())
   .filter(Boolean);
 
+// Off by default: with no gate, anyone who can reach this port (including
+// everyone on a Tailscale tailnet — see README's remote-access section) could
+// self-provision a working API key with full tool/integration access. Flip
+// this on only for the window you actually want a new account created.
+const ALLOW_REGISTRATION = (process.env.ALLOW_REGISTRATION || "false").toLowerCase() === "true";
+
+// The frontend (src/static/*.html) is a pre-existing single-file dashboard
+// built around inline <script> blocks and inline onclick= handlers — a
+// strict default-src/script-src CSP would break it outright. 'unsafe-inline'
+// here is a deliberate, scoped tradeoff (splitting that inline JS into real
+// modules is a separate, larger frontend refactor, not part of this pass),
+// not an oversight — everything else (frame-ancestors, object-src, the
+// external-host allowlist) is still tightened to exactly what's actually used.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+      // Helmet defaults script-src-attr to 'none' — a SEPARATE CSP directive
+      // from script-src that governs inline event handler attributes
+      // (onclick=, etc.) specifically. This frontend uses 36+ onclick=
+      // attributes in index.html alone; leaving this at helmet's default
+      // would have silently broken every one of them.
+      scriptSrcAttr: ["'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      mediaSrc: ["'self'", "blob:"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+    },
+  },
+  // Match the legacy X-Frame-Options header to the frame-ancestors 'none'
+  // directive above — helmet's own default (SAMEORIGIN) doesn't follow it.
+  frameguard: { action: "deny" },
+  // The desktop app's embedded webview and Gemini Live's image/audio streams
+  // don't need cross-origin isolation, and COEP would only add friction here.
+  crossOriginEmbedderPolicy: false,
+}));
+
 app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ limit: "15mb", extended: true }));
@@ -84,6 +128,19 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many attempts, try again later" },
+});
+
+// Chat/executive/board routes call out to a real (billed) Gemini API with no
+// cap otherwise — a leaked key, or a runaway client-side retry loop, could
+// otherwise generate unbounded cost. Keyed per authenticated user (not IP) so
+// this actually bounds a given key's usage rather than a shared NAT's.
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any) => req.username || req.ip,
+  message: { error: "Too many requests — please slow down." },
 });
 
 // ---------- Platform Instances ----------
@@ -142,6 +199,20 @@ const executiveBoard = new ExecutiveBoard();
 // see initDatabase() near the bottom of this file, called before app.listen.
 
 // ---------- Middleware: API Key Auth ----------
+// Plain === on a secret is subject to a timing attack in theory (string
+// comparison short-circuits on the first mismatched byte). Compares
+// equal-length buffers either way so the time taken doesn't leak how many
+// leading characters of a guess were correct.
+function safeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, Buffer.alloc(bufA.length));
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 // Header-only: query-string keys end up in access logs, browser history and
 // Referer headers, so ?api_key=... is intentionally not accepted.
 const validateApiKey = async (req: any, res: any, next: any) => {
@@ -150,7 +221,7 @@ const validateApiKey = async (req: any, res: any, next: any) => {
     observation.logTelemetry("warn", "Security", "Access denied: Missing API Key");
     return res.status(401).json({ error: "Missing API Key" });
   }
-  if (apiKey === ADMIN_API_KEY) {
+  if (typeof apiKey === "string" && safeCompare(apiKey, ADMIN_API_KEY)) {
     req.username = "admin";
     return next();
   }
@@ -219,6 +290,9 @@ app.get("/api/governance", (req, res) => {
 
 // Authentication Endpoints
 app.post("/api/register", authLimiter, async (req, res) => {
+  if (!ALLOW_REGISTRATION) {
+    return res.status(403).json({ error: "Registration is currently disabled. Set ALLOW_REGISTRATION=true to enable it." });
+  }
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: "Username and password required" });
@@ -422,7 +496,7 @@ app.get("/api/cognition/kernel", validateApiKey, async (req: any, res: any) => {
 });
 
 // Autonomous Executive Execution Hook
-app.post("/api/executive/run", validateApiKey, async (req: any, res: any) => {
+app.post("/api/executive/run", validateApiKey, aiLimiter, async (req: any, res: any) => {
   const { objective } = req.body;
   if (!objective) {
     return res.status(400).json({ error: "Missing objective" });
@@ -470,7 +544,7 @@ app.post("/api/learning/mistake", validateApiKey, (req, res) => {
 
 // ---------- Pass XVI: Multi-Agent Executive Board Endpoints ----------
 
-app.post("/api/executive/board/debate", validateApiKey, async (req: any, res: any) => {
+app.post("/api/executive/board/debate", validateApiKey, aiLimiter, async (req: any, res: any) => {
   const { prompt, proposedResponse } = req.body;
   if (!prompt || !proposedResponse) {
     return res.status(400).json({ error: "Missing prompt or proposedResponse" });
@@ -550,7 +624,7 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
 });
 
 // Chat Streaming Endpoint (SSE)
-app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
+app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
   const { message, image } = req.body;
   if (!message) {
     return res.status(400).json({ error: "Missing message" });
@@ -1029,7 +1103,7 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 });
 
 // Chat completions compatible with OpenAI standard
-app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, async (req: any, res: any) => {
+app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, aiLimiter, async (req: any, res: any) => {
   const { messages } = req.body;
   let userMsg = "Hello";
   if (messages && messages.length > 0) {
@@ -2057,6 +2131,32 @@ app.get("*", (req, res) => {
 
 observation.endProfile("startup");
 
+// One-time tickets for /ws/voice — see the comment on the WS handshake below
+// for why this exists instead of the permanent API key riding in the URL.
+const VOICE_TICKET_TTL_MS = 30_000;
+const voiceTickets = new Map<string, { username: string; expiresAt: number }>();
+
+function issueVoiceTicket(username: string): string {
+  const now = Date.now();
+  for (const [t, v] of voiceTickets) {
+    if (v.expiresAt < now) voiceTickets.delete(t); // opportunistic sweep, keeps the map bounded
+  }
+  const ticket = crypto.randomBytes(24).toString("hex");
+  voiceTickets.set(ticket, { username, expiresAt: now + VOICE_TICKET_TTL_MS });
+  return ticket;
+}
+
+function consumeVoiceTicket(ticket: string): string | null {
+  const entry = voiceTickets.get(ticket);
+  voiceTickets.delete(ticket); // single-use regardless of outcome
+  if (!entry || entry.expiresAt < Date.now()) return null;
+  return entry.username;
+}
+
+app.post("/api/voice-ticket", validateApiKey, (req: any, res: any) => {
+  res.json({ ticket: issueVoiceTicket(req.username) });
+});
+
 initDatabase().then(async (ready) => {
   if (ready) {
     try {
@@ -2076,28 +2176,21 @@ initDatabase().then(async (ready) => {
 
   // ---------- Voice-native mode (Gemini Live API) ----------
   // A continuous WebSocket audio stream, not a request/response round trip —
-  // see src/cognition/live-voice.ts. Auth via ?apiKey= query param since
-  // browser WebSocket clients can't attach a custom x-api-key header on the
-  // handshake; the key itself is the same secret already used everywhere
-  // else, just carried differently for this one connection type.
+  // see src/cognition/live-voice.ts. Browser WebSocket clients can't attach a
+  // custom x-api-key header on the handshake, and the permanent admin/user
+  // key deliberately never goes in a URL elsewhere (see the header-only note
+  // above validateApiKey — query strings end up in access logs). So the
+  // handshake instead carries a short-lived, single-use ticket obtained via
+  // a normal authenticated POST (see /api/voice-ticket below); the permanent
+  // key never touches a URL or a log line for this path either.
   const voiceWss = new WebSocketServer({ server: httpServer, path: "/ws/voice" });
   voiceWss.on("connection", async (ws, req) => {
     const url = new URL(req.url || "", `http://${req.headers.host}`);
-    const apiKey = url.searchParams.get("apiKey");
-
-    let username: string | null = null;
-    if (apiKey === ADMIN_API_KEY) {
-      username = "admin";
-    } else if (apiKey) {
-      try {
-        username = await usersRepo.getUsernameByApiKey(apiKey);
-      } catch (err: any) {
-        observation.logTelemetry("warn", "LiveVoice", `API key lookup failed: ${err.message}`);
-      }
-    }
+    const ticket = url.searchParams.get("ticket");
+    const username = ticket ? consumeVoiceTicket(ticket) : null;
 
     if (!username) {
-      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid API key." }));
+      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid/expired voice ticket." }));
       ws.close();
       return;
     }

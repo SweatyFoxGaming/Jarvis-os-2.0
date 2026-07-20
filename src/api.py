@@ -75,6 +75,19 @@ NODE_URL = f"http://127.0.0.1:{NODE_PORT}"
 # Thread-safe variable to track Node.js server process
 node_process = None
 
+# Real health state for the Express subprocess, so /health can report the
+# truth instead of always saying "up". Previously /health fell back to a
+# hardcoded {"status": "up"} whenever the proxy call failed for ANY reason,
+# including "Node has been crash-looping for 20 minutes" — live-observed:
+# the Express server crashed on every boot for 18+ minutes (a missing
+# npm dependency) while docker ps and this endpoint both reported healthy.
+GATEWAY_START_TIME = time.time()
+STARTUP_GRACE_SECONDS = 30  # Node normally binds its port within a few seconds
+MAX_CONSECUTIVE_BOOT_FAILURES = 5
+node_supervisor_status = "starting"  # "starting" | "healthy" | "crash_looping" | "given_up"
+node_consecutive_boot_failures = 0
+node_last_exit_code: int | None = None
+
 def is_node_running() -> bool:
     """Check if the Node.js server is already running on port 3000."""
     try:
@@ -114,13 +127,14 @@ def supervise_node_server():
     mock responses forever, since Docker's restart policy only sees the
     top-level container process (uvicorn), not the Node subprocess.
     """
-    global node_process
+    global node_process, node_supervisor_status, node_consecutive_boot_failures, node_last_exit_code
 
     # Wait a moment for uvicorn to bind
     time.sleep(1.0)
 
     if is_node_running():
         logger.info("[Gateway] Express server already active on port %s. Proxying enabled.", NODE_PORT)
+        node_supervisor_status = "healthy"
         return
 
     logger.info("[Gateway] Checking for Node.js runtime to launch Express server...")
@@ -128,10 +142,12 @@ def supervise_node_server():
         subprocess.run(["node", "--version"], capture_output=True, check=True)
     except Exception:
         logger.warning("[Gateway] Node.js runtime not found in this container. Running in Python fallback simulation mode.")
+        node_supervisor_status = "given_up"
         return
 
     if not os.path.exists("package.json"):
         logger.warning("[Gateway] package.json not found in workspace. Express server cannot be launched.")
+        node_supervisor_status = "given_up"
         return
 
     backoff_seconds = 2
@@ -141,6 +157,16 @@ def supervise_node_server():
         logger.info("[Gateway] Spawning TypeScript/Express server via 'npm run start'...")
         proc = spawn_node_process()
         if proc is None:
+            node_consecutive_boot_failures += 1
+            if node_consecutive_boot_failures >= MAX_CONSECUTIVE_BOOT_FAILURES:
+                node_supervisor_status = "given_up"
+                logger.error(
+                    "[Gateway] Failed to spawn the Express server process %d times in a row. "
+                    "Giving up automatic restarts — fix the underlying error and restart the container.",
+                    node_consecutive_boot_failures
+                )
+                return
+            node_supervisor_status = "crash_looping"
             time.sleep(backoff_seconds)
             backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
             continue
@@ -157,12 +183,29 @@ def supervise_node_server():
 
         if started:
             backoff_seconds = 2  # reset backoff after a healthy start
+            node_consecutive_boot_failures = 0
+            node_supervisor_status = "healthy"
+        else:
+            node_consecutive_boot_failures += 1
+            node_supervisor_status = "crash_looping"
 
         exit_code = proc.wait()  # blocks until the Node process actually dies
+        node_last_exit_code = exit_code
         logger.warning(
             "[Gateway] Express server process exited (code %s). Restarting in %ss...",
             exit_code, backoff_seconds
         )
+
+        if node_consecutive_boot_failures >= MAX_CONSECUTIVE_BOOT_FAILURES:
+            node_supervisor_status = "given_up"
+            logger.error(
+                "[Gateway] Express server failed to stay up %d times in a row (last exit code %s). "
+                "Giving up automatic restarts — fix the underlying error (see Express-Err logs above) "
+                "and restart the container manually once it's resolved.",
+                node_consecutive_boot_failures, exit_code
+            )
+            return
+
         time.sleep(backoff_seconds)
         backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
 
@@ -274,7 +317,14 @@ def get_simulated_workspace():
 
 @app.get("/health")
 async def health_check(request: Request):
-    """Health check proxy with automatic fallback."""
+    """
+    Health check proxy — reports the REAL state of the Express subprocess,
+    not just whether uvicorn itself is alive. Previously this always
+    returned {"status": "up"} whenever the proxy call failed for any
+    reason, so a fully crash-looping Express server (e.g. a missing npm
+    dependency) was indistinguishable from a genuinely healthy one to
+    anything checking this endpoint or `docker ps`/HEALTHCHECK.
+    """
     if is_node_running():
         try:
             # make_proxy_request is a blocking urllib call — run it in a
@@ -287,7 +337,36 @@ async def health_check(request: Request):
             return await asyncio.to_thread(make_proxy_request, "/health", "GET", dict(request.headers))
         except Exception:
             pass
-    return {"status": "up", "mode": "python-fallback", "engine_ready": True}
+
+    # Node isn't reachable. Give a fresh boot a real grace period (npm
+    # install/tsx startup genuinely takes a few seconds) before reporting
+    # unhealthy — but once past that window, or once the supervisor has
+    # explicitly given up, say so instead of pretending everything's fine.
+    uptime = time.time() - GATEWAY_START_TIME
+    if node_supervisor_status == "given_up":
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "down",
+                "mode": "python-fallback",
+                "engine_ready": False,
+                "reason": "Express server repeatedly failed to start and automatic restarts were stopped.",
+                "last_exit_code": node_last_exit_code,
+            },
+        )
+    if uptime < STARTUP_GRACE_SECONDS:
+        return {"status": "starting", "mode": "python-fallback", "engine_ready": False}
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": "down",
+            "mode": "python-fallback",
+            "engine_ready": False,
+            "reason": "Express server is not currently reachable.",
+            "supervisor_status": node_supervisor_status,
+            "last_exit_code": node_last_exit_code,
+        },
+    )
 
 @app.get("/props")
 async def props_check(request: Request):

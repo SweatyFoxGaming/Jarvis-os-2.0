@@ -63,6 +63,10 @@ Thumbs.db
 /data/
 tmp/
 
+# Postgres dumps produced by scripts/backup-postgres.sh — real user data,
+# never committed.
+/backups/
+
 # Node dependencies
 node_modules/
 

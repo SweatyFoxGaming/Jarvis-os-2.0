@@ -8,46 +8,16 @@
     <meta name="theme-color" content="#050608">
     <link rel="icon" href="/pwa/icon-256.png">
     <link rel="apple-touch-icon" href="/pwa/icon-256.png">
-    <!-- Tailwind's Play CDN JIT-compiles on every load, so it can't carry a
-         static SRI hash and isn't meant for production (per Tailwind's own
-         docs) — replacing it with a pinned build is a follow-up, not done here. -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Precompiled by `npm run build:css` (tailwind.index.config.js) instead
+         of loading the Play CDN's JIT compiler + arbitrary third-party script
+         on every page load — that CDN script is explicitly documented by
+         Tailwind as not meant for production. Re-run the build script after
+         changing any Tailwind utility classes used in this file. -->
+    <link rel="stylesheet" href="/css/tailwind-index.css">
     <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"
         integrity="sha384-X7WMDD1lV+pn8w6J5+gz+4oe1KOb37V6QOOAFoNZHLuFqGfN3gKWUT5N7eiZewEo"
         crossorigin="anonymous"></script>
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-
-    <script>
-        // Calmer, more premium palette — replaces the previous cyberpunk/
-        // holographic theme per direct user preference. Near-black ground,
-        // a single cool accent (used sparingly: the orb, the active nav
-        // state, primary actions), neutrals with a faint blue bias rather
-        // than pure grey so they read as chosen, not default.
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        bg: '#050608',
-                        surface: '#0B0D12',
-                        card: '#12141B',
-                        glass: '#0D0F15',
-                        primary: '#8FB8E8',
-                        accent: '#8FB8E8',
-                        success: '#5FBF8F',
-                        warning: '#D9A85C',
-                        danger: '#D97A7A',
-                        text: '#EDEFF3',
-                        secondary: '#767C8C'
-                    },
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                        display: ['Space Grotesk', 'Inter', 'sans-serif'],
-                        mono: ['JetBrains Mono', 'monospace']
-                    }
-                }
-            }
-        }
-    </script>
     <style>
         ::-webkit-scrollbar { width: 3px; height: 3px; }
         ::-webkit-scrollbar-track { background: rgba(5, 6, 8, 0.5); }
@@ -1115,8 +1085,26 @@
         liveOutputAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
         liveNextPlayTime = 0;
 
+        // A WebSocket handshake can't carry a custom header, so the permanent
+        // API key never rides in this URL — a short-lived, single-use ticket
+        // (fetched over a normal authenticated request) does instead.
+        let voiceTicket;
+        try {
+            const ticketRes = await authFetch('/api/voice-ticket', {
+                method: 'POST',
+                headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (!ticketRes.ok) throw new Error(`ticket request failed (${ticketRes.status})`);
+            voiceTicket = (await ticketRes.json()).ticket;
+        } catch (err) {
+            console.warn("Could not obtain a voice ticket, live voice can't start: ", err);
+            addNotification("Live voice couldn't authenticate — falling back to click-to-talk.", "warning");
+            toggleMicrophoneSensor();
+            return;
+        }
+
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        liveVoiceWs = new WebSocket(`${protocol}//${location.host}/ws/voice?apiKey=${encodeURIComponent(CURRENT_API_KEY)}`);
+        liveVoiceWs = new WebSocket(`${protocol}//${location.host}/ws/voice?ticket=${encodeURIComponent(voiceTicket)}`);
         liveVoiceWs.binaryType = 'arraybuffer';
 
         let everConnected = false;

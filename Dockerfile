@@ -25,5 +25,13 @@ COPY . .
 # Expose port 8000 (FastAPI gateway) and 3000 (Express API)
 EXPOSE 8000 3000
 
+# /health now reports the real state of the Express subprocess (200 while
+# starting/healthy, 503 once it's given up after repeated crashes — see
+# src/api.py) instead of always claiming "up", so this can actually catch
+# the failure mode that previously went unnoticed: the container itself
+# staying "Up" in `docker ps` while the app inside it was crash-looping.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD wget --spider -q http://127.0.0.1:8000/health || exit 1
+
 # Default command starts the FastAPI Gateway, which spawns the Node.js Express server on startup
 CMD ["python3", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
