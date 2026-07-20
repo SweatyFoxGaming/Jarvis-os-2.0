@@ -852,7 +852,27 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
 
               const responseParts = [];
               for (const call of calls) {
-                const result = await executeTool(call.name || "", call.args || {}, req.username, ai, kernel.localLlmEndpoint);
+                const result = await executeTool(
+                  call.name || "",
+                  call.args || {},
+                  req.username,
+                  ai,
+                  kernel.localLlmEndpoint,
+                  { alreadyAttached: !!image, supportsRoundTrip: true }
+                );
+
+                // view_screen can't execute server-side — it needs the connected client to
+                // capture a screenshot and resubmit (see Task 1's design note). End this
+                // turn here rather than feeding a fake function response back to Gemini.
+                if (result.needsClientAction === "capture_screen") {
+                  res.write("data: request_screen\n\n");
+                  res.write("data: [DONE]\n\n");
+                  res.end();
+                  success = true;
+                  succeededStep = "Gemini";
+                  return;
+                }
+
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
                 responseParts.push({
                   functionResponse: {
