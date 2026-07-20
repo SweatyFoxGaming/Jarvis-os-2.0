@@ -1627,8 +1627,8 @@ app.post("/api/system/ingest/command-result", validateApiKey, async (req: any, r
     // so only 'executed' rows get the follow-up question.
     if (updated.status === "executed") {
       scheduler.pushNotification(
-        "admin",
-        `Ran your command, sir: "${updated.command}". Did that fix it?`,
+        updated.requested_by,
+        `Ran your command (#${updated.id}), sir: "${updated.command}". Did that fix it?`,
         "info"
       );
     }
