@@ -15,6 +15,8 @@ import { executeTool } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
+import { spawn, ChildProcess } from "child_process";
+import net from "net";
 
 interface TestResult {
   name: string;
@@ -582,6 +584,60 @@ registerTest("Identity", "generateProactiveThought never fabricates a thought wh
   const result = await generateProactiveThought(fakeAi);
   if (result !== null) {
     throw new Error("Identity: expected null (no real history to draw from), got a fabricated result");
+  }
+});
+
+// ---------- HTTP Boundary ----------
+// Every other test in this file imports internal modules directly — none of
+// them would have caught today's real incident, where the Express app
+// itself failed to boot at all (a missing npm dependency) while everything
+// unit-testable in isolation was fine. This actually starts the process the
+// way Docker does and confirms it comes up and serves a real HTTP response.
+
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host: "127.0.0.1" });
+    socket.once("connect", () => { socket.destroy(); resolve(true); });
+    socket.once("error", () => resolve(false));
+    socket.setTimeout(500, () => { socket.destroy(); resolve(false); });
+  });
+}
+
+registerTest("HTTP Boundary", "Express server boots from a cold start and serves /health", async () => {
+  // If something's already listening on :3000 (e.g. this suite running
+  // alongside a live dev/docker instance on the same host), don't spawn a
+  // second process into the same port — just confirm whatever's already
+  // there responds, which still exercises the same assertion.
+  const alreadyRunning = await isPortInUse(3000);
+  let child: ChildProcess | null = null;
+
+  if (!alreadyRunning) {
+    child = spawn("npx", ["tsx", "src/server.ts"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        INTERNAL_API_KEY: process.env.INTERNAL_API_KEY || "test-only-smoke-test-key-not-a-real-secret",
+      },
+      stdio: "ignore",
+    });
+  }
+
+  try {
+    const deadline = Date.now() + 25_000;
+    let lastErr: any = null;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch("http://127.0.0.1:3000/health");
+        if (res.ok) return;
+        lastErr = new Error(`/health returned HTTP ${res.status}`);
+      } catch (err: any) {
+        lastErr = err;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error(`Server never became reachable on :3000/health: ${lastErr?.message || lastErr}`);
+  } finally {
+    if (child) child.kill();
   }
 });
 

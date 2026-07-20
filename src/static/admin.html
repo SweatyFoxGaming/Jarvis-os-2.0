@@ -6,33 +6,10 @@
     <title>JARVIS OS · Executive Admin Control Panel</title>
     <!-- Fonts & Tailwind CSS -->
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
-    <!-- Tailwind's Play CDN JIT-compiles on every load, so it can't carry a
-         static SRI hash and isn't meant for production (per Tailwind's own
-         docs) — replacing it with a pinned build is a follow-up, not done here. -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        bg: '#040711',
-                        surface: '#090d1e',
-                        card: '#0d152d',
-                        primary: '#38bdf8',
-                        accent: '#818cf8',
-                        success: '#34d399',
-                        warning: '#fbbf24',
-                        danger: '#f87171',
-                        secondary: '#94a3b8',
-                    },
-                    fontFamily: {
-                        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
-                        sans: ['Space Grotesk', 'sans-serif'],
-                    }
-                }
-            }
-        }
-    </script>
+    <!-- Precompiled by `npm run build:css` (tailwind.admin.config.js) instead
+         of loading the Play CDN's JIT compiler in production — re-run the
+         build script after changing any Tailwind utility classes here. -->
+    <link rel="stylesheet" href="/css/tailwind-admin.css">
     <style>
         body {
             background-color: #040711;

@@ -419,6 +419,28 @@ directory unless `COMPOSE_PROJECT_NAME` is set in `.env` — set it explicitly
 folder doesn't silently spin up a second, disconnected set of
 networks/volumes alongside the real stack.
 
+## Backups
+
+`docker-compose.yml`'s `postgres` service bind-mounts its data directory to
+the host, but that mount is where the data *lives*, not a backup of it — a
+bad `rm`, a disk failure, or a botched migration takes memory, the
+knowledge graph, sessions, and identity reflections with it, permanently.
+
+`scripts/backup-postgres.sh` dumps the database to a gzip-compressed,
+timestamped file under `backups/` (gitignored — these are real dumps of
+your data, never committed) and prunes anything older than the 14 most
+recent runs. Run it manually, or put it on a daily cron:
+
+```
+0 3 * * * /path/to/jarvis-os/scripts/backup-postgres.sh >> /path/to/jarvis-os/backups/backup.log 2>&1
+```
+
+To restore a dump:
+
+```
+gunzip -c backups/jarvis-<db>-<timestamp>.sql.gz | docker exec -i jarvis-postgres psql -U "$POSTGRES_USER" "$POSTGRES_DB"
+```
+
 ## Files/notes
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
