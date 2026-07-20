@@ -59,7 +59,7 @@ This is real, load-bearing infrastructure — but it's all still in service of
 one person on one machine. That's the honest starting line for everything
 below.
 
-## Phase 1 — One identity across every interface
+## Phase 1 — One identity across every interface (done, merged PR #55)
 
 **The gap:** text chat (`/api/chat`) builds its system prompt from memory,
 identity, and learned style every turn. Live voice mode
@@ -77,7 +77,7 @@ already proven correct in the text-chat path. This is wiring, not design.
 **Done when:** something told to Jarvis by voice is recalled in a later text
 conversation, and vice versa — live-verified both directions.
 
-## Phase 2 — Standing objectives, not just standing conversations
+## Phase 2 — Standing objectives, not just standing conversations (done, merged PR #57)
 
 **The gap:** Jarvis's memory today is memory of *conversations*. There's no
 concept of a goal that persists and gets checked in on without being
@@ -99,7 +99,7 @@ than one session at a time.
 proactively follows up on it (via the existing notification path) without
 being re-asked.
 
-## Phase 3 — Measuring whether Jarvis is actually right
+## Phase 3 — Measuring whether Jarvis is actually right (done, merged PR #59, scoped to command_proposals)
 
 **The gap:** the vision's own stated measure of success is "the decisions
 it improves" — but nothing in the codebase today measures decision quality.
@@ -123,10 +123,21 @@ here's whether it actually helped" — not just whether it executed without
 error — and that record measurably changes future confidence scoring or
 behavior, not just sits in a log.
 
-## Phase 4 — From 18 hand-coded tools toward real capability scale
+## Phase 4 — From hand-coded tools toward real capability scale (design complete, PR #60; implementation not yet started)
+
+**Design decision made:** the design spec
+(`docs/superpowers/specs/2026-07-20-mcp-capability-architecture-design.md`)
+and full implementation plan
+(`docs/superpowers/plans/2026-07-20-mcp-capability-architecture.md`) are
+written and merged — real MCP (Model Context Protocol) client, admin-gated
+server registration mirroring `propose_command`'s trust model, capabilities
+namespaced `mcp.<server>.<tool>` into the existing grant system. Per this
+phase's own "done" criterion below, writing that plan *was* this phase's
+deliverable — executing it is a separate, later decision.
 
 **The gap:** every tool Jarvis has is a hand-written `case` in one `switch`
-statement in `src/execution/tools.ts` — 18 of them as of this writing, each
+statement in `src/execution/tools.ts` — 24 of them as of Phase 3's
+completion (up from 18 when this roadmap was first written), each
 requiring a code change and a PR to add. The vision names "orchestrating
 millions of capabilities" — getting there isn't a matter of writing tools
 faster, it's a different mechanism entirely: capabilities as independently
@@ -178,13 +189,17 @@ would need regardless of what it turns out to be. When something concrete
 enough to plan against actually shows up, it gets a phase then, not a
 guess now.
 
-## If picking one next step right now
+## Current status (updated after Phase 4's design pass)
 
-Phase 1. It's the smallest, most concretely scoped, most directly
-contradicts the vision's own current words, and — unlike everything after
-it — needs no new design decision, no new subsystem, and no dedicated
-brainstorming pass to start. It's the one item on this roadmap that could
-become a merged PR without anything happening first.
+Phases 1-3 are done and deployed live. Phase 4's design and implementation
+plan are written and merged, but not executed — implementing it (a real
+MCP client, a new dependency, several new files) is a substantial pass in
+its own right and is a separate decision from writing the plan. Phase 5
+remains deliberately un-started: its own stated trigger — an actual second
+person who wants to use this — hasn't happened. Executing the Phase 4 plan
+is the only concretely-scoped, ready-to-start work item left on this
+roadmap; everything else either requires that trigger fact (Phase 5) or
+isn't planned yet on purpose (see "What's genuinely not planned" below).
 
 ---
 
