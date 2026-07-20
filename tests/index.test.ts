@@ -443,7 +443,7 @@ registerTest("Tools", "display_content executes without any capability grant", a
 });
 
 registerTest("Tools", "unrelated tools never carry a displayDirective", async () => {
-  const result = await executeTool("not_a_real_tool", {}, "admin");
+  const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: true, supportsRoundTrip: true });
   if ((result as any).displayDirective) {
     throw new Error("Tools: displayDirective should only ever be set by display_content");
   }
