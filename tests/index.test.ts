@@ -432,6 +432,23 @@ registerTest("Tools", "view_screen's default screenContext is safe (supportsRoun
   }
 });
 
+registerTest("Tools", "display_content executes without any capability grant", async () => {
+  const result = await executeTool("display_content", { type: "image", title: "Test", content: { url: "https://example.com/x.png" } }, "ungranted_test_user");
+  if (result.ok !== true) {
+    throw new Error("Tools: display_content should succeed with no grant required");
+  }
+  if (!result.displayDirective || result.displayDirective.type !== "image") {
+    throw new Error("Tools: display_content should return a displayDirective matching the call's type");
+  }
+});
+
+registerTest("Tools", "unrelated tools never carry a displayDirective", async () => {
+  const result = await executeTool("not_a_real_tool", {}, "admin");
+  if ((result as any).displayDirective) {
+    throw new Error("Tools: displayDirective should only ever be set by display_content");
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);

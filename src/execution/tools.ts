@@ -30,6 +30,10 @@ export interface ToolCallResult {
   // client to do something first (currently only view_screen) — see
   // Task 2 in docs/superpowers/plans/2026-07-20-view-screen-tool.md.
   needsClientAction?: "capture_screen";
+  // Set by display_content — relayed to the client as a "display: " SSE
+  // frame by /api/chat. See Task 1 in
+  // docs/superpowers/plans/2026-07-20-display-content-panel.md.
+  displayDirective?: { type: string; title: string; content: any };
 }
 
 const PERMISSION_BY_TOOL: Record<string, string> = {
@@ -270,6 +274,30 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       properties: {},
     },
   },
+  {
+    name: "display_content",
+    description: "Show something in the dashboard's display panel — use this whenever a reply has something genuinely better shown than said: an image, a code/text snippet, a simple chart, or a web page. Don't call this for plain conversational replies with nothing visual to show.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        type: { type: Type.STRING, description: "One of: image, code, chart, webpage" },
+        title: { type: Type.STRING, description: "Short title shown at the top of the panel" },
+        content: {
+          type: Type.OBJECT,
+          description: "Shape depends on type. image: {url} or {base64}. code: {code, language}. chart: {labels: string[], values: number[]}. webpage: {url}.",
+          properties: {
+            url: { type: Type.STRING },
+            base64: { type: Type.STRING },
+            code: { type: Type.STRING },
+            language: { type: Type.STRING },
+            labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+            values: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+          },
+        },
+      },
+      required: ["type", "title", "content"],
+    },
+  },
 ];
 
 export async function executeTool(
@@ -280,17 +308,23 @@ export async function executeTool(
   localEndpoint: string | null = null,
   screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
 ): Promise<ToolCallResult> {
+  // display_content has no real-world side effect or access to anything
+  // private beyond what the conversation already contains, so it's the one
+  // tool deliberately left out of PERMISSION_BY_TOOL/ALL_CAPABILITIES rather
+  // than gated behind a grant every user would need to be given anyway.
+  const UNGATED_TOOLS = new Set(["display_content"]);
   const requiredGrant = PERMISSION_BY_TOOL[name];
-  if (!requiredGrant) {
+  if (!requiredGrant && !UNGATED_TOOLS.has(name)) {
     return { name, ok: false, error: `Unknown tool "${name}"` };
   }
-  if (!hasGrant(username, requiredGrant)) {
+  if (requiredGrant && !hasGrant(username, requiredGrant)) {
     observation.logAuditEvent(username, "tool_call_denied", "failed", `Missing grant "${requiredGrant}" for tool "${name}"`);
     return { name, ok: false, error: `Missing capability grant "${requiredGrant}"` };
   }
 
   try {
     let output: any;
+    let displayDirective: ToolCallResult["displayDirective"];
     switch (name) {
       case "github_get_repo_or_file":
         output = args.path
@@ -404,11 +438,16 @@ export async function executeTool(
         }
         return { name, ok: false, error: "Screen capture requested", needsClientAction: "capture_screen" };
       }
+      case "display_content": {
+        displayDirective = { type: args.type, title: args.title, content: args.content };
+        output = `Displayed ${args.type} "${args.title}" in the display panel.`;
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
     observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
-    return { name, ok: true, output };
+    return { name, ok: true, output, displayDirective };
   } catch (err: any) {
     observation.logAuditEvent(username, "tool_call", "failed", `${name}(${JSON.stringify(args)}): ${err.message}`);
     return { name, ok: false, error: err.message || String(err) };

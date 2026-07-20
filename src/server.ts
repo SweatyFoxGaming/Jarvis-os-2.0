@@ -873,6 +873,13 @@ app.post("/api/chat", validateApiKey, async (req: any, res: any) => {
                   return;
                 }
 
+                // display_content executes entirely server-side and just packages a
+                // directive for the dashboard's display panel — relay it over the
+                // existing SSE stream as its own frame (see Task 1's design note).
+                if (result.displayDirective) {
+                  res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
+                }
+
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
                 responseParts.push({
                   functionResponse: {
