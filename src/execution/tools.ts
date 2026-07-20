@@ -278,7 +278,7 @@ export async function executeTool(
   username: string,
   ai: GoogleGenAI | null = null,
   localEndpoint: string | null = null,
-  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: true }
+  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
 ): Promise<ToolCallResult> {
   const requiredGrant = PERMISSION_BY_TOOL[name];
   if (!requiredGrant) {

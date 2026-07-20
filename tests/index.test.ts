@@ -405,9 +405,9 @@ registerTest("Tools", "executeTool rejects unknown tool names", async () => {
 });
 
 registerTest("Tools", "view_screen returns a client-action sentinel when nothing is attached yet", async () => {
-  const result = await executeTool("view_screen", {}, "admin");
+  const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: false, supportsRoundTrip: true });
   if (result.ok !== false || result.needsClientAction !== "capture_screen") {
-    throw new Error("Tools: view_screen should return needsClientAction='capture_screen' with no screenContext passed");
+    throw new Error("Tools: view_screen should return needsClientAction='capture_screen' when supportsRoundTrip is true and nothing is attached yet");
   }
 });
 

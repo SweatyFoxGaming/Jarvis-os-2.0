@@ -122,13 +122,15 @@ In `TOOL_TRIGGER_WORDS`, add:
 
 - [ ] **Step 6: Write the failing test**
 
+> **Correction (2026-07-20):** Test 1 as originally written below (`executeTool("view_screen", {}, "admin")`, relying on the default `screenContext` with no explicit value) cannot pass — this Global Constraints section deliberately defaults `screenContext` to `{ alreadyAttached: false, supportsRoundTrip: false }` specifically so `live-voice.ts`'s existing call site (which omits this parameter) inherits the safe "not supported in voice mode" behavior with zero code changes there. With that correct-by-design default, `executeTool("view_screen", {}, "admin")` hits the "round trip not supported" branch, not `needsClientAction: "capture_screen"`. An earlier implementation pass "fixed" this by changing the *default* to `supportsRoundTrip: true` instead, which made the test pass but silently broke the voice-mode safety property the default exists for (`live-voice.ts` would then also default to `supportsRoundTrip: true`, so a `view_screen` call from Gemini Live would get the round-trip sentinel instead of a clean decline, even though voice mode has no mechanism to act on that sentinel). The default has been reverted back to `supportsRoundTrip: false`, and Test 1 below is corrected to pass `screenContext` explicitly (`{ alreadyAttached: false, supportsRoundTrip: true }`), simulating what `/api/chat` will pass once Task 2 wires it in — testing the behavior directly rather than relying on the default. `docs/superpowers/plans/` is a durable record, so this note stays rather than the original code block being silently edited away; the code block below now reflects the corrected test.
+
 Add to `tests/index.test.ts`, in the `"Tools"` category section (right after the existing `"executeTool rejects unknown tool names"` test):
 
 ```ts
 registerTest("Tools", "view_screen returns a client-action sentinel when nothing is attached yet", async () => {
-  const result = await executeTool("view_screen", {}, "admin");
+  const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: false, supportsRoundTrip: true });
   if (result.ok !== false || result.needsClientAction !== "capture_screen") {
-    throw new Error("Tools: view_screen should return needsClientAction='capture_screen' with no screenContext passed");
+    throw new Error("Tools: view_screen should return needsClientAction='capture_screen' when supportsRoundTrip is true and nothing is attached yet");
   }
 });
 
