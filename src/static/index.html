@@ -336,6 +336,18 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Display panel — Jarvis renders here (images, code,
+                         charts, embedded pages) whenever a reply has
+                         something better shown than said. Hidden until the
+                         first "display: " SSE frame arrives. -->
+                    <div id="display-panel" class="hidden holo-panel rounded-2xl mt-4 flex flex-col max-h-[520px]">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <span id="display-panel-title" class="text-xs font-semibold uppercase tracking-wider text-secondary">Display</span>
+                            <button onclick="hideDisplayPanel()" class="text-secondary hover:text-white transition-all text-lg leading-none" title="Close">&times;</button>
+                        </div>
+                        <div id="display-panel-body" class="flex-1 overflow-auto p-4"></div>
+                    </div>
                 </div>
             </div>
 
@@ -2884,6 +2896,14 @@
 
                         if (dataStr === "[DONE]") break;
 
+                        if (dataStr.startsWith("display: ")) {
+                            try {
+                                const directive = JSON.parse(dataStr.slice(9));
+                                renderDisplayContent(directive.type, directive.title, directive.content);
+                            } catch {}
+                            continue;
+                        }
+
                         if (dataStr.startsWith("detail: ")) {
                             try {
                                 const trace = JSON.parse(dataStr.slice(8));
@@ -3272,6 +3292,82 @@
             mainHub.className = "lg:col-span-3 holo-panel rounded-2xl h-[420px] flex flex-col";
             localStorage.removeItem('trace-sidebar-collapsed');
         }
+    }
+
+    function renderDisplayContent(type, title, content) {
+        const panel = document.getElementById('display-panel');
+        const body = document.getElementById('display-panel-body');
+        const titleEl = document.getElementById('display-panel-title');
+        if (!panel || !body || !titleEl) return;
+
+        titleEl.textContent = title || 'Display';
+        body.innerHTML = '';
+
+        if (type === 'image') {
+            const img = document.createElement('img');
+            img.src = content?.url || (content?.base64 ? `data:image/png;base64,${content.base64}` : '');
+            img.className = 'max-w-full rounded-xl mx-auto';
+            body.appendChild(img);
+        } else if (type === 'code') {
+            const pre = document.createElement('pre');
+            pre.className = 'text-xs font-mono whitespace-pre-wrap text-white bg-black/30 rounded-xl p-4';
+            pre.textContent = content?.code || '';
+            body.appendChild(pre);
+        } else if (type === 'chart') {
+            const canvas = document.createElement('canvas');
+            canvas.width = 480;
+            canvas.height = 280;
+            body.appendChild(canvas);
+            drawSimpleBarChart(canvas, content?.labels || [], content?.values || []);
+        } else if (type === 'webpage') {
+            const iframe = document.createElement('iframe');
+            iframe.src = content?.url || '';
+            iframe.className = 'w-full h-[420px] rounded-xl border border-white/10';
+            const fallback = document.createElement('div');
+            fallback.className = 'text-secondary text-xs text-center py-8 hidden';
+            fallback.innerHTML = `This site doesn't allow embedding — <a href="${escapeHtml(content?.url || '')}" target="_blank" class="text-primary underline">open in new tab</a> instead.`;
+            let loaded = false;
+            iframe.onload = () => { loaded = true; };
+            body.appendChild(iframe);
+            body.appendChild(fallback);
+            setTimeout(() => {
+                if (!loaded) {
+                    iframe.classList.add('hidden');
+                    fallback.classList.remove('hidden');
+                }
+            }, 4000);
+        } else {
+            const err = document.createElement('div');
+            err.className = 'text-danger text-xs text-center py-8';
+            err.textContent = `Unsupported display type: "${String(type)}"`;
+            body.appendChild(err);
+        }
+
+        panel.classList.remove('hidden');
+    }
+
+    function hideDisplayPanel() {
+        document.getElementById('display-panel')?.classList.add('hidden');
+    }
+
+    // Minimal, dependency-free bar chart — no charting library needed for
+    // the simple {labels, values} shape display_content sends.
+    function drawSimpleBarChart(canvas, labels, values) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (!values.length) return;
+        const max = Math.max(...values, 1);
+        const barWidth = canvas.width / values.length;
+        ctx.fillStyle = '#8FB8E8';
+        values.forEach((v, i) => {
+            const barHeight = (v / max) * (canvas.height - 30);
+            ctx.fillRect(i * barWidth + 8, canvas.height - barHeight - 20, barWidth - 16, barHeight);
+        });
+        ctx.fillStyle = '#767C8C';
+        ctx.font = '10px monospace';
+        labels.forEach((label, i) => {
+            ctx.fillText(String(label).slice(0, 10), i * barWidth + 8, canvas.height - 6);
+        });
     }
 
     // 10. SLEEP CONTROLLERS
