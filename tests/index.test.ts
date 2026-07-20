@@ -472,6 +472,27 @@ registerTest("Tools", "update_objective_status rejects an invalid status value b
   }
 });
 
+registerTest("Tools", "record_command_outcome denies calls without system.execute grant", async () => {
+  const result = await executeTool("record_command_outcome", { commandId: 1, outcome: "worked" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: record_command_outcome should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "record_command_outcome rejects an invalid outcome value before touching the DB", async () => {
+  const result = await executeTool("record_command_outcome", { commandId: 1, outcome: "sort of" }, "admin");
+  if (result.ok !== false || !result.error?.includes("worked")) {
+    throw new Error("Tools: record_command_outcome should reject an outcome value that isn't 'worked' or 'not_worked'");
+  }
+});
+
+registerTest("Tools", "record_command_outcome reports a clean error for a non-existent command id", async () => {
+  const result = await executeTool("record_command_outcome", { commandId: 999999, outcome: "worked" }, "admin");
+  if (result.ok !== false || !result.error) {
+    throw new Error("Tools: record_command_outcome should fail cleanly for a command id that doesn't exist");
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);
