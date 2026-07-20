@@ -19,7 +19,8 @@ export async function createObjective(
   const db = getPool();
   const { rows } = await db.query(
     `INSERT INTO objectives (username, description, target_date)
-     VALUES ($1, $2, $3) RETURNING *`,
+     VALUES ($1, $2, $3)
+     RETURNING id, username, description, target_date::text AS target_date, status, created_at, updated_at, last_checked_at`,
     [username, description, targetDateISO]
   );
   return rows[0];
@@ -29,7 +30,8 @@ export async function listActiveObjectives(username: string): Promise<ObjectiveR
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `SELECT * FROM objectives WHERE username = $1 AND status = 'active'
+      `SELECT id, username, description, target_date::text AS target_date, status, created_at, updated_at, last_checked_at
+       FROM objectives WHERE username = $1 AND status = 'active'
        ORDER BY target_date ASC NULLS LAST, created_at ASC`,
       [username]
     );
@@ -61,7 +63,8 @@ export async function collectDueObjectives(username: string): Promise<ObjectiveR
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `SELECT * FROM objectives
+      `SELECT id, username, description, target_date::text AS target_date, status, created_at, updated_at, last_checked_at
+       FROM objectives
        WHERE username = $1 AND status = 'active'
          AND (
            last_checked_at IS NULL
