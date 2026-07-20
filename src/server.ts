@@ -104,6 +104,16 @@ app.use(helmet({
       fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
       imgSrc: ["'self'", "data:", "blob:"],
       mediaSrc: ["'self'", "blob:"],
+      // No explicit directive here previously meant frame-src fell back to
+      // default-src 'self', silently blocking every cross-origin iframe —
+      // discovered live while testing display_content's webpage embed type
+      // (a separate, since-merged feature branch), which needs exactly
+      // this. 'self' is deliberately left out: allowing only https: still
+      // lets legitimate cross-origin embeds through while CSP itself also
+      // blocks framing this dashboard's own origin, matching (and backing
+      // up at the network layer) the same-origin rejection
+      // display_content's isSafeEmbedUrl already does client-side.
+      frameSrc: ["https:"],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
