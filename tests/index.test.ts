@@ -451,6 +451,27 @@ registerTest("Tools", "unrelated tools never carry a displayDirective", async ()
   }
 });
 
+registerTest("Tools", "set_objective denies calls without objectives.write grant", async () => {
+  const result = await executeTool("set_objective", { description: "test goal" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: set_objective should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "update_objective_status reports a clear error for a non-existent objective", async () => {
+  const result = await executeTool("update_objective_status", { objectiveId: 999999, status: "completed" }, "admin");
+  if (result.ok !== false || !result.error) {
+    throw new Error("Tools: update_objective_status should fail cleanly for an id that doesn't exist");
+  }
+});
+
+registerTest("Tools", "update_objective_status rejects an invalid status value before touching the DB", async () => {
+  const result = await executeTool("update_objective_status", { objectiveId: 1, status: "done" }, "admin");
+  if (result.ok !== false || !result.error?.includes("completed") ) {
+    throw new Error("Tools: update_objective_status should reject a status value that isn't 'completed' or 'abandoned'");
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);
@@ -561,6 +582,99 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
   } finally {
     delete process.env.JARVIS_FILES_DIR_MOUNT;
     fsSync.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------- Objectives Tests (no live Postgres in this test process) ----------
+import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/data/objectives-repo.js";
+
+registerTest("Objectives", "createObjective degrades cleanly when Postgres isn't reachable", async () => {
+  try {
+    await createObjective("test_user", "run a marathon", null);
+    throw new Error("Objectives: expected createObjective to reject without a live Postgres connection");
+  } catch (err: any) {
+    if (err.message?.includes("expected createObjective to reject")) throw err;
+    // Any other thrown error (connection refused/DNS failure) is the expected
+    // behavior in this no-DB test process — createObjective is a genuine
+    // write with no sensible fallback value, so it's allowed to reject; the
+    // read-side functions below are the ones required to degrade silently.
+  }
+});
+
+registerTest("Objectives", "listActiveObjectives degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listActiveObjectives("test_user");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Objectives: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Objectives", "updateObjectiveStatus degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await updateObjectiveStatus("test_user", 999999, "completed");
+  if (result !== false) {
+    throw new Error(`Objectives: expected false with no DB, got: ${result}`);
+  }
+});
+
+registerTest("Objectives", "collectDueObjectives degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await collectDueObjectives("test_user");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Objectives: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Objectives", "markCheckedIn never throws, even with no DB or an empty list", async () => {
+  await markCheckedIn([]);
+  await markCheckedIn([999999]);
+  // Reaching this line without an unhandled rejection is the assertion.
+});
+
+// ---------- Briefing Tests ----------
+import { prioritizeSignals } from "../src/execution/briefing.js";
+
+registerTest("Briefing", "prioritizeSignals scores a near-due objective as high urgency", () => {
+  const soon = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10); // tomorrow
+  const items = prioritizeSignals({
+    emails: [],
+    githubNotifications: [],
+    objectives: [{
+      id: 1, username: "admin", description: "finish the report", target_date: soon,
+      status: "active", created_at: new Date(), updated_at: new Date(), last_checked_at: null,
+    }],
+  });
+  const obj = items.find(i => i.id === "objective:1");
+  if (!obj || obj.urgency !== "high") {
+    throw new Error(`Briefing: expected a near-due objective to score "high", got: ${JSON.stringify(obj)}`);
+  }
+});
+
+registerTest("Briefing", "prioritizeSignals scores a distant objective as medium urgency", () => {
+  const distant = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10); // 30 days out
+  const items = prioritizeSignals({
+    emails: [],
+    githubNotifications: [],
+    objectives: [{
+      id: 2, username: "admin", description: "get better at guitar", target_date: distant,
+      status: "active", created_at: new Date(), updated_at: new Date(), last_checked_at: null,
+    }],
+  });
+  const obj = items.find(i => i.id === "objective:2");
+  if (!obj || obj.urgency !== "medium") {
+    throw new Error(`Briefing: expected a distant objective to score "medium", got: ${JSON.stringify(obj)}`);
+  }
+});
+
+registerTest("Briefing", "prioritizeSignals scores an objective with no target date as medium urgency", () => {
+  const items = prioritizeSignals({
+    emails: [],
+    githubNotifications: [],
+    objectives: [{
+      id: 3, username: "admin", description: "get better at guitar", target_date: null,
+      status: "active", created_at: new Date(), updated_at: new Date(), last_checked_at: null,
+    }],
+  });
+  const obj = items.find(i => i.id === "objective:3");
+  if (!obj || obj.urgency !== "medium") {
+    throw new Error(`Briefing: expected an undated objective to score "medium", got: ${JSON.stringify(obj)}`);
   }
 });
 

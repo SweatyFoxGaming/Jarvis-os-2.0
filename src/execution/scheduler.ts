@@ -5,6 +5,7 @@ import * as briefing from "./briefing.js";
 import * as briefingRepo from "../data/briefing-repo.js";
 import * as identity from "../cognition/identity.js";
 import * as identityRepo from "../data/identity-repo.js";
+import * as objectivesRepo from "../data/objectives-repo.js";
 import * as push from "../integrations/push.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -117,7 +118,7 @@ let seenBriefingItemIds = new Set<string>();
 
 export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-briefing", intervalMs, async () => {
-    const result = await briefing.generateBriefing(ai);
+    const result = await briefing.generateBriefing(ai, "admin");
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
     } catch (err: any) {
@@ -134,6 +135,16 @@ export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 
       const freshText = await briefing.synthesizeBriefing(ai, freshItems, []);
       pushNotification("admin", freshText, freshItems.some(i => i.urgency === "high") ? "warning" : "info");
     }
+
+    // Stamp last_checked_at for every objective this run actually surfaced
+    // (whether or not it was "fresh" by the in-memory tracker above — an
+    // objective only appears here at all because objectives-repo.ts's own
+    // collectDueObjectives() already decided it was due, so every
+    // appearance here is a real check-in worth recording).
+    const objectiveIds = result.items
+      .filter(i => i.source === "objective")
+      .map(i => Number(i.id.split(":")[1]));
+    await objectivesRepo.markCheckedIn(objectiveIds);
   });
 }
 

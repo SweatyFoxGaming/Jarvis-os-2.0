@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { ObservationPlatform } from "../observation/index.js";
 import * as emailIntegration from "../integrations/email.js";
 import * as github from "../integrations/github.js";
+import * as objectivesRepo from "../data/objectives-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -25,8 +26,8 @@ export function getConfiguredAi(): GoogleGenAI | null {
  */
 
 export interface PrioritizedItem {
-  id: string; // stable across runs (email UID / GitHub notification id) — lets a caller dedup against what it already notified about
-  source: "email" | "github";
+  id: string; // stable across runs (email UID / GitHub notification id / objective id) — lets a caller dedup against what it already notified about
+  source: "email" | "github" | "objective";
   urgency: "high" | "medium" | "low";
   summary: string;
   ageHours?: number;
@@ -37,12 +38,14 @@ export interface PrioritizedItem {
 export interface RawSignals {
   emails: any[];
   githubNotifications: any[];
+  objectives: import("../data/objectives-repo.js").ObjectiveRow[];
   emailError?: string;
   githubError?: string;
+  objectivesError?: string;
 }
 
-export async function collectSignals(): Promise<RawSignals> {
-  const signals: RawSignals = { emails: [], githubNotifications: [] };
+export async function collectSignals(username: string): Promise<RawSignals> {
+  const signals: RawSignals = { emails: [], githubNotifications: [], objectives: [] };
 
   try {
     signals.emails = await emailIntegration.fetchRecentMessages(10);
@@ -54,6 +57,12 @@ export async function collectSignals(): Promise<RawSignals> {
     signals.githubNotifications = await github.getNotifications();
   } catch (err: any) {
     signals.githubError = err.message || String(err);
+  }
+
+  try {
+    signals.objectives = await objectivesRepo.collectDueObjectives(username);
+  } catch (err: any) {
+    signals.objectivesError = err.message || String(err);
   }
 
   return signals;
@@ -92,6 +101,22 @@ export function prioritizeSignals(signals: RawSignals): PrioritizedItem[] {
       source: "github",
       urgency,
       summary: `[${n.reason}] ${n.repository?.full_name || "unknown repo"}: "${n.subject?.title || "untitled"}"`,
+    });
+  }
+
+  const now = Date.now();
+  for (const obj of signals.objectives) {
+    const daysUntilDue = obj.target_date
+      ? (new Date(obj.target_date).getTime() - now) / 86_400_000
+      : undefined;
+    const urgent = daysUntilDue !== undefined && daysUntilDue <= 3; // includes overdue (negative values)
+    items.push({
+      id: `objective:${obj.id}`,
+      source: "objective",
+      urgency: urgent ? "high" : "medium",
+      summary: obj.target_date
+        ? `Standing goal: "${obj.description}" (target: ${obj.target_date})`
+        : `Standing goal: "${obj.description}"`,
     });
   }
 
@@ -137,10 +162,10 @@ export async function synthesizeBriefing(ai: GoogleGenAI | null, items: Prioriti
   }
 }
 
-export async function generateBriefing(ai: GoogleGenAI | null): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
-  const signals = await collectSignals();
+export async function generateBriefing(ai: GoogleGenAI | null, username: string): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
+  const signals = await collectSignals(username);
   const items = prioritizeSignals(signals);
-  const errors = [signals.emailError, signals.githubError].filter(Boolean) as string[];
+  const errors = [signals.emailError, signals.githubError, signals.objectivesError].filter(Boolean) as string[];
   const text = await synthesizeBriefing(ai, items, errors);
   return { text, itemCount: items.length, items };
 }
