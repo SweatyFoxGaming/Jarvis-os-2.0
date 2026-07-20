@@ -1620,6 +1620,16 @@ app.post("/api/system/ingest/command-result", validateApiKey, async (req: any, r
   try {
     const updated = await commandProposalsRepo.recordCommandResult(id, output || "", exitCode);
     if (!updated) return res.status(404).json({ error: "Command not found" });
+    // A nonzero exit is already an unambiguous outcome signal — only a
+    // successful run is actually ambiguous ("it ran, but did it help?"),
+    // so only 'executed' rows get the follow-up question.
+    if (updated.status === "executed") {
+      scheduler.pushNotification(
+        "admin",
+        `Ran your command, sir: "${updated.command}". Did that fix it?`,
+        "info"
+      );
+    }
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
