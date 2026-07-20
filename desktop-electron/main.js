@@ -345,7 +345,7 @@ ipcMain.on('notify', (event, { title, body }) => {
 });
 
 // One still image, not a stream — matches the explicit on-demand-only
-// design decision (see docs/superpowers/specs/2026-07-20-...design.md).
+// design decision (see docs/superpowers/specs/2026-07-20-os-integration-and-display-panel-design.md).
 ipcMain.handle('capture-screen', async () => {
   try {
     const sources = await desktopCapturer.getSources({
