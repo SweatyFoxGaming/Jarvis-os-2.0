@@ -16,6 +16,12 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 
+// Set by the autostart .desktop entry / systemd unit (see ensureOsIntegration
+// below) so a login-triggered launch doesn't pop a window in front of the
+// user before they've asked to see it. The app-menu entry passes no flag,
+// so double-clicking the icon still opens visibly exactly as before.
+const START_HIDDEN = process.argv.includes('--hidden');
+
 // Without this, closing the window (which hides it into the tray rather
 // than quitting — see the 'close' handler below) combined with launching
 // the app again later (double-clicking the desktop icon, a hotkey, a fresh
@@ -108,11 +114,16 @@ async function createWindow() {
     backgroundColor: '#04060f',
     title: 'Jarvis OS',
     icon: ICON_PATH,
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
     },
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    if (!START_HIDDEN) mainWindow.show();
   });
 
   // Auto-grant microphone/camera to our own locally-hosted dashboard — this
