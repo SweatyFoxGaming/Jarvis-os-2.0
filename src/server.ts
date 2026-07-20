@@ -1631,7 +1631,7 @@ app.post("/api/system/ingest/command-result", validateApiKey, async (req: any, r
 // scheduler.ts runs the same real synthesis on a timer without being asked.
 app.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
   try {
-    const result = await briefing.generateBriefing(ai);
+    const result = await briefing.generateBriefing(ai, req.username);
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
     } catch (err: any) {

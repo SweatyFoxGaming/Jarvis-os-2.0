@@ -628,6 +628,56 @@ registerTest("Objectives", "markCheckedIn never throws, even with no DB or an em
   // Reaching this line without an unhandled rejection is the assertion.
 });
 
+// ---------- Briefing Tests ----------
+import { prioritizeSignals } from "../src/execution/briefing.js";
+
+registerTest("Briefing", "prioritizeSignals scores a near-due objective as high urgency", () => {
+  const soon = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10); // tomorrow
+  const items = prioritizeSignals({
+    emails: [],
+    githubNotifications: [],
+    objectives: [{
+      id: 1, username: "admin", description: "finish the report", target_date: soon,
+      status: "active", created_at: new Date(), updated_at: new Date(), last_checked_at: null,
+    }],
+  });
+  const obj = items.find(i => i.id === "objective:1");
+  if (!obj || obj.urgency !== "high") {
+    throw new Error(`Briefing: expected a near-due objective to score "high", got: ${JSON.stringify(obj)}`);
+  }
+});
+
+registerTest("Briefing", "prioritizeSignals scores a distant objective as medium urgency", () => {
+  const distant = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10); // 30 days out
+  const items = prioritizeSignals({
+    emails: [],
+    githubNotifications: [],
+    objectives: [{
+      id: 2, username: "admin", description: "get better at guitar", target_date: distant,
+      status: "active", created_at: new Date(), updated_at: new Date(), last_checked_at: null,
+    }],
+  });
+  const obj = items.find(i => i.id === "objective:2");
+  if (!obj || obj.urgency !== "medium") {
+    throw new Error(`Briefing: expected a distant objective to score "medium", got: ${JSON.stringify(obj)}`);
+  }
+});
+
+registerTest("Briefing", "prioritizeSignals scores an objective with no target date as medium urgency", () => {
+  const items = prioritizeSignals({
+    emails: [],
+    githubNotifications: [],
+    objectives: [{
+      id: 3, username: "admin", description: "get better at guitar", target_date: null,
+      status: "active", created_at: new Date(), updated_at: new Date(), last_checked_at: null,
+    }],
+  });
+  const obj = items.find(i => i.id === "objective:3");
+  if (!obj || obj.urgency !== "medium") {
+    throw new Error(`Briefing: expected an undated objective to score "medium", got: ${JSON.stringify(obj)}`);
+  }
+});
+
 // ---------- Identity (Continuity of Self) Tests ----------
 registerTest("Identity", "buildIdentityContext degrades cleanly when Postgres isn't reachable", async () => {
   // This test process never calls initDatabase(), so there's no live

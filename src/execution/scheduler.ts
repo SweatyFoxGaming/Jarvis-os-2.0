@@ -117,7 +117,7 @@ let seenBriefingItemIds = new Set<string>();
 
 export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-briefing", intervalMs, async () => {
-    const result = await briefing.generateBriefing(ai);
+    const result = await briefing.generateBriefing(ai, "admin");
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
     } catch (err: any) {
