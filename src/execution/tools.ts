@@ -18,6 +18,7 @@ import * as webSearch from "../integrations/websearch.js";
 import * as featureRequestsRepo from "../data/feature-requests-repo.js";
 import * as securityRepo from "../data/security-repo.js";
 import * as commandProposalsRepo from "../data/command-proposals-repo.js";
+import * as objectivesRepo from "../data/objectives-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -56,6 +57,9 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   get_security_status: "security.read",
   propose_command: "system.execute",
   view_screen: "screen.view",
+  set_objective: "objectives.write",
+  list_objectives: "objectives.read",
+  update_objective_status: "objectives.write",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -298,6 +302,38 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["type", "title", "content"],
     },
   },
+  {
+    name: "set_objective",
+    description: "Record a standing goal the user wants Jarvis to track and proactively follow up on over time (e.g. \"help me train for a marathon by October\", \"I want to get better at guitar\"). Only call this for something the user actually wants tracked across future conversations, not a one-off question.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        description: { type: Type.STRING, description: "A clear, short description of the goal" },
+        targetDateISO: { type: Type.STRING, description: "Optional ISO 8601 date (YYYY-MM-DD) the user wants to hit, if they mentioned one" },
+      },
+      required: ["description"],
+    },
+  },
+  {
+    name: "list_objectives",
+    description: "List the user's currently active standing objectives. Use this when the user asks what goals they're tracking, or before calling update_objective_status if you don't already know the objective's id from earlier in this conversation.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "update_objective_status",
+    description: "Mark a standing objective as completed or abandoned. Call list_objectives first if you don't already know the objective's numeric id.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        objectiveId: { type: Type.NUMBER, description: "The objective's id, from list_objectives" },
+        status: { type: Type.STRING, description: "Either \"completed\" or \"abandoned\"" },
+      },
+      required: ["objectiveId", "status"],
+    },
+  },
 ];
 
 export async function executeTool(
@@ -438,6 +474,20 @@ export async function executeTool(
         }
         return { name, ok: false, error: "Screen capture requested", needsClientAction: "capture_screen" };
       }
+      case "set_objective":
+        output = await objectivesRepo.createObjective(username, args.description, args.targetDateISO || null);
+        break;
+      case "list_objectives":
+        output = { objectives: await objectivesRepo.listActiveObjectives(username) };
+        break;
+      case "update_objective_status": {
+        const updated = await objectivesRepo.updateObjectiveStatus(username, args.objectiveId, args.status);
+        if (!updated) {
+          return { name, ok: false, error: "No matching active objective found for that id." };
+        }
+        output = { updated: true };
+        break;
+      }
       case "display_content": {
         displayDirective = { type: args.type, title: args.title, content: args.content };
         output = `Displayed ${args.type} "${args.title}" in the display panel.`;
@@ -475,6 +525,8 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   search_web: ["search the web", "search for", "look up", "google", "find out about", "what's the latest"],
   get_security_status: ["network security", "unknown device", "unrecognized device", "vulnerabilit", "security findings", "is my network safe"],
   view_screen: ["what's on my screen", "whats on my screen", "look at my screen", "what am i looking at", "help me with this error", "what does this say"],
+  set_objective: ["help me", "i want to", "track this goal", "keep me accountable", "my goal is"],
+  list_objectives: ["what am i tracking", "my goals", "my objectives", "what are my goals"],
 };
 
 /**

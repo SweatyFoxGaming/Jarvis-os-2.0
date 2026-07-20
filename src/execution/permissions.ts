@@ -36,6 +36,8 @@ export const ALL_CAPABILITIES = [
   "security.read",
   "security.manage",
   "screen.view",
+  "objectives.read",
+  "objectives.write",
   "system.execute",
 ] as const;
 

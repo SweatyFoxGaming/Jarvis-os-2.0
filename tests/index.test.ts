@@ -451,6 +451,20 @@ registerTest("Tools", "unrelated tools never carry a displayDirective", async ()
   }
 });
 
+registerTest("Tools", "set_objective denies calls without objectives.write grant", async () => {
+  const result = await executeTool("set_objective", { description: "test goal" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: set_objective should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "update_objective_status reports a clear error for a non-existent objective", async () => {
+  const result = await executeTool("update_objective_status", { objectiveId: 999999, status: "completed" }, "admin");
+  if (result.ok !== false || !result.error) {
+    throw new Error("Tools: update_objective_status should fail cleanly for an id that doesn't exist");
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);
