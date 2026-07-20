@@ -4,7 +4,7 @@
 
 **Goal:** The desktop app auto-launches at login with no visible window and survives a crash without needing the user to log out/in again.
 
-**Architecture:** Two small, additive changes to `desktop-electron/main.js`: (1) a `--hidden` CLI flag, forwarded through `launch.sh`, that skips showing the window on launch; (2) a `systemd --user` unit that supervises the same launch path with `Restart=on-failure`, written the same "only if missing" way the existing `.desktop` autostart entry already is. Neither replaces anything that exists today — both are additive to `2026-07-19-desktop-os-integration-design.md`'s already-shipped autostart/tray/single-instance-lock system.
+**Architecture:** Two small changes to `desktop-electron/main.js`: (1) a `--hidden` CLI flag, forwarded through `launch.sh`, that skips showing the window on launch; (2) a `systemd --user` unit that supervises the same launch path with `Restart=on-failure`, written the same "only if missing" way the existing `.desktop` autostart entry already is. Both build on `2026-07-19-desktop-os-integration-design.md`'s already-shipped autostart/tray/single-instance-lock system — but per the 2026-07-20 correction on Tasks 2 and 3 below, the systemd unit ends up **replacing** the XDG autostart entry as the login-launch mechanism wherever systemd --user is available, rather than running alongside it; autostart remains only as the fallback when systemd isn't available.
 
 **Tech Stack:** Electron (existing), Bash, systemd user units (Linux-only, matching this repo's existing XDG-only scope).
 
@@ -117,7 +117,9 @@ git commit -m "feat: add --hidden launch mode, load window without a visible fla
 - Consumes: `LAUNCH_SCRIPT` (existing constant, `desktop-electron/main.js:13`), `START_HIDDEN` (Task 1).
 - Produces: no new exports — this only changes file contents written to disk.
 
-- [ ] **Step 1: Split the single shared `.desktop` template into two**
+- [ ] **Step 1: Split the single shared `.desktop` template into two, and make the autostart entry conditional on systemd being unavailable**
+
+> **Correction (2026-07-20):** this step originally had `ensureOsIntegration()` write the autostart `.desktop` entry unconditionally, in addition to the systemd unit from Task 3. Live testing after both landed found a real bug in that design: this machine's `systemd-xdg-autostart-generator` independently wraps the autostart `.desktop` file into its own transient systemd unit, so writing both meant two systemd-adjacent launchers racing `requestSingleInstanceLock()` at every login, with no guarantee `jarvis-os.service` specifically ended up supervising the surviving instance — undermining the whole point of adding it. The fix, described below, makes systemd the sole login-launcher whenever it's available, and only falls back to XDG autostart when it isn't. `docs/superpowers/plans/` is a durable record, so this note stays rather than being silently edited away — but the code block below reflects the corrected design, not what originally shipped.
 
 Current `ensureOsIntegration()` writes the *same* `desktopEntry` content to both the app-menu path and the autostart path. Replace the whole function body:
 
@@ -135,44 +137,64 @@ function ensureOsIntegration() {
     '',
   ].join('\n');
 
-  // Passes --hidden so a login-triggered launch (see Task 1) doesn't show a
-  // window before the user asks to see it — this is the ONLY difference
-  // from menuEntry above.
-  const autostartEntry = [
-    '[Desktop Entry]',
-    'Type=Application',
-    'Name=Jarvis OS',
-    'Comment=Jarvis OS desktop console',
-    `Exec="${LAUNCH_SCRIPT}" --hidden`,
-    `Icon=${ICON_PATH}`,
-    'Terminal=false',
-    'Categories=Utility;',
-    'X-GNOME-Autostart-enabled=true',
-    '',
-  ].join('\n');
-
-  const targets = [
-    { file: path.join(os.homedir(), '.local', 'share', 'applications', 'jarvis-os.desktop'), content: menuEntry },
-    { file: path.join(os.homedir(), '.config', 'autostart', 'jarvis-os.desktop'), content: autostartEntry },
-  ];
-
-  for (const { file, content } of targets) {
-    try {
-      if (fs.existsSync(file)) continue;
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, content, { mode: 0o644 });
-    } catch (err) {
-      console.error(`Could not write ${file}:`, err.message);
+  const menuEntryFile = path.join(os.homedir(), '.local', 'share', 'applications', 'jarvis-os.desktop');
+  try {
+    if (!fs.existsSync(menuEntryFile)) {
+      fs.mkdirSync(path.dirname(menuEntryFile), { recursive: true });
+      fs.writeFileSync(menuEntryFile, menuEntry, { mode: 0o644 });
     }
+  } catch (err) {
+    console.error(`Could not write ${menuEntryFile}:`, err.message);
   }
 
-  ensureSystemdService();
+  const autostartFile = path.join(os.homedir(), '.config', 'autostart', 'jarvis-os.desktop');
+  const systemdOwnsLogin = ensureSystemdService();
+
+  if (systemdOwnsLogin) {
+    // systemd now owns login-launch + crash supervision. Remove a stale
+    // autostart entry (from an older build, or a pre-fix run) so it can't
+    // recreate the two-launcher race this design avoids.
+    try {
+      if (fs.existsSync(autostartFile)) {
+        fs.unlinkSync(autostartFile);
+        console.log(`[main] Removed ${autostartFile}: jarvis-os.service now owns login-launch and crash supervision, so a separate XDG autostart entry would just race it again.`);
+      }
+    } catch (err) {
+      console.error(`Could not remove stale ${autostartFile}:`, err.message);
+    }
+  } else {
+    // Fallback path: systemd --user isn't available, so XDG autostart is
+    // the only login-launch mechanism available. Passes --hidden so a
+    // login-triggered launch (see Task 1) doesn't show a window before the
+    // user asks to see it — this is the ONLY difference from menuEntry above.
+    const autostartEntry = [
+      '[Desktop Entry]',
+      'Type=Application',
+      'Name=Jarvis OS',
+      'Comment=Jarvis OS desktop console',
+      `Exec="${LAUNCH_SCRIPT}" --hidden`,
+      `Icon=${ICON_PATH}`,
+      'Terminal=false',
+      'Categories=Utility;',
+      'X-GNOME-Autostart-enabled=true',
+      '',
+    ].join('\n');
+
+    try {
+      if (!fs.existsSync(autostartFile)) {
+        fs.mkdirSync(path.dirname(autostartFile), { recursive: true });
+        fs.writeFileSync(autostartFile, autostartEntry, { mode: 0o644 });
+      }
+    } catch (err) {
+      console.error(`Could not write ${autostartFile}:`, err.message);
+    }
+  }
 }
 ```
 
-Note the call to `ensureSystemdService()` at the end — implemented in Task 3. Leave that call in place now; Task 3 defines the function it calls.
+Note the call to `ensureSystemdService()` — implemented in Task 3, and now returning `true`/`false` so `ensureOsIntegration()` can decide whether systemd owns login-launch. Leave that call in place now; Task 3 defines the function it calls.
 
-- [ ] **Step 2: Verify existing `.desktop` files are never clobbered**
+- [ ] **Step 2: Verify existing `.desktop` files are never clobbered, and that the autostart entry is written only when systemd isn't available**
 
 Run: `cat ~/.local/share/applications/jarvis-os.desktop` (if it already exists from a prior run, its content should be untouched — confirm no `--hidden` is present).
 To test a genuinely fresh write, temporarily move existing files aside first:
@@ -181,7 +203,7 @@ mv ~/.local/share/applications/jarvis-os.desktop /tmp/jarvis-menu.desktop.bak 2>
 mv ~/.config/autostart/jarvis-os.desktop /tmp/jarvis-autostart.desktop.bak 2>/dev/null || true
 ```
 Run: `cd desktop-electron && ./launch.sh --hidden` (then quit via tray).
-Expected: `cat ~/.local/share/applications/jarvis-os.desktop` has no `--hidden` in its `Exec=` line; `cat ~/.config/autostart/jarvis-os.desktop` does.
+Expected on this machine (systemd --user available): `cat ~/.local/share/applications/jarvis-os.desktop` has no `--hidden` in its `Exec=` line; `~/.config/autostart/jarvis-os.desktop` does **not** exist (systemd owns login-launch, so it's never written — and is actively removed if a stale copy is found instead).
 
 - [ ] **Step 3: Commit**
 
@@ -199,7 +221,7 @@ git commit -m "feat: autostart entry launches hidden, app-menu entry launches vi
 
 **Interfaces:**
 - Consumes: `LAUNCH_SCRIPT` (existing constant).
-- Produces: `ensureSystemdService()` — called once from `ensureOsIntegration()` (Task 2), no return value, no other module depends on it.
+- Produces: `ensureSystemdService()` — called once from `ensureOsIntegration()` (Task 2), returns `true`/`false` (installed vs. unavailable/failed) so the caller can decide whether to fall back to XDG autostart; no other module depends on it.
 
 - [ ] **Step 1: Add the `child_process` import**
 
@@ -211,26 +233,30 @@ const { execSync } = require('child_process');
 
 - [ ] **Step 2: Implement `ensureSystemdService()`**
 
+> **Correction (2026-07-20):** the code block below now differs from what originally shipped in two ways, both fixes from the same live-testing round noted in Task 2's correction: (1) the function returns `true`/`false` (installed-or-already-present vs. unavailable/failed) so `ensureOsIntegration()` (Task 2) can decide whether systemd owns login-launch instead of the XDG autostart entry; (2) it runs `systemctl --user enable` alone, **not** `enable --now`. This function only ever executes from inside the app's own `whenReady()` — i.e. an instance is already running — so `--now` guaranteed the newly-installed unit immediately raced the very process installing it. `enable` alone arms the unit for the *next* login or crash instead, which means on a fresh install the systemd-supervised instance only becomes "the" instance starting from then — that's expected, not a bug.
+
 Add this function right after `ensureOsIntegration()`:
 
 ```js
-// Real crash-restart supervision, complementing (not replacing) the XDG
-// autostart entry above. Autostart only fires once, at login — if this
-// process ever crashes afterward, nothing brings it back until the next
-// login without this. requestSingleInstanceLock() above already makes it
-// harmless for both this unit AND the XDG autostart entry to independently
-// try to launch at login (the second attempt just hands off to the first
-// and exits) — so this is additive, not a replacement.
+// Real crash-restart supervision AND (per ensureOsIntegration above) the
+// sole at-login launcher whenever systemd --user is available — replacing
+// the XDG autostart entry rather than running alongside it, to avoid two
+// independent launchers racing requestSingleInstanceLock() at login.
+//
+// Returns true if jarvis-os.service is installed (already, or just now)
+// and can be trusted to own login-launch; false if systemd --user isn't
+// available or installation failed, in which case the caller falls back
+// to XDG autostart.
 function ensureSystemdService() {
   const unitDir = path.join(os.homedir(), '.config', 'systemd', 'user');
   const unitPath = path.join(unitDir, 'jarvis-os.service');
-  if (fs.existsSync(unitPath)) return;
+  if (fs.existsSync(unitPath)) return true;
 
   try {
     execSync('systemctl --user --version', { stdio: 'ignore' });
   } catch {
-    console.log('[main] systemd --user not available; relying on XDG autostart only.');
-    return;
+    console.log('[main] systemd --user not available; falling back to XDG autostart only.');
+    return false;
   }
 
   const unit = [
@@ -252,15 +278,19 @@ function ensureSystemdService() {
     fs.mkdirSync(unitDir, { recursive: true });
     fs.writeFileSync(unitPath, unit, { mode: 0o644 });
     execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
-    execSync('systemctl --user enable --now jarvis-os.service', { stdio: 'ignore' });
-    console.log('[main] Installed and started jarvis-os.service (systemd --user).');
+    // Deliberately `enable` only, NOT `enable --now` — see the correction
+    // note above this code block for why.
+    execSync('systemctl --user enable jarvis-os.service', { stdio: 'ignore' });
+    console.log('[main] Installed and enabled jarvis-os.service (systemd --user); will take effect at next login or crash restart, not immediately.');
+    return true;
   } catch (err) {
     console.error('[main] Could not install systemd user service:', err.message);
+    return false;
   }
 }
 ```
 
-- [ ] **Step 3: Verify the unit gets written and enabled on first run**
+- [ ] **Step 3: Verify the unit gets written and enabled (but not started) on first run**
 
 ```bash
 rm -f ~/.config/systemd/user/jarvis-os.service
@@ -268,12 +298,12 @@ systemctl --user disable jarvis-os.service 2>/dev/null || true
 cd desktop-electron && ./launch.sh --hidden
 sleep 2
 ```
-Run: `systemctl --user status jarvis-os.service --no-pager`
-Expected: `Active: active (running)`, and `cat ~/.config/systemd/user/jarvis-os.service` shows `Restart=on-failure` and `ExecStart=".../launch.sh" --hidden`.
+Run: `systemctl --user is-enabled jarvis-os.service` and `systemctl --user is-active jarvis-os.service`.
+Expected: `is-enabled` prints `enabled`; `is-active` prints something other than `active` (e.g. `inactive`) — the unit is armed for next login/crash but was deliberately not started now (`enable`, not `enable --now`), since an instance is already running and starting a second one would race it. `cat ~/.config/systemd/user/jarvis-os.service` shows `Restart=on-failure` and `ExecStart=".../launch.sh" --hidden`.
 
 - [ ] **Step 4: Verify real crash-restart supervision**
 
-Run: `pkill -9 -f "electron . --hidden"`
+Since Step 3 leaves the unit enabled-but-inactive rather than running, crash-restart supervision only actually engages once systemd has started the unit itself (next login, or after a manual `systemctl --user start jarvis-os.service`). To verify the behavior directly: `systemctl --user start jarvis-os.service`, wait a couple seconds, then run `pkill -9 -f "electron . --hidden"`.
 Wait 10 seconds, then run: `systemctl --user status jarvis-os.service --no-pager`
 Expected: the service shows `Active: active (running)` again with a recent start time — systemd relaunched it within `RestartSec=5` of the crash, without any manual login/relaunch.
 
@@ -298,4 +328,4 @@ git commit -m "feat: supervise the desktop app with a systemd --user service"
 
 **Placeholder scan:** No TBD/TODO; every step has exact code or an exact command with expected output.
 
-**Type consistency:** `START_HIDDEN` (Task 1) is read only inside `createWindow()` (same file, module scope) — no cross-file signature to keep consistent. `ensureSystemdService()` (Task 3) is called from `ensureOsIntegration()` (Task 2) with no arguments and no return value used — consistent between both tasks.
+**Type consistency:** `START_HIDDEN` (Task 1) is read only inside `createWindow()` (same file, module scope) — no cross-file signature to keep consistent. `ensureSystemdService()` (Task 3) is called from `ensureOsIntegration()` (Task 2) with no arguments; per the 2026-07-20 correction it now returns a boolean that `ensureOsIntegration()` uses to decide whether to write or remove the XDG autostart entry — consistent between both tasks.
