@@ -2,6 +2,7 @@ import { ObservationPlatform } from "../observation/index.js";
 import { GoogleGenAI } from "@google/genai";
 import { MindKernel } from "../cognition/kernel/kernel.js";
 import { SessionState } from "../cognition/session.js";
+import * as commandProposalsRepo from "../data/command-proposals-repo.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
@@ -178,12 +179,14 @@ export class AutonomousExecutive {
       buildVerification: "NOT PERFORMED — no code was written, compiled, or tested."
     };
 
+    const recentOutcomeSuccessRate = await commandProposalsRepo.getRecentOutcomeSuccessRate();
     const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
       memoryConfidence: 1.0,
       toolConfidence: 1.0,
       validationConfidence: 1.0,
       capabilityConfidence: 1.0,
-      environmentConfidence: 1.0
+      environmentConfidence: 1.0,
+      ...(recentOutcomeSuccessRate !== null ? { outcomeConfidence: recentOutcomeSuccessRate } : {})
     });
 
     session.updateState({

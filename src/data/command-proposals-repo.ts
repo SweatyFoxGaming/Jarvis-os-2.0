@@ -97,3 +97,45 @@ export async function recordCommandResult(
   );
   return rows[0] || null;
 }
+
+// Scoped to status = 'executed' AND outcome IS NULL so this can never
+// double-record (a repeated tool call or the user answering twice is a
+// safe no-op) and can never attach an outcome to a command that hasn't
+// actually succeeded yet.
+export async function recordCommandOutcome(
+  id: number,
+  outcome: "worked" | "not_worked"
+): Promise<boolean> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `UPDATE command_proposals SET outcome = $1, outcome_recorded_at = now()
+       WHERE id = $2 AND status = 'executed' AND outcome IS NULL`,
+      [outcome, id]
+    );
+    return (rowCount ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// Returns null when zero outcomes have ever been recorded — callers must
+// treat that as "no data yet," never as "0% success." Windowed to the most
+// recent 20 recorded outcomes so one very old streak doesn't dominate the
+// signal forever.
+export async function getRecentOutcomeSuccessRate(): Promise<number | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT outcome FROM command_proposals
+       WHERE outcome IS NOT NULL
+       ORDER BY outcome_recorded_at DESC
+       LIMIT 20`
+    );
+    if (rows.length === 0) return null;
+    const worked = rows.filter((r: { outcome: string }) => r.outcome === "worked").length;
+    return worked / rows.length;
+  } catch {
+    return null;
+  }
+}

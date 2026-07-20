@@ -15,6 +15,7 @@ import { executeTool } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
+import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -472,6 +473,27 @@ registerTest("Tools", "update_objective_status rejects an invalid status value b
   }
 });
 
+registerTest("Tools", "record_command_outcome denies calls without system.execute grant", async () => {
+  const result = await executeTool("record_command_outcome", { commandId: 1, outcome: "worked" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: record_command_outcome should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "record_command_outcome rejects an invalid outcome value before touching the DB", async () => {
+  const result = await executeTool("record_command_outcome", { commandId: 1, outcome: "sort of" }, "admin");
+  if (result.ok !== false || !result.error?.includes("worked")) {
+    throw new Error("Tools: record_command_outcome should reject an outcome value that isn't 'worked' or 'not_worked'");
+  }
+});
+
+registerTest("Tools", "record_command_outcome reports a clean error for a non-existent command id", async () => {
+  const result = await executeTool("record_command_outcome", { commandId: 999999, outcome: "worked" }, "admin");
+  if (result.ok !== false || !result.error) {
+    throw new Error("Tools: record_command_outcome should fail cleanly for a command id that doesn't exist");
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);
@@ -587,6 +609,7 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
 
 // ---------- Objectives Tests (no live Postgres in this test process) ----------
 import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/data/objectives-repo.js";
+import { recordCommandOutcome, getRecentOutcomeSuccessRate } from "../src/data/command-proposals-repo.js";
 
 registerTest("Objectives", "createObjective degrades cleanly when Postgres isn't reachable", async () => {
   try {
@@ -678,6 +701,22 @@ registerTest("Briefing", "prioritizeSignals scores an objective with no target d
   }
 });
 
+// ---------- Command Outcome Tracking Tests (no live Postgres in this test process) ----------
+
+registerTest("CommandOutcomes", "recordCommandOutcome degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await recordCommandOutcome(999999, "worked");
+  if (result !== false) {
+    throw new Error(`CommandOutcomes: expected false with no DB, got: ${result}`);
+  }
+});
+
+registerTest("CommandOutcomes", "getRecentOutcomeSuccessRate degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getRecentOutcomeSuccessRate();
+  if (result !== null) {
+    throw new Error(`CommandOutcomes: expected null with no DB, got: ${result}`);
+  }
+});
+
 // ---------- Identity (Continuity of Self) Tests ----------
 registerTest("Identity", "buildIdentityContext degrades cleanly when Postgres isn't reachable", async () => {
   // This test process never calls initDatabase(), so there's no live
@@ -752,6 +791,47 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
     throw new Error(`Server never became reachable on :3000/health: ${lastErr?.message || lastErr}`);
   } finally {
     if (child) child.kill();
+  }
+});
+
+// ---------- ConfidenceModel Tests (pure, no DB) ----------
+
+registerTest("Confidence", "calculateOverallConfidence matches today's 5-input average when outcomeConfidence is omitted", () => {
+  const model = new ConfidenceModel();
+  const result = model.calculateOverallConfidence({
+    memoryConfidence: 0.8,
+    toolConfidence: 1.0,
+    validationConfidence: 1.0,
+    capabilityConfidence: 0.9,
+    environmentConfidence: 1.0
+  });
+  const expected = Math.round(((0.8 + 1.0 + 1.0 + 0.9 + 1.0) / 5) * 100);
+  if (result !== expected) {
+    throw new Error(`Confidence: expected ${expected} with outcomeConfidence omitted, got ${result}`);
+  }
+});
+
+registerTest("Confidence", "calculateOverallConfidence factors outcomeConfidence in when provided", () => {
+  const model = new ConfidenceModel();
+  const result = model.calculateOverallConfidence({
+    memoryConfidence: 0.8,
+    toolConfidence: 1.0,
+    validationConfidence: 1.0,
+    capabilityConfidence: 0.9,
+    environmentConfidence: 1.0,
+    outcomeConfidence: 0.5
+  });
+  const expected = Math.round(((0.8 + 1.0 + 1.0 + 0.9 + 1.0 + 0.5) / 6) * 100);
+  if (result !== expected) {
+    throw new Error(`Confidence: expected ${expected} with outcomeConfidence 0.5, got ${result}`);
+  }
+});
+
+registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully empty input", () => {
+  const model = new ConfidenceModel();
+  const result = model.calculateOverallConfidence({});
+  if (result !== 100) {
+    throw new Error(`Confidence: expected 100 for an empty input, got ${result}`);
   }
 });
 

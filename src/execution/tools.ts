@@ -60,6 +60,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   set_objective: "objectives.write",
   list_objectives: "objectives.read",
   update_objective_status: "objectives.write",
+  record_command_outcome: "system.execute",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -334,6 +335,19 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["objectiveId", "status"],
     },
   },
+  {
+    name: "record_command_outcome",
+    description:
+      "Record whether a previously-executed command actually fixed the user's problem. Call this when the user answers a question about whether an executed command worked (e.g. after Jarvis asked \"did that fix it?\"), using the command's numeric id from the conversation. Never call this speculatively — only when the user has actually told you whether it worked.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        commandId: { type: Type.NUMBER, description: "The command proposal's numeric id, from the notification or earlier conversation" },
+        outcome: { type: Type.STRING, description: "Either \"worked\" or \"not_worked\", based on what the user said" },
+      },
+      required: ["commandId", "outcome"],
+    },
+  },
 ];
 
 export async function executeTool(
@@ -462,6 +476,17 @@ export async function executeTool(
         const proposed = await commandProposalsRepo.addCommandProposal(args.command, args.reason, username);
         observation.logAuditEvent(username, "command_proposed", "success", `"${args.command}" (id ${proposed.id})`);
         output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval in the dashboard. Nothing runs until you approve it." };
+        break;
+      }
+      case "record_command_outcome": {
+        if (args.outcome !== "worked" && args.outcome !== "not_worked") {
+          return { name, ok: false, error: "outcome must be either \"worked\" or \"not_worked\"." };
+        }
+        const recorded = await commandProposalsRepo.recordCommandOutcome(args.commandId, args.outcome);
+        if (!recorded) {
+          return { name, ok: false, error: "No matching executed command found awaiting an outcome for that id." };
+        }
+        output = { recorded: true };
         break;
       }
       case "view_screen": {

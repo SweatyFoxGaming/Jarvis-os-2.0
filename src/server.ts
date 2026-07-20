@@ -1062,12 +1062,14 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const toolSuccessRate = toolCallsExecuted.length === 0
       ? 1.0
       : toolCallsExecuted.filter(t => t.ok).length / toolCallsExecuted.length;
+    const recentOutcomeSuccessRate = await commandProposalsRepo.getRecentOutcomeSuccessRate();
     const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
       memoryConfidence: memoryHits.length > 0 ? 0.95 : 0.7,
       toolConfidence: toolSuccessRate,
       validationConfidence: success ? 1.0 : 0.4,
       capabilityConfidence: succeededStep === "Simulated" ? 0.5 : succeededStep ? 0.9 : 0.3,
-      environmentConfidence: 1.0
+      environmentConfidence: 1.0,
+      ...(recentOutcomeSuccessRate !== null ? { outcomeConfidence: recentOutcomeSuccessRate } : {})
     });
 
     // Finalize state to idle
@@ -1620,6 +1622,16 @@ app.post("/api/system/ingest/command-result", validateApiKey, async (req: any, r
   try {
     const updated = await commandProposalsRepo.recordCommandResult(id, output || "", exitCode);
     if (!updated) return res.status(404).json({ error: "Command not found" });
+    // A nonzero exit is already an unambiguous outcome signal — only a
+    // successful run is actually ambiguous ("it ran, but did it help?"),
+    // so only 'executed' rows get the follow-up question.
+    if (updated.status === "executed") {
+      scheduler.pushNotification(
+        updated.requested_by,
+        `Ran your command (#${updated.id}), sir: "${updated.command}". Did that fix it?`,
+        "info"
+      );
+    }
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
