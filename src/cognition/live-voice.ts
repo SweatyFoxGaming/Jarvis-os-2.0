@@ -34,14 +34,13 @@ const VOICE_SYSTEM_INSTRUCTION_BASE =
 
 // Builds the same identity/style personalization chat gets (see
 // baseSystemInstruction in src/server.ts), so voice isn't a second, generic
-// persona wearing the same name. Deliberately NOT including semantic
-// memory recall() here, unlike chat — recall() searches against one
-// specific message's text, and a live voice session has no discrete
-// message at connection time (it's a continuous audio stream, not a
-// per-turn exchange) to search against. Recalling relevant past
-// conversations mid-utterance would need updating the Live API session's
-// instruction after connection, which isn't attempted here — an honest,
-// separate gap from the identity/style one this fixes.
+// persona wearing the same name. Semantic memory recall() still can't run
+// here at connection time — recall() searches against one specific
+// message's text, and there's no discrete message yet on a continuous
+// audio stream — but it's not skipped entirely: see flushTurn() below,
+// which recalls against each completed utterance and prefills the result
+// into the session for the *next* turn onward, the only point a query
+// actually exists to search against.
 async function buildVoiceSystemInstruction(): Promise<string> {
   const identityContext = await buildIdentityContext();
   const stylePrefs = LongTermLearningEngine.getInstance().getStylePreferences();
@@ -93,7 +92,7 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
   // learning, knowledge graph, continuity-of-self) — without this, a spoken
   // conversation would leave zero trace anywhere text chat's memory/learning
   // draws from, making voice and text two disconnected personas again.
-  const flushTurn = () => {
+  const flushTurn = async () => {
     const userText = inputTranscriptBuffer.trim();
     const replyText = outputTranscriptBuffer.trim();
     inputTranscriptBuffer = "";
@@ -115,6 +114,26 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
         reflectAndLearn(ai, userText, replyText).catch(() => {});
         knowledgeGraph.extractAndStore(ai, userText, replyText).catch(() => {});
         identity.extractSelfReflection(ai, userText, replyText).catch(() => {});
+      }
+    }
+
+    // Read side of the same memory chat already draws on every turn — see
+    // the comment above buildVoiceSystemInstruction() for why this can't
+    // run before Gemini answers THIS utterance (no query exists until the
+    // utterance is transcribed), only from here onward. Prefilled with
+    // turnComplete: false so it's silently added to context rather than
+    // spoken as a reply — it becomes available the moment the user's next
+    // utterance actually needs it, the same way a typed follow-up question
+    // already benefits from memory recall() run on the message before it.
+    if (userText && liveSession) {
+      try {
+        const hits = await memoryStore.recall(username, userText, ai, null);
+        if (hits.length > 0) {
+          const memoryContext = `Relevant things you remember about this user from past conversations:\n${hits.map(m => `- ${m}`).join("\n")}`;
+          liveSession.sendClientContent({ turns: memoryContext, turnComplete: false });
+        }
+      } catch {
+        // Best-effort — memory recall failing should never break the live session.
       }
     }
   };
