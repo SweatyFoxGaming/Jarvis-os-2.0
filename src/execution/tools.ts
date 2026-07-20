@@ -481,6 +481,9 @@ export async function executeTool(
         output = { objectives: await objectivesRepo.listActiveObjectives(username) };
         break;
       case "update_objective_status": {
+        if (args.status !== "completed" && args.status !== "abandoned") {
+          return { name, ok: false, error: "status must be either \"completed\" or \"abandoned\"." };
+        }
         const updated = await objectivesRepo.updateObjectiveStatus(username, args.objectiveId, args.status);
         if (!updated) {
           return { name, ok: false, error: "No matching active objective found for that id." };

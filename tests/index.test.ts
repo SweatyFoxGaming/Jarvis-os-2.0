@@ -465,6 +465,13 @@ registerTest("Tools", "update_objective_status reports a clear error for a non-e
   }
 });
 
+registerTest("Tools", "update_objective_status rejects an invalid status value before touching the DB", async () => {
+  const result = await executeTool("update_objective_status", { objectiveId: 1, status: "done" }, "admin");
+  if (result.ok !== false || !result.error?.includes("completed") ) {
+    throw new Error("Tools: update_objective_status should reject a status value that isn't 'completed' or 'abandoned'");
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);
