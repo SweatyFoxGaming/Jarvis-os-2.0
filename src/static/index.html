@@ -2813,7 +2813,7 @@
     // on) that should reach the model exactly like a real message — genuine
     // vision context, streamed reply, spoken aloud — but without a fake
     // "user" bubble/toast for something the user didn't actually type.
-    async function triggerChatDialogue(presetMessage) {
+    async function triggerChatDialogue(presetMessage, screenshotOverride) {
         const isPreset = typeof presetMessage === "string";
         const text = (isPreset ? presetMessage : chatInput.value).trim();
         if (!text) return;
@@ -2828,8 +2828,13 @@
             addNotification("Broadcasting query vector...");
         }
 
-        const frame = captureCameraFrame();
-        if (frame) addNotification("Visual snapshot attached — Jarvis can see this turn.", "info");
+        const frame = screenshotOverride || captureCameraFrame();
+        if (screenshotOverride) {
+            // Already notified via "Looking at your screen..." above — no
+            // second, redundant notification for the same resubmitted turn.
+        } else if (frame) {
+            addNotification("Visual snapshot attached — Jarvis can see this turn.", "info");
+        }
 
         try {
             const res = await fetch('/api/chat', {
@@ -2862,6 +2867,21 @@
                         // word chunk ends with ("word " per src/server.ts), so
                         // every reply rendered with no spaces between words.
                         const dataStr = line.slice(6).replace(/\r$/, "");
+
+                        if (dataStr === "request_screen") {
+                            if (!window.jarvisDesktop?.captureScreen) {
+                                appendChatMessage("Screen viewing is only available in the desktop app.", "assistant");
+                                return;
+                            }
+                            const screenshot = await window.jarvisDesktop.captureScreen();
+                            if (!screenshot) {
+                                appendChatMessage("I couldn't capture your screen just now.", "assistant");
+                                return;
+                            }
+                            addNotification("Looking at your screen...", "info");
+                            return triggerChatDialogue(text, screenshot);
+                        }
+
                         if (dataStr === "[DONE]") break;
 
                         if (dataStr.startsWith("detail: ")) {
