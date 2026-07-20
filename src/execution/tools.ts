@@ -26,6 +26,10 @@ export interface ToolCallResult {
   ok: boolean;
   output?: any;
   error?: string;
+  // Set when a tool can't execute server-side and needs the connected
+  // client to do something first (currently only view_screen) — see
+  // Task 2 in docs/superpowers/plans/2026-07-20-view-screen-tool.md.
+  needsClientAction?: "capture_screen";
 }
 
 const PERMISSION_BY_TOOL: Record<string, string> = {
@@ -47,6 +51,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   queue_feature_request: "feature.propose",
   get_security_status: "security.read",
   propose_command: "system.execute",
+  view_screen: "screen.view",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -257,6 +262,14 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["command", "reason"],
     },
   },
+  {
+    name: "view_screen",
+    description: "Look at what's currently on the user's screen. Only call this when screen content would genuinely help answer the question (e.g. \"what am I looking at\", \"help me with this error\", \"what does this say\") — not for every message.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 export async function executeTool(
@@ -264,7 +277,8 @@ export async function executeTool(
   args: Record<string, any>,
   username: string,
   ai: GoogleGenAI | null = null,
-  localEndpoint: string | null = null
+  localEndpoint: string | null = null,
+  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: true }
 ): Promise<ToolCallResult> {
   const requiredGrant = PERMISSION_BY_TOOL[name];
   if (!requiredGrant) {
@@ -380,6 +394,16 @@ export async function executeTool(
         output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval in the dashboard. Nothing runs until you approve it." };
         break;
       }
+      case "view_screen": {
+        if (screenContext.alreadyAttached) {
+          output = "A screenshot is already attached to this message — describe what's visible in it directly, no need to look again.";
+          break;
+        }
+        if (!screenContext.supportsRoundTrip) {
+          return { name, ok: false, error: "Screen viewing isn't available in this mode yet — ask via text chat instead." };
+        }
+        return { name, ok: false, error: "Screen capture requested", needsClientAction: "capture_screen" };
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -411,6 +435,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   get_news: ["news", "headlines", "what's happening in", "current events", "latest on"],
   search_web: ["search the web", "search for", "look up", "google", "find out about", "what's the latest"],
   get_security_status: ["network security", "unknown device", "unrecognized device", "vulnerabilit", "security findings", "is my network safe"],
+  view_screen: ["what's on my screen", "whats on my screen", "look at my screen", "what am i looking at", "help me with this error", "what does this say"],
 };
 
 /**

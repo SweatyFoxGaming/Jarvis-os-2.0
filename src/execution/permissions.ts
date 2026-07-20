@@ -35,6 +35,7 @@ export const ALL_CAPABILITIES = [
   "feature.propose",
   "security.read",
   "security.manage",
+  "screen.view",
   "system.execute",
 ] as const;
 
