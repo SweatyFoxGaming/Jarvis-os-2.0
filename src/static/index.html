@@ -3294,6 +3294,18 @@
         }
     }
 
+    // Only http(s) URLs are safe to hand to iframe.src/img.src. A prompt-injected
+    // tool call could otherwise smuggle a javascript:/data:/vbscript: URI in as
+    // content.url and get it executed in the page's origin.
+    function isSafeEmbedUrl(url) {
+        try {
+            const parsed = new URL(url, window.location.href);
+            return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+        } catch {
+            return false;
+        }
+    }
+
     function renderDisplayContent(type, title, content) {
         const panel = document.getElementById('display-panel');
         const body = document.getElementById('display-panel-body');
@@ -3304,10 +3316,22 @@
         body.innerHTML = '';
 
         if (type === 'image') {
-            const img = document.createElement('img');
-            img.src = content?.url || (content?.base64 ? `data:image/png;base64,${content.base64}` : '');
-            img.className = 'max-w-full rounded-xl mx-auto';
-            body.appendChild(img);
+            if (content?.base64) {
+                const img = document.createElement('img');
+                img.src = `data:image/png;base64,${content.base64}`;
+                img.className = 'max-w-full rounded-xl mx-auto';
+                body.appendChild(img);
+            } else if (content?.url && isSafeEmbedUrl(content.url)) {
+                const img = document.createElement('img');
+                img.src = content.url;
+                img.className = 'max-w-full rounded-xl mx-auto';
+                body.appendChild(img);
+            } else {
+                const err = document.createElement('div');
+                err.className = 'text-danger text-xs text-center py-8';
+                err.textContent = 'Invalid or unsupported image URL.';
+                body.appendChild(err);
+            }
         } else if (type === 'code') {
             const pre = document.createElement('pre');
             pre.className = 'text-xs font-mono whitespace-pre-wrap text-white bg-black/30 rounded-xl p-4';
@@ -3320,22 +3344,30 @@
             body.appendChild(canvas);
             drawSimpleBarChart(canvas, content?.labels || [], content?.values || []);
         } else if (type === 'webpage') {
-            const iframe = document.createElement('iframe');
-            iframe.src = content?.url || '';
-            iframe.className = 'w-full h-[420px] rounded-xl border border-white/10';
-            const fallback = document.createElement('div');
-            fallback.className = 'text-secondary text-xs text-center py-8 hidden';
-            fallback.innerHTML = `This site doesn't allow embedding — <a href="${escapeHtml(content?.url || '')}" target="_blank" class="text-primary underline">open in new tab</a> instead.`;
-            let loaded = false;
-            iframe.onload = () => { loaded = true; };
-            body.appendChild(iframe);
-            body.appendChild(fallback);
-            setTimeout(() => {
-                if (!loaded) {
-                    iframe.classList.add('hidden');
-                    fallback.classList.remove('hidden');
-                }
-            }, 4000);
+            if (!content?.url || !isSafeEmbedUrl(content.url)) {
+                const err = document.createElement('div');
+                err.className = 'text-danger text-xs text-center py-8';
+                err.textContent = 'Invalid or unsupported webpage URL.';
+                body.appendChild(err);
+            } else {
+                const iframe = document.createElement('iframe');
+                iframe.src = content.url;
+                iframe.sandbox = 'allow-scripts allow-same-origin';
+                iframe.className = 'w-full h-[420px] rounded-xl border border-white/10';
+                const fallback = document.createElement('div');
+                fallback.className = 'text-secondary text-xs text-center py-8 hidden';
+                fallback.innerHTML = `This site doesn't allow embedding — <a href="${escapeHtml(content.url)}" target="_blank" class="text-primary underline">open in new tab</a> instead.`;
+                let loaded = false;
+                iframe.onload = () => { loaded = true; };
+                body.appendChild(iframe);
+                body.appendChild(fallback);
+                setTimeout(() => {
+                    if (!loaded) {
+                        iframe.classList.add('hidden');
+                        fallback.classList.remove('hidden');
+                    }
+                }, 4000);
+            }
         } else {
             const err = document.createElement('div');
             err.className = 'text-danger text-xs text-center py-8';
