@@ -251,10 +251,21 @@ async function createSchema(): Promise<void> {
       exit_code INTEGER,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       approved_at TIMESTAMPTZ,
-      executed_at TIMESTAMPTZ
+      executed_at TIMESTAMPTZ,
+      outcome TEXT,
+      outcome_recorded_at TIMESTAMPTZ
     );
   `);
+  // command_proposals is NOT a new table (unlike objectives in Phase 2) — it
+  // already exists on every live deployment, so CREATE TABLE IF NOT EXISTS
+  // above is a no-op there and would never actually add these two columns.
+  // These ALTER statements are what makes the migration work on an existing
+  // database; they're also safe no-ops on a fresh one where the columns
+  // above already declared them.
+  await db.query(`ALTER TABLE command_proposals ADD COLUMN IF NOT EXISTS outcome TEXT;`);
+  await db.query(`ALTER TABLE command_proposals ADD COLUMN IF NOT EXISTS outcome_recorded_at TIMESTAMPTZ;`);
   await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_status_idx ON command_proposals(status);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_outcome_idx ON command_proposals(outcome_recorded_at) WHERE outcome IS NOT NULL;`);
 
   // Browser Push API subscriptions — one row per device/browser that's
   // opted in, keyed by the endpoint URL itself (unique per subscription,

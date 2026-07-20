@@ -587,6 +587,7 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
 
 // ---------- Objectives Tests (no live Postgres in this test process) ----------
 import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/data/objectives-repo.js";
+import { recordCommandOutcome, getRecentOutcomeSuccessRate } from "../src/data/command-proposals-repo.js";
 
 registerTest("Objectives", "createObjective degrades cleanly when Postgres isn't reachable", async () => {
   try {
@@ -675,6 +676,22 @@ registerTest("Briefing", "prioritizeSignals scores an objective with no target d
   const obj = items.find(i => i.id === "objective:3");
   if (!obj || obj.urgency !== "medium") {
     throw new Error(`Briefing: expected an undated objective to score "medium", got: ${JSON.stringify(obj)}`);
+  }
+});
+
+// ---------- Command Outcome Tracking Tests (no live Postgres in this test process) ----------
+
+registerTest("CommandOutcomes", "recordCommandOutcome degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await recordCommandOutcome(999999, "worked");
+  if (result !== false) {
+    throw new Error(`CommandOutcomes: expected false with no DB, got: ${result}`);
+  }
+});
+
+registerTest("CommandOutcomes", "getRecentOutcomeSuccessRate degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getRecentOutcomeSuccessRate();
+  if (result !== null) {
+    throw new Error(`CommandOutcomes: expected null with no DB, got: ${result}`);
   }
 });
 
