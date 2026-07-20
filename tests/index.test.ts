@@ -404,6 +404,51 @@ registerTest("Tools", "executeTool rejects unknown tool names", async () => {
   }
 });
 
+registerTest("Tools", "view_screen returns a client-action sentinel when nothing is attached yet", async () => {
+  const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: false, supportsRoundTrip: true });
+  if (result.ok !== false || result.needsClientAction !== "capture_screen") {
+    throw new Error("Tools: view_screen should return needsClientAction='capture_screen' when supportsRoundTrip is true and nothing is attached yet");
+  }
+});
+
+registerTest("Tools", "view_screen answers directly once a screenshot is already attached", async () => {
+  const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: true, supportsRoundTrip: true });
+  if (result.ok !== true || result.needsClientAction) {
+    throw new Error("Tools: view_screen should answer directly (ok:true, no needsClientAction) when alreadyAttached is true");
+  }
+});
+
+registerTest("Tools", "view_screen declines cleanly where the round trip isn't supported (e.g. voice mode)", async () => {
+  const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: false, supportsRoundTrip: false });
+  if (result.ok !== false || result.needsClientAction) {
+    throw new Error("Tools: view_screen should fail cleanly with no needsClientAction when supportsRoundTrip is false");
+  }
+});
+
+registerTest("Tools", "view_screen's default screenContext is safe (supportsRoundTrip: false) — the property live-voice.ts's call site relies on", async () => {
+  const result = await executeTool("view_screen", {}, "admin");
+  if (result.ok !== false || result.needsClientAction) {
+    throw new Error("Tools: view_screen with NO screenContext argument (the default) must decline cleanly with no needsClientAction — if this fails, the default was flipped to supportsRoundTrip: true again, which would break live-voice.ts's safe fallback");
+  }
+});
+
+registerTest("Tools", "display_content executes without any capability grant", async () => {
+  const result = await executeTool("display_content", { type: "image", title: "Test", content: { url: "https://example.com/x.png" } }, "ungranted_test_user");
+  if (result.ok !== true) {
+    throw new Error("Tools: display_content should succeed with no grant required");
+  }
+  if (!result.displayDirective || result.displayDirective.type !== "image") {
+    throw new Error("Tools: display_content should return a displayDirective matching the call's type");
+  }
+});
+
+registerTest("Tools", "unrelated tools never carry a displayDirective", async () => {
+  const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: true, supportsRoundTrip: true });
+  if ((result as any).displayDirective) {
+    throw new Error("Tools: displayDirective should only ever be set by display_content");
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);

@@ -26,6 +26,14 @@ export interface ToolCallResult {
   ok: boolean;
   output?: any;
   error?: string;
+  // Set when a tool can't execute server-side and needs the connected
+  // client to do something first (currently only view_screen) — see
+  // Task 2 in docs/superpowers/plans/2026-07-20-view-screen-tool.md.
+  needsClientAction?: "capture_screen";
+  // Set by display_content — relayed to the client as a "display: " SSE
+  // frame by /api/chat. See Task 1 in
+  // docs/superpowers/plans/2026-07-20-display-content-panel.md.
+  displayDirective?: { type: string; title: string; content: any };
 }
 
 const PERMISSION_BY_TOOL: Record<string, string> = {
@@ -47,6 +55,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   queue_feature_request: "feature.propose",
   get_security_status: "security.read",
   propose_command: "system.execute",
+  view_screen: "screen.view",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -257,6 +266,38 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["command", "reason"],
     },
   },
+  {
+    name: "view_screen",
+    description: "Look at what's currently on the user's screen. Only call this when screen content would genuinely help answer the question (e.g. \"what am I looking at\", \"help me with this error\", \"what does this say\") — not for every message.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "display_content",
+    description: "Show something in the dashboard's display panel — use this whenever a reply has something genuinely better shown than said: an image, a code/text snippet, a simple chart, or a web page. Don't call this for plain conversational replies with nothing visual to show.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        type: { type: Type.STRING, description: "One of: image, code, chart, webpage" },
+        title: { type: Type.STRING, description: "Short title shown at the top of the panel" },
+        content: {
+          type: Type.OBJECT,
+          description: "Shape depends on type. image: {url} or {base64}. code: {code, language}. chart: {labels: string[], values: number[]}. webpage: {url}.",
+          properties: {
+            url: { type: Type.STRING },
+            base64: { type: Type.STRING },
+            code: { type: Type.STRING },
+            language: { type: Type.STRING },
+            labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+            values: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+          },
+        },
+      },
+      required: ["type", "title", "content"],
+    },
+  },
 ];
 
 export async function executeTool(
@@ -264,19 +305,26 @@ export async function executeTool(
   args: Record<string, any>,
   username: string,
   ai: GoogleGenAI | null = null,
-  localEndpoint: string | null = null
+  localEndpoint: string | null = null,
+  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
 ): Promise<ToolCallResult> {
+  // display_content has no real-world side effect or access to anything
+  // private beyond what the conversation already contains, so it's the one
+  // tool deliberately left out of PERMISSION_BY_TOOL/ALL_CAPABILITIES rather
+  // than gated behind a grant every user would need to be given anyway.
+  const UNGATED_TOOLS = new Set(["display_content"]);
   const requiredGrant = PERMISSION_BY_TOOL[name];
-  if (!requiredGrant) {
+  if (!requiredGrant && !UNGATED_TOOLS.has(name)) {
     return { name, ok: false, error: `Unknown tool "${name}"` };
   }
-  if (!hasGrant(username, requiredGrant)) {
+  if (requiredGrant && !hasGrant(username, requiredGrant)) {
     observation.logAuditEvent(username, "tool_call_denied", "failed", `Missing grant "${requiredGrant}" for tool "${name}"`);
     return { name, ok: false, error: `Missing capability grant "${requiredGrant}"` };
   }
 
   try {
     let output: any;
+    let displayDirective: ToolCallResult["displayDirective"];
     switch (name) {
       case "github_get_repo_or_file":
         output = args.path
@@ -380,11 +428,26 @@ export async function executeTool(
         output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval in the dashboard. Nothing runs until you approve it." };
         break;
       }
+      case "view_screen": {
+        if (screenContext.alreadyAttached) {
+          output = "A screenshot is already attached to this message — describe what's visible in it directly, no need to look again.";
+          break;
+        }
+        if (!screenContext.supportsRoundTrip) {
+          return { name, ok: false, error: "Screen viewing isn't available in this mode yet — ask via text chat instead." };
+        }
+        return { name, ok: false, error: "Screen capture requested", needsClientAction: "capture_screen" };
+      }
+      case "display_content": {
+        displayDirective = { type: args.type, title: args.title, content: args.content };
+        output = `Displayed ${args.type} "${args.title}" in the display panel.`;
+        break;
+      }
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
     observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
-    return { name, ok: true, output };
+    return { name, ok: true, output, displayDirective };
   } catch (err: any) {
     observation.logAuditEvent(username, "tool_call", "failed", `${name}(${JSON.stringify(args)}): ${err.message}`);
     return { name, ok: false, error: err.message || String(err) };
@@ -411,6 +474,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   get_news: ["news", "headlines", "what's happening in", "current events", "latest on"],
   search_web: ["search the web", "search for", "look up", "google", "find out about", "what's the latest"],
   get_security_status: ["network security", "unknown device", "unrecognized device", "vulnerabilit", "security findings", "is my network safe"],
+  view_screen: ["what's on my screen", "whats on my screen", "look at my screen", "what am i looking at", "help me with this error", "what does this say"],
 };
 
 /**

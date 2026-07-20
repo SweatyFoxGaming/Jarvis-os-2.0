@@ -1,8 +1,9 @@
-const { app, BrowserWindow, session, Tray, Menu, globalShortcut, Notification, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, session, Tray, Menu, globalShortcut, Notification, ipcMain, nativeImage, desktopCapturer } = require('electron');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { execSync } = require('child_process');
 
 const SERVER_URL = 'http://localhost:3000';
 const HEALTH_URL = 'http://localhost:3000/health';
@@ -15,6 +16,12 @@ const LAUNCH_SCRIPT = path.join(__dirname, 'launch.sh');
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+
+// Set by the autostart .desktop entry / systemd unit (see ensureOsIntegration
+// below) so a login-triggered launch doesn't pop a window in front of the
+// user before they've asked to see it. The app-menu entry passes no flag,
+// so double-clicking the icon still opens visibly exactly as before.
+const START_HIDDEN = process.argv.includes('--hidden');
 
 // Without this, closing the window (which hides it into the tray rather
 // than quitting — see the 'close' handler below) combined with launching
@@ -63,12 +70,22 @@ async function waitForServer(win) {
   return false;
 }
 
-// Writes the two per-user XDG .desktop files (app menu + autostart) if they
-// don't already exist yet — never overwrites, so a user's own edits to
-// either file survive every future launch. No sudo/system install involved;
-// both target directories are per-user and always writable.
+// Writes the per-user app-menu .desktop entry (only if missing — never
+// overwrites, so a user's own edits survive every future launch), then
+// arranges for at-login launch. That launch mechanism is EITHER the
+// systemd --user unit below OR, only as a fallback when systemd --user
+// isn't available, the XDG autostart .desktop entry — never both. Live
+// testing found that this machine's systemd-xdg-autostart-generator
+// independently wraps an autostart .desktop file into its OWN transient
+// systemd unit, so having both meant two systemd-adjacent launchers racing
+// requestSingleInstanceLock() at every login with no guarantee that
+// jarvis-os.service specifically ended up supervising the surviving
+// instance — defeating the point of adding it (reliable crash-restart).
+// Making systemd the sole login-launcher when it's available removes that
+// race entirely. No sudo/system install involved anywhere here; every
+// target path is per-user and always writable.
 function ensureOsIntegration() {
-  const desktopEntry = [
+  const menuEntry = [
     '[Desktop Entry]',
     'Type=Application',
     'Name=Jarvis OS',
@@ -77,27 +94,145 @@ function ensureOsIntegration() {
     `Icon=${ICON_PATH}`,
     'Terminal=false',
     'Categories=Utility;',
-    'X-GNOME-Autostart-enabled=true',
     '',
   ].join('\n');
 
-  const targets = [
-    path.join(os.homedir(), '.local', 'share', 'applications', 'jarvis-os.desktop'),
-    path.join(os.homedir(), '.config', 'autostart', 'jarvis-os.desktop'),
-  ];
-
-  for (const target of targets) {
-    try {
-      if (fs.existsSync(target)) continue;
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      // .desktop entry files should NOT be executable themselves — only
-      // launch.sh (the thing Exec= actually points at) needs that bit.
-      // systemd-xdg-autostart-generator warns on every boot otherwise
-      // ("marked executable, please remove executable permission bits").
-      fs.writeFileSync(target, desktopEntry, { mode: 0o644 });
-    } catch (err) {
-      console.error(`Could not write ${target}:`, err.message);
+  const menuEntryFile = path.join(os.homedir(), '.local', 'share', 'applications', 'jarvis-os.desktop');
+  try {
+    if (!fs.existsSync(menuEntryFile)) {
+      fs.mkdirSync(path.dirname(menuEntryFile), { recursive: true });
+      fs.writeFileSync(menuEntryFile, menuEntry, { mode: 0o644 });
     }
+  } catch (err) {
+    console.error(`Could not write ${menuEntryFile}:`, err.message);
+  }
+
+  const autostartFile = path.join(os.homedir(), '.config', 'autostart', 'jarvis-os.desktop');
+  const systemdOwnsLogin = ensureSystemdService();
+
+  if (systemdOwnsLogin) {
+    // systemd now owns login-launch + crash supervision. Leaving a stale
+    // XDG autostart entry around (from an older build of this code, or a
+    // pre-fix run) would recreate the exact two-launcher race this fix
+    // removes, so clean it up if present.
+    try {
+      if (fs.existsSync(autostartFile)) {
+        fs.unlinkSync(autostartFile);
+        console.log(`[main] Removed ${autostartFile}: jarvis-os.service now owns login-launch and crash supervision, so a separate XDG autostart entry would just race it again.`);
+      }
+    } catch (err) {
+      console.error(`Could not remove stale ${autostartFile}:`, err.message);
+    }
+  } else {
+    // Fallback path: systemd --user isn't available on this machine, so
+    // XDG autostart is the only login-launch mechanism we have. Passes
+    // --hidden so a login-triggered launch (see Task 1) doesn't show a
+    // window before the user asks to see it — this is the ONLY difference
+    // from menuEntry above.
+    const autostartEntry = [
+      '[Desktop Entry]',
+      'Type=Application',
+      'Name=Jarvis OS',
+      'Comment=Jarvis OS desktop console',
+      `Exec="${LAUNCH_SCRIPT}" --hidden`,
+      `Icon=${ICON_PATH}`,
+      'Terminal=false',
+      'Categories=Utility;',
+      'X-GNOME-Autostart-enabled=true',
+      '',
+    ].join('\n');
+
+    try {
+      if (!fs.existsSync(autostartFile)) {
+        fs.mkdirSync(path.dirname(autostartFile), { recursive: true });
+        fs.writeFileSync(autostartFile, autostartEntry, { mode: 0o644 });
+      }
+    } catch (err) {
+      console.error(`Could not write ${autostartFile}:`, err.message);
+    }
+  }
+}
+
+// Real crash-restart supervision AND (per ensureOsIntegration above) the
+// sole at-login launcher whenever systemd --user is available — replacing
+// the XDG autostart entry rather than running alongside it, to avoid two
+// independent launchers racing requestSingleInstanceLock() at login (see
+// the comment above ensureOsIntegration for the full failure mode this
+// avoids).
+//
+// Returns true if jarvis-os.service is installed (either already, or
+// installed just now) and can therefore be trusted to own login-launch;
+// false if systemd --user isn't available or installation failed, in
+// which case the caller falls back to XDG autostart.
+function ensureSystemdService() {
+  const unitDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+  const unitPath = path.join(unitDir, 'jarvis-os.service');
+  const unitFileExists = fs.existsSync(unitPath);
+
+  if (unitFileExists) {
+    // The unit file existing on disk isn't proof it's actually wired up to
+    // fire at next login — a prior run could have written the file but then
+    // thrown on the `enable` call below (transient systemctl error,
+    // permissions blip, etc.), or something out-of-band could have disabled
+    // it since (e.g. a manual `systemctl --user disable` that leaves the
+    // file in place). Only trust "file exists" as "systemd owns
+    // login-launch" if it's genuinely enabled right now; otherwise fall
+    // through and retry enabling it below without rewriting the file.
+    try {
+      execSync('systemctl --user is-enabled jarvis-os.service', { stdio: 'ignore' });
+      return true;
+    } catch {
+      console.log('[main] jarvis-os.service unit file exists but is not enabled; retrying enable instead of trusting the stale file.');
+    }
+  }
+
+  try {
+    execSync('systemctl --user --version', { stdio: 'ignore' });
+  } catch {
+    console.log('[main] systemd --user not available; falling back to XDG autostart only.');
+    return false;
+  }
+
+  if (!unitFileExists) {
+    const unit = [
+      '[Unit]',
+      'Description=Jarvis OS Desktop',
+      'After=graphical-session.target',
+      '',
+      '[Service]',
+      `ExecStart="${LAUNCH_SCRIPT}" --hidden`,
+      'Restart=on-failure',
+      'RestartSec=5',
+      '',
+      '[Install]',
+      'WantedBy=graphical-session.target',
+      '',
+    ].join('\n');
+
+    try {
+      fs.mkdirSync(unitDir, { recursive: true });
+      fs.writeFileSync(unitPath, unit, { mode: 0o644 });
+      execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
+    } catch (err) {
+      console.error('[main] Could not install systemd user service:', err.message);
+      return false;
+    }
+  }
+
+  try {
+    // Deliberately `enable` only, NOT `enable --now`: this function only ever
+    // runs from inside the app's own whenReady() — i.e. an instance is
+    // already running — so `--now` would immediately start a second instance
+    // racing the one currently installing the unit, the exact kind of race
+    // this design is meant to eliminate. `enable` arms the unit for the next
+    // login or crash instead; the systemd-supervised instance only becomes
+    // "the" instance starting from then.
+    execSync('systemctl --user enable jarvis-os.service', { stdio: 'ignore' });
+    console.log('[main] Installed and enabled jarvis-os.service (systemd --user); will take effect at next login or crash restart, not immediately.');
+    return true;
+  } catch (err) {
+    console.error('[main] Could not enable systemd user service:', err.message);
+    return false;
   }
 }
 
@@ -108,11 +243,16 @@ async function createWindow() {
     backgroundColor: '#04060f',
     title: 'Jarvis OS',
     icon: ICON_PATH,
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
     },
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    if (!START_HIDDEN) mainWindow.show();
   });
 
   // Auto-grant microphone/camera to our own locally-hosted dashboard — this
@@ -202,6 +342,25 @@ ipcMain.on('notify', (event, { title, body }) => {
   if (mainWindow && mainWindow.isFocused()) return;
   if (!Notification.isSupported()) return;
   new Notification({ title, body, icon: ICON_PATH }).show();
+});
+
+// One still image, not a stream — matches the explicit on-demand-only
+// design decision (see docs/superpowers/specs/2026-07-20-os-integration-and-display-panel-design.md).
+ipcMain.handle('capture-screen', async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1920, height: 1080 },
+    });
+    if (!sources.length) return null;
+    // toJPEG returns a Buffer; strip to base64 only, matching the
+    // no-data-URL-prefix convention captureCameraFrame() already uses
+    // client-side for camera frames.
+    return sources[0].thumbnail.toJPEG(80).toString('base64');
+  } catch (err) {
+    console.error('[main] Screen capture failed:', err.message);
+    return null;
+  }
 });
 
 app.on('will-quit', () => {
