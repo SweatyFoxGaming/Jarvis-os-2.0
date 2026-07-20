@@ -3300,7 +3300,13 @@
     function isSafeEmbedUrl(url) {
         try {
             const parsed = new URL(url, window.location.href);
-            return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+            // Reject same-origin URLs (including relative ones that resolve to our own
+            // origin, e.g. "/"): with sandbox="allow-scripts allow-same-origin", a
+            // same-origin iframe gets full script access to the parent's origin —
+            // including the API key in localStorage — so this is not isolation at all.
+            if (parsed.origin === window.location.origin) return false;
+            return true;
         } catch {
             return false;
         }
@@ -3354,16 +3360,28 @@
                 iframe.src = content.url;
                 iframe.sandbox = 'allow-scripts allow-same-origin';
                 iframe.className = 'w-full h-[420px] rounded-xl border border-white/10';
+                // Browsers fire `load` on an iframe even when the target refused to be
+                // embedded (X-Frame-Options / CSP frame-ancestors) — they just paint
+                // their own blocked-page in the frame and still fire the event. That
+                // makes onload-based block detection unreliable, so the "open in new
+                // tab" link below is always visible from the start rather than only
+                // appearing if detection happens to fire — the user is never left with
+                // just a blank/broken iframe and no escape hatch.
+                const openLink = document.createElement('div');
+                openLink.className = 'text-secondary text-xs text-center py-2';
+                openLink.innerHTML = `<a href="${escapeHtml(content.url)}" target="_blank" class="text-primary underline">Open in new tab</a>`;
                 const fallback = document.createElement('div');
                 fallback.className = 'text-secondary text-xs text-center py-8 hidden';
                 fallback.innerHTML = `This site doesn't allow embedding — <a href="${escapeHtml(content.url)}" target="_blank" class="text-primary underline">open in new tab</a> instead.`;
                 let loaded = false;
                 iframe.onload = () => { loaded = true; };
                 body.appendChild(iframe);
+                body.appendChild(openLink);
                 body.appendChild(fallback);
                 setTimeout(() => {
                     if (!loaded) {
                         iframe.classList.add('hidden');
+                        openLink.classList.add('hidden');
                         fallback.classList.remove('hidden');
                     }
                 }, 4000);
