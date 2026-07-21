@@ -26,6 +26,7 @@ import {
   rejectCode as rejectBuildCode,
 } from "../src/data/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
+import * as departments from "../src/execution/departments.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -1012,6 +1013,46 @@ registerTest("BuildRequests", "rejectCode degrades cleanly when Postgres isn't r
   const result = await rejectBuildCode(999999);
   if (result !== null) {
     throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- Departments Tests (no live AI/network in this test process) ----------
+
+registerTest("Departments", "decomposeObjective falls back to a single research step with no AI client", async () => {
+  const steps = await departments.decomposeObjective("Build me a website", null, false);
+  if (steps.length !== 1 || steps[0].department !== "research") {
+    throw new Error(`Departments: expected a single research-tagged fallback step, got: ${JSON.stringify(steps)}`);
+  }
+});
+
+registerTest("Departments", "decomposeObjective falls back to research when offline mode is on, even with an AI client", async () => {
+  // A real GoogleGenAI instance isn't available in this test process; `{} as
+  // any` is safe here because offlineMode=true short-circuits before any
+  // property on it is ever touched.
+  const steps = await departments.decomposeObjective("Build me a website", {} as any, true);
+  if (steps.length !== 1 || steps[0].department !== "research") {
+    throw new Error(`Departments: expected offline mode to force the research-only fallback, got: ${JSON.stringify(steps)}`);
+  }
+});
+
+registerTest("Departments", "runResearch degrades cleanly with no AI client", async () => {
+  const result = await departments.runResearch("test objective", null);
+  if (!result.summary.includes("No capable model is available")) {
+    throw new Error(`Departments: expected the no-AI degrade message, got: ${result.summary}`);
+  }
+});
+
+registerTest("Departments", "draftCodeChanges degrades cleanly with no AI client", async () => {
+  const result = await departments.draftCodeChanges("test objective", "research", "direction", null);
+  if (result.ok !== false || !result.error.includes("No capable model is available")) {
+    throw new Error(`Departments: expected a clean failure with no AI client, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client", async () => {
+  const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], null);
+  if (!result.includes("No capable model was available")) {
+    throw new Error(`Departments: expected the no-AI degrade message, got: ${result}`);
   }
 });
 
