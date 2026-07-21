@@ -17,6 +17,7 @@ import { pushNotification, getNotifications, markAllRead, registerJob } from "..
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
+import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -873,6 +874,43 @@ registerTest("McpServers", "setMcpServerStatus degrades cleanly when Postgres is
   const result = await setMcpServerStatus(999999, "disabled");
   if (result !== null) {
     throw new Error(`McpServers: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- MCP Registry Tests (pure schema validation, no network/DB) ----------
+
+registerTest("McpRegistry", "isValidToolSchema accepts a well-formed tool", () => {
+  const valid = isValidToolSchema({ name: "search_issues", description: "Search GitHub issues", inputSchema: { type: "object", properties: {} } });
+  if (!valid) {
+    throw new Error("McpRegistry: expected a well-formed tool schema to be accepted");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects a tool name with unsafe characters", () => {
+  const valid = isValidToolSchema({ name: "search issues; rm -rf", description: "x", inputSchema: { type: "object" } });
+  if (valid) {
+    throw new Error("McpRegistry: expected a tool name with unsafe characters to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects a tool with no inputSchema", () => {
+  const valid = isValidToolSchema({ name: "no_schema", description: "x" });
+  if (valid) {
+    throw new Error("McpRegistry: expected a tool with a missing inputSchema to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects an oversized description", () => {
+  const valid = isValidToolSchema({ name: "long_desc", description: "x".repeat(2000), inputSchema: { type: "object" } });
+  if (valid) {
+    throw new Error("McpRegistry: expected an oversized description to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "getCachedMcpTools returns an empty array with nothing approved", () => {
+  const tools = getCachedMcpTools();
+  if (!Array.isArray(tools) || tools.length !== 0) {
+    throw new Error(`McpRegistry: expected an empty array with nothing approved, got: ${JSON.stringify(tools)}`);
   }
 });
 
