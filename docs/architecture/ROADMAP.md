@@ -125,17 +125,25 @@ here's whether it actually helped" — not just whether it executed without
 error — and that record measurably changes future confidence scoring or
 behavior, not just sits in a log.
 
-## Phase 4 — From hand-coded tools toward real capability scale (design complete, PR #60; implementation not yet started)
+## Phase 4 — From hand-coded tools toward real capability scale (done, merged PR #63, deployed live)
 
-**Design decision made:** the design spec
+**Built:** the design spec
 (`docs/superpowers/specs/2026-07-20-mcp-capability-architecture-design.md`)
-and full implementation plan
-(`docs/superpowers/plans/2026-07-20-mcp-capability-architecture.md`) are
-written and merged — real MCP (Model Context Protocol) client, admin-gated
-server registration mirroring `propose_command`'s trust model, capabilities
-namespaced `mcp.<server>.<tool>` into the existing grant system. Per this
-phase's own "done" criterion below, writing that plan *was* this phase's
-deliverable — executing it is a separate, later decision.
+and implementation plan
+(`docs/superpowers/plans/2026-07-20-mcp-capability-architecture.md`, PR #60)
+were written first, then executed and merged (PR #63) — a real MCP (Model
+Context Protocol) client (`@modelcontextprotocol/sdk` v1, stable line), a
+new `mcp_servers` table, admin-gated server registration behind a new
+`system.mcp_manage` capability mirroring `propose_command`'s trust model,
+capabilities namespaced `mcp.<server>.<tool>` into the existing grant
+system, dynamic tool merging into both the chat and voice tool-calling
+loops, and a 30-minute health-check job. Live-verified post-deploy: an
+unreachable/fake server proposal is cleanly rejected on approval (never
+falsely trusted), the schema migration applied, and admin was correctly
+auto-backfilled for the new capability. This phase's own "done" criterion
+originally scoped it as design-only ("its 'done' is a decision, not a
+merge") — executing the plan was deliberately treated as a separate,
+later decision, which is what happened here.
 
 **The gap:** every tool Jarvis has is a hand-written `case` in one `switch`
 statement in `src/execution/tools.ts` — 24 of them as of Phase 3's
@@ -191,17 +199,23 @@ would need regardless of what it turns out to be. When something concrete
 enough to plan against actually shows up, it gets a phase then, not a
 guess now.
 
-## Current status (updated after Phase 4's design pass)
+## Current status (updated after Phase 4's execution and live deploy)
 
-Phases 1-3 are done and deployed live. Phase 4's design and implementation
-plan are written and merged, but not executed — implementing it (a real
-MCP client, a new dependency, several new files) is a substantial pass in
-its own right and is a separate decision from writing the plan. Phase 5
-remains deliberately un-started: its own stated trigger — an actual second
-person who wants to use this — hasn't happened. Executing the Phase 4 plan
-is the only concretely-scoped, ready-to-start work item left on this
-roadmap; everything else either requires that trigger fact (Phase 5) or
-isn't planned yet on purpose (see "What's genuinely not planned" below).
+Phases 1-4 are done and deployed live — including Phase 4's MCP capability
+architecture, which was originally scoped as design-only and later
+executed as its own separate decision once the plan was written and
+reviewed. Phase 5 remains deliberately un-started: its own stated
+trigger — an actual second person who wants to use this — hasn't
+happened. There is no other concretely-scoped, ready-to-start work item
+left on this roadmap right now; what's left either requires that trigger
+fact (Phase 5) or isn't planned yet on purpose (see "What's genuinely not
+planned" below). A cross-phase audit after Phase 4's design pass (before
+execution) found no Critical/Important issues across the accumulated
+system; Phase 4's own execution went through a full implementer/reviewer
+cycle per task plus a final whole-branch review that caught and fixed 3
+Important findings (all security/stability-related: an unbounded
+connection timeout, weak MCP tool-schema validation, and a silent no-op
+in the health-check refresh path) before merge.
 
 ---
 
