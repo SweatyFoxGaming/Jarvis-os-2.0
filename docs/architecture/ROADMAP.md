@@ -38,10 +38,12 @@ this document doesn't re-litigate it:
   continuity (`src/cognition/identity.ts`), conversation history that
   survives a restart.
 - **Real tool delegation, human-gated**: GitHub, email, TTS, calendar,
-  objective planning, screen viewing, and dashboard display, each behind an
-  explicit, admin-revocable capability grant — not a fixed permission list,
-  a real Postgres-backed grant system that backfills new capabilities
-  automatically.
+  objective planning, and screen viewing each sit behind an explicit,
+  admin-revocable capability grant — not a fixed permission list, a real
+  Postgres-backed grant system that backfills new capabilities
+  automatically. Dashboard display (`display_content`) is the deliberate
+  exception: it has no real-world side effect or access to anything, so
+  it's intentionally left ungated rather than gated-and-auto-granted.
 - **The trust hazard is fixed**: the local model no longer fabricates tool
   results it can't actually produce; tool-shaped requests route to a real
   backend instead.

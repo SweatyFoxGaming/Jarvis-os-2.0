@@ -798,6 +798,8 @@ export function getAllToolDeclarations(): FunctionDeclaration[] {
 
 In `src/server.ts`, find where `TOOL_DECLARATIONS` is passed to the Gemini function-calling request inside the `/api/chat` handler (search for `TOOL_DECLARATIONS` — it's referenced when constructing the `tools` field of the generation config) and replace that reference with `tools.getAllToolDeclarations()` (the module is already imported as `tools` for `executeTool`). Search first with `grep -n "TOOL_DECLARATIONS" src/server.ts` to find every call site — there may be more than one (e.g. the streaming and non-streaming paths, if both exist), and every one must switch to `getAllToolDeclarations()` for MCP tools to actually be callable from any code path that can reach them.
 
+There is also a **third, non-`server.ts` call site**: `src/cognition/live-voice.ts` — voice mode's own tool-calling session builds its `tools` field directly from the static `TOOL_DECLARATIONS` import (currently `tools: [{ functionDeclarations: TOOL_DECLARATIONS }]`, around where it later calls `executeTool()` for the actual dispatch). Update the import at the top of `live-voice.ts` from `import { TOOL_DECLARATIONS, executeTool } from "../execution/tools.js";` to `import { getAllToolDeclarations, executeTool } from "../execution/tools.js";`, and change that `tools:` field to `tools: [{ functionDeclarations: getAllToolDeclarations() }]`. Skipping this leaves voice mode silently limited to the static tool set — MCP tools would work in chat but never be offered when talking to Jarvis by voice.
+
 - [ ] **Step 6: Add the admin approve/disable routes**
 
 In `src/server.ts`, near the existing `/api/system/commands/:id/approve` route, add:
@@ -888,7 +890,7 @@ Expected: no errors.
 
 - [ ] **Step 9: Search for any other reference to `TOOL_DECLARATIONS` outside `tools.ts` itself**
 
-Run: `grep -rn "TOOL_DECLARATIONS" src/` and confirm every call site outside `tools.ts`'s own definition now goes through `getAllToolDeclarations()` instead (Step 5 already covers `server.ts`'s chat handler(s) — this step is the verification that nothing else references the static array directly, the same kind of check that caught unanticipated call sites in Phases 2 and 3).
+Run: `grep -rn "TOOL_DECLARATIONS" src/` and confirm every call site outside `tools.ts`'s own definition now goes through `getAllToolDeclarations()` instead (Step 5 already covers `server.ts`'s chat handler(s) and `src/cognition/live-voice.ts`'s voice-mode tool-calling session — this step is the verification that nothing else references the static array directly, the same kind of check that caught unanticipated call sites in Phases 2 and 3).
 
 - [ ] **Step 10: Commit**
 
