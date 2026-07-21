@@ -515,6 +515,20 @@ registerTest("Tools", "propose_mcp_server denies calls without system.mcp_manage
   }
 });
 
+registerTest("Tools", "confirm_build_direction denies calls without executive.plan grant", async () => {
+  const result = await executeTool("confirm_build_direction", { directionNotes: "use React" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: confirm_build_direction should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "confirm_build_direction reports cleanly when no build request is awaiting consult", async () => {
+  const result = await executeTool("confirm_build_direction", { directionNotes: "use React" }, "admin");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("no build request")) {
+    throw new Error(`Tools: expected a clean 'no build request awaiting consult' error, got: ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("Tools", "executeTool reports unknown tool for a name that isn't static or a cached MCP tool", async () => {
   const result = await executeTool("not_a_real_tool", {}, "admin");
   if (result.ok !== false || !result.error?.toLowerCase().includes("unknown")) {

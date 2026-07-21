@@ -47,6 +47,8 @@ import * as pushRepo from "./data/push-subscriptions-repo.js";
 import * as mcpServersRepo from "./data/mcp-servers-repo.js";
 import * as mcpRegistry from "./execution/mcp-registry.js";
 import * as push from "./integrations/push.js";
+import * as buildRequestsRepo from "./data/build-requests-repo.js";
+import * as departments from "./execution/departments.js";
 
 dotenv.config();
 
@@ -698,10 +700,24 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // in the relationship for this to have accumulated anything).
     const identityContext = await identity.buildIdentityContext();
 
+    // Pulls a currently-awaiting-consult build request's research findings
+    // into context the same way memory/identity already are — without this,
+    // Jarvis has no way to discuss research it did moments (or turns) ago
+    // once the notification that announced it scrolls out of context.
+    // getLatestAwaitingConsult already degrades to null internally (Task 1)
+    // — no extra try/catch needed here, matching how memoryStore.recall is
+    // called directly above for the same reason.
+    const awaitingBuildRequest = await buildRequestsRepo.getLatestAwaitingConsult(req.username);
+    const buildRequestContext = awaitingBuildRequest
+      ? `\n\nYou have a build request (#${awaitingBuildRequest.id}) awaiting the user's direction: "${awaitingBuildRequest.objective}". ` +
+        `Research findings: ${awaitingBuildRequest.research_summary}. Discuss this with the user and, once they've genuinely ` +
+        `confirmed a direction, call confirm_build_direction.`
+      : "";
+
     const baseSystemInstruction =
       "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, unfailingly polite, and quietly confident rather than warm or effusive. Address the user as \"sir\" where it reads naturally — not in every sentence, and drop it entirely if it starts to feel forced. Keep responses concise and precise; substance over flourish. A touch of understated, deadpan humor is welcome, but avoid gushing enthusiasm, exclamation points, or flowery language. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. If asked about your own state or system metrics, report them plainly and matter-of-factly — composed even when the news is bad, the way JARVIS would be."
       + "\n\nIf the user asks for something you have no tool for, don't just decline or invent a fake result. Use search_web to research whether/how it could genuinely be built, then present a concrete, honest plan in conversation — what it would do, roughly how. Only after the user clearly approves building it, call queue_feature_request to hand it to a real human developer; you never write or execute code yourself. If they don't approve, or you're just discussing the idea, don't queue anything."
-      + memoryContext + styleContext + identityContext;
+      + memoryContext + styleContext + identityContext + buildRequestContext;
 
     // The Gemini branch genuinely has tool access (declared via `tools` in
     // its request config below), so its prompt stays as-is. The local model
@@ -1590,6 +1606,155 @@ app.post("/api/system/mcp-servers/:id/disable", validateApiKey, async (req: any,
     if (!updated) return res.status(404).json({ error: "Server not found" });
     mcpRegistry.evictFromToolCache(updated.id); // drop cached tools immediately instead of waiting on the next health-check cycle
     observation.logAuditEvent(req.username, "mcp_server_disabled", "success", `#${updated.id}: ${updated.name}`);
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/system/build-requests", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "github.pulls.create")) {
+    return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
+  }
+  try {
+    res.json({ buildRequests: await buildRequestsRepo.listBuildRequests(req.query.status as buildRequestsRepo.BuildRequestStatus | undefined) });
+  } catch (err: any) {
+    res.json({ buildRequests: [], error: err.message });
+  }
+});
+
+// Rejects a proposed file path before any GitHub call happens. Closes a gap
+// left open by Task 3's draftCodeChanges review: that function validates
+// each path is a non-empty string but never checks for traversal or
+// absolute paths, and this route is the first (and only) place a
+// model-drafted path reaches a real GitHub write — untrusted input, real
+// repo, no prior gate.
+function isUnsafeProposedPath(path: string): boolean {
+  if (!path || path.startsWith("/") || path.includes("\0")) return true;
+  return path.split("/").some((segment) => segment === "..");
+}
+
+// The only place in this codebase that opens a real PR on Jarvis's own
+// behalf. Every GitHub call here (branch -> commit each file -> open PR) is
+// wrapped so a partial failure records exactly which step failed via
+// markPrError rather than silently claiming a status it didn't reach — see
+// this plan's Global Constraints.
+app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "github.pulls.create")) {
+    return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
+  }
+  const owner = process.env.SELF_REPO_OWNER;
+  const repoName = process.env.SELF_REPO_NAME;
+  if (!owner || !repoName) {
+    return res.status(503).json({ error: "SELF_REPO_OWNER/SELF_REPO_NAME are not configured." });
+  }
+  try {
+    const buildRequest = await buildRequestsRepo.getBuildRequest(Number(req.params.id));
+    if (!buildRequest || buildRequest.status !== "awaiting_code_approval") {
+      return res.status(404).json({ error: "Build request not found or not awaiting approval" });
+    }
+    const files = buildRequest.proposed_files || [];
+    if (files.length === 0) {
+      await buildRequestsRepo.markPrError(buildRequest.id, "No proposed files to commit.");
+      return res.status(422).json({ error: "No proposed files to commit." });
+    }
+
+    // Closing the gap noted above: reject the whole approval loudly and
+    // cleanly if any proposed file targets a path outside the intended
+    // scope (traversal, absolute path, or a null byte) — never commit any
+    // of them.
+    const unsafePaths = files.map((f) => f.path).filter(isUnsafeProposedPath);
+    if (unsafePaths.length > 0) {
+      const message = `Refusing to commit unsafe file path(s): ${unsafePaths.join(", ")}`;
+      await buildRequestsRepo.markPrError(buildRequest.id, message);
+      return res.status(422).json({ error: message });
+    }
+
+    const branchName = `jarvis/build-request-${buildRequest.id}`;
+
+    let repoInfo: any;
+    try {
+      repoInfo = await github.getRepo(owner, repoName);
+    } catch (err: any) {
+      await buildRequestsRepo.markPrError(buildRequest.id, `Failed to read repo default branch: ${err.message}`);
+      return res.status(502).json({ error: `Failed to read repo default branch: ${err.message}` });
+    }
+    const baseBranch = repoInfo.default_branch;
+
+    try {
+      await github.createBranch(owner, repoName, branchName, baseBranch);
+    } catch (err: any) {
+      await buildRequestsRepo.markPrError(buildRequest.id, `Failed to create branch: ${err.message}`);
+      return res.status(502).json({ error: `Failed to create branch: ${err.message}` });
+    }
+
+    for (const file of files) {
+      try {
+        await github.commitFile(
+          owner,
+          repoName,
+          file.path,
+          file.content,
+          `Build request #${buildRequest.id}: ${buildRequest.code_summary || buildRequest.objective}`,
+          branchName
+        );
+      } catch (err: any) {
+        await buildRequestsRepo.markPrError(
+          buildRequest.id,
+          `Failed to commit "${file.path}": ${err.message}. Branch "${branchName}" may exist with a partial commit — review it manually.`
+        );
+        return res.status(502).json({ error: `Failed to commit "${file.path}": ${err.message}` });
+      }
+    }
+
+    let pr: any;
+    try {
+      pr = await github.createPullRequest(
+        owner,
+        repoName,
+        `Build request #${buildRequest.id}: ${buildRequest.objective}`,
+        branchName,
+        baseBranch,
+        buildRequest.code_summary || undefined
+      );
+    } catch (err: any) {
+      await buildRequestsRepo.markPrError(buildRequest.id, `Branch and commits succeeded but opening the PR failed: ${err.message}`);
+      return res.status(502).json({ error: `Failed to open PR: ${err.message}` });
+    }
+
+    const updated = await buildRequestsRepo.recordPrOpened(buildRequest.id, pr.html_url, pr.number);
+    if (!updated) {
+      return res.status(500).json({ error: "PR was opened but couldn't be recorded — check GitHub directly." });
+    }
+
+    observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
+
+    // QA runs immediately, synchronously, right here — no CI polling (see
+    // design spec's "Decisions"). CI's own result speaks for itself on
+    // GitHub, same as any other PR.
+    const qaSummary = await departments.reviewCodeDiff(updated.objective, files, ai);
+    await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
+
+    scheduler.pushNotification(
+      req.username,
+      `Opened the pull request for build request #${updated.id}, sir: ${pr.html_url}. QA review: ${qaSummary.slice(0, 300)}${qaSummary.length > 300 ? "..." : ""} Check GitHub for CI status.`,
+      "info"
+    );
+
+    res.json({ ...updated, qa_summary: qaSummary });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/system/build-requests/:id/reject-code", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "github.pulls.create")) {
+    return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
+  }
+  try {
+    const updated = await buildRequestsRepo.rejectCode(Number(req.params.id));
+    if (!updated) return res.status(404).json({ error: "Build request not found or not awaiting code approval" });
+    observation.logAuditEvent(req.username, "build_request_code_rejected", "success", `#${updated.id}`);
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
