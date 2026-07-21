@@ -928,6 +928,31 @@ registerTest("McpRegistry", "isValidToolSchema rejects an oversized description"
   }
 });
 
+registerTest("McpRegistry", "isValidToolSchema rejects an inputSchema that is an array", () => {
+  const valid = isValidToolSchema({ name: "array_schema", description: "x", inputSchema: [] });
+  if (valid) {
+    throw new Error("McpRegistry: expected an array inputSchema to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects an inputSchema missing type: \"object\"", () => {
+  const missingType = isValidToolSchema({ name: "no_type", description: "x", inputSchema: { properties: {} } });
+  if (missingType) {
+    throw new Error("McpRegistry: expected an inputSchema with no type to be rejected");
+  }
+  const wrongType = isValidToolSchema({ name: "wrong_type", description: "x", inputSchema: { type: "string", properties: {} } });
+  if (wrongType) {
+    throw new Error("McpRegistry: expected an inputSchema with type !== \"object\" to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects an inputSchema with non-object properties", () => {
+  const valid = isValidToolSchema({ name: "bad_properties", description: "x", inputSchema: { type: "object", properties: [] } });
+  if (valid) {
+    throw new Error("McpRegistry: expected an inputSchema with array properties to be rejected");
+  }
+});
+
 registerTest("McpRegistry", "getCachedMcpTools returns an empty array with nothing approved", () => {
   const tools = getCachedMcpTools();
   if (!Array.isArray(tools) || tools.length !== 0) {

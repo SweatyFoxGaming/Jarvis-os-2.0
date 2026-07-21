@@ -5,6 +5,22 @@ import { ObservationPlatform } from "../observation/index.js";
 
 const observation = ObservationPlatform.getInstance();
 
+// Races `promise` against a timer so a stalling/malicious server (one that
+// accepts the TCP connection but never completes the MCP handshake, or never
+// responds to a request) can't hang the caller for undici's ~5-minute
+// default. The underlying operation isn't cancelled — only the caller stops
+// waiting on it — so this is paired with the existing `finally { close() }`
+// cleanup at each call site.
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 export interface McpToolDescriptor {
   serverId: number;
   serverName: string;
@@ -26,6 +42,12 @@ export function isValidToolSchema(tool: any): tool is { name: string; descriptio
   if (!SAFE_NAME_PATTERN.test(tool.name)) return false;
   if (tool.description !== undefined && (typeof tool.description !== "string" || tool.description.length > MAX_TOOL_DESCRIPTION_LENGTH)) return false;
   if (!tool.inputSchema || typeof tool.inputSchema !== "object") return false;
+  if (Array.isArray(tool.inputSchema)) return false;
+  if (tool.inputSchema.type !== "object") return false;
+  if (tool.inputSchema.properties !== undefined) {
+    const props = tool.inputSchema.properties;
+    if (typeof props !== "object" || props === null || Array.isArray(props)) return false;
+  }
   return true;
 }
 
@@ -37,12 +59,15 @@ export function isValidToolSchema(tool: any): tool is { name: string; descriptio
 // already uses for grants.
 const toolCache = new Map<number, McpToolDescriptor[]>();
 
+const CONNECT_TIMEOUT_MS = 10_000;
+const CALL_TIMEOUT_MS = 10_000;
+
 async function connectAndListTools(url: string): Promise<{ ok: true; tools: any[] } | { ok: false; error: string }> {
   const client = new Client({ name: "jarvis-os", version: "1.0.0" });
   try {
     const transport = new StreamableHTTPClientTransport(new URL(url));
-    await client.connect(transport);
-    const { tools } = await client.listTools();
+    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, "MCP connect()");
+    const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, "MCP listTools()");
     return { ok: true, tools };
   } catch (err: any) {
     return { ok: false, error: err.message || String(err) };
@@ -99,6 +124,7 @@ export async function refreshServerConnection(id: number): Promise<boolean> {
   const result = await connectAndListTools(server.url);
   if (!result.ok) {
     await mcpServersRepo.markMcpServerError(id, result.error);
+    toolCache.delete(id);
     return false;
   }
 
@@ -110,7 +136,12 @@ export async function refreshServerConnection(id: number): Promise<boolean> {
     description: t.description || "",
     inputSchema: t.inputSchema
   })));
-  await mcpServersRepo.markMcpServerApproved(id); // refreshes last_connected_at, clears last_error
+  // Server is already 'approved' here (checked above), so
+  // markMcpServerApproved's pending/error -> approved UPDATE would match 0
+  // rows — use the dedicated approved -> approved refresh instead so
+  // last_connected_at/last_error actually get updated on a successful
+  // health-check reconnect.
+  await mcpServersRepo.refreshMcpServerConnection(id);
   return true;
 }
 
@@ -120,7 +151,12 @@ export function getCachedMcpTools(): McpToolDescriptor[] {
   return Array.from(toolCache.values()).flat();
 }
 
-const CALL_TIMEOUT_MS = 10_000;
+// Exposed so admin routes (e.g. the disable route in server.ts) can drop a
+// server's cached tools immediately instead of waiting for the next failed
+// health-check cycle to notice.
+export function evictFromToolCache(id: number): void {
+  toolCache.delete(id);
+}
 
 // Never throws past this boundary — a down/slow/misbehaving MCP server can
 // only ever affect the one tool call that invoked it.
@@ -137,7 +173,7 @@ export async function callMcpTool(
   const client = new Client({ name: "jarvis-os", version: "1.0.0" });
   try {
     const transport = new StreamableHTTPClientTransport(new URL(server.url));
-    await client.connect(transport);
+    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, "MCP connect()");
     const result = await client.callTool({ name: toolName, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
     if ((result as any).isError) {
       return { ok: false, error: `Tool "${toolName}" on server "${server.name}" reported an error: ${JSON.stringify((result as any).content)}` };

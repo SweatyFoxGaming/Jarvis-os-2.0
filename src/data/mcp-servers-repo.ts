@@ -80,6 +80,25 @@ export async function markMcpServerError(id: number, error: string): Promise<voi
   }
 }
 
+// Called by the Task 5 health-check job after a successful reconnect to an
+// already-'approved' server. Deliberately separate from
+// markMcpServerApproved: that function's WHERE clause only matches
+// status IN ('pending', 'error'), so it's a guaranteed no-op for a server
+// that's already 'approved' — which is exactly the case here.
+export async function refreshMcpServerConnection(id: number): Promise<McpServerRow | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `UPDATE mcp_servers SET last_connected_at = now(), last_error = NULL
+       WHERE id = $1 AND status = 'approved' RETURNING *`,
+      [id]
+    );
+    return rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function setMcpServerStatus(id: number, status: "error" | "disabled"): Promise<McpServerRow | null> {
   try {
     const db = getPool();

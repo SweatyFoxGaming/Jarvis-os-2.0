@@ -1588,6 +1588,7 @@ app.post("/api/system/mcp-servers/:id/disable", validateApiKey, async (req: any,
   try {
     const updated = await mcpServersRepo.setMcpServerStatus(Number(req.params.id), "disabled");
     if (!updated) return res.status(404).json({ error: "Server not found" });
+    mcpRegistry.evictFromToolCache(updated.id); // drop cached tools immediately instead of waiting on the next health-check cycle
     observation.logAuditEvent(req.username, "mcp_server_disabled", "success", `#${updated.id}: ${updated.name}`);
     res.json(updated);
   } catch (err: any) {
