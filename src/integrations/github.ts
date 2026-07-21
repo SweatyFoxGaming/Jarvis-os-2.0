@@ -117,3 +117,60 @@ export async function getPullRequest(owner: string, repo: string, pullNumber: nu
 export async function getNotifications(): Promise<any[]> {
   return githubRequest(`/notifications?participating=true`);
 }
+
+export async function createBranch(owner: string, repo: string, branchName: string, baseBranch: string) {
+  const baseRef = await githubRequest(`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(baseBranch)}`);
+  const baseSha = baseRef.object.sha;
+  const created = await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
+    method: "POST",
+    body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha: baseSha }),
+  });
+  observation.logTelemetry("info", "Integrations", `GitHub branch created: ${owner}/${repo}@${branchName} (from ${baseBranch})`);
+  return created;
+}
+
+// Creates the file if it doesn't exist on this branch yet, or updates it in
+// place if it does — the Contents API requires the current file's `sha` for
+// an update but rejects one for a genuinely new file, so this checks first.
+export async function commitFile(
+  owner: string,
+  repo: string,
+  path: string,
+  content: string,
+  message: string,
+  branch: string
+) {
+  // Encode each path segment individually (preserving "/" as the literal
+  // separator) rather than interpolating the raw path — the caller
+  // (server.ts's approve-code route) already rejects traversal/absolute
+  // paths, but an unencoded segment could still contain characters GitHub's
+  // routing interprets differently than this codebase's own segment split
+  // does. Used for both the existence check and the write so they always
+  // resolve to the exact same resource.
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+
+  let existingSha: string | undefined;
+  try {
+    const existing = await getFileContent(owner, repo, encodedPath, branch);
+    if (existing && !Array.isArray(existing) && typeof existing.sha === "string") {
+      existingSha = existing.sha;
+    }
+  } catch (err: any) {
+    if (!(err instanceof GitHubIntegrationError) || err.status !== 404) {
+      throw err;
+    }
+    // 404 means the file doesn't exist yet on this branch — a genuine new file, not an error.
+  }
+
+  const created = await githubRequest(`/repos/${owner}/${repo}/contents/${encodedPath}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      message,
+      content: Buffer.from(content, "utf-8").toString("base64"),
+      branch,
+      ...(existingSha ? { sha: existingSha } : {}),
+    }),
+  });
+  observation.logTelemetry("info", "Integrations", `GitHub file committed: ${owner}/${repo}/${path}@${branch}`);
+  return created;
+}

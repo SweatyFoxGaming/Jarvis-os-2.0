@@ -17,7 +17,16 @@ import { pushNotification, getNotifications, markAllRead, registerJob } from "..
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
+import {
+  createBuildRequest,
+  getBuildRequest,
+  getLatestAwaitingConsult,
+  listBuildRequests,
+  recordDirectionConfirmed,
+  rejectCode as rejectBuildCode,
+} from "../src/data/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
+import * as departments from "../src/execution/departments.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -178,18 +187,21 @@ registerTest("Cognitive 2.0", "Working memory compartment cells validation", () 
 });
 
 // ---------- 7. Autonomous Executive Tests ----------
-registerTest("Executive 2.0", "Autonomous executive 5-stage pipeline validation", async () => {
+registerTest("Executive 2.0", "Autonomous executive real dispatch pipeline (no AI available)", async () => {
   const session = new SessionState();
   const obs = ObservationPlatform.getInstance();
-  const exec = AutonomousExecutive.getInstance(obs, null); // Run in simulated mode
+  const exec = AutonomousExecutive.getInstance(obs, null); // No AI client — exercises the degrade-safety fallback path
 
-  const report = await exec.executeObjective("Deploy microservices orchestrator", session);
+  const report = await exec.executeObjective("Deploy microservices orchestrator", session, "test_user");
 
   if (report.status !== "success") {
     throw new Error("Autonomous Executive: Execution status mismatch");
   }
-  if (report.totalStepsExecuted !== 4) {
-    throw new Error("Autonomous Executive: Core steps count mismatch");
+  if (report.totalStepsExecuted !== 1) {
+    throw new Error(`Autonomous Executive: expected 1 step in the no-AI fallback, got ${report.totalStepsExecuted}`);
+  }
+  if (!report.findings?.[0]?.includes("No capable model is available")) {
+    throw new Error("Autonomous Executive: expected the no-AI research fallback message in findings");
   }
   if (session.workspace.mission.status !== "completed") {
     throw new Error("Autonomous Executive: Mission status did not resolve to 'completed'");
@@ -500,6 +512,20 @@ registerTest("Tools", "propose_mcp_server denies calls without system.mcp_manage
   const result = await executeTool("propose_mcp_server", { name: "test-server", url: "http://example.invalid/mcp" }, "ungranted_test_user");
   if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
     throw new Error("Tools: propose_mcp_server should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "confirm_build_direction denies calls without executive.plan grant", async () => {
+  const result = await executeTool("confirm_build_direction", { directionNotes: "use React" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: confirm_build_direction should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "confirm_build_direction reports cleanly when no build request is awaiting consult", async () => {
+  const result = await executeTool("confirm_build_direction", { directionNotes: "use React" }, "admin");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("no build request")) {
+    throw new Error(`Tools: expected a clean 'no build request awaiting consult' error, got: ${JSON.stringify(result)}`);
   }
 });
 
@@ -957,6 +983,93 @@ registerTest("McpRegistry", "getCachedMcpTools returns an empty array with nothi
   const tools = getCachedMcpTools();
   if (!Array.isArray(tools) || tools.length !== 0) {
     throw new Error(`McpRegistry: expected an empty array with nothing approved, got: ${JSON.stringify(tools)}`);
+  }
+});
+
+// ---------- Build Requests Repo Tests (no live Postgres in this test process) ----------
+
+registerTest("BuildRequests", "createBuildRequest degrades cleanly when Postgres isn't reachable", async () => {
+  try {
+    await createBuildRequest("test objective", "admin");
+    throw new Error("BuildRequests: expected createBuildRequest to reject without a live Postgres connection");
+  } catch (err: any) {
+    if (err.message?.includes("expected createBuildRequest to reject")) throw err;
+    // Any other thrown error (connection refused/DNS failure) is expected here.
+  }
+});
+
+registerTest("BuildRequests", "getBuildRequest degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getBuildRequest(999999);
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "getLatestAwaitingConsult degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getLatestAwaitingConsult("admin");
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "listBuildRequests degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listBuildRequests();
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`BuildRequests: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "recordDirectionConfirmed degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await recordDirectionConfirmed(999999, "some direction notes");
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "rejectCode degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await rejectBuildCode(999999);
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- Departments Tests (no live AI/network in this test process) ----------
+
+registerTest("Departments", "decomposeObjective falls back to a single research step with no AI client", async () => {
+  const steps = await departments.decomposeObjective("Build me a website", null, false);
+  if (steps.length !== 1 || steps[0].department !== "research") {
+    throw new Error(`Departments: expected a single research-tagged fallback step, got: ${JSON.stringify(steps)}`);
+  }
+});
+
+registerTest("Departments", "decomposeObjective falls back to research when offline mode is on, even with an AI client", async () => {
+  // A real GoogleGenAI instance isn't available in this test process; `{} as
+  // any` is safe here because offlineMode=true short-circuits before any
+  // property on it is ever touched.
+  const steps = await departments.decomposeObjective("Build me a website", {} as any, true);
+  if (steps.length !== 1 || steps[0].department !== "research") {
+    throw new Error(`Departments: expected offline mode to force the research-only fallback, got: ${JSON.stringify(steps)}`);
+  }
+});
+
+registerTest("Departments", "runResearch degrades cleanly with no AI client", async () => {
+  const result = await departments.runResearch("test objective", null);
+  if (!result.summary.includes("No capable model is available")) {
+    throw new Error(`Departments: expected the no-AI degrade message, got: ${result.summary}`);
+  }
+});
+
+registerTest("Departments", "draftCodeChanges degrades cleanly with no AI client", async () => {
+  const result = await departments.draftCodeChanges("test objective", "research", "direction", null);
+  if (result.ok !== false || !result.error.includes("No capable model is available")) {
+    throw new Error(`Departments: expected a clean failure with no AI client, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client", async () => {
+  const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], null);
+  if (!result.includes("No capable model was available")) {
+    throw new Error(`Departments: expected the no-AI degrade message, got: ${result}`);
   }
 });
 
