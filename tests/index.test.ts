@@ -17,6 +17,14 @@ import { pushNotification, getNotifications, markAllRead, registerJob } from "..
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
+import {
+  createBuildRequest,
+  getBuildRequest,
+  getLatestAwaitingConsult,
+  listBuildRequests,
+  recordDirectionConfirmed,
+  rejectCode as rejectBuildCode,
+} from "../src/data/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
@@ -957,6 +965,53 @@ registerTest("McpRegistry", "getCachedMcpTools returns an empty array with nothi
   const tools = getCachedMcpTools();
   if (!Array.isArray(tools) || tools.length !== 0) {
     throw new Error(`McpRegistry: expected an empty array with nothing approved, got: ${JSON.stringify(tools)}`);
+  }
+});
+
+// ---------- Build Requests Repo Tests (no live Postgres in this test process) ----------
+
+registerTest("BuildRequests", "createBuildRequest degrades cleanly when Postgres isn't reachable", async () => {
+  try {
+    await createBuildRequest("test objective", "admin");
+    throw new Error("BuildRequests: expected createBuildRequest to reject without a live Postgres connection");
+  } catch (err: any) {
+    if (err.message?.includes("expected createBuildRequest to reject")) throw err;
+    // Any other thrown error (connection refused/DNS failure) is expected here.
+  }
+});
+
+registerTest("BuildRequests", "getBuildRequest degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getBuildRequest(999999);
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "getLatestAwaitingConsult degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getLatestAwaitingConsult("admin");
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "listBuildRequests degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listBuildRequests();
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`BuildRequests: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "recordDirectionConfirmed degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await recordDirectionConfirmed(999999, "some direction notes");
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "rejectCode degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await rejectBuildCode(999999);
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
   }
 });
 
