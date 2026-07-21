@@ -16,6 +16,7 @@ import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
+import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -832,6 +833,46 @@ registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully e
   const result = model.calculateOverallConfidence({});
   if (result !== 100) {
     throw new Error(`Confidence: expected 100 for an empty input, got ${result}`);
+  }
+});
+
+// ---------- MCP Servers Repo Tests (no live Postgres in this test process) ----------
+
+registerTest("McpServers", "proposeMcpServer degrades cleanly when Postgres isn't reachable", async () => {
+  try {
+    await proposeMcpServer("test-server", "http://example.invalid/mcp", "admin");
+    throw new Error("McpServers: expected proposeMcpServer to reject without a live Postgres connection");
+  } catch (err: any) {
+    if (err.message?.includes("expected proposeMcpServer to reject")) throw err;
+    // Any other thrown error (connection refused/DNS failure) is expected here.
+  }
+});
+
+registerTest("McpServers", "getMcpServer degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getMcpServer(999999);
+  if (result !== null) {
+    throw new Error(`McpServers: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("McpServers", "listMcpServers degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listMcpServers();
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`McpServers: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("McpServers", "markMcpServerApproved degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await markMcpServerApproved(999999);
+  if (result !== null) {
+    throw new Error(`McpServers: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("McpServers", "setMcpServerStatus degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await setMcpServerStatus(999999, "disabled");
+  if (result !== null) {
+    throw new Error(`McpServers: expected null with no DB, got: ${JSON.stringify(result)}`);
   }
 });
 

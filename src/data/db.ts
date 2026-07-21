@@ -267,6 +267,21 @@ async function createSchema(): Promise<void> {
   await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_status_idx ON command_proposals(status);`);
   await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_outcome_idx ON command_proposals(outcome_recorded_at) WHERE outcome IS NOT NULL;`);
 
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      registered_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      approved_at TIMESTAMPTZ,
+      last_connected_at TIMESTAMPTZ,
+      last_error TEXT
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS mcp_servers_status_idx ON mcp_servers(status);`);
+
   // Browser Push API subscriptions — one row per device/browser that's
   // opted in, keyed by the endpoint URL itself (unique per subscription,
   // not per user) since one user can have several devices subscribed at once.
