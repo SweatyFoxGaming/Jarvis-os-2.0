@@ -140,9 +140,18 @@ export async function commitFile(
   message: string,
   branch: string
 ) {
+  // Encode each path segment individually (preserving "/" as the literal
+  // separator) rather than interpolating the raw path — the caller
+  // (server.ts's approve-code route) already rejects traversal/absolute
+  // paths, but an unencoded segment could still contain characters GitHub's
+  // routing interprets differently than this codebase's own segment split
+  // does. Used for both the existence check and the write so they always
+  // resolve to the exact same resource.
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+
   let existingSha: string | undefined;
   try {
-    const existing = await getFileContent(owner, repo, path, branch);
+    const existing = await getFileContent(owner, repo, encodedPath, branch);
     if (existing && !Array.isArray(existing) && typeof existing.sha === "string") {
       existingSha = existing.sha;
     }
@@ -153,7 +162,7 @@ export async function commitFile(
     // 404 means the file doesn't exist yet on this branch — a genuine new file, not an error.
   }
 
-  const created = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {
+  const created = await githubRequest(`/repos/${owner}/${repo}/contents/${encodedPath}`, {
     method: "PUT",
     body: JSON.stringify({
       message,
