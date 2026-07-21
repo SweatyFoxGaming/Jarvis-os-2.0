@@ -1,5 +1,6 @@
 import { ObservationPlatform } from "../observation/index.js";
 import { getPool } from "../data/db.js";
+import { getCachedMcpTools } from "./mcp-registry.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -39,6 +40,7 @@ export const ALL_CAPABILITIES = [
   "objectives.read",
   "objectives.write",
   "system.execute",
+  "system.mcp_manage",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
@@ -74,7 +76,9 @@ export async function loadGrantsFromDb(): Promise<void> {
   }
 
   const adminGrants = grants.get("admin") ?? new Set<string>();
-  const missing = ALL_CAPABILITIES.filter(c => !adminGrants.has(c));
+  const dynamicMcpCapabilities = getCachedMcpTools().map(t => `mcp.${t.serverName}.${t.toolName}`);
+
+  const missing = [...ALL_CAPABILITIES, ...dynamicMcpCapabilities].filter(c => !adminGrants.has(c));
   if (missing.length > 0) {
     for (const capability of missing) {
       await db.query(

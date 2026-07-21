@@ -11,11 +11,13 @@ import { AutonomousExecutive } from "../src/execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/cognition/long_term_learning.js";
 import { ExecutiveBoard } from "../src/execution/executive_board.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/execution/permissions.js";
-import { executeTool } from "../src/execution/tools.js";
+import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
+import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
+import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -494,6 +496,27 @@ registerTest("Tools", "record_command_outcome reports a clean error for a non-ex
   }
 });
 
+registerTest("Tools", "propose_mcp_server denies calls without system.mcp_manage grant", async () => {
+  const result = await executeTool("propose_mcp_server", { name: "test-server", url: "http://example.invalid/mcp" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: propose_mcp_server should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "executeTool reports unknown tool for a name that isn't static or a cached MCP tool", async () => {
+  const result = await executeTool("not_a_real_tool", {}, "admin");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("unknown")) {
+    throw new Error("Tools: expected a clean 'unknown tool' error for a name matching neither a static tool nor a cached MCP tool");
+  }
+});
+
+registerTest("Tools", "getAllToolDeclarations includes every static declaration with nothing MCP-approved", () => {
+  const declarations = getAllToolDeclarations();
+  if (declarations.length < 25) { // 24 static tools as of Phase 3, plus propose_mcp_server = 25
+    throw new Error(`Tools: expected at least 25 static declarations, got ${declarations.length}`);
+  }
+});
+
 // ---------- 14. Semantic Memory Tests (no external DB/network dependency) ----------
 registerTest("Memory", "embedText returns null with no provider configured", async () => {
   const result = await embedText("hello world", null, null);
@@ -832,6 +855,108 @@ registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully e
   const result = model.calculateOverallConfidence({});
   if (result !== 100) {
     throw new Error(`Confidence: expected 100 for an empty input, got ${result}`);
+  }
+});
+
+// ---------- MCP Servers Repo Tests (no live Postgres in this test process) ----------
+
+registerTest("McpServers", "proposeMcpServer degrades cleanly when Postgres isn't reachable", async () => {
+  try {
+    await proposeMcpServer("test-server", "http://example.invalid/mcp", "admin");
+    throw new Error("McpServers: expected proposeMcpServer to reject without a live Postgres connection");
+  } catch (err: any) {
+    if (err.message?.includes("expected proposeMcpServer to reject")) throw err;
+    // Any other thrown error (connection refused/DNS failure) is expected here.
+  }
+});
+
+registerTest("McpServers", "getMcpServer degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getMcpServer(999999);
+  if (result !== null) {
+    throw new Error(`McpServers: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("McpServers", "listMcpServers degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listMcpServers();
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`McpServers: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("McpServers", "markMcpServerApproved degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await markMcpServerApproved(999999);
+  if (result !== null) {
+    throw new Error(`McpServers: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("McpServers", "setMcpServerStatus degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await setMcpServerStatus(999999, "disabled");
+  if (result !== null) {
+    throw new Error(`McpServers: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- MCP Registry Tests (pure schema validation, no network/DB) ----------
+
+registerTest("McpRegistry", "isValidToolSchema accepts a well-formed tool", () => {
+  const valid = isValidToolSchema({ name: "search_issues", description: "Search GitHub issues", inputSchema: { type: "object", properties: {} } });
+  if (!valid) {
+    throw new Error("McpRegistry: expected a well-formed tool schema to be accepted");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects a tool name with unsafe characters", () => {
+  const valid = isValidToolSchema({ name: "search issues; rm -rf", description: "x", inputSchema: { type: "object" } });
+  if (valid) {
+    throw new Error("McpRegistry: expected a tool name with unsafe characters to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects a tool with no inputSchema", () => {
+  const valid = isValidToolSchema({ name: "no_schema", description: "x" });
+  if (valid) {
+    throw new Error("McpRegistry: expected a tool with a missing inputSchema to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects an oversized description", () => {
+  const valid = isValidToolSchema({ name: "long_desc", description: "x".repeat(2000), inputSchema: { type: "object" } });
+  if (valid) {
+    throw new Error("McpRegistry: expected an oversized description to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects an inputSchema that is an array", () => {
+  const valid = isValidToolSchema({ name: "array_schema", description: "x", inputSchema: [] });
+  if (valid) {
+    throw new Error("McpRegistry: expected an array inputSchema to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects an inputSchema missing type: \"object\"", () => {
+  const missingType = isValidToolSchema({ name: "no_type", description: "x", inputSchema: { properties: {} } });
+  if (missingType) {
+    throw new Error("McpRegistry: expected an inputSchema with no type to be rejected");
+  }
+  const wrongType = isValidToolSchema({ name: "wrong_type", description: "x", inputSchema: { type: "string", properties: {} } });
+  if (wrongType) {
+    throw new Error("McpRegistry: expected an inputSchema with type !== \"object\" to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "isValidToolSchema rejects an inputSchema with non-object properties", () => {
+  const valid = isValidToolSchema({ name: "bad_properties", description: "x", inputSchema: { type: "object", properties: [] } });
+  if (valid) {
+    throw new Error("McpRegistry: expected an inputSchema with array properties to be rejected");
+  }
+});
+
+registerTest("McpRegistry", "getCachedMcpTools returns an empty array with nothing approved", () => {
+  const tools = getCachedMcpTools();
+  if (!Array.isArray(tools) || tools.length !== 0) {
+    throw new Error(`McpRegistry: expected an empty array with nothing approved, got: ${JSON.stringify(tools)}`);
   }
 });
 

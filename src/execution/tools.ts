@@ -19,6 +19,8 @@ import * as featureRequestsRepo from "../data/feature-requests-repo.js";
 import * as securityRepo from "../data/security-repo.js";
 import * as commandProposalsRepo from "../data/command-proposals-repo.js";
 import * as objectivesRepo from "../data/objectives-repo.js";
+import * as mcpServersRepo from "../data/mcp-servers-repo.js";
+import * as mcpRegistry from "../execution/mcp-registry.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -61,6 +63,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   list_objectives: "objectives.read",
   update_objective_status: "objectives.write",
   record_command_outcome: "system.execute",
+  propose_mcp_server: "system.mcp_manage",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -348,7 +351,33 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["commandId", "outcome"],
     },
   },
+  {
+    name: "propose_mcp_server",
+    description:
+      "Propose a new MCP (Model Context Protocol) server as a new source of capabilities. This ONLY creates a pending registration for the user to review and approve — it never connects to or trusts the server automatically. Only call this when the user has given you a specific server name and URL and clearly wants it registered.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING, description: "A short, unique name for this server (used in capability names, e.g. \"github-mcp\")" },
+        url: { type: Type.STRING, description: "The server's MCP endpoint URL" },
+      },
+      required: ["name", "url"],
+    },
+  },
 ];
+
+// Static declarations plus whatever MCP servers are currently approved and
+// reachable — called fresh each time a chat turn builds its Gemini
+// function-calling request, so a newly-approved server's tools appear
+// without a restart, and a disabled/unreachable one's disappear.
+export function getAllToolDeclarations(): FunctionDeclaration[] {
+  const mcpDeclarations: FunctionDeclaration[] = mcpRegistry.getCachedMcpTools().map(t => ({
+    name: `mcp.${t.serverName}.${t.toolName}`,
+    description: t.description,
+    parameters: t.inputSchema as any
+  }));
+  return [...TOOL_DECLARATIONS, ...mcpDeclarations];
+}
 
 export async function executeTool(
   name: string,
@@ -364,12 +393,32 @@ export async function executeTool(
   // than gated behind a grant every user would need to be given anyway.
   const UNGATED_TOOLS = new Set(["display_content"]);
   const requiredGrant = PERMISSION_BY_TOOL[name];
-  if (!requiredGrant && !UNGATED_TOOLS.has(name)) {
+
+  // Not a static tool — check whether it's a currently-cached MCP tool
+  // before concluding it's genuinely unknown.
+  const mcpTool = !requiredGrant && !UNGATED_TOOLS.has(name)
+    ? mcpRegistry.getCachedMcpTools().find(t => `mcp.${t.serverName}.${t.toolName}` === name)
+    : undefined;
+
+  if (!requiredGrant && !UNGATED_TOOLS.has(name) && !mcpTool) {
     return { name, ok: false, error: `Unknown tool "${name}"` };
   }
-  if (requiredGrant && !hasGrant(username, requiredGrant)) {
-    observation.logAuditEvent(username, "tool_call_denied", "failed", `Missing grant "${requiredGrant}" for tool "${name}"`);
-    return { name, ok: false, error: `Missing capability grant "${requiredGrant}"` };
+
+  const mcpCapability = mcpTool ? `mcp.${mcpTool.serverName}.${mcpTool.toolName}` : undefined;
+  const effectiveRequiredGrant = requiredGrant || mcpCapability;
+  if (effectiveRequiredGrant && !hasGrant(username, effectiveRequiredGrant)) {
+    observation.logAuditEvent(username, "tool_call_denied", "failed", `Missing grant "${effectiveRequiredGrant}" for tool "${name}"`);
+    return { name, ok: false, error: `Missing capability grant "${effectiveRequiredGrant}"` };
+  }
+
+  if (mcpTool) {
+    const result = await mcpRegistry.callMcpTool(mcpTool.serverId, mcpTool.toolName, args);
+    if (!result.ok) {
+      observation.logAuditEvent(username, "tool_call", "failed", `${name}(${JSON.stringify(args)}): ${result.error}`);
+      return { name, ok: false, error: result.error };
+    }
+    observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
+    return { name, ok: true, output: result.content };
   }
 
   try {
@@ -514,6 +563,12 @@ export async function executeTool(
           return { name, ok: false, error: "No matching active objective found for that id." };
         }
         output = { updated: true };
+        break;
+      }
+      case "propose_mcp_server": {
+        const proposed = await mcpServersRepo.proposeMcpServer(args.name, args.url, username);
+        observation.logAuditEvent(username, "mcp_server_proposed", "success", `"${args.name}" (${args.url}, id ${proposed.id})`);
+        output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval. Nothing connects until you approve it." };
         break;
       }
       case "display_content": {
