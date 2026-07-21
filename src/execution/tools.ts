@@ -533,8 +533,13 @@ export async function executeTool(
 }
 
 // Keyword triggers per tool, not a single flat list — makes it obvious which
-// tool a match implies and keeps this in sync with TOOL_DECLARATIONS by
-// construction rather than a second hand-maintained list drifting from it.
+// tool a match implies. This is a hand-maintained list, deliberately not
+// derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
+// display_content, update_objective_status, record_command_outcome,
+// queue_feature_request) are intentionally absent because they should only
+// ever be invoked as a model-driven follow-up, never routed to directly by
+// keyword match. If you add a tool that SHOULD be keyword-routable, add its
+// entry here too — nothing enforces the two staying in sync.
 const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
   github_create_issue: ["github", "issue", "repo", "repository"],
