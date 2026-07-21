@@ -23,7 +23,7 @@ import * as usersRepo from "./data/users-repo.js";
 import * as memoryRepo from "./data/memory-repo.js";
 import * as sessionRepo from "./data/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
-import { TOOL_DECLARATIONS, executeTool, looksToolShaped } from "./execution/tools.js";
+import { getAllToolDeclarations, executeTool, looksToolShaped } from "./execution/tools.js";
 import * as permissions from "./execution/permissions.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./execution/scheduler.js";
@@ -44,6 +44,8 @@ import * as featureRequestsRepo from "./data/feature-requests-repo.js";
 import * as securityRepo from "./data/security-repo.js";
 import * as commandProposalsRepo from "./data/command-proposals-repo.js";
 import * as pushRepo from "./data/push-subscriptions-repo.js";
+import * as mcpServersRepo from "./data/mcp-servers-repo.js";
+import * as mcpRegistry from "./execution/mcp-registry.js";
 import * as push from "./integrations/push.js";
 
 dotenv.config();
@@ -916,7 +918,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               contents,
               config: {
                 systemInstruction,
-                tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+                tools: [{ functionDeclarations: getAllToolDeclarations() }],
               },
             }, chatModels);
 
@@ -976,7 +978,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
 
               response = await generateContentWithFallback(ai, {
                 contents,
-                config: { systemInstruction, tools: [{ functionDeclarations: TOOL_DECLARATIONS }] },
+                config: { systemInstruction, tools: [{ functionDeclarations: getAllToolDeclarations() }] },
               }, chatModels);
               calls = response.functionCalls || [];
             }
@@ -1555,6 +1557,38 @@ app.post("/api/system/commands/:id/approve", validateApiKey, async (req: any, re
     const updated = await commandProposalsRepo.setCommandDecision(Number(req.params.id), "approved");
     if (!updated) return res.status(404).json({ error: "Command not found or not pending" });
     observation.logAuditEvent(req.username, "command_approved", "success", `#${updated.id}: ${updated.command}`);
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/system/mcp-servers/:id/approve", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.mcp_manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.mcp_manage"' });
+  }
+  try {
+    const result = await mcpRegistry.approveMcpServer(Number(req.params.id));
+    if (!result.ok) {
+      observation.logAuditEvent(req.username, "mcp_server_approve_failed", "failed", result.error);
+      return res.status(422).json({ error: result.error });
+    }
+    await permissions.loadGrantsFromDb(); // backfill admin for this server's newly-cached tools immediately
+    observation.logAuditEvent(req.username, "mcp_server_approved", "success", `#${result.server.id}: ${result.server.name}`);
+    res.json(result.server);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/system/mcp-servers/:id/disable", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.mcp_manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.mcp_manage"' });
+  }
+  try {
+    const updated = await mcpServersRepo.setMcpServerStatus(Number(req.params.id), "disabled");
+    if (!updated) return res.status(404).json({ error: "Server not found" });
+    observation.logAuditEvent(req.username, "mcp_server_disabled", "success", `#${updated.id}: ${updated.name}`);
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

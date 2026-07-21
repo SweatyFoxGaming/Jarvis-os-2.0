@@ -11,7 +11,7 @@ import { AutonomousExecutive } from "../src/execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/cognition/long_term_learning.js";
 import { ExecutiveBoard } from "../src/execution/executive_board.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/execution/permissions.js";
-import { executeTool } from "../src/execution/tools.js";
+import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
 import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
@@ -493,6 +493,27 @@ registerTest("Tools", "record_command_outcome reports a clean error for a non-ex
   const result = await executeTool("record_command_outcome", { commandId: 999999, outcome: "worked" }, "admin");
   if (result.ok !== false || !result.error) {
     throw new Error("Tools: record_command_outcome should fail cleanly for a command id that doesn't exist");
+  }
+});
+
+registerTest("Tools", "propose_mcp_server denies calls without system.mcp_manage grant", async () => {
+  const result = await executeTool("propose_mcp_server", { name: "test-server", url: "http://example.invalid/mcp" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: propose_mcp_server should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "executeTool reports unknown tool for a name that isn't static or a cached MCP tool", async () => {
+  const result = await executeTool("not_a_real_tool", {}, "admin");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("unknown")) {
+    throw new Error("Tools: expected a clean 'unknown tool' error for a name matching neither a static tool nor a cached MCP tool");
+  }
+});
+
+registerTest("Tools", "getAllToolDeclarations includes every static declaration with nothing MCP-approved", () => {
+  const declarations = getAllToolDeclarations();
+  if (declarations.length < 25) { // 24 static tools as of Phase 3, plus propose_mcp_server = 25
+    throw new Error(`Tools: expected at least 25 static declarations, got ${declarations.length}`);
   }
 });
 

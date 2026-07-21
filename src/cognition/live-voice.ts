@@ -8,7 +8,7 @@ import * as sessionRepo from "../data/session-repo.js";
 import * as memoryStore from "./memory-store.js";
 import { reflectAndLearn } from "./reflection.js";
 import * as knowledgeGraph from "./knowledge-graph.js";
-import { TOOL_DECLARATIONS, executeTool } from "../execution/tools.js";
+import { getAllToolDeclarations, executeTool } from "../execution/tools.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -201,7 +201,7 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
         // Same capability set text chat gets (src/server.ts) — spoken
         // requests can invoke GitHub/email/TTS/planning/etc. exactly like a
         // typed one, dispatched through the identical executeTool().
-        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+        tools: [{ functionDeclarations: getAllToolDeclarations() }],
       },
       callbacks: {
         onopen: () => {
