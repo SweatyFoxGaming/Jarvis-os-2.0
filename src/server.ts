@@ -2290,6 +2290,7 @@ initDatabase().then(async (ready) => {
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(ai);
   scheduler.startSelfReflectionJob(ai);
+  scheduler.startMcpHealthCheckJob();
 });
 
 // Evict idle per-user session state (working memory, not persisted data) so

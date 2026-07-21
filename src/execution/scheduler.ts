@@ -7,6 +7,8 @@ import * as identity from "../cognition/identity.js";
 import * as identityRepo from "../data/identity-repo.js";
 import * as objectivesRepo from "../data/objectives-repo.js";
 import * as push from "../integrations/push.js";
+import * as mcpServersRepo from "../data/mcp-servers-repo.js";
+import * as mcpRegistry from "./mcp-registry.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -169,5 +171,35 @@ export function startSelfReflectionJob(ai: GoogleGenAI | null, intervalMs = 6 * 
       observation.logTelemetry("warn", "Identity", `Failed to persist proactive thought: ${err.message}`);
     }
     pushNotification("admin", result.content, "info");
+  });
+}
+
+// Tracks consecutive reconnect failures per server, in-memory only — reset
+// on a successful reconnect or a restart. This is deliberately ephemeral
+// (unlike command_proposals/objectives' Postgres-backed durability): a
+// restart re-attempting from a clean slate for "how many times has this
+// server failed in a row" is the correct behavior here, not a bug — a
+// server that was flapping before a restart gets a fresh chance, exactly
+// like `seenBriefingItemIds`'s existing ephemeral novelty tracking.
+const consecutiveFailures = new Map<number, number>();
+const MCP_HEALTH_CHECK_FAILURE_THRESHOLD = 3;
+
+export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Timeout {
+  return registerJob("mcp-health-check", intervalMs, async () => {
+    const servers = await mcpServersRepo.listMcpServers("approved");
+    for (const server of servers) {
+      const reconnected = await mcpRegistry.refreshServerConnection(server.id);
+      if (reconnected) {
+        consecutiveFailures.delete(server.id);
+        continue;
+      }
+      const failures = (consecutiveFailures.get(server.id) ?? 0) + 1;
+      consecutiveFailures.set(server.id, failures);
+      if (failures >= MCP_HEALTH_CHECK_FAILURE_THRESHOLD) {
+        await mcpServersRepo.setMcpServerStatus(server.id, "error");
+        observation.logTelemetry("warn", "McpHealthCheck", `Server "${server.name}" (#${server.id}) failed to reconnect ${failures} times in a row — marked 'error'.`);
+        consecutiveFailures.delete(server.id);
+      }
+    }
   });
 }
