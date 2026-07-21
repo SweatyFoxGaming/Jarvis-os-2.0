@@ -516,7 +516,7 @@ app.post("/api/executive/run", validateApiKey, aiLimiter, async (req: any, res: 
 
   try {
     const session = await getSession(req.username);
-    const report = await executive.executeObjective(objective, session);
+    const report = await executive.executeObjective(objective, session, req.username);
     res.json(report);
   } catch (error: any) {
     observation.logTelemetry("error", "Executive", `Objective execution failed: ${error.message}`);

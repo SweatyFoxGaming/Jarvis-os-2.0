@@ -64,6 +64,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   update_objective_status: "objectives.write",
   record_command_outcome: "system.execute",
   propose_mcp_server: "system.mcp_manage",
+  confirm_build_direction: "executive.plan",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -128,6 +129,18 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
         objective: { type: Type.STRING, description: "The high-level objective to decompose into steps" },
       },
       required: ["objective"],
+    },
+  },
+  {
+    name: "confirm_build_direction",
+    description:
+      "Call this ONLY when the user has explicitly confirmed the direction for something you researched and discussed with them (not just a casual 'sounds interesting') — this locks in the direction and starts drafting real code. Never call this speculatively or before a genuine research-and-discussion exchange about a build request.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        directionNotes: { type: Type.STRING, description: "A clear summary of the direction the user confirmed — what to build, key choices discussed (stack, scope, style)" },
+      },
+      required: ["directionNotes"],
     },
   },
   {
@@ -445,7 +458,15 @@ export async function executeTool(
       }
       case "decompose_plan": {
         const session = await getSession(username);
-        output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session);
+        output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session, username);
+        break;
+      }
+      case "confirm_build_direction": {
+        const result = await AutonomousExecutive.getInstance().confirmDirection(username, args.directionNotes);
+        if (!result.ok) {
+          return { name, ok: false, error: result.message };
+        }
+        output = { message: result.message };
         break;
       }
       case "calendar_list_events":

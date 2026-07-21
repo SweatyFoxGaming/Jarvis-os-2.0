@@ -187,18 +187,21 @@ registerTest("Cognitive 2.0", "Working memory compartment cells validation", () 
 });
 
 // ---------- 7. Autonomous Executive Tests ----------
-registerTest("Executive 2.0", "Autonomous executive 5-stage pipeline validation", async () => {
+registerTest("Executive 2.0", "Autonomous executive real dispatch pipeline (no AI available)", async () => {
   const session = new SessionState();
   const obs = ObservationPlatform.getInstance();
-  const exec = AutonomousExecutive.getInstance(obs, null); // Run in simulated mode
+  const exec = AutonomousExecutive.getInstance(obs, null); // No AI client — exercises the degrade-safety fallback path
 
-  const report = await exec.executeObjective("Deploy microservices orchestrator", session);
+  const report = await exec.executeObjective("Deploy microservices orchestrator", session, "test_user");
 
   if (report.status !== "success") {
     throw new Error("Autonomous Executive: Execution status mismatch");
   }
-  if (report.totalStepsExecuted !== 4) {
-    throw new Error("Autonomous Executive: Core steps count mismatch");
+  if (report.totalStepsExecuted !== 1) {
+    throw new Error(`Autonomous Executive: expected 1 step in the no-AI fallback, got ${report.totalStepsExecuted}`);
+  }
+  if (!report.findings?.[0]?.includes("No capable model is available")) {
+    throw new Error("Autonomous Executive: expected the no-AI research fallback message in findings");
   }
   if (session.workspace.mission.status !== "completed") {
     throw new Error("Autonomous Executive: Mission status did not resolve to 'completed'");

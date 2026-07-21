@@ -3,28 +3,22 @@ import { GoogleGenAI } from "@google/genai";
 import { MindKernel } from "../cognition/kernel/kernel.js";
 import { SessionState } from "../cognition/session.js";
 import * as commandProposalsRepo from "../data/command-proposals-repo.js";
+import * as buildRequestsRepo from "../data/build-requests-repo.js";
+import * as departments from "./departments.js";
+import * as scheduler from "./scheduler.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
  * Acts as an orchestrator/coordinator.
- * Responsibilities:
- * 1. Receive request
- * 2. Ask Mind Kernel for state
- * 3. Determine execution path
- * 4. Delegate
- * 5. Receive result
- * 6. Update Mind Kernel
- * 7. Return response
  *
- * This planner decomposes a free-text objective into steps (via Gemini when
- * available) and narrates them — it does not execute anything itself. Real
- * delegation to a capability (GitHub/email/TTS) requires structured arguments
- * (owner/repo/title, to/subject/body, ...) that a free-text objective doesn't
- * reliably contain; that's handled by real Gemini function-calling in the
- * /api/chat path instead (src/execution/tools.ts), where the model extracts
- * those arguments directly from the conversation. Keeping this planner honest
- * about that boundary (see `simulated`/`buildVerification` below) beats
- * guessing a repo/recipient from keyword matches on a plan string.
+ * Decomposes a free-text objective into department-tagged steps (real
+ * dispatch via src/execution/departments.ts when Gemini is available).
+ * An objective with a 'coding' step branches into the build_requests
+ * lifecycle (real research -> human consult -> confirmed direction -> real
+ * drafted code -> human approval -> real GitHub PR -> real QA review) —
+ * see docs/superpowers/specs/2026-07-21-agent-departments-design.md. An
+ * objective with no coding step gets real research for each step, same
+ * lighter-weight shape this planner always had, just no longer narrated.
  */
 export class AutonomousExecutive {
   private static instance: AutonomousExecutive | null = null;
@@ -50,7 +44,7 @@ export class AutonomousExecutive {
     return this.instance;
   }
 
-  public async executeObjective(objective: string, session: SessionState): Promise<any> {
+  public async executeObjective(objective: string, session: SessionState, username: string): Promise<any> {
     const kernel = MindKernel.getInstance();
     const workspace = session.workspace;
 
@@ -58,8 +52,7 @@ export class AutonomousExecutive {
 
     session.dialogue.clear();
     session.dialogue.recordTurn("CEO", `We have received a new high-level objective: "${objective}". Let's decompose and coordinate execution.`);
-    session.dialogue.recordTurn("Architect", "We should decompose this into 4 clean sequential targets for safety and structure.");
-    session.dialogue.recordTurn("Security", "This planner does not execute — structured delegation happens through chat function-calling instead.");
+    session.dialogue.recordTurn("Architect", "We should decompose this into concrete steps, each owned by a real department.");
 
     // --- STAGE 1: Decompose Objective ---
     session.updateState({
@@ -75,110 +68,34 @@ export class AutonomousExecutive {
 
     // --- STAGE 2: Formulate Goals ---
     session.updateState({
-      currentGoal: `Autonomous Fullfillment: ${objective}`,
-      currentThought: "Searching Memory",
+      currentGoal: `Autonomous Fulfillment: ${objective}`,
+      currentThought: "Planning Departments",
       executiveStatus: "Planning",
-      attentionTarget: session.attentionEngine.determineAttention({ activeGoal: `Autonomous Fullfillment: ${objective}` }),
+      attentionTarget: session.attentionEngine.determineAttention({ activeGoal: `Autonomous Fulfillment: ${objective}` }),
     }, this.observation);
 
     workspace.mission.progressPercent = 30;
-    workspace.mission.status = "in_progress";
     await this.delay(300);
 
-    // --- STAGE 3: Proactive Task Creation ---
-    let tasks = [
-      `Deconstruct requirements for ${objective}`,
-      `Establish logical interfaces and database contracts`,
-      `Implement operational components and state machines`,
-      `Run regression suite and verify QA standards`
-    ];
-
-    if (this.ai && !kernel.offlineMode) {
-      try {
-        const response = await this.ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: `Decompose this software objective into exactly 4 sequential plan step strings: "${objective}". Respond with the plan steps separated by newlines, with no bullet points or extra text.`,
-        });
-        if (response.text) {
-          const lines = response.text.split("\n").map(l => l.replace(/^[-*•\d.\s]+/, "").trim()).filter(Boolean);
-          if (lines.length >= 3) {
-            tasks = lines.slice(0, 4);
-          }
-        }
-      } catch (err: any) {
-        this.observation.logTelemetry("warn", "Executive", `AI Planner decomposition failed: ${err.message}. Reverting to standard heuristics.`);
-      }
-    }
+    // --- STAGE 3: Department-Tagged Decomposition ---
+    const steps = await departments.decomposeObjective(objective, this.ai, kernel.offlineMode);
+    const hasCodingStep = steps.some(s => s.department === "coding");
 
     session.updateState({
-      currentPlan: tasks,
-      currentThought: "Planning",
-      executiveStatus: "Planning",
+      currentPlan: steps.map(s => `[${s.department}] ${s.step}`),
+      currentThought: hasCodingStep ? "Starting Research For Build Request" : "Researching",
+      executiveStatus: "Executing",
+      activeCapability: hasCodingStep ? "Build Request Pipeline" : "Research Department",
       attentionTarget: session.attentionEngine.determineAttention({ hasIncompletePlan: true }),
     }, this.observation);
 
     workspace.mission.progressPercent = 50;
-    workspace.mission.status = "in_progress";
-    await this.delay(300);
+    await this.delay(200);
 
-    // --- STAGE 4: Specialist Assembly (narrated, not executed — see class doc) ---
-    session.updateState({
-      currentThought: "Executing Research",
-      executiveStatus: "Executing",
-      activeCapability: "Specialist Swarm Assembler",
-    }, this.observation);
-
-    workspace.mission.progressPercent = 75;
-    workspace.mission.status = "in_progress";
-
-    const swarmLog: string[] = [];
-
-    for (let i = 0; i < tasks.length; i++) {
-      const step = tasks[i];
-      workspace.plan.currentStepIndex = i;
-
-      session.updateState({
-        attentionTarget: session.attentionEngine.determineAttention({ emergency: null, userRequest: step }),
-      }, this.observation);
-      workspace.attention.focusOn(step);
-
-      // Narrated planning output only — no code is actually written, compiled,
-      // or tested here. See `simulated`/`buildVerification` on the final report.
-      let swarmResult = "";
-      if (i === 0) {
-        swarmResult = `[Research Swarm — planned, not executed] Would verify specifications, host OS environment, and network latency.`;
-      } else if (i === 1) {
-        swarmResult = `[Coding Swarm — planned, not executed] Would write templates, endpoints, and database connection logic.`;
-      } else if (i === 2) {
-        swarmResult = `[Coding Swarm — planned, not executed] Would compile the main process loop and wire Express endpoints.`;
-      } else {
-        swarmResult = `[QA/Verification Swarm — planned, not executed] Would run the test harness.`;
-      }
-
-      workspace.capabilities.recordResult({ step, outcome: "success", summary: swarmResult });
-      this.observation.logTelemetry("info", "Executive", `[Stage 4: Swarm Dispatch] Step ${i + 1} narrated by specialist swarm.`);
-      swarmLog.push(swarmResult);
-      await this.delay(200);
-    }
-
-    // --- STAGE 5: Output Aggregation & QA ---
-    session.dialogue.recordTurn("QA", "All specialist swarms returned narrated (non-executed) plans.");
-    session.dialogue.recordTurn("Decision", `Objective "${objective}" successfully planned.`);
-
-    const finalReport = {
-      objective,
-      status: "success",
-      totalStepsExecuted: tasks.length,
-      swarmOutcomes: swarmLog,
-      // This coordinator decomposes and narrates a plan (optionally via Gemini
-      // for the step breakdown) — it does not write files, run a compiler, or
-      // execute tests. For real capability execution with structured
-      // arguments, use /api/chat, which supports Gemini function-calling
-      // against src/execution/tools.ts.
-      simulated: true,
-      buildVerification: "NOT PERFORMED — no code was written, compiled, or tested."
-    };
-
+    // Computed once, shared by both branches below, instead of a bare magic
+    // number in the build-request branch's decision trace — same real
+    // command-outcome-driven signal every other confidence score in this
+    // codebase uses.
     const recentOutcomeSuccessRate = await commandProposalsRepo.getRecentOutcomeSuccessRate();
     const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
       memoryConfidence: 1.0,
@@ -189,6 +106,99 @@ export class AutonomousExecutive {
       ...(recentOutcomeSuccessRate !== null ? { outcomeConfidence: recentOutcomeSuccessRate } : {})
     });
 
+    // --- STAGE 4a: Build Request Branch (real research -> stop for consult) ---
+    if (hasCodingStep) {
+      const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
+      const research = await departments.runResearch(objective, this.ai);
+      const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
+
+      if (!recorded) {
+        await buildRequestsRepo.markResearchError(buildRequest.id, "Failed to persist research findings.");
+        session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
+        workspace.mission.status = "failed";
+        return {
+          objective,
+          status: "error",
+          buildRequestId: buildRequest.id,
+          message: "Research completed but couldn't be saved — please try again.",
+        };
+      }
+
+      scheduler.pushNotification(
+        username,
+        `I've done some research on "${objective}", sir. ${research.summary.slice(0, 300)}${research.summary.length > 300 ? "..." : ""} ` +
+          `Let's talk through direction before I draft anything — build request #${buildRequest.id}.`,
+        "info"
+      );
+
+      session.dialogue.recordTurn("Research", "Real research complete — findings stored, awaiting your input on direction.");
+      session.dialogue.recordTurn("Decision", `Build request #${buildRequest.id} is awaiting your consultation.`);
+
+      session.updateState({
+        currentThought: "Awaiting Consultation",
+        executiveStatus: "Idle",
+        activeCapability: null,
+        attentionTarget: session.attentionEngine.determineAttention({}),
+      }, this.observation);
+      workspace.mission.progressPercent = 60;
+      workspace.mission.status = "in_progress";
+
+      this.observation.recordDecisionTrace({
+        intent: `Autonomous Execution: "${objective}"`,
+        goals: [`Complete: ${objective}`, "Research before building", "Confirm direction before coding"],
+        strategy: "Real department dispatch — build request lifecycle",
+        planner: steps.map(s => s.step),
+        capabilitySelection: ["Research Department"],
+        reasoning: `Objective required real code, so a build request (#${buildRequest.id}) was created. Real research ran and is stored; coding is deferred until the user confirms direction.`,
+        knowledgeUsed: workspace.userContext.loadedFacts,
+        executionResult: `Build request #${buildRequest.id} created, research stored, awaiting consult.`,
+        reflection: "This objective needs a human conversation before any code gets written — that boundary is by design, not a limitation.",
+        confidence: calculatedConfidence / 100
+      });
+
+      return {
+        objective,
+        status: "awaiting_consult",
+        buildRequestId: buildRequest.id,
+        researchSummary: research.summary,
+        message: "Research is done and stored. I'll discuss it with you before drafting any code — nothing gets built until you confirm direction.",
+      };
+    }
+
+    // --- STAGE 4b: No coding step — real research for every step, same
+    // lighter-weight shape this planner always had, just no longer narrated. ---
+    const findings: string[] = [];
+
+    for (let i = 0; i < steps.length; i++) {
+      const { step } = steps[i];
+      workspace.plan.currentStepIndex = i;
+
+      session.updateState({
+        attentionTarget: session.attentionEngine.determineAttention({ emergency: null, userRequest: step }),
+      }, this.observation);
+      workspace.attention.focusOn(step);
+
+      const research = await departments.runResearch(step, this.ai);
+      const resultText = `[Research] ${research.summary}`;
+
+      workspace.capabilities.recordResult({ step, outcome: "success", summary: resultText });
+      this.observation.logTelemetry("info", "Executive", `[Stage 4] Step ${i + 1} researched for real.`);
+      findings.push(resultText);
+    }
+
+    // --- STAGE 5: Output Aggregation ---
+    session.dialogue.recordTurn("QA", "All steps researched for real.");
+    session.dialogue.recordTurn("Decision", `Objective "${objective}" researched.`);
+
+    const finalReport = {
+      objective,
+      status: "success",
+      totalStepsExecuted: steps.length,
+      findings,
+    };
+
+    // calculatedConfidence was already computed once, right after Stage 3,
+    // shared with the build-request branch above — not recomputed here.
     session.updateState({
       currentThought: "Preparing Response",
       executiveStatus: "Idle",
@@ -206,18 +216,72 @@ export class AutonomousExecutive {
 
     this.observation.recordDecisionTrace({
       intent: `Autonomous Execution: "${objective}"`,
-      goals: [`Complete: ${objective}`, "Decompose goals autonomously", "Assemble specialist swarms"],
+      goals: [`Complete: ${objective}`, "Decompose goals autonomously", "Research for real"],
       strategy: "Multi-stage Autonomous executive pattern",
-      planner: tasks,
-      capabilitySelection: ["Specialist Swarm Assembler", "QA/Verification Swarm"],
-      reasoning: `Completed all 5 stages of planning. Swarms narrated their intended steps without executing them. Confidence: ${calculatedConfidence}%.`,
+      planner: steps.map(s => s.step),
+      capabilitySelection: ["Research Department"],
+      reasoning: `Completed research for all ${steps.length} step(s). Confidence: ${calculatedConfidence}%.`,
       knowledgeUsed: workspace.userContext.loadedFacts,
-      executionResult: `Planned ${objective}. Status: SUCCESS (planning only)`,
-      reflection: "Executive coordinator loop ran via SessionState; no capability was actually invoked.",
+      executionResult: `Researched ${objective}. Status: SUCCESS`,
+      reflection: "Executive coordinator loop ran via SessionState; real research was performed for every step.",
       confidence: calculatedConfidence / 100
     });
 
     return finalReport;
+  }
+
+  // Drives the second stage of the build_requests lifecycle: called once
+  // the user has actually confirmed a direction in conversation (never
+  // speculatively — see confirm_build_direction's tool description in
+  // tools.ts). Resolves against the caller's own most recent
+  // 'awaiting_consult' row rather than a model-recalled id — see this
+  // plan's Global Constraints for why.
+  public async confirmDirection(username: string, directionNotes: string): Promise<{ ok: boolean; message: string }> {
+    const buildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
+    if (!buildRequest) {
+      return { ok: false, message: "There's no build request of mine currently awaiting your direction to confirm." };
+    }
+
+    const confirmed = await buildRequestsRepo.recordDirectionConfirmed(buildRequest.id, directionNotes);
+    if (!confirmed) {
+      return { ok: false, message: "Couldn't confirm direction — that build request may have already moved on." };
+    }
+
+    await buildRequestsRepo.markCoding(confirmed.id);
+
+    const draft = await departments.draftCodeChanges(
+      confirmed.objective,
+      confirmed.research_summary || "",
+      directionNotes,
+      this.ai
+    );
+
+    if (!draft.ok) {
+      await buildRequestsRepo.markCodeDraftError(confirmed.id, draft.error);
+      scheduler.pushNotification(
+        username,
+        `I wasn't able to draft code for build request #${confirmed.id}, sir: ${draft.error}`,
+        "warning"
+      );
+      return { ok: false, message: `Direction confirmed, but drafting the code failed: ${draft.error}` };
+    }
+
+    const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files);
+    if (!recorded) {
+      await buildRequestsRepo.markCodeDraftError(confirmed.id, "Failed to persist the drafted code.");
+      return { ok: false, message: "Direction confirmed and code drafted, but I couldn't save it — please try again." };
+    }
+
+    scheduler.pushNotification(
+      username,
+      `I've drafted the code for build request #${confirmed.id}, sir: ${draft.summary}. It's waiting for your approval in the dashboard before I open a pull request.`,
+      "info"
+    );
+
+    return {
+      ok: true,
+      message: `Direction confirmed. I've drafted ${draft.files.length} file(s) — build request #${confirmed.id} is now waiting for your approval before I open a pull request.`,
+    };
   }
 
   private delay(ms: number): Promise<void> {
