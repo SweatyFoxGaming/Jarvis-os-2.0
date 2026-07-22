@@ -1,20 +1,20 @@
-import { GoogleGenAI } from "@google/genai";
 import { ObservationPlatform } from "../observation/index.js";
 import * as emailIntegration from "../integrations/email.js";
 import * as github from "../integrations/github.js";
 import * as objectivesRepo from "../data/objectives-repo.js";
+import Groq from "groq-sdk";
 
 const observation = ObservationPlatform.getInstance();
 
 // Set once from server.ts at startup so the get_briefing chat tool
 // (tools.ts) can generate a real briefing without server.ts needing to
-// export its module-scoped `ai` variable directly.
-let configuredAi: GoogleGenAI | null = null;
-export function configureAi(client: GoogleGenAI | null): void {
-  configuredAi = client;
+// export its module-scoped `groq` variable directly.
+let configuredGroq: Groq | null = null;
+export function configureGroq(client: Groq | null): void {
+  configuredGroq = client;
 }
-export function getConfiguredAi(): GoogleGenAI | null {
-  return configuredAi;
+export function getConfiguredGroq(): Groq | null {
+  return configuredGroq;
 }
 
 /**
@@ -126,46 +126,44 @@ export function prioritizeSignals(signals: RawSignals): PrioritizedItem[] {
 
 // ---------- Synthesis: real Gemini call when available, honest plain list otherwise ----------
 
-export async function synthesizeBriefing(ai: GoogleGenAI | null, items: PrioritizedItem[], errors: string[]): Promise<string> {
+export async function synthesizeBriefing(groq: Groq | null, items: PrioritizedItem[], errors: string[]): Promise<string> {
   if (items.length === 0) {
     return errors.length > 0
       ? `Nothing new to report, though some sources couldn't be checked: ${errors.join("; ")}.`
       : "Nothing new since the last check — inbox and GitHub notifications are both clear.";
   }
 
-  if (!ai) {
+  if (!groq) {
     const lines = items.map(i => `- [${i.urgency}] ${i.summary}`);
     return `Briefing (${items.length} item(s)):\n${lines.join("\n")}${errors.length ? `\n\nCouldn't check: ${errors.join("; ")}` : ""}`;
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{
         role: "user",
-        parts: [{
-          text:
-            "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, " +
-            "addressing the user as \"sir\" where it reads naturally. Write a short briefing paragraph " +
-            "(3-5 sentences) summarizing these prioritized items, in that voice — concise and matter-of-fact, " +
-            "not gushing. Lead with the highest-urgency items. Do not invent details not present below. " +
-            "If nothing is urgent, say so plainly rather than manufacturing urgency.\n\n" +
-            items.map(i => `[${i.urgency}] (${i.source}) ${i.summary}`).join("\n"),
-        }],
+        content:
+          "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, " +
+          "addressing the user as \"sir\" where it reads naturally. Write a short briefing paragraph " +
+          "(3-5 sentences) summarizing these prioritized items, in that voice — concise and matter-of-fact, " +
+          "not gushing. Lead with the highest-urgency items. Do not invent details not present below. " +
+          "If nothing is urgent, say so plainly rather than manufacturing urgency.\n\n" +
+          items.map(i => `[${i.urgency}] (${i.source}) ${i.summary}`).join("\n"),
       }],
     });
-    return response.text || `Briefing (${items.length} item(s)) — synthesis returned empty, raw items: ${items.map(i => i.summary).join("; ")}`;
+    return response.choices[0]?.message?.content || `Briefing (${items.length} item(s)) — synthesis returned empty, raw items: ${items.map(i => i.summary).join("; ")}`;
   } catch (err: any) {
-    observation.logTelemetry("warn", "Briefing", `Gemini synthesis failed, falling back to plain list: ${err.message}`);
+    observation.logTelemetry("warn", "Briefing", `Groq synthesis failed, falling back to plain list: ${err.message}`);
     const lines = items.map(i => `- [${i.urgency}] ${i.summary}`);
     return `Briefing (${items.length} item(s)):\n${lines.join("\n")}`;
   }
 }
 
-export async function generateBriefing(ai: GoogleGenAI | null, username: string): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
+export async function generateBriefing(groq: Groq | null, username: string): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
   const signals = await collectSignals(username);
   const items = prioritizeSignals(signals);
   const errors = [signals.emailError, signals.githubError, signals.objectivesError].filter(Boolean) as string[];
-  const text = await synthesizeBriefing(ai, items, errors);
+  const text = await synthesizeBriefing(groq, items, errors);
   return { text, itemCount: items.length, items };
 }

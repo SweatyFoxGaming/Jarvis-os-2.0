@@ -191,6 +191,7 @@ if (process.env.GROQ_API_KEY) {
 } else {
   observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
 }
+briefing.configureGroq(groq);
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -1342,9 +1343,9 @@ app.get("/api/identity/reflections", validateApiKey, async (req: any, res: any) 
 // On-demand generation of a proactive thought (the scheduled job in
 // scheduler.ts runs the same real synthesis on a timer without being asked).
 app.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
-  if (!ai) return res.status(503).json({ error: "Requires GEMINI_API_KEY to be configured." });
+  if (!groq) return res.status(503).json({ error: "Requires GROQ_API_KEY to be configured." });
   try {
-    const result = await identity.generateProactiveThought(ai);
+    const result = await identity.generateProactiveThought(groq);
     if (!result) {
       return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
     }
@@ -1853,7 +1854,7 @@ app.post("/api/system/ingest/command-result", validateApiKey, async (req: any, r
 // scheduler.ts runs the same real synthesis on a timer without being asked.
 app.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
   try {
-    const result = await briefing.generateBriefing(ai, req.username);
+    const result = await briefing.generateBriefing(groq, req.username);
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
     } catch (err: any) {
@@ -2464,8 +2465,8 @@ initDatabase().then(async (ready) => {
   });
 
   scheduler.startEmailWatchJob();
-  scheduler.startBriefingJob(ai);
-  scheduler.startSelfReflectionJob(ai);
+  scheduler.startBriefingJob(groq);
+  scheduler.startSelfReflectionJob(groq);
   scheduler.startMcpHealthCheckJob();
 });
 

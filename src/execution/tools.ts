@@ -476,7 +476,7 @@ export async function executeTool(
         output = await calendar.createEvent(args.summary, args.startISO, args.endISO, args.description);
         break;
       case "get_briefing": {
-        const result = await briefing.generateBriefing(briefing.getConfiguredAi(), username);
+        const result = await briefing.generateBriefing(briefing.getConfiguredGroq(), username);
         output = { text: result.text, itemCount: result.itemCount };
         break;
       }

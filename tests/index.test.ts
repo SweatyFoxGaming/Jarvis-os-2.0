@@ -704,7 +704,7 @@ registerTest("Objectives", "markCheckedIn never throws, even with no DB or an em
 });
 
 // ---------- Briefing Tests ----------
-import { prioritizeSignals } from "../src/execution/briefing.js";
+import { prioritizeSignals, synthesizeBriefing } from "../src/execution/briefing.js";
 
 registerTest("Briefing", "prioritizeSignals scores a near-due objective as high urgency", () => {
   const soon = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10); // tomorrow
@@ -750,6 +750,14 @@ registerTest("Briefing", "prioritizeSignals scores an objective with no target d
   const obj = items.find(i => i.id === "objective:3");
   if (!obj || obj.urgency !== "medium") {
     throw new Error(`Briefing: expected an undated objective to score "medium", got: ${JSON.stringify(obj)}`);
+  }
+});
+
+registerTest("Briefing", "synthesizeBriefing falls back to a plain list with no Groq client", async () => {
+  const items = [{ id: "email:1", source: "email" as const, urgency: "high" as const, summary: "test item" }];
+  const text = await synthesizeBriefing(null, items, []);
+  if (!text.includes("test item")) {
+    throw new Error(`Briefing: expected the plain-list fallback to include the raw item summary, got: "${text}"`);
   }
 });
 
