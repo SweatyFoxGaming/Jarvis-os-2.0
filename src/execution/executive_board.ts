@@ -1,4 +1,4 @@
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 
 /**
  * Phase XVI: Multi-Agent Executive Board

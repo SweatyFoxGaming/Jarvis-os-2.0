@@ -1,7 +1,7 @@
 import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 

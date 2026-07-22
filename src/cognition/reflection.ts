@@ -1,7 +1,7 @@
 import { Type } from "@google/genai";
 import Groq from "groq-sdk";
 import { toGroqSchema } from "./groq-client.js";
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 import { LongTermLearningEngine, ICodingStylePreference } from "./long_term_learning.js";
 
 const observation = ObservationPlatform.getInstance();

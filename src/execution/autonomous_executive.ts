@@ -1,12 +1,12 @@
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
 import { MindKernel } from "../cognition/kernel/kernel.js";
 import { SessionState } from "../cognition/session.js";
-import * as commandProposalsRepo from "../data/command-proposals-repo.js";
-import * as buildRequestsRepo from "../data/build-requests-repo.js";
+import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
+import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 import * as departments from "./departments.js";
-import * as scheduler from "./scheduler.js";
+import * as scheduler from "../kernel/scheduler.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)

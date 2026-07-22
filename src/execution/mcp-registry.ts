@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import * as mcpServersRepo from "../data/mcp-servers-repo.js";
-import { ObservationPlatform } from "../observation/index.js";
+import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 

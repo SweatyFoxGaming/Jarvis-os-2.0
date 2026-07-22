@@ -1,4 +1,4 @@
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 const BRAVE_API = "https://api.search.brave.com/res/v1/web/search";

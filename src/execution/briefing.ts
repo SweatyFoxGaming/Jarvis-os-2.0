@@ -1,7 +1,7 @@
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 import * as emailIntegration from "../integrations/email.js";
 import * as github from "../integrations/github.js";
-import * as objectivesRepo from "../data/objectives-repo.js";
+import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import Groq from "groq-sdk";
 
 const observation = ObservationPlatform.getInstance();
@@ -38,7 +38,7 @@ export interface PrioritizedItem {
 export interface RawSignals {
   emails: any[];
   githubNotifications: any[];
-  objectives: import("../data/objectives-repo.js").ObjectiveRow[];
+  objectives: import("../kernel/state/objectives-repo.js").ObjectiveRow[];
   emailError?: string;
   githubError?: string;
   objectivesError?: string;

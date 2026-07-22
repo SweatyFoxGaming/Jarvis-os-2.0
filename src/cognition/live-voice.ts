@@ -1,11 +1,11 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import Groq from "groq-sdk";
 import type WebSocket from "ws";
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 import { buildIdentityContext } from "./identity.js";
 import * as identity from "./identity.js";
 import { LongTermLearningEngine } from "./long_term_learning.js";
-import * as sessionRepo from "../data/session-repo.js";
+import * as sessionRepo from "../kernel/state/session-repo.js";
 import * as memoryStore from "./memory-store.js";
 import { reflectAndLearn } from "./reflection.js";
 import * as knowledgeGraph from "./knowledge-graph.js";

@@ -1,5 +1,5 @@
 import pg from "pg";
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../observation.js";
 
 const observation = ObservationPlatform.getInstance();
 

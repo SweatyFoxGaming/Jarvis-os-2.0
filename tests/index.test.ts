@@ -6,19 +6,19 @@
 
 import { CognitiveWorkspace } from "../src/cognition/workspace.js";
 import { SessionState, getSession } from "../src/cognition/session.js";
-import { ObservationPlatform } from "../src/observation/index.js";
+import { ObservationPlatform } from "../src/kernel/observation.js";
 import { AutonomousExecutive } from "../src/execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/cognition/long_term_learning.js";
 import { ExecutiveBoard } from "../src/execution/executive_board.js";
-import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/execution/permissions.js";
+import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
 import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
-import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
+import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
 import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/cognition/identity.js";
 import { extractAndStore } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/cognition/reflection.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
-import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
+import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/kernel/state/mcp-servers-repo.js";
 import {
   createBuildRequest,
   getBuildRequest,
@@ -26,7 +26,7 @@ import {
   listBuildRequests,
   recordDirectionConfirmed,
   rejectCode as rejectBuildCode,
-} from "../src/data/build-requests-repo.js";
+} from "../src/kernel/state/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
 import * as departments from "../src/execution/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/cognition/groq-client.js";
@@ -660,8 +660,8 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
 });
 
 // ---------- Objectives Tests (no live Postgres in this test process) ----------
-import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/data/objectives-repo.js";
-import { recordCommandOutcome, getRecentOutcomeSuccessRate } from "../src/data/command-proposals-repo.js";
+import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/kernel/state/objectives-repo.js";
+import { recordCommandOutcome, getRecentOutcomeSuccessRate } from "../src/kernel/state/command-proposals-repo.js";
 
 registerTest("Objectives", "createObjective degrades cleanly when Postgres isn't reachable", async () => {
   try {

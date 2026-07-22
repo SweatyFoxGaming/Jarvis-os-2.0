@@ -1,6 +1,6 @@
 import webpush from "web-push";
-import { ObservationPlatform } from "../observation/index.js";
-import * as pushRepo from "../data/push-subscriptions-repo.js";
+import { ObservationPlatform } from "../kernel/observation.js";
+import * as pushRepo from "../kernel/state/push-subscriptions-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 

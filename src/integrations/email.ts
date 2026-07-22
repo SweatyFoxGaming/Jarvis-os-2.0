@@ -1,6 +1,6 @@
 import nodemailer from "nodemailer";
 import { ImapFlow } from "imapflow";
-import { ObservationPlatform } from "../observation/index.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 

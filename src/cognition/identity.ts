@@ -1,9 +1,9 @@
 import { Type } from "@google/genai";
 import Groq from "groq-sdk";
 import { toGroqSchema } from "./groq-client.js";
-import { ObservationPlatform } from "../observation/index.js";
-import * as identityRepo from "../data/identity-repo.js";
-import type { ReflectionCategory } from "../data/identity-repo.js";
+import { ObservationPlatform } from "../kernel/observation.js";
+import * as identityRepo from "../kernel/state/identity-repo.js";
+import type { ReflectionCategory } from "../kernel/state/identity-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 

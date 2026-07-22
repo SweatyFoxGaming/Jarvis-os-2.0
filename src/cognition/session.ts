@@ -6,8 +6,8 @@ import { ExecutiveStateTracker, ExecutiveStatus } from "./kernel/executive_state
 import { InternalDialogue } from "./kernel/dialogue.js";
 import { SynchronizationEngine } from "./kernel/synchronization.js";
 import { CognitiveWorkspace } from "./workspace.js";
-import { ObservationPlatform } from "../observation/index.js";
-import * as sessionRepo from "../data/session-repo.js";
+import { ObservationPlatform } from "../kernel/observation.js";
+import * as sessionRepo from "../kernel/state/session-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
