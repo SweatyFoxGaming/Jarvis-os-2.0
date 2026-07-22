@@ -14,10 +14,10 @@ import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/
 import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
-import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/cognition/identity.js";
+import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/self/identity.js";
 import { extractAndStore } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/cognition/reflection.js";
-import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
+import { ConfidenceModel } from "../src/self/confidence.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/kernel/state/mcp-servers-repo.js";
 import {
   createBuildRequest,

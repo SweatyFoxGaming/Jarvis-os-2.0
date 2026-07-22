@@ -1,10 +1,10 @@
-import { MindStateTracker, MindState } from "./kernel/state.js";
-import { AttentionEngine } from "./kernel/attention.js";
-import { ThoughtEngine } from "./kernel/thought.js";
-import { ConfidenceModel } from "./kernel/confidence.js";
-import { ExecutiveStateTracker, ExecutiveStatus } from "./kernel/executive_state.js";
-import { InternalDialogue } from "./kernel/dialogue.js";
-import { SynchronizationEngine } from "./kernel/synchronization.js";
+import { MindStateTracker, MindState } from "../self/state.js";
+import { AttentionEngine } from "../self/attention.js";
+import { ThoughtEngine } from "../self/thought.js";
+import { ConfidenceModel } from "../self/confidence.js";
+import { ExecutiveStateTracker, ExecutiveStatus } from "../self/executive_state.js";
+import { InternalDialogue } from "../self/dialogue.js";
+import { SynchronizationEngine } from "../self/synchronization.js";
 import { CognitiveWorkspace } from "./workspace.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as sessionRepo from "../kernel/state/session-repo.js";

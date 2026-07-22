@@ -12,7 +12,7 @@ import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
 import { ExecutiveBoard } from "./execution/executive_board.js";
-import { MindKernel } from "./cognition/kernel/kernel.js";
+import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./cognition/local_engine.js";
 import * as github from "./integrations/github.js";
 import * as emailIntegration from "./integrations/email.js";
@@ -38,7 +38,7 @@ import * as briefing from "./execution/briefing.js";
 import * as briefingRepo from "./kernel/state/briefing-repo.js";
 import * as analyzer from "./evolution/analyzer.js";
 import * as evolutionRepo from "./kernel/state/evolution-repo.js";
-import * as identity from "./cognition/identity.js";
+import * as identity from "./self/identity.js";
 import * as identityRepo from "./kernel/state/identity-repo.js";
 import * as news from "./integrations/news.js";
 import * as webSearch from "./integrations/websearch.js";
@@ -707,7 +707,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
 
     // Real continuity, not a static persona repeated unchanged every
-    // session — see src/cognition/identity.ts. Empty string when there's
+    // session — see src/self/identity.ts. Empty string when there's
     // no genuine self-reflection history yet (fresh install, or too early
     // in the relationship for this to have accumulated anything).
     const identityContext = await identity.buildIdentityContext();
@@ -1177,7 +1177,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
         knowledgeGraph.extractAndStore(groq, message, fullReply).catch(() => {});
-        // Write side of continuity-of-self — see cognition/identity.ts.
+        // Write side of continuity-of-self — see self/identity.ts.
         identity.extractSelfReflection(groq, message, fullReply).catch(() => {});
       }
     }

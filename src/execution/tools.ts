@@ -12,7 +12,7 @@ import * as calendar from "../integrations/calendar.js";
 import * as briefing from "./briefing.js";
 import * as files from "../integrations/files.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
-import * as identity from "../cognition/identity.js";
+import * as identity from "../self/identity.js";
 import * as news from "../integrations/news.js";
 import * as webSearch from "../integrations/websearch.js";
 import * as featureRequestsRepo from "../kernel/state/feature-requests-repo.js";

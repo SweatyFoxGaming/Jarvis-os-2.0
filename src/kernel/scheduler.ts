@@ -3,7 +3,7 @@ import { ObservationPlatform } from "./observation.js";
 import * as emailIntegration from "../integrations/email.js";
 import * as briefing from "../execution/briefing.js";
 import * as briefingRepo from "./state/briefing-repo.js";
-import * as identity from "../cognition/identity.js";
+import * as identity from "../self/identity.js";
 import * as identityRepo from "./state/identity-repo.js";
 import * as objectivesRepo from "./state/objectives-repo.js";
 import * as push from "../integrations/push.js";
@@ -153,7 +153,7 @@ export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000)
 /**
  * The autonomous-initiative half of continuity-of-self — periodically
  * synthesizes one genuine reflective thought from real recorded
- * self-reflections (see cognition/identity.ts) and pushes it as a
+ * self-reflections (see self/identity.ts) and pushes it as a
  * notification, so something resembling an ongoing internal life happens
  * between conversations instead of only ever reacting to one. Honestly
  * no-ops (no notification, nothing persisted) when there isn't enough real

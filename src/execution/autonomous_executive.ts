@@ -1,7 +1,7 @@
 import { ObservationPlatform } from "../kernel/observation.js";
 import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
-import { MindKernel } from "../cognition/kernel/kernel.js";
+import { MindKernel } from "../self/kernel.js";
 import { SessionState } from "../cognition/session.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
 import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
