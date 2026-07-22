@@ -34,7 +34,7 @@ export function toGroqSchema(schema: any): any {
  * getAllToolDeclarations() already produces for Gemini) into Groq's
  * {type: "function", function: {...}} tool shape.
  */
-export function toGroqTools(declarations: Array<{ name: string; description?: string; parameters?: any }>): any[] {
+export function toGroqTools(declarations: Array<{ name?: string; description?: string; parameters?: any }>): any[] {
   return declarations.map((decl) => ({
     type: "function" as const,
     function: {

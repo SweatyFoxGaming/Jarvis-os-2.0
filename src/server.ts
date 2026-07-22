@@ -6,6 +6,7 @@ import crypto from "crypto";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
+import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./cognition/groq-client.js";
 import Groq from "groq-sdk";
 import { ObservationPlatform } from "./observation/index.js";
 import { AutonomousExecutive } from "./execution/autonomous_executive.js";
@@ -761,43 +762,49 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
     } else {
       if (kernel.llmMode === "strictly-online") {
-        executionChain.push("Gemini");
+        executionChain.push("Groq", "Gemini");
       } else if (kernel.llmMode === "strictly-local") {
         executionChain.push("LocalLLM");
       } else if (kernel.llmMode === "online-first") {
-        executionChain.push("Gemini", "LocalLLM");
+        executionChain.push("Groq", "Gemini", "LocalLLM");
       } else {
         // local-first (default)
-        executionChain.push("LocalLLM", "Gemini");
+        executionChain.push("LocalLLM", "Groq", "Gemini");
       }
     }
 
     // A tool-shaped request ("check that GitHub repo", "send an email...")
     // sent to the local model is exactly the fabrication risk the honest
     // local prompt above is a safety net for — but the better outcome is to
-    // not need that net at all. When Gemini is actually available and the
-    // user hasn't explicitly forced strictly-local, prefer it first so the
-    // request gets real capability instead of an honest decline.
+    // not need that net at all. Groq can call tools (unlike local), so
+    // prefer it first so the request gets real capability instead of an
+    // honest decline. Guarded on `executionChain[0] !== "Groq"` rather than
+    // `=== "LocalLLM"` specifically so this is a no-op (not a crash) if
+    // Groq's already at the front for some other reason.
     if (
-      ai &&
+      groq &&
       kernel.llmMode !== "strictly-local" &&
       looksToolShaped(message) &&
-      executionChain[0] === "LocalLLM" &&
-      executionChain.includes("Gemini")
+      executionChain[0] !== "Groq" &&
+      executionChain.includes("Groq")
     ) {
-      const idx = executionChain.indexOf("Gemini");
+      const idx = executionChain.indexOf("Groq");
       executionChain.splice(idx, 1);
-      executionChain.unshift("Gemini");
+      executionChain.unshift("Groq");
     }
 
     // A live camera frame is only genuinely usable by Gemini's multimodal
-    // input — the local llama-cpp path has no vision support here. Same
-    // "don't let a backend fake capability it doesn't have" rule as above.
+    // input — neither the local llama-cpp path nor Groq's hosted text
+    // models have vision support. Checked AFTER the tool-shaped promotion
+    // above (not instead of it) and guarded on `!== "Gemini"` (not
+    // `executionChain[0] === "LocalLLM"`) so an image always wins the front
+    // slot even when the same message also looks tool-shaped and Groq was
+    // just promoted there a moment ago.
     if (
       ai &&
       image &&
       kernel.llmMode !== "strictly-local" &&
-      executionChain[0] === "LocalLLM" &&
+      executionChain[0] !== "Gemini" &&
       executionChain.includes("Gemini")
     ) {
       const idx = executionChain.indexOf("Gemini");
@@ -918,6 +925,98 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
           observation.logTelemetry("info", "Cognition", "Local LLM content streaming completed successfully.");
         } catch (err: any) {
           observation.logTelemetry("warn", "Cognition", `Local LLM generation failed: ${err.message || err}`);
+        }
+      }
+
+      else if (step === "Groq") {
+        if (groq) {
+          try {
+            observation.incrementMetric("groqApiCalls");
+            session.updateState({
+              currentThought: "Querying Groq",
+              executiveStatus: "Executing",
+              activeCapability: "Groq LLM Generation"
+            }, observation);
+
+            const groqTools = toGroqTools(getAllToolDeclarations());
+            const messages: any[] = [
+              { role: "system", content: systemInstruction },
+              { role: "user", content: message },
+            ];
+            const groqModels = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+
+            let response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+            let toolCalls = response.choices[0]?.message?.tool_calls || [];
+            let guard = 0;
+
+            while (toolCalls.length > 0 && guard < 3) {
+              guard++;
+              const assistantMessage = response.choices[0].message;
+              messages.push({
+                role: "assistant",
+                content: assistantMessage.content,
+                tool_calls: assistantMessage.tool_calls,
+              });
+
+              const toolResponseMessages: any[] = [];
+              for (const call of toolCalls) {
+                let args: Record<string, any> = {};
+                try {
+                  args = JSON.parse(call.function.arguments || "{}");
+                } catch {
+                  // Malformed arguments from the model — executeTool below
+                  // fails cleanly on whatever this leaves args as, same as
+                  // a genuinely empty-args call would.
+                }
+
+                const result = await executeTool(
+                  call.function.name || "",
+                  args,
+                  req.username,
+                  ai,
+                  kernel.localLlmEndpoint,
+                  { alreadyAttached: false, supportsRoundTrip: true }
+                );
+
+                // Mirrors the Gemini branch's identical handling below.
+                if (result.needsClientAction === "capture_screen") {
+                  res.write("data: request_screen\n\n");
+                  res.write("data: [DONE]\n\n");
+                  res.end();
+                  success = true;
+                  succeededStep = "Groq";
+                  return;
+                }
+
+                if (result.displayDirective) {
+                  res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
+                }
+
+                toolCallsExecuted.push({ name: result.name, ok: result.ok });
+                toolResponseMessages.push({
+                  role: "tool",
+                  tool_call_id: call.id,
+                  content: JSON.stringify(result.ok ? { output: result.output } : { error: result.error }),
+                });
+              }
+              messages.push(...toolResponseMessages);
+
+              response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+              toolCalls = response.choices[0]?.message?.tool_calls || [];
+            }
+
+            const finalText = response.choices[0]?.message?.content || "";
+            if (finalText) {
+              for (const word of finalText.split(" ")) {
+                fullReply += word + " ";
+                res.write(`data: ${word} \n\n`);
+              }
+              success = true;
+              succeededStep = "Groq";
+            }
+          } catch (err: any) {
+            observation.logTelemetry("warn", "Cognition", `Groq generation failed: ${err.message || err}`);
+          }
         }
       }
 

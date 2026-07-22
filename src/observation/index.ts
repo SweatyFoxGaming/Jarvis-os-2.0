@@ -47,6 +47,7 @@ export class ObservationPlatform {
   public metrics = {
     totalRequests: 0,
     geminiApiCalls: 0,
+    groqApiCalls: 0,
     geminiSuccessRate: 1.0,
     averageLatencyMs: 0,
     knowledgeRetrievals: 0,
