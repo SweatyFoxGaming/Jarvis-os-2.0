@@ -1,56 +1,43 @@
-# JARVIS Cognitive Engine V3 Architecture
+# Architecture
 
-> **Historical design doc.** This describes an earlier, larger architecture that predates the current Docker/FastAPI/Express implementation and has since been replaced. For what actually exists today, see [README.md](README.md) and [docs/architecture/ROADMAP.md](docs/architecture/ROADMAP.md).
+Jarvis OS is organized into 9 subsystems, each a top-level folder under `src/`:
 
-## 1. High-Level Overview
-JARVIS V3 is a multi‑layer, event‑driven cognitive platform. It is built around five core abstractions: Goal, Task, Capability, Event, and Memory. The architecture separates strategic reasoning (Executive Mind) from deterministic execution (Planner, Scheduler, ChiefOfStaff) and specialised work (Capabilities / Departments).
+| Subsystem | Folder | Owns |
+|---|---|---|
+| Self | `src/self/` | Identity, self-reflection, mind/attention/confidence state |
+| World | `src/world/` | Signal collection and briefing synthesis (email, GitHub, objectives) |
+| Executive | `src/executive/` | Autonomous objective execution, department dispatch, the executive board |
+| Cognition | `src/cognition/` | Working memory (workspace, session) and long-term knowledge (memory store, knowledge graph) |
+| Adaptation | `src/adaptation/` | Self-analysis, style/mistake reflection, long-term learning |
+| Kernel | `src/kernel/` | Postgres state store (`src/kernel/state/`), capability-grant security, the job scheduler, observability/telemetry |
+| Runtime | `src/runtime/` | LLM provider clients (Groq, the local-engine fallback) |
+| Capabilities | `src/capabilities/` | Tool dispatch, MCP registry, external-world providers (GitHub, email, calendar, web search, files, news) under `src/capabilities/providers/` |
+| Interaction | `src/interaction/` | Voice (live-voice, whisper, TTS), push notifications, the web frontend (`src/interaction/static/`), the optional desktop client |
 
-## 2. Key Layers
+**Purpose has no dedicated module.** Values, intent, and interruption policy are implicit today —
+scattered across system-prompt text and individual policy checks (`ALLOW_REGISTRATION`,
+`kernel.offlineMode`/`llmMode`, capability grants) rather than a distinct piece of logic. A real
+Purpose module is a future step once there's an actual policy engine to put in it, not a
+placeholder built to fill a ninth folder.
 
-### Executive Intelligence Layer
-- **Executive Mind**: Creates Goals, interprets user intent, and manages the high‑level conversation.
-- **Executive Board**: Contains reasoning engines (Strategy, Planning, Risk, etc.) that assist the Executive Mind.
+`src/server.ts` (the Express app) and `src/api.py` (the FastAPI process supervisor/proxy) are the
+composition root — they wire the 9 subsystems together and are not owned by any single one of
+them.
 
-### Execution Layer
-- **Planner**: Receives a Goal, queries the Capability Registry, and produces a structured Plan (list of Tasks).
-- **Scheduler (ChiefOfStaff)**: Orders Tasks by priority, resolves dependencies, enforces budgets, and dispatches Tasks to Departments.
-- **State Machine**: Governs the universal lifecycle of all Goals and Tasks (Created → ... → Archived).
-- **Retry Engine**: Handles Task failures according to policies (exponential backoff, max retries).
+**Known naming compromise:** `src/self/kernel.ts`'s `MindKernel` class (in-memory per-turn state:
+current thought, attention target, executive status) predates this structure and is a different
+concept from the `Kernel` subsystem above (state store, security, scheduling) — an unfortunate but
+pre-existing name collision. The file/class itself was not renamed as part of this reorg (only its
+folder moved) since renaming a class used throughout the codebase is a separate, higher-risk change
+from relocating a file.
 
-### Capability Layer
-- **Capability Registry**: Discovers, versions, and health‑checks all executable abilities.
-- **Tool Registry** (Alias): Provides compatibility with legacy tools, but all new functionality is registered as Capabilities.
-- **Departments** (Research, Coding, System): Provide the concrete execution of capabilities, but they are a communication metaphor.
+## Not done here (tracked as follow-ups, not oversights)
 
-### Infrastructure Layer
-- **Event Bus**: The nervous system. All communication is structured and event‑driven.
-- **Digital Twin**: Maintains a state snapshot (hardware, capabilities, environment) stored in Memory.
-- **Memory System**: Follows a formal pipeline (Conversation → Working → Episode → Review → Consolidation → Semantic → Archive).
-- **Synapse Interface**: The exclusive, deterministic gateway to the OS. Enforces security policies.
-- **SecurityModule**: Validates paths, commands, and permissions.
-- **SecureMemoryStore**: Stores embeddings, events, and conversations (PostgreSQL with pgvector or SQLite fallback).
+- Splitting `src/server.ts`'s 70+ Express routes into per-subsystem router files.
+- Any literal kernel-as-infrastructure rewrite (sandboxed process isolation, event-sourced state,
+  zero-copy IPC, swappable runtime drivers). Postgres, Docker, and Express remain exactly as they
+  are; this reorg changed file locations only, never the underlying infrastructure.
 
-## 3. Data Flow
-User → Executive Mind → Goal → Planner → Tasks → ChiefOfStaff → Capabilities → Department → Synapse → OS
-
-Every step emits Events. Results flow back via Events and are stored in Memory.
-
-## 4. Mermaid Diagram (Internal Reference)
-```mermaid
-graph TD
-    User((User)) --> EM[Executive Mind]
-    EM --> Goal[Goal]
-    Goal --> Planner[Planner]
-    Planner --> Tasks[Tasks]
-    Tasks --> CoS[Chief of Staff (Scheduler)]
-    CoS --> Registry[Capability Registry]
-    Registry --> Dept[Departments]
-    Dept --> Synapse[Synapse Interface]
-    Synapse --> OS[Phoenix OS]
-
-    EM --> EB[Event Bus]
-    Planner --> EB
-    CoS --> EB
-    Dept --> EB
-    EB --> Memory[Memory Pipeline]
-    Memory --> Twin[Digital Twin]
+See `docs/superpowers/specs/2026-07-22-repo-cleanup-and-subsystem-reorg-design.md` and
+`docs/superpowers/specs/2026-07-21-groq-provider-design.md` for the two most recent real
+architecture decisions and their full rationale.

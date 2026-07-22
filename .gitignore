@@ -75,3 +75,7 @@ node_modules/
 
 # Subagent-driven-development scratch (task briefs, review packages, ledger)
 .superpowers/
+
+# Stray media/audio artifacts that shouldn't land in the repo root
+*.mp3
+*.wav

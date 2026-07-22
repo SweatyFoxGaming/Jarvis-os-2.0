@@ -6,51 +6,51 @@ import crypto from "crypto";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
-import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./cognition/groq-client.js";
+import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
 import Groq from "groq-sdk";
-import { ObservationPlatform } from "./observation/index.js";
-import { AutonomousExecutive } from "./execution/autonomous_executive.js";
-import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
-import { ExecutiveBoard } from "./execution/executive_board.js";
-import { MindKernel } from "./cognition/kernel/kernel.js";
-import { LocalCognitiveEngine } from "./cognition/local_engine.js";
-import * as github from "./integrations/github.js";
-import * as emailIntegration from "./integrations/email.js";
-import * as tts from "./integrations/tts.js";
-import * as whisper from "./integrations/whisper.js";
-import * as jarvisFiles from "./integrations/files.js";
-import * as calendar from "./integrations/calendar.js";
-import { initDatabase } from "./data/db.js";
-import * as usersRepo from "./data/users-repo.js";
-import * as memoryRepo from "./data/memory-repo.js";
-import * as sessionRepo from "./data/session-repo.js";
+import { ObservationPlatform } from "./kernel/observation.js";
+import { AutonomousExecutive } from "./executive/autonomous_executive.js";
+import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
+import { ExecutiveBoard } from "./executive/executive_board.js";
+import { MindKernel } from "./self/kernel.js";
+import { LocalCognitiveEngine } from "./runtime/local_engine.js";
+import * as github from "./capabilities/providers/github.js";
+import * as emailIntegration from "./capabilities/providers/email.js";
+import * as tts from "./interaction/tts.js";
+import * as whisper from "./interaction/whisper.js";
+import * as jarvisFiles from "./capabilities/providers/files.js";
+import * as calendar from "./capabilities/providers/calendar.js";
+import { initDatabase } from "./kernel/state/db.js";
+import * as usersRepo from "./kernel/state/users-repo.js";
+import * as memoryRepo from "./kernel/state/memory-repo.js";
+import * as sessionRepo from "./kernel/state/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
-import { getAllToolDeclarations, executeTool, looksToolShaped } from "./execution/tools.js";
-import * as permissions from "./execution/permissions.js";
+import { getAllToolDeclarations, executeTool, looksToolShaped } from "./capabilities/tools.js";
+import * as permissions from "./kernel/security.js";
 import * as memoryStore from "./cognition/memory-store.js";
-import * as scheduler from "./execution/scheduler.js";
-import { reflectAndLearn } from "./cognition/reflection.js";
+import * as scheduler from "./kernel/scheduler.js";
+import { reflectAndLearn } from "./adaptation/reflection.js";
 import { WebSocketServer } from "ws";
-import * as liveVoice from "./cognition/live-voice.js";
+import * as liveVoice from "./interaction/live-voice.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
-import * as knowledgeGraphRepo from "./data/knowledge-graph-repo.js";
-import * as briefing from "./execution/briefing.js";
-import * as briefingRepo from "./data/briefing-repo.js";
-import * as analyzer from "./evolution/analyzer.js";
-import * as evolutionRepo from "./data/evolution-repo.js";
-import * as identity from "./cognition/identity.js";
-import * as identityRepo from "./data/identity-repo.js";
-import * as news from "./integrations/news.js";
-import * as webSearch from "./integrations/websearch.js";
-import * as featureRequestsRepo from "./data/feature-requests-repo.js";
-import * as securityRepo from "./data/security-repo.js";
-import * as commandProposalsRepo from "./data/command-proposals-repo.js";
-import * as pushRepo from "./data/push-subscriptions-repo.js";
-import * as mcpServersRepo from "./data/mcp-servers-repo.js";
-import * as mcpRegistry from "./execution/mcp-registry.js";
-import * as push from "./integrations/push.js";
-import * as buildRequestsRepo from "./data/build-requests-repo.js";
-import * as departments from "./execution/departments.js";
+import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
+import * as briefing from "./world/briefing.js";
+import * as briefingRepo from "./kernel/state/briefing-repo.js";
+import * as analyzer from "./adaptation/analyzer.js";
+import * as evolutionRepo from "./kernel/state/evolution-repo.js";
+import * as identity from "./self/identity.js";
+import * as identityRepo from "./kernel/state/identity-repo.js";
+import * as news from "./capabilities/providers/news.js";
+import * as webSearch from "./capabilities/providers/websearch.js";
+import * as featureRequestsRepo from "./kernel/state/feature-requests-repo.js";
+import * as securityRepo from "./kernel/state/security-repo.js";
+import * as commandProposalsRepo from "./kernel/state/command-proposals-repo.js";
+import * as pushRepo from "./kernel/state/push-subscriptions-repo.js";
+import * as mcpServersRepo from "./kernel/state/mcp-servers-repo.js";
+import * as mcpRegistry from "./capabilities/mcp-registry.js";
+import * as push from "./interaction/push.js";
+import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
+import * as departments from "./executive/departments.js";
 
 dotenv.config();
 
@@ -88,7 +88,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000,h
 // this on only for the window you actually want a new account created.
 const ALLOW_REGISTRATION = (process.env.ALLOW_REGISTRATION || "false").toLowerCase() === "true";
 
-// The frontend (src/static/*.html) is a pre-existing single-file dashboard
+// The frontend (src/interaction/static/*.html) is a pre-existing single-file dashboard
 // built around inline <script> blocks and inline onclick= handlers — a
 // strict default-src/script-src CSP would break it outright. 'unsafe-inline'
 // here is a deliberate, scoped tradeoff (splitting that inline JS into real
@@ -707,7 +707,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
 
     // Real continuity, not a static persona repeated unchanged every
-    // session — see src/cognition/identity.ts. Empty string when there's
+    // session — see src/self/identity.ts. Empty string when there's
     // no genuine self-reflection history yet (fresh install, or too early
     // in the relationship for this to have accumulated anything).
     const identityContext = await identity.buildIdentityContext();
@@ -1177,7 +1177,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
         knowledgeGraph.extractAndStore(groq, message, fullReply).catch(() => {});
-        // Write side of continuity-of-self — see cognition/identity.ts.
+        // Write side of continuity-of-self — see self/identity.ts.
         identity.extractSelfReflection(groq, message, fullReply).catch(() => {});
       }
     }
@@ -2475,7 +2475,7 @@ app.get("/api/integrations/websearch", validateApiKey, async (req: any, res: any
 });
 
 // ---------- Static Files Serving ----------
-const staticDir = path.join(process.cwd(), "src", "static");
+const staticDir = path.join(process.cwd(), "src", "interaction", "static");
 app.use(express.static(staticDir));
 
 app.get("/admin", (req, res) => {

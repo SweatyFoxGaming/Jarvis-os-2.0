@@ -86,7 +86,7 @@ relying on anything not listed in "What's implemented."
 
 - **Proactive briefing** (`GET /api/briefing`, `/api/briefing/history`): the one thing
   in this codebase that happens without a chat message triggering it first. An hourly
-  scheduled job (`src/execution/scheduler.ts`) collects real signals (unread email via
+  scheduled job (`src/kernel/scheduler.ts`) collects real signals (unread email via
   IMAP, GitHub notifications via the real `/notifications` API — both best-effort,
   one failing never blocks the other), prioritizes them with real urgency scoring
   (a GitHub review request or a stale unread email ranks above a routine comment),
@@ -161,11 +161,11 @@ relying on anything not listed in "What's implemented."
   relationships after every real chat turn — only when something was genuinely
   stated, never invented — and stores them in Postgres. Queryable via the
   `query_knowledge_graph` chat tool or `GET /api/knowledge/search?q=`.
-- **Continuity of self** (`src/cognition/identity.ts`): not a claim of actual sentience —
+- **Continuity of self** (`src/self/identity.ts`): not a claim of actual sentience —
   a real, structured record of things Jarvis itself said. After every real chat turn, a
   Gemini call judges whether Jarvis's own reply genuinely contained an opinion it formed,
   a commitment it made, or a notable realization/observation — empty on most turns, by
-  design, and never invented when nothing qualifies (`src/data/identity-repo.ts`,
+  design, and never invented when nothing qualifies (`src/kernel/state/identity-repo.ts`,
   `self_reflections` table in Postgres). Recent entries are read back into the system
   prompt for every future turn (`buildIdentityContext`), so Jarvis's sense of continuity
   comes from real past statements instead of a static persona string. A 6-hour scheduled
@@ -197,7 +197,7 @@ relying on anything not listed in "What's implemented."
 - **Always-on voice + vision**: the dashboard's default experience, not an
   opt-in mode — mic and camera both start themselves on load and stay live,
   no click-to-talk button. Under the hood this is a continuous, real-time
-  spoken conversation via Gemini's Live API (`src/cognition/live-voice.ts`)
+  spoken conversation via Gemini's Live API (`src/interaction/live-voice.ts`)
   over a WebSocket (`/ws/voice`) — raw PCM audio streamed both directions as
   it's generated, not the record → transcribe → reply → synthesize round trip
   `/api/voice-input` uses. Spoken turns get real transcription
@@ -282,15 +282,13 @@ None of this is a security issue — it's worth knowing before you rely on it:
   pattern-matching guardrail (checks for code fences, sensitive-key mentions) — a
   real, useful lint step, not multi-agent LLM reasoning. Its response includes
   `"method": "deterministic-pattern-check"`.
-- **The offline chat fallback** (`src/cognition/local_engine.ts`) is keyword-matched
+- **The offline chat fallback** (`src/runtime/local_engine.ts`) is keyword-matched
   canned phrasing, not a language model. It only fires if `llama-cpp` itself is
   unreachable (or `HOST_MODEL_DIR`/`LOCAL_MODEL_FILE` were never set) and no
   `GEMINI_API_KEY` is configured either — with the bundled `llama-cpp` service, that's
   no longer the out-of-the-box default the way it used to be with a host-run Ollama.
-- A couple of files under `src/` (`bridge/synapse.py`, `infrastructure/health.py`)
-  are unused fragments from a prior design and are not imported by anything that
-  runs. `src/desktop/app.py` is an older, separate pywebview launcher attempt that
-  tries to spawn its own copy of the server directly on the host rather than
+- `src/interaction/desktop/app.py` is an older, separate pywebview launcher attempt
+  that tries to spawn its own copy of the server directly on the host rather than
   pointing at the Docker stack — superseded by `desktop-electron/` (see "Desktop
   app" below), which does the latter and is the maintained path going forward.
 - **Tool-calling delegation only fires through `/api/chat`** — `/api/executive/run`'s
@@ -445,7 +443,7 @@ gunzip -c backups/jarvis-<db>-<timestamp>.sql.gz | docker exec -i jarvis-postgre
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
 read-write into the `api` container at `/jarvis-files` — the *only* folder
-`src/integrations/files.ts` can ever touch. Every path is resolved against that
+`src/capabilities/providers/files.ts` can ever touch. Every path is resolved against that
 root and rejected if it would escape it (`list_files`/`read_file`/`write_file`
 chat tools, or `GET/POST/DELETE /api/integrations/files*` directly), gated by
 `files.read`/`files.write` capability grants like every other tool. The folder

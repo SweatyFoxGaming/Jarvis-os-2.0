@@ -28,7 +28,7 @@ cd "$PROJECT_ROOT"
 # Check if pywebview is available to use Python native window, else fallback to standard web browser app mode
 if python3 -c "import webview" &>/dev/null; then
     echo "Launching JARVIS in native pywebview window mode..."
-    python3 src/desktop/app.py
+    python3 src/interaction/desktop/app.py
 elif command -v google-chrome &>/dev/null; then
     echo "Launching in Google Chrome sandboxed app mode..."
     # Start the local server in background
@@ -65,7 +65,7 @@ chmod +x "$CAT_LAUNCHER"
 echo "[+] Launcher generated at: $CAT_LAUNCHER"
 
 # Create an elegant icon path or look for system icon
-ICON_PATH="$PROJECT_ROOT/src/static/favicon.ico" # Fallback static logo
+ICON_PATH="$PROJECT_ROOT/src/interaction/static/favicon.ico" # Fallback static logo
 # Create a desktop entry for gnome/kde system integration
 DESKTOP_ENTRY="$APP_DIR/JARVIS.desktop"
 

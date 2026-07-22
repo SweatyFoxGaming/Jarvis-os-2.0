@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
-import { getPool, isVectorReady } from "../data/db.js";
-import { ObservationPlatform } from "../observation/index.js";
+import { getPool, isVectorReady } from "../kernel/state/db.js";
+import { ObservationPlatform } from "../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 

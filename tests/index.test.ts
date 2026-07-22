@@ -6,19 +6,19 @@
 
 import { CognitiveWorkspace } from "../src/cognition/workspace.js";
 import { SessionState, getSession } from "../src/cognition/session.js";
-import { ObservationPlatform } from "../src/observation/index.js";
-import { AutonomousExecutive } from "../src/execution/autonomous_executive.js";
-import { LongTermLearningEngine } from "../src/cognition/long_term_learning.js";
-import { ExecutiveBoard } from "../src/execution/executive_board.js";
-import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/execution/permissions.js";
-import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
+import { ObservationPlatform } from "../src/kernel/observation.js";
+import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
+import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
+import { ExecutiveBoard } from "../src/executive/executive_board.js";
+import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
+import { executeTool, getAllToolDeclarations } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
-import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
-import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/cognition/identity.js";
+import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
+import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/self/identity.js";
 import { extractAndStore } from "../src/cognition/knowledge-graph.js";
-import { reflectAndLearn } from "../src/cognition/reflection.js";
-import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
-import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
+import { reflectAndLearn } from "../src/adaptation/reflection.js";
+import { ConfidenceModel } from "../src/self/confidence.js";
+import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/kernel/state/mcp-servers-repo.js";
 import {
   createBuildRequest,
   getBuildRequest,
@@ -26,10 +26,10 @@ import {
   listBuildRequests,
   recordDirectionConfirmed,
   rejectCode as rejectBuildCode,
-} from "../src/data/build-requests-repo.js";
-import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
-import * as departments from "../src/execution/departments.js";
-import { toGroqSchema, toGroqTools } from "../src/cognition/groq-client.js";
+} from "../src/kernel/state/build-requests-repo.js";
+import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-registry.js";
+import * as departments from "../src/executive/departments.js";
+import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -616,7 +616,7 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
 
   // getRoot() reads process.env.JARVIS_FILES_DIR_MOUNT fresh on every call,
   // so setting it above is enough — no need to re-import the module.
-  const files = await import("../src/integrations/files.js");
+  const files = await import("../src/capabilities/providers/files.js");
 
   try {
     await files.writeFile("note.txt", "hello jarvis");
@@ -660,8 +660,8 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
 });
 
 // ---------- Objectives Tests (no live Postgres in this test process) ----------
-import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/data/objectives-repo.js";
-import { recordCommandOutcome, getRecentOutcomeSuccessRate } from "../src/data/command-proposals-repo.js";
+import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/kernel/state/objectives-repo.js";
+import { recordCommandOutcome, getRecentOutcomeSuccessRate } from "../src/kernel/state/command-proposals-repo.js";
 
 registerTest("Objectives", "createObjective degrades cleanly when Postgres isn't reachable", async () => {
   try {
@@ -704,7 +704,7 @@ registerTest("Objectives", "markCheckedIn never throws, even with no DB or an em
 });
 
 // ---------- Briefing Tests ----------
-import { prioritizeSignals, synthesizeBriefing } from "../src/execution/briefing.js";
+import { prioritizeSignals, synthesizeBriefing } from "../src/world/briefing.js";
 
 registerTest("Briefing", "prioritizeSignals scores a near-due objective as high urgency", () => {
   const soon = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10); // tomorrow
