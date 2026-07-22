@@ -588,7 +588,7 @@ export async function executeTool(
 // tool a match implies. This is a hand-maintained list, deliberately not
 // derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
 // display_content, update_objective_status, record_command_outcome,
-// queue_feature_request) are intentionally absent because they should only
+// confirm_build_direction) are intentionally absent because they should only
 // ever be invoked as a model-driven follow-up, never routed to directly by
 // keyword match. If you add a tool that SHOULD be keyword-routable, add its
 // entry here too — nothing enforces the two staying in sync.
