@@ -322,19 +322,19 @@
             </div>
 
             <!-- ================= SUB-PANEL 3: WORKING MEMORY CELLS ================= -->
-            <!-- ================= PROJECTS: capability requests — the bridge from "asked Jarvis for it" to "actually built" ================= -->
+            <!-- ================= PROJECTS: build requests — the bridge from "asked Jarvis for it" to "actually built" ================= -->
             <div id="view-projects" class="view-pane hidden space-y-6">
                 <div class="pb-2">
                     <h2 class="font-display font-semibold text-lg text-white">Projects</h2>
-                    <p class="text-sm text-secondary mt-1 max-w-xl">When you ask Jarvis for something it can't yet do, it researches, proposes a plan, and — only with your approval — queues it here for a real developer to build. Jarvis never writes or runs code itself.</p>
+                    <p class="text-sm text-secondary mt-1 max-w-xl">When you ask Jarvis for something it can't yet do, it researches the idea, talks through direction with you, and — once you confirm — drafts real code and opens a pull request for your review.</p>
                 </div>
                 <div class="holo-panel rounded-2xl p-5 w-full">
                     <div class="flex justify-between items-center mb-4">
-                        <h3 class="font-display font-semibold text-sm text-white">Queued</h3>
-                        <span id="feature-requests-count-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary">0 queued</span>
+                        <h3 class="font-display font-semibold text-sm text-white">Build Requests</h3>
+                        <span id="build-requests-count-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary">0 active</span>
                     </div>
-                    <div id="feature-requests-list" class="space-y-2.5">
-                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing queued yet — ask Jarvis for something new and approve its plan to see it here.</div>
+                    <div id="build-requests-list" class="space-y-2.5">
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing yet — ask Jarvis to build something new to see it here.</div>
                     </div>
                 </div>
             </div>
@@ -2377,45 +2377,94 @@
         } catch {}
     }
 
-    const FEATURE_REQUEST_STATUS_STYLE = {
-        queued: { label: 'QUEUED', classes: 'border-warning/25 text-warning bg-warning/5' },
-        in_progress: { label: 'IN PROGRESS', classes: 'border-primary/25 text-primary bg-primary/5' },
-        shipped: { label: 'SHIPPED', classes: 'border-success/25 text-success bg-success/5' },
-        declined: { label: 'DECLINED', classes: 'border-secondary/25 text-secondary bg-secondary/5' },
+    const BUILD_REQUEST_STATUS_STYLE = {
+        researching: { label: 'RESEARCHING', classes: 'border-warning/25 text-warning bg-warning/5' },
+        awaiting_consult: { label: 'AWAITING CONSULT', classes: 'border-warning/25 text-warning bg-warning/5' },
+        direction_confirmed: { label: 'DIRECTION CONFIRMED', classes: 'border-primary/25 text-primary bg-primary/5' },
+        coding: { label: 'CODING', classes: 'border-primary/25 text-primary bg-primary/5' },
+        awaiting_code_approval: { label: 'AWAITING APPROVAL', classes: 'border-warning/25 text-warning bg-warning/5' },
+        pr_opened: { label: 'PR OPENED', classes: 'border-success/25 text-success bg-success/5' },
+        qa_complete: { label: 'QA COMPLETE', classes: 'border-success/25 text-success bg-success/5' },
+        rejected_at_code: { label: 'REJECTED', classes: 'border-secondary/25 text-secondary bg-secondary/5' },
+        error: { label: 'ERROR', classes: 'border-danger/25 text-danger bg-danger/5' },
     };
+    const BUILD_REQUEST_TERMINAL_STATUSES = ['pr_opened', 'qa_complete', 'rejected_at_code', 'error'];
 
-    async function loadFeatureRequests() {
+    async function loadBuildRequests() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
-            const res = await authFetch('/api/feature-requests', { headers });
+            const res = await authFetch('/api/system/build-requests', { headers });
             if (!res.ok) return;
             const data = await res.json();
-            const requests = data.requests || [];
+            const requests = data.buildRequests || [];
 
-            const activeCount = requests.filter(r => r.status === 'queued' || r.status === 'in_progress').length;
-            document.getElementById('feature-requests-count-badge').textContent = `${activeCount} QUEUED`;
+            const activeCount = requests.filter(r => !BUILD_REQUEST_TERMINAL_STATUSES.includes(r.status)).length;
+            document.getElementById('build-requests-count-badge').textContent = `${activeCount} ACTIVE`;
 
-            const list = document.getElementById('feature-requests-list');
+            const list = document.getElementById('build-requests-list');
             if (requests.length === 0) {
-                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">Nothing queued yet — ask Jarvis for something new and approve its plan to see it here.</div>`;
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">Nothing yet — ask Jarvis to build something new to see it here.</div>`;
                 return;
             }
             list.innerHTML = requests.map(r => {
-                const style = FEATURE_REQUEST_STATUS_STYLE[r.status] || FEATURE_REQUEST_STATUS_STYLE.queued;
+                const style = BUILD_REQUEST_STATUS_STYLE[r.status] || BUILD_REQUEST_STATUS_STYLE.researching;
+                const summary = r.qa_summary || r.code_summary || r.direction_notes || r.research_summary;
+                const approveReject = r.status === 'awaiting_code_approval' ? `
+                    <div class="flex gap-2 mt-2">
+                        <button onclick="approveBuildRequest(${r.id})" class="flex-1 px-2 py-1 rounded border border-success/25 text-success bg-success/5 text-[10px] font-mono font-bold uppercase tracking-widest hover:bg-success/10">Approve</button>
+                        <button onclick="rejectBuildRequest(${r.id})" class="flex-1 px-2 py-1 rounded border border-danger/25 text-danger bg-danger/5 text-[10px] font-mono font-bold uppercase tracking-widest hover:bg-danger/10">Reject</button>
+                    </div>
+                ` : '';
+                const prLink = r.pr_url ? `<a href="${escapeHtml(r.pr_url)}" target="_blank" rel="noopener noreferrer" class="text-[10px] text-primary underline block mt-1.5">View pull request &rarr;</a>` : '';
                 return `
                     <div class="holo-chip border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
                         <div class="flex items-center justify-between mb-1.5">
-                            <span class="font-display font-bold text-xs text-white">${escapeHtml(r.title)}</span>
+                            <span class="font-display font-bold text-xs text-white">${escapeHtml(r.objective)}</span>
                             <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase whitespace-nowrap ${style.classes}">${style.label}</span>
                         </div>
-                        <p class="text-[11px] text-text/80 leading-snug mb-1.5">${escapeHtml(r.description)}</p>
-                        ${r.proposed_plan ? `<p class="text-[10px] text-secondary font-mono leading-snug border-t border-white/5 pt-1.5">${escapeHtml(r.proposed_plan)}</p>` : ''}
+                        ${summary ? `<p class="text-[11px] text-text/80 leading-snug mb-1.5">${escapeHtml(summary.slice(0, 300))}</p>` : ''}
+                        ${prLink}
+                        ${approveReject}
                         <span class="text-[8px] text-secondary font-mono mt-1.5 block">${new Date(r.created_at).toLocaleString()}</span>
                     </div>
                 `;
             }).join('');
         } catch {}
+    }
+
+    async function approveBuildRequest(id) {
+        if (!CURRENT_API_KEY) return;
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await authFetch(`/api/system/build-requests/${id}/approve-code`, { method: 'POST', headers });
+            if (res.ok) {
+                addNotification('Build request approved — opening pull request.', 'success');
+            } else {
+                const data = await res.json().catch(() => ({}));
+                addNotification(`Approve failed: ${data.error || res.statusText}`, 'danger');
+            }
+        } catch {
+            addNotification('Approve request failed.', 'danger');
+        }
+        loadBuildRequests();
+    }
+
+    async function rejectBuildRequest(id) {
+        if (!CURRENT_API_KEY) return;
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await authFetch(`/api/system/build-requests/${id}/reject-code`, { method: 'POST', headers });
+            if (res.ok) {
+                addNotification('Build request rejected.', 'info');
+            } else {
+                const data = await res.json().catch(() => ({}));
+                addNotification(`Reject failed: ${data.error || res.statusText}`, 'danger');
+            }
+        } catch {
+            addNotification('Reject request failed.', 'danger');
+        }
+        loadBuildRequests();
     }
 
     const SEVERITY_STYLE = {
@@ -2927,7 +2976,7 @@
             // Self-reflection extraction runs fire-and-forget server-side after
             // the reply completes — give it a moment before checking for a new entry.
             setTimeout(loadIdentityStream, 2500);
-            setTimeout(loadFeatureRequests, 500);
+            setTimeout(loadBuildRequests, 500);
         } catch {
             addNotification("Dialogue transmission failure.", "danger");
         }
@@ -3604,7 +3653,7 @@
         loadMindKernelData();
         loadSystemSettings();
         loadIdentityStream();
-        loadFeatureRequests();
+        loadBuildRequests();
         loadSecurityOps();
         loadCommandExecution();
         loadProactiveNotifications();
@@ -3612,7 +3661,7 @@
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
         setInterval(loadIdentityStream, 20000);
-        setInterval(loadFeatureRequests, 20000);
+        setInterval(loadBuildRequests, 20000);
         setInterval(loadSecurityOps, 20000);
         setInterval(loadCommandExecution, 10000);
         setInterval(loadProactiveNotifications, 20000);

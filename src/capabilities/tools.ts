@@ -15,7 +15,6 @@ import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import * as identity from "../self/identity.js";
 import * as news from "./providers/news.js";
 import * as webSearch from "./providers/websearch.js";
-import * as featureRequestsRepo from "../kernel/state/feature-requests-repo.js";
 import * as securityRepo from "../kernel/state/security-repo.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
@@ -55,7 +54,6 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   reflect_on_self: "identity.read",
   get_news: "news.read",
   search_web: "web.search",
-  queue_feature_request: "feature.propose",
   get_security_status: "security.read",
   propose_command: "system.execute",
   view_screen: "screen.view",
@@ -250,20 +248,6 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
         query: { type: Type.STRING, description: "The search query" },
       },
       required: ["query"],
-    },
-  },
-  {
-    name: "queue_feature_request",
-    description:
-      "Queue a request for a genuinely new capability to be built by a human developer — use this ONLY after the user has explicitly approved building something you don't currently have a tool for (research it with search_web first, present a concrete plan, and wait for clear approval before calling this). You never write or execute code yourself; this hands the approved request to a real, reviewed development process.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        title: { type: Type.STRING, description: "Short title for the requested capability" },
-        description: { type: Type.STRING, description: "What the user actually wants this to do, in their own words/intent" },
-        plan: { type: Type.STRING, description: "The concrete plan you researched and the user approved — what would need to be built, roughly how" },
-      },
-      required: ["title", "description", "plan"],
     },
   },
   {
@@ -521,14 +505,6 @@ export async function executeTool(
         }
         break;
       }
-      case "queue_feature_request": {
-        const queued = await featureRequestsRepo.addFeatureRequest(
-          args.title, args.description, null, args.plan, username
-        );
-        observation.logAuditEvent(username, "feature_request_queued", "success", `"${args.title}" (id ${queued.id})`);
-        output = { id: queued.id, status: queued.status };
-        break;
-      }
       case "get_security_status": {
         const [devices, findings, proposals] = await Promise.all([
           securityRepo.getNetworkDevices(),
@@ -612,7 +588,7 @@ export async function executeTool(
 // tool a match implies. This is a hand-maintained list, deliberately not
 // derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
 // display_content, update_objective_status, record_command_outcome,
-// queue_feature_request) are intentionally absent because they should only
+// confirm_build_direction) are intentionally absent because they should only
 // ever be invoked as a model-driven follow-up, never routed to directly by
 // keyword match. If you add a tool that SHOULD be keyword-routable, add its
 // entry here too — nothing enforces the two staying in sync.
