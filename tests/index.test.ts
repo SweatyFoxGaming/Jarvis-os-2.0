@@ -11,7 +11,7 @@ import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
 import { ExecutiveBoard } from "../src/executive/executive_board.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
-import { executeTool, getAllToolDeclarations } from "../src/capabilities/tools.js";
+import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
 import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/self/identity.js";
@@ -1216,6 +1216,43 @@ registerTest("GroqClient", "toGroqTools wraps a declaration in Groq's function-t
   }
   if (result[0].function.parameters.type !== "object") {
     throw new Error("GroqClient: expected the wrapped parameters schema to be lowercased too");
+  }
+});
+
+// ---------- Trivial-Message Fast Path Tests ----------
+
+registerTest("ToolRouting", "looksTrivial recognizes a short greeting", () => {
+  if (!looksTrivial("good morning")) {
+    throw new Error("ToolRouting: expected \"good morning\" to be classified as trivial");
+  }
+});
+
+registerTest("ToolRouting", "looksTrivial recognizes a short acknowledgment with trailing punctuation", () => {
+  if (!looksTrivial("thanks!")) {
+    throw new Error("ToolRouting: expected \"thanks!\" to be classified as trivial");
+  }
+});
+
+registerTest("ToolRouting", "looksTrivial rejects a long message that happens to start with a trivial phrase", () => {
+  if (looksTrivial("thanks, can you check my GitHub for open issues?")) {
+    throw new Error("ToolRouting: a substantive request starting with \"thanks\" must not be classified as trivial");
+  }
+});
+
+registerTest("ToolRouting", "looksTrivial rejects a short message that isn't a recognized trivial phrase", () => {
+  if (looksTrivial("what time is it")) {
+    throw new Error("ToolRouting: a short but substantive question must not be classified as trivial");
+  }
+});
+
+registerTest("ToolRouting", "looksToolShaped takes precedence over looksTrivial for an ambiguous message", () => {
+  const message = "thanks, what's on my calendar today?";
+  // This is the precedence contract every call site must honor: check
+  // looksToolShaped first, and only treat a message as eligible for the
+  // trivial fast path when it is BOTH tool-shaped-negative AND trivial.
+  const eligibleForFastPath = !looksToolShaped(message) && looksTrivial(message);
+  if (eligibleForFastPath) {
+    throw new Error("ToolRouting: a message matching a tool trigger word must never be treated as trivial, even if it also matches a trivial phrase");
   }
 });
 

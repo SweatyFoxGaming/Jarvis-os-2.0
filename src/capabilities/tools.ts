@@ -650,3 +650,30 @@ export function looksToolShaped(message: string): boolean {
   const lower = message.toLowerCase();
   return Object.values(TOOL_TRIGGER_WORDS).some(words => words.some(w => lower.includes(w)));
 }
+
+/**
+ * Narrower and stricter than looksToolShaped on purpose: that heuristic only
+ * ever affects which backend is tried first (the LLM still decides
+ * everything for itself), so a substring match anywhere in the message is
+ * an acceptable false-positive rate. This one controls whether tools are
+ * attached to the request AT ALL for a Groq turn — a false positive here
+ * would silently remove real tool capability from a substantive request, so
+ * it requires the trivial phrase to be the message's actual content (exact
+ * match, or the message's first word(s) followed by a space/comma), not
+ * merely present somewhere inside a longer message, and caps message length
+ * so a genuine multi-part request can never qualify no matter how it opens.
+ */
+const TRIVIAL_PHRASES = [
+  "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+  "thanks", "thank you", "ok", "okay", "sounds good", "got it", "cool",
+  "nice", "great", "perfect", "awesome", "yes", "no", "yep", "nope", "sure",
+];
+const TRIVIAL_MAX_LENGTH = 50;
+
+export function looksTrivial(message: string): boolean {
+  const trimmed = message.trim();
+  if (trimmed.length > TRIVIAL_MAX_LENGTH) return false;
+  // Strip trailing punctuation to handle cases like "thanks!" or "good morning?"
+  const stripped = trimmed.replace(/[!?.,:;-]+$/, '').toLowerCase();
+  return TRIVIAL_PHRASES.some(p => stripped === p || stripped.startsWith(p + " "));
+}
