@@ -1,5 +1,5 @@
 import { getPool } from "./db.js";
-import type { PrioritizedItem } from "../../execution/briefing.js";
+import type { PrioritizedItem } from "../../world/briefing.js";
 
 export interface StoredBriefing {
   id: number;

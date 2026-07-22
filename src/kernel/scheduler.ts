@@ -1,7 +1,7 @@
 import type Groq from "groq-sdk";
 import { ObservationPlatform } from "./observation.js";
 import * as emailIntegration from "../integrations/email.js";
-import * as briefing from "../execution/briefing.js";
+import * as briefing from "../world/briefing.js";
 import * as briefingRepo from "./state/briefing-repo.js";
 import * as identity from "../self/identity.js";
 import * as identityRepo from "./state/identity-repo.js";

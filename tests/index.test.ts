@@ -704,7 +704,7 @@ registerTest("Objectives", "markCheckedIn never throws, even with no DB or an em
 });
 
 // ---------- Briefing Tests ----------
-import { prioritizeSignals, synthesizeBriefing } from "../src/execution/briefing.js";
+import { prioritizeSignals, synthesizeBriefing } from "../src/world/briefing.js";
 
 registerTest("Briefing", "prioritizeSignals scores a near-due objective as high urgency", () => {
   const soon = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10); // tomorrow

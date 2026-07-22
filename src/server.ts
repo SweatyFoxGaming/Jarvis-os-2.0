@@ -34,7 +34,7 @@ import { WebSocketServer } from "ws";
 import * as liveVoice from "./cognition/live-voice.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
-import * as briefing from "./execution/briefing.js";
+import * as briefing from "./world/briefing.js";
 import * as briefingRepo from "./kernel/state/briefing-repo.js";
 import * as analyzer from "./evolution/analyzer.js";
 import * as evolutionRepo from "./kernel/state/evolution-repo.js";

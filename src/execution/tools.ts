@@ -9,7 +9,7 @@ import { ObservationPlatform } from "../kernel/observation.js";
 import { AutonomousExecutive } from "./autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
 import * as calendar from "../integrations/calendar.js";
-import * as briefing from "./briefing.js";
+import * as briefing from "../world/briefing.js";
 import * as files from "../integrations/files.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import * as identity from "../self/identity.js";
