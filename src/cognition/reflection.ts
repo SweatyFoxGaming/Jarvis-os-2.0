@@ -1,4 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
+import Groq from "groq-sdk";
+import { toGroqSchema } from "./groq-client.js";
 import { ObservationPlatform } from "../observation/index.js";
 import { LongTermLearningEngine, ICodingStylePreference } from "./long_term_learning.js";
 
@@ -40,31 +42,30 @@ const REFLECTION_SCHEMA = {
  * user is waiting on. Every failure is caught and logged, never thrown.
  */
 export async function reflectAndLearn(
-  ai: GoogleGenAI,
+  groq: Groq | null,
   userMessage: string,
   replyText: string
 ): Promise<void> {
+  if (!groq) return;
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{
+    const response = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{
         role: "user",
-        parts: [{
-          text:
-            "Analyze this exchange between a user and Jarvis, an AI assistant. " +
-            "Only report a coding style preference if the user actually stated or clearly implied one. " +
-            "Only report a mistake if a real error/bug and its fix were actually discussed — not a hypothetical. " +
-            "Leave any field empty (\"\" or 0) if it doesn't apply; do not invent content to fill the schema.\n\n" +
-            `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
-        }],
+        content:
+          "Analyze this exchange between a user and Jarvis, an AI assistant. " +
+          "Only report a coding style preference if the user actually stated or clearly implied one. " +
+          "Only report a mistake if a real error/bug and its fix were actually discussed — not a hypothetical. " +
+          "Leave any field empty (\"\" or 0) if it doesn't apply; do not invent content to fill the schema.\n\n" +
+          `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
       }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: REFLECTION_SCHEMA,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "style_and_mistake_reflection", schema: toGroqSchema(REFLECTION_SCHEMA), strict: true },
       },
     });
 
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
 
     const styleUpdate: Partial<ICodingStylePreference> = {};
     if (VALID_NAMING.includes(parsed.styleNamingConvention)) {

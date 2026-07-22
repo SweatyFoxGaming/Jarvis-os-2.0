@@ -14,7 +14,9 @@ import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/
 import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
-import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
+import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/cognition/identity.js";
+import { extractAndStore } from "../src/cognition/knowledge-graph.js";
+import { reflectAndLearn } from "../src/cognition/reflection.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
 import {
@@ -788,6 +790,20 @@ registerTest("Identity", "generateProactiveThought never fabricates a thought wh
   if (result !== null) {
     throw new Error("Identity: expected null (no real history to draw from), got a fabricated result");
   }
+});
+
+registerTest("Identity", "extractSelfReflection no-ops with no Groq client", async () => {
+  // Must return (not throw) immediately on the `if (!groq) return;` guard,
+  // without ever touching the database or a Groq client.
+  await extractSelfReflection(null, "hello", "some reply");
+});
+
+registerTest("KnowledgeGraph", "extractAndStore no-ops with no Groq client", async () => {
+  await extractAndStore(null, "hello", "some reply");
+});
+
+registerTest("Learning", "reflectAndLearn no-ops with no Groq client", async () => {
+  await reflectAndLearn(null, "hello", "some reply");
 });
 
 // ---------- HTTP Boundary ----------

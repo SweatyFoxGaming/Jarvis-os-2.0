@@ -6,6 +6,7 @@ import crypto from "crypto";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
+import Groq from "groq-sdk";
 import { ObservationPlatform } from "./observation/index.js";
 import { AutonomousExecutive } from "./execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
@@ -165,7 +166,8 @@ const observation = ObservationPlatform.getInstance();
 
 observation.startProfile("startup");
 
-// ---------- Gemini Client Initialization ----------
+// ---------- Gemini Client Initialization (vision/multimodal only — see
+// docs/superpowers/specs/2026-07-21-groq-provider-design.md) ----------
 let ai: GoogleGenAI | null = null;
 if (process.env.GEMINI_API_KEY) {
   ai = new GoogleGenAI({
@@ -180,7 +182,15 @@ if (process.env.GEMINI_API_KEY) {
 } else {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
-briefing.configureAi(ai);
+
+// ---------- Groq Client Initialization (primary cloud tier) ----------
+let groq: Groq | null = null;
+if (process.env.GROQ_API_KEY) {
+  groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  observation.logTelemetry("info", "Cognition", "Groq client successfully configured with API Key.");
+} else {
+  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
+}
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -1059,13 +1069,13 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       // Gemini specifically (structured JSON output), independent of which
       // backend actually answered the user.
       if (ai) {
-        reflectAndLearn(ai, message, fullReply).catch(() => {});
+        reflectAndLearn(groq, message, fullReply).catch(() => {});
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
-        knowledgeGraph.extractAndStore(ai, message, fullReply).catch(() => {});
+        knowledgeGraph.extractAndStore(groq, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see cognition/identity.ts.
-        identity.extractSelfReflection(ai, message, fullReply).catch(() => {});
+        identity.extractSelfReflection(groq, message, fullReply).catch(() => {});
       }
     }
 
@@ -2450,7 +2460,7 @@ initDatabase().then(async (ready) => {
     }
 
     observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
-    await liveVoice.bridgeVoiceSession(ai, ws, username);
+    await liveVoice.bridgeVoiceSession(ai, groq, ws, username);
   });
 
   scheduler.startEmailWatchJob();

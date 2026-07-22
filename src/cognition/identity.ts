@@ -1,4 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import Groq from "groq-sdk";
+import { toGroqSchema } from "./groq-client.js";
 import { ObservationPlatform } from "../observation/index.js";
 import * as identityRepo from "../data/identity-repo.js";
 import type { ReflectionCategory } from "../data/identity-repo.js";
@@ -32,28 +34,27 @@ const SELF_REFLECTION_SCHEMA = {
  * this turn contained something genuinely worth remembering about itself;
  * empty category/content means nothing did, and nothing is stored.
  */
-export async function extractSelfReflection(ai: GoogleGenAI, userMessage: string, replyText: string): Promise<void> {
+export async function extractSelfReflection(groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
+  if (!groq) return;
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{
+    const response = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{
         role: "user",
-        parts: [{
-          text:
-            "You are analyzing Jarvis's OWN reply below (not the user's message) for something Jarvis itself genuinely " +
-            "expressed: a real opinion it formed, a commitment/promise it made, or a notable realization/observation about " +
-            "itself or the conversation. Only report something if it's actually there in Jarvis's reply — do not invent " +
-            "introspection that isn't present. Most turns have nothing like this; that's expected, return \"\" in that case.\n\n" +
-            `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
-        }],
+        content:
+          "You are analyzing Jarvis's OWN reply below (not the user's message) for something Jarvis itself genuinely " +
+          "expressed: a real opinion it formed, a commitment/promise it made, or a notable realization/observation about " +
+          "itself or the conversation. Only report something if it's actually there in Jarvis's reply — do not invent " +
+          "introspection that isn't present. Most turns have nothing like this; that's expected, return \"\" in that case.\n\n" +
+          `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
       }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: SELF_REFLECTION_SCHEMA,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "self_reflection", schema: toGroqSchema(SELF_REFLECTION_SCHEMA), strict: true },
       },
     });
 
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const category = parsed.category;
     const content = typeof parsed.content === "string" ? parsed.content.trim() : "";
 
