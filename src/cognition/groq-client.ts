@@ -63,5 +63,5 @@ export async function generateWithFallback(groq: Groq, params: any, models: stri
       observation.logTelemetry("warn", "Cognition", `Groq model ${model} failed: ${error.message || error}`);
     }
   }
-  throw lastError;
+  throw lastError || new Error("All fallback models failed content generation");
 }
