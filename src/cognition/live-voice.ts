@@ -4,10 +4,10 @@ import type WebSocket from "ws";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { buildIdentityContext } from "../self/identity.js";
 import * as identity from "../self/identity.js";
-import { LongTermLearningEngine } from "./long_term_learning.js";
+import { LongTermLearningEngine } from "../adaptation/long_term_learning.js";
 import * as sessionRepo from "../kernel/state/session-repo.js";
 import * as memoryStore from "./memory-store.js";
-import { reflectAndLearn } from "./reflection.js";
+import { reflectAndLearn } from "../adaptation/reflection.js";
 import * as knowledgeGraph from "./knowledge-graph.js";
 import { getAllToolDeclarations, executeTool } from "../execution/tools.js";
 

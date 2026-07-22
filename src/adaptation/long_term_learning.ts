@@ -1,5 +1,5 @@
 import { ObservationPlatform } from "../kernel/observation.js";
-import { loadLearningState, saveLearningState } from "./learning-store.js";
+import { loadLearningState, saveLearningState } from "../cognition/learning-store.js";
 
 /**
  * Phase XV: Long-Term Learning

@@ -10,7 +10,7 @@ import { toGroqTools, generateWithFallback as generateGroqWithFallback } from ".
 import Groq from "groq-sdk";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
-import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
+import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
 import { ExecutiveBoard } from "./executive/executive_board.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./cognition/local_engine.js";
@@ -29,14 +29,14 @@ import { getAllToolDeclarations, executeTool, looksToolShaped } from "./executio
 import * as permissions from "./kernel/security.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
-import { reflectAndLearn } from "./cognition/reflection.js";
+import { reflectAndLearn } from "./adaptation/reflection.js";
 import { WebSocketServer } from "ws";
 import * as liveVoice from "./cognition/live-voice.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
 import * as briefing from "./world/briefing.js";
 import * as briefingRepo from "./kernel/state/briefing-repo.js";
-import * as analyzer from "./evolution/analyzer.js";
+import * as analyzer from "./adaptation/analyzer.js";
 import * as evolutionRepo from "./kernel/state/evolution-repo.js";
 import * as identity from "./self/identity.js";
 import * as identityRepo from "./kernel/state/identity-repo.js";

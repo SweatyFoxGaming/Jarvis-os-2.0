@@ -1,5 +1,5 @@
 import { getPool } from "./db.js";
-import type { AnalysisIssue } from "../../evolution/analyzer.js";
+import type { AnalysisIssue } from "../../adaptation/analyzer.js";
 
 export interface StoredAnalysis {
   id: number;
