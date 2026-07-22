@@ -65,7 +65,7 @@ below.
 
 **The gap:** text chat (`/api/chat`) builds its system prompt from memory,
 identity, and learned style every turn. Live voice mode
-(`src/cognition/live-voice.ts`) doesn't — its system instruction is a static
+(`src/interaction/live-voice.ts`) doesn't — its system instruction is a static
 string with no call to `recall()` or `buildIdentityContext()`. Something you
 told Jarvis by voice isn't remembered next time you type, and vice versa.
 This is the most direct, currently-true contradiction of the vision's own

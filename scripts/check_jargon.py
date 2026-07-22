@@ -26,7 +26,7 @@ FORBIDDEN_PATTERNS = [(word, re.compile(r'\b' + re.escape(word) + r'\b', re.IGNO
 
 # Files to scan. This is a Python-only, AST-based literal scanner, so it
 # cannot cover the actual user-facing strings in src/server.ts or
-# src/static/*.html/js — most of this app's UI copy lives there, not here.
+# src/interaction/static/*.html/js — most of this app's UI copy lives there, not here.
 SCAN_PATHS = [
     "src/api.py",
 ]

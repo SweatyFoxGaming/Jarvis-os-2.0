@@ -258,7 +258,7 @@ sessions without being re-prompted.
 AR, robotics, future tech).** This is the clearest concrete gap found this
 pass. Text chat (`/api/chat`) builds its system prompt from memory +
 identity + style context every turn. Live voice mode
-(`src/cognition/live-voice.ts`) does not — `VOICE_SYSTEM_INSTRUCTION` is a
+(`src/interaction/live-voice.ts`) does not — `VOICE_SYSTEM_INSTRUCTION` is a
 static string with no call to `recall()`, `buildIdentityContext()`, or any
 style context at all. Concretely: something you told Jarvis in a text
 conversation is recalled the next time you type, but not the next time you

@@ -65,7 +65,7 @@ chmod +x "$CAT_LAUNCHER"
 echo "[+] Launcher generated at: $CAT_LAUNCHER"
 
 # Create an elegant icon path or look for system icon
-ICON_PATH="$PROJECT_ROOT/src/static/favicon.ico" # Fallback static logo
+ICON_PATH="$PROJECT_ROOT/src/interaction/static/favicon.ico" # Fallback static logo
 # Create a desktop entry for gnome/kde system integration
 DESKTOP_ENTRY="$APP_DIR/JARVIS.desktop"
 
