@@ -1,4 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
+import Groq from "groq-sdk";
+import { toGroqSchema } from "../cognition/groq-client.js";
 import { ObservationPlatform } from "../observation/index.js";
 import * as github from "../integrations/github.js";
 import * as webSearch from "../integrations/websearch.js";
@@ -53,24 +55,27 @@ const DEPARTMENT_DECOMPOSITION_SCHEMA = {
 // without a real model actually reasoning about it).
 export async function decomposeObjective(
   objective: string,
-  ai: GoogleGenAI | null,
+  groq: Groq | null,
   offlineMode: boolean
 ): Promise<DepartmentStep[]> {
-  if (!ai || offlineMode) {
+  if (!groq || offlineMode) {
     return [{ step: objective, department: "research" }];
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: `Break this objective down into 1-5 concrete steps, each tagged with the department that owns it: "${objective}"`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: DEPARTMENT_DECOMPOSITION_SCHEMA,
+    const response = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{
+        role: "user",
+        content: `Break this objective down into 1-5 concrete steps, each tagged with the department that owns it: "${objective}"`,
+      }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "department_decomposition", schema: toGroqSchema(DEPARTMENT_DECOMPOSITION_SCHEMA), strict: true },
       },
     });
 
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const rawSteps = Array.isArray(parsed.steps) ? parsed.steps : [];
     const valid: DepartmentStep[] = rawSteps.filter(
       (s: any) =>
@@ -126,8 +131,8 @@ const RESEARCH_LOOKUPS_SCHEMA = {
 // the raw objective; the second synthesizes whatever was actually gathered.
 // Each individual lookup degrades independently — one failing read (a
 // missing BRAVE_API_KEY, a GitHub hiccup) doesn't abort the whole pass.
-export async function runResearch(objective: string, ai: GoogleGenAI | null): Promise<ResearchResult> {
-  if (!ai) {
+export async function runResearch(objective: string, groq: Groq | null): Promise<ResearchResult> {
+  if (!groq) {
     return {
       summary:
         "No capable model is available right now, so I couldn't do real research on this — " +
@@ -139,15 +144,15 @@ export async function runResearch(objective: string, ai: GoogleGenAI | null): Pr
   let checkThisRepo = false;
   let knowledgeQuery = "";
   try {
-    const lookupResponse = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: `Plan what to research for this objective: "${objective}"`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: RESEARCH_LOOKUPS_SCHEMA,
+    const lookupResponse = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{ role: "user", content: `Plan what to research for this objective: "${objective}"` }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "research_lookups", schema: toGroqSchema(RESEARCH_LOOKUPS_SCHEMA), strict: true },
       },
     });
-    const parsed = JSON.parse(lookupResponse.text || "{}");
+    const parsed = JSON.parse(lookupResponse.choices[0]?.message?.content || "{}");
     webQueries = Array.isArray(parsed.webQueries)
       ? parsed.webQueries.filter((q: any) => typeof q === "string" && q.trim()).slice(0, 3)
       : [];
@@ -218,11 +223,14 @@ export async function runResearch(objective: string, ai: GoogleGenAI | null): Pr
   }
 
   try {
-    const synthesis = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: `Synthesize these raw research findings into a clear, concise report for the objective "${objective}". Findings:\n\n${findings.join("\n\n")}`,
+    const synthesis = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{
+        role: "user",
+        content: `Synthesize these raw research findings into a clear, concise report for the objective "${objective}". Findings:\n\n${findings.join("\n\n")}`,
+      }],
     });
-    return { summary: synthesis.text || findings.join("\n\n") };
+    return { summary: synthesis.choices[0]?.message?.content || findings.join("\n\n") };
   } catch (err: any) {
     observation.logTelemetry("warn", "Departments", `Research synthesis failed: ${err.message}. Returning raw findings.`);
     return { summary: findings.join("\n\n") };
@@ -255,25 +263,28 @@ export async function draftCodeChanges(
   objective: string,
   researchSummary: string,
   directionNotes: string,
-  ai: GoogleGenAI | null
+  groq: Groq | null
 ): Promise<CodeDraftResult> {
-  if (!ai) {
-    return { ok: false, error: "No capable model is available right now to draft real code — Gemini must be reachable for this." };
+  if (!groq) {
+    return { ok: false, error: "No capable model is available right now to draft real code — Groq must be reachable for this." };
   }
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents:
-        "Draft real, complete file changes for this repository to accomplish the objective below. Only include files " +
-        "that genuinely need to be created or changed. Write complete, working file contents, not snippets or " +
-        "placeholders.\n\n" +
-        `Objective: ${objective}\n\nResearch findings:\n${researchSummary}\n\nConfirmed direction from the user:\n${directionNotes}`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: CODE_DRAFT_SCHEMA,
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{
+        role: "user",
+        content:
+          "Draft real, complete file changes for this repository to accomplish the objective below. Only include files " +
+          "that genuinely need to be created or changed. Write complete, working file contents, not snippets or " +
+          "placeholders.\n\n" +
+          `Objective: ${objective}\n\nResearch findings:\n${researchSummary}\n\nConfirmed direction from the user:\n${directionNotes}`,
+      }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "code_draft", schema: toGroqSchema(CODE_DRAFT_SCHEMA), strict: true },
       },
     });
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const files: DraftedFile[] = Array.isArray(parsed.files)
       ? parsed.files.filter((f: any) => typeof f.path === "string" && f.path.trim() && typeof f.content === "string")
       : [];
@@ -288,20 +299,23 @@ export async function draftCodeChanges(
   }
 }
 
-export async function reviewCodeDiff(objective: string, files: DraftedFile[], ai: GoogleGenAI | null): Promise<string> {
-  if (!ai) {
+export async function reviewCodeDiff(objective: string, files: DraftedFile[], groq: Groq | null): Promise<string> {
+  if (!groq) {
     return "No capable model was available to review this change — please review the diff yourself before merging.";
   }
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents:
-        "Review this drafted code change against the objective it's meant to accomplish. Flag anything concerning — " +
-        "bugs, missing error handling, security issues, or ways it doesn't actually satisfy the objective. Be concise.\n\n" +
-        `Objective: ${objective}\n\nFiles:\n${filesText}`,
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{
+        role: "user",
+        content:
+          "Review this drafted code change against the objective it's meant to accomplish. Flag anything concerning — " +
+          "bugs, missing error handling, security issues, or ways it doesn't actually satisfy the objective. Be concise.\n\n" +
+          `Objective: ${objective}\n\nFiles:\n${filesText}`,
+      }],
     });
-    return response.text || "Review completed with no specific feedback.";
+    return response.choices[0]?.message?.content || "Review completed with no specific feedback.";
   } catch (err: any) {
     observation.logTelemetry("warn", "Departments", `reviewCodeDiff failed: ${err.message}`);
     return `Automated review failed (${err.message}) — please review the diff yourself before merging.`;

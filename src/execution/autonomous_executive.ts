@@ -1,5 +1,6 @@
 import { ObservationPlatform } from "../observation/index.js";
 import { GoogleGenAI } from "@google/genai";
+import Groq from "groq-sdk";
 import { MindKernel } from "../cognition/kernel/kernel.js";
 import { SessionState } from "../cognition/session.js";
 import * as commandProposalsRepo from "../data/command-proposals-repo.js";
@@ -24,22 +25,25 @@ export class AutonomousExecutive {
   private static instance: AutonomousExecutive | null = null;
   private observation: ObservationPlatform;
   private ai: GoogleGenAI | null;
+  private groq: Groq | null;
 
-  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null) {
+  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, groq: Groq | null) {
     this.observation = observation;
     this.ai = ai;
+    this.groq = groq;
   }
 
   // A singleton (like the other cognition engines) rather than a plain
-  // constructor so tools.ts's decompose_plan tool can reach the same
-  // instance server.ts already created at startup with the real ai client,
-  // instead of needing a circular import back into server.ts.
-  public static getInstance(observation?: ObservationPlatform, ai?: GoogleGenAI | null): AutonomousExecutive {
+  // constructor so tools.ts's decompose_plan/confirm_build_direction tools
+  // can reach the same instance server.ts already created at startup with
+  // the real ai/groq clients, instead of needing a circular import back
+  // into server.ts.
+  public static getInstance(observation?: ObservationPlatform, ai?: GoogleGenAI | null, groq?: Groq | null): AutonomousExecutive {
     if (!this.instance) {
       if (!observation) {
         throw new Error("AutonomousExecutive.getInstance() called before server.ts initialized it");
       }
-      this.instance = new AutonomousExecutive(observation, ai ?? null);
+      this.instance = new AutonomousExecutive(observation, ai ?? null, groq ?? null);
     }
     return this.instance;
   }
@@ -78,7 +82,7 @@ export class AutonomousExecutive {
     await this.delay(300);
 
     // --- STAGE 3: Department-Tagged Decomposition ---
-    const steps = await departments.decomposeObjective(objective, this.ai, kernel.offlineMode);
+    const steps = await departments.decomposeObjective(objective, this.groq, kernel.offlineMode);
     const hasCodingStep = steps.some(s => s.department === "coding");
 
     session.updateState({
@@ -109,7 +113,7 @@ export class AutonomousExecutive {
     // --- STAGE 4a: Build Request Branch (real research -> stop for consult) ---
     if (hasCodingStep) {
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
-      const research = await departments.runResearch(objective, this.ai);
+      const research = await departments.runResearch(objective, this.groq);
       const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
 
       if (!recorded) {
@@ -178,7 +182,7 @@ export class AutonomousExecutive {
       }, this.observation);
       workspace.attention.focusOn(step);
 
-      const research = await departments.runResearch(step, this.ai);
+      const research = await departments.runResearch(step, this.groq);
       const resultText = `[Research] ${research.summary}`;
 
       workspace.capabilities.recordResult({ step, outcome: "success", summary: resultText });
@@ -253,7 +257,7 @@ export class AutonomousExecutive {
       confirmed.objective,
       confirmed.research_summary || "",
       directionNotes,
-      this.ai
+      this.groq
     );
 
     if (!draft.ok) {

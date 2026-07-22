@@ -216,7 +216,7 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai);
+const executive = AutonomousExecutive.getInstance(observation, ai, groq);
 const learningEngine = LongTermLearningEngine.getInstance();
 const executiveBoard = new ExecutiveBoard();
 
@@ -1743,7 +1743,7 @@ app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (r
     // QA runs immediately, synchronously, right here — no CI polling (see
     // design spec's "Decisions"). CI's own result speaks for itself on
     // GitHub, same as any other PR.
-    const qaSummary = await departments.reviewCodeDiff(updated.objective, files, ai);
+    const qaSummary = await departments.reviewCodeDiff(updated.objective, files, groq);
     await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
 
     scheduler.pushNotification(
