@@ -28,7 +28,7 @@ cd "$PROJECT_ROOT"
 # Check if pywebview is available to use Python native window, else fallback to standard web browser app mode
 if python3 -c "import webview" &>/dev/null; then
     echo "Launching JARVIS in native pywebview window mode..."
-    python3 src/desktop/app.py
+    python3 src/interaction/desktop/app.py
 elif command -v google-chrome &>/dev/null; then
     echo "Launching in Google Chrome sandboxed app mode..."
     # Start the local server in background
