@@ -1169,6 +1169,45 @@ registerTest("GroqClient", "toGroqSchema is idempotent on an already-lowercase (
   }
 });
 
+registerTest("GroqClient", "toGroqSchema adds additionalProperties: false to every object node, recursively", () => {
+  // Groq's strict json_schema mode rejects any object node missing this —
+  // live-verified: every response_format:{strict:true} call 400'd until
+  // this was added (Gemini's Type-based schemas never set it).
+  const geminiShaped = {
+    type: "OBJECT",
+    properties: {
+      steps: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: { step: { type: "STRING" } },
+          required: ["step"],
+        },
+      },
+    },
+    required: ["steps"],
+  };
+  const result = toGroqSchema(geminiShaped);
+  if (result.additionalProperties !== false) {
+    throw new Error(`GroqClient: expected top-level additionalProperties: false, got: ${JSON.stringify(result)}`);
+  }
+  if (result.properties.steps.items.additionalProperties !== false) {
+    throw new Error(`GroqClient: expected the nested array-item object to also get additionalProperties: false, got: ${JSON.stringify(result)}`);
+  }
+  // A non-object node (the array itself) must not get this field at all.
+  if ("additionalProperties" in result.properties.steps) {
+    throw new Error("GroqClient: did not expect additionalProperties on a non-object (array) node");
+  }
+});
+
+registerTest("GroqClient", "toGroqSchema preserves an explicit additionalProperties value instead of overwriting it", () => {
+  const withExplicitValue = { type: "object", properties: { name: { type: "string" } }, additionalProperties: true };
+  const result = toGroqSchema(withExplicitValue);
+  if (result.additionalProperties !== true) {
+    throw new Error(`GroqClient: expected an explicit additionalProperties: true to survive untouched, got: ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("GroqClient", "toGroqTools wraps a declaration in Groq's function-tool shape", () => {
   const declarations = [{ name: "search_web", description: "Search the web", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } }];
   const result = toGroqTools(declarations);

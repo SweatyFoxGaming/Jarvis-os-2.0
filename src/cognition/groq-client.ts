@@ -24,6 +24,16 @@ export function toGroqSchema(schema: any): any {
     for (const [key, value] of Object.entries(schema)) {
       result[key] = key === "type" && typeof value === "string" ? value.toLowerCase() : toGroqSchema(value);
     }
+    // Groq's strict JSON-schema mode rejects any object-typed node that
+    // doesn't explicitly declare additionalProperties — live-verified:
+    // every response_format:{strict:true} call failed 400 across the board
+    // until this was added. Gemini's Type-based schemas never set this (it
+    // isn't required there), so it has to be injected here at translation
+    // time. An explicit value already present (e.g. from an MCP-sourced
+    // schema) is left alone rather than overwritten.
+    if (result.type === "object" && !("additionalProperties" in result)) {
+      result.additionalProperties = false;
+    }
     return result;
   }
   return schema;
