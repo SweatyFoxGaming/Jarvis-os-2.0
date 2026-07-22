@@ -1029,15 +1029,21 @@ Add immediately after it:
 briefing.configureGroq(groq);
 ```
 
-Find:
+Find (the `/api/identity/thought` route, right above the call this task is about to rewrite — this guard currently checks the wrong client and must change too, the same class of stale-guard bug already caught and fixed once in Task 2's post-reply learning block):
 
 ```ts
+app.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
+  if (!ai) return res.status(503).json({ error: "Requires GEMINI_API_KEY to be configured." });
+  try {
     const result = await identity.generateProactiveThought(ai);
 ```
 
 Replace with:
 
 ```ts
+app.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
+  if (!groq) return res.status(503).json({ error: "Requires GROQ_API_KEY to be configured." });
+  try {
     const result = await identity.generateProactiveThought(groq);
 ```
 
