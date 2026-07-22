@@ -1,4 +1,4 @@
-import { ObservationPlatform } from "../kernel/observation.js";
+import { ObservationPlatform } from "../../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 const GITHUB_API = "https://api.github.com";

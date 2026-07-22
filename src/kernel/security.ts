@@ -1,6 +1,6 @@
 import { ObservationPlatform } from "./observation.js";
 import { getPool } from "./state/db.js";
-import { getCachedMcpTools } from "../execution/mcp-registry.js";
+import { getCachedMcpTools } from "../capabilities/mcp-registry.js";
 
 const observation = ObservationPlatform.getInstance();
 

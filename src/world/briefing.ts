@@ -1,6 +1,6 @@
 import { ObservationPlatform } from "../kernel/observation.js";
-import * as emailIntegration from "../integrations/email.js";
-import * as github from "../integrations/github.js";
+import * as emailIntegration from "../capabilities/providers/email.js";
+import * as github from "../capabilities/providers/github.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import Groq from "groq-sdk";
 

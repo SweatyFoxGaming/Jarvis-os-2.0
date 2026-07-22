@@ -1,6 +1,6 @@
 import type Groq from "groq-sdk";
 import { ObservationPlatform } from "./observation.js";
-import * as emailIntegration from "../integrations/email.js";
+import * as emailIntegration from "../capabilities/providers/email.js";
 import * as briefing from "../world/briefing.js";
 import * as briefingRepo from "./state/briefing-repo.js";
 import * as identity from "../self/identity.js";
@@ -8,7 +8,7 @@ import * as identityRepo from "./state/identity-repo.js";
 import * as objectivesRepo from "./state/objectives-repo.js";
 import * as push from "../integrations/push.js";
 import * as mcpServersRepo from "./state/mcp-servers-repo.js";
-import * as mcpRegistry from "../execution/mcp-registry.js";
+import * as mcpRegistry from "../capabilities/mcp-registry.js";
 
 const observation = ObservationPlatform.getInstance();
 

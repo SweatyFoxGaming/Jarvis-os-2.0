@@ -11,7 +11,7 @@ import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
 import { ExecutiveBoard } from "../src/executive/executive_board.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
-import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
+import { executeTool, getAllToolDeclarations } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
 import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/self/identity.js";
@@ -27,7 +27,7 @@ import {
   recordDirectionConfirmed,
   rejectCode as rejectBuildCode,
 } from "../src/kernel/state/build-requests-repo.js";
-import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
+import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
 import { spawn, ChildProcess } from "child_process";
@@ -616,7 +616,7 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
 
   // getRoot() reads process.env.JARVIS_FILES_DIR_MOUNT fresh on every call,
   // so setting it above is enough — no need to re-import the module.
-  const files = await import("../src/integrations/files.js");
+  const files = await import("../src/capabilities/providers/files.js");
 
   try {
     await files.writeFile("note.txt", "hello jarvis");

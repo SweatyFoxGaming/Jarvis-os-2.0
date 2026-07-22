@@ -2,8 +2,8 @@ import { Type } from "@google/genai";
 import Groq from "groq-sdk";
 import { toGroqSchema } from "../runtime/groq-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
-import * as github from "../integrations/github.js";
-import * as webSearch from "../integrations/websearch.js";
+import * as github from "../capabilities/providers/github.js";
+import * as webSearch from "../capabilities/providers/websearch.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 

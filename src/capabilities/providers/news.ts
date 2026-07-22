@@ -1,4 +1,4 @@
-import { ObservationPlatform } from "../kernel/observation.js";
+import { ObservationPlatform } from "../../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 const NEWS_API = "https://newsapi.org/v2";

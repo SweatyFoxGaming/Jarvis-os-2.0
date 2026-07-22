@@ -1,5 +1,5 @@
-import { ObservationPlatform } from "../kernel/observation.js";
-import * as oauthRepo from "../kernel/state/oauth-repo.js";
+import { ObservationPlatform } from "../../kernel/observation.js";
+import * as oauthRepo from "../../kernel/state/oauth-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";

@@ -9,7 +9,7 @@ import * as sessionRepo from "../kernel/state/session-repo.js";
 import * as memoryStore from "./memory-store.js";
 import { reflectAndLearn } from "../adaptation/reflection.js";
 import * as knowledgeGraph from "./knowledge-graph.js";
-import { getAllToolDeclarations, executeTool } from "../execution/tools.js";
+import { getAllToolDeclarations, executeTool } from "../capabilities/tools.js";
 
 const observation = ObservationPlatform.getInstance();
 

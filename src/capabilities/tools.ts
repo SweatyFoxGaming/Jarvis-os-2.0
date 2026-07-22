@@ -1,26 +1,26 @@
 import type { FunctionDeclaration, GoogleGenAI } from "@google/genai";
 import { Type } from "@google/genai";
 import * as memoryStore from "../cognition/memory-store.js";
-import * as github from "../integrations/github.js";
-import * as emailIntegration from "../integrations/email.js";
+import * as github from "./providers/github.js";
+import * as emailIntegration from "./providers/email.js";
 import * as tts from "../integrations/tts.js";
 import { hasGrant } from "../kernel/security.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { AutonomousExecutive } from "../executive/autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
-import * as calendar from "../integrations/calendar.js";
+import * as calendar from "./providers/calendar.js";
 import * as briefing from "../world/briefing.js";
-import * as files from "../integrations/files.js";
+import * as files from "./providers/files.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import * as identity from "../self/identity.js";
-import * as news from "../integrations/news.js";
-import * as webSearch from "../integrations/websearch.js";
+import * as news from "./providers/news.js";
+import * as webSearch from "./providers/websearch.js";
 import * as featureRequestsRepo from "../kernel/state/feature-requests-repo.js";
 import * as securityRepo from "../kernel/state/security-repo.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
-import * as mcpRegistry from "../execution/mcp-registry.js";
+import * as mcpRegistry from "./mcp-registry.js";
 
 const observation = ObservationPlatform.getInstance();
 
