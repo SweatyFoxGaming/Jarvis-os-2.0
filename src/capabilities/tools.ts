@@ -3,7 +3,7 @@ import { Type } from "@google/genai";
 import * as memoryStore from "../cognition/memory-store.js";
 import * as github from "./providers/github.js";
 import * as emailIntegration from "./providers/email.js";
-import * as tts from "../integrations/tts.js";
+import * as tts from "../interaction/tts.js";
 import { hasGrant } from "../kernel/security.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { AutonomousExecutive } from "../executive/autonomous_executive.js";

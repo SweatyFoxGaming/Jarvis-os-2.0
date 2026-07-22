@@ -1,10 +1,10 @@
-// Config for the main dashboard (src/static/index.html). Colors/fonts here
+// Config for the main dashboard (src/interaction/static/index.html). Colors/fonts here
 // must stay in sync with what used to be the inline `tailwind.config = {...}`
 // script when this ran on the CDN Play build — see README for why that's
 // gone (production shouldn't load a JIT compiler + arbitrary script from a
 // third-party host on every page load).
 module.exports = {
-  content: ["./src/static/index.html"],
+  content: ["./src/interaction/static/index.html"],
   theme: {
     extend: {
       colors: {

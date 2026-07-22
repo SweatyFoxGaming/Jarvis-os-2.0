@@ -16,8 +16,8 @@ import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./runtime/local_engine.js";
 import * as github from "./capabilities/providers/github.js";
 import * as emailIntegration from "./capabilities/providers/email.js";
-import * as tts from "./integrations/tts.js";
-import * as whisper from "./integrations/whisper.js";
+import * as tts from "./interaction/tts.js";
+import * as whisper from "./interaction/whisper.js";
 import * as jarvisFiles from "./capabilities/providers/files.js";
 import * as calendar from "./capabilities/providers/calendar.js";
 import { initDatabase } from "./kernel/state/db.js";
@@ -31,7 +31,7 @@ import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
 import { reflectAndLearn } from "./adaptation/reflection.js";
 import { WebSocketServer } from "ws";
-import * as liveVoice from "./cognition/live-voice.js";
+import * as liveVoice from "./interaction/live-voice.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
 import * as briefing from "./world/briefing.js";
@@ -48,7 +48,7 @@ import * as commandProposalsRepo from "./kernel/state/command-proposals-repo.js"
 import * as pushRepo from "./kernel/state/push-subscriptions-repo.js";
 import * as mcpServersRepo from "./kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./capabilities/mcp-registry.js";
-import * as push from "./integrations/push.js";
+import * as push from "./interaction/push.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
 import * as departments from "./executive/departments.js";
 
@@ -88,7 +88,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000,h
 // this on only for the window you actually want a new account created.
 const ALLOW_REGISTRATION = (process.env.ALLOW_REGISTRATION || "false").toLowerCase() === "true";
 
-// The frontend (src/static/*.html) is a pre-existing single-file dashboard
+// The frontend (src/interaction/static/*.html) is a pre-existing single-file dashboard
 // built around inline <script> blocks and inline onclick= handlers — a
 // strict default-src/script-src CSP would break it outright. 'unsafe-inline'
 // here is a deliberate, scoped tradeoff (splitting that inline JS into real
@@ -2475,7 +2475,7 @@ app.get("/api/integrations/websearch", validateApiKey, async (req: any, res: any
 });
 
 // ---------- Static Files Serving ----------
-const staticDir = path.join(process.cwd(), "src", "static");
+const staticDir = path.join(process.cwd(), "src", "interaction", "static");
 app.use(express.static(staticDir));
 
 app.get("/admin", (req, res) => {

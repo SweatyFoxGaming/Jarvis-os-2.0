@@ -1,8 +1,8 @@
-// Config for the admin panel (src/static/admin.html) — a separate, older
+// Config for the admin panel (src/interaction/static/admin.html) — a separate, older
 // palette from the main dashboard's, kept as its own build so the two pages'
 // colors don't collide in one shared config.
 module.exports = {
-  content: ["./src/static/admin.html"],
+  content: ["./src/interaction/static/admin.html"],
   theme: {
     extend: {
       colors: {

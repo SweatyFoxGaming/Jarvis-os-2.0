@@ -6,7 +6,7 @@ import * as briefingRepo from "./state/briefing-repo.js";
 import * as identity from "../self/identity.js";
 import * as identityRepo from "./state/identity-repo.js";
 import * as objectivesRepo from "./state/objectives-repo.js";
-import * as push from "../integrations/push.js";
+import * as push from "../interaction/push.js";
 import * as mcpServersRepo from "./state/mcp-servers-repo.js";
 import * as mcpRegistry from "../capabilities/mcp-registry.js";
 
