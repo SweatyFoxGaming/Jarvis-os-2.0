@@ -1,4 +1,4 @@
-import type { GoogleGenAI } from "@google/genai";
+import type Groq from "groq-sdk";
 import { ObservationPlatform } from "../observation/index.js";
 import * as emailIntegration from "../integrations/email.js";
 import * as briefing from "./briefing.js";
@@ -118,9 +118,9 @@ export function startEmailWatchJob(intervalMs = 5 * 60 * 1000): NodeJS.Timeout |
  */
 let seenBriefingItemIds = new Set<string>();
 
-export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
+export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-briefing", intervalMs, async () => {
-    const result = await briefing.generateBriefing(ai, "admin");
+    const result = await briefing.generateBriefing(groq, "admin");
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
     } catch (err: any) {
@@ -134,7 +134,7 @@ export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 
     seenBriefingItemIds = new Set(result.items.map(i => i.id));
 
     if (freshItems.length > 0) {
-      const freshText = await briefing.synthesizeBriefing(ai, freshItems, []);
+      const freshText = await briefing.synthesizeBriefing(groq, freshItems, []);
       pushNotification("admin", freshText, freshItems.some(i => i.urgency === "high") ? "warning" : "info");
     }
 
@@ -160,10 +160,10 @@ export function startBriefingJob(ai: GoogleGenAI | null, intervalMs = 60 * 60 * 
  * self-reflection history yet rather than fabricating a thought from
  * nothing.
  */
-export function startSelfReflectionJob(ai: GoogleGenAI | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
+export function startSelfReflectionJob(groq: Groq | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-self-reflection", intervalMs, async () => {
-    if (!ai) return;
-    const result = await identity.generateProactiveThought(ai);
+    if (!groq) return;
+    const result = await identity.generateProactiveThought(groq);
     if (!result) return;
     try {
       await identityRepo.saveProactiveThought(result.content, result.basedOnCount);

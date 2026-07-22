@@ -1,4 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
+import Groq from "groq-sdk";
+import { toGroqSchema } from "./groq-client.js";
 import { ObservationPlatform } from "../observation/index.js";
 import * as identityRepo from "../data/identity-repo.js";
 import type { ReflectionCategory } from "../data/identity-repo.js";
@@ -32,28 +34,27 @@ const SELF_REFLECTION_SCHEMA = {
  * this turn contained something genuinely worth remembering about itself;
  * empty category/content means nothing did, and nothing is stored.
  */
-export async function extractSelfReflection(ai: GoogleGenAI, userMessage: string, replyText: string): Promise<void> {
+export async function extractSelfReflection(groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
+  if (!groq) return;
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{
+    const response = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{
         role: "user",
-        parts: [{
-          text:
-            "You are analyzing Jarvis's OWN reply below (not the user's message) for something Jarvis itself genuinely " +
-            "expressed: a real opinion it formed, a commitment/promise it made, or a notable realization/observation about " +
-            "itself or the conversation. Only report something if it's actually there in Jarvis's reply — do not invent " +
-            "introspection that isn't present. Most turns have nothing like this; that's expected, return \"\" in that case.\n\n" +
-            `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
-        }],
+        content:
+          "You are analyzing Jarvis's OWN reply below (not the user's message) for something Jarvis itself genuinely " +
+          "expressed: a real opinion it formed, a commitment/promise it made, or a notable realization/observation about " +
+          "itself or the conversation. Only report something if it's actually there in Jarvis's reply — do not invent " +
+          "introspection that isn't present. Most turns have nothing like this; that's expected, return \"\" in that case.\n\n" +
+          `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
       }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: SELF_REFLECTION_SCHEMA,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "self_reflection", schema: toGroqSchema(SELF_REFLECTION_SCHEMA), strict: true },
       },
     });
 
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const category = parsed.category;
     const content = typeof parsed.content === "string" ? parsed.content.trim() : "";
 
@@ -102,7 +103,7 @@ export interface ProactiveThoughtResult {
  * when there isn't enough real history to draw from yet (a fresh install,
  * or too few real conversations so far).
  */
-export async function generateProactiveThought(ai: GoogleGenAI, minReflections = 3): Promise<ProactiveThoughtResult | null> {
+export async function generateProactiveThought(groq: Groq | null, minReflections = 3): Promise<ProactiveThoughtResult | null> {
   let recent: identityRepo.SelfReflection[];
   try {
     recent = await identityRepo.getRecentSelfReflections(15);
@@ -114,36 +115,39 @@ export async function generateProactiveThought(ai: GoogleGenAI, minReflections =
     observation.logTelemetry("info", "Identity", `Skipping proactive thought — only ${recent.length} self-reflection(s) recorded so far (need ${minReflections}).`);
     return null;
   }
+  if (!groq) return null;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{
         role: "user",
-        parts: [{
-          text:
-            "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, " +
-            "addressing the user as \"sir\" where it reads naturally, not gushing. Below are real things you " +
-            "have genuinely said, believed, or committed to across past conversations. " +
-            "Generate ONE specific, genuine reflective thought grounded in them — a follow-up on a prior commitment, a " +
-            "connection you've noticed between them, or real curiosity that follows from them. Do not invent anything " +
-            "beyond what's listed. If there's nothing substantive enough to reflect on, respond with an empty string.\n\n" +
-            recent.map(r => `- (${r.category}) ${r.content}`).join("\n"),
-        }],
+        content:
+          "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, " +
+          "addressing the user as \"sir\" where it reads naturally, not gushing. Below are real things you " +
+          "have genuinely said, believed, or committed to across past conversations. " +
+          "Generate ONE specific, genuine reflective thought grounded in them — a follow-up on a prior commitment, a " +
+          "connection you've noticed between them, or real curiosity that follows from them. Do not invent anything " +
+          "beyond what's listed. If there's nothing substantive enough to reflect on, respond with an empty string.\n\n" +
+          recent.map(r => `- (${r.category}) ${r.content}`).join("\n"),
       }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            thought: { type: Type.STRING, description: "The genuine reflective thought, or \"\" if there's nothing substantive" },
-          },
-          required: ["thought"],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "proactive_thought",
+          schema: toGroqSchema({
+            type: Type.OBJECT,
+            properties: {
+              thought: { type: Type.STRING, description: "The genuine reflective thought, or \"\" if there's nothing substantive" },
+            },
+            required: ["thought"],
+          }),
+          strict: true,
         },
       },
     });
 
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const thought = typeof parsed.thought === "string" ? parsed.thought.trim() : "";
     if (!thought) return null;
     return { content: thought, basedOnCount: recent.length };

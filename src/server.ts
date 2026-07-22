@@ -6,6 +6,8 @@ import crypto from "crypto";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
+import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./cognition/groq-client.js";
+import Groq from "groq-sdk";
 import { ObservationPlatform } from "./observation/index.js";
 import { AutonomousExecutive } from "./execution/autonomous_executive.js";
 import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
@@ -165,7 +167,8 @@ const observation = ObservationPlatform.getInstance();
 
 observation.startProfile("startup");
 
-// ---------- Gemini Client Initialization ----------
+// ---------- Gemini Client Initialization (vision/multimodal only — see
+// docs/superpowers/specs/2026-07-21-groq-provider-design.md) ----------
 let ai: GoogleGenAI | null = null;
 if (process.env.GEMINI_API_KEY) {
   ai = new GoogleGenAI({
@@ -180,7 +183,16 @@ if (process.env.GEMINI_API_KEY) {
 } else {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
-briefing.configureAi(ai);
+
+// ---------- Groq Client Initialization (primary cloud tier) ----------
+let groq: Groq | null = null;
+if (process.env.GROQ_API_KEY) {
+  groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  observation.logTelemetry("info", "Cognition", "Groq client successfully configured with API Key.");
+} else {
+  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
+}
+briefing.configureGroq(groq);
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -205,7 +217,7 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai);
+const executive = AutonomousExecutive.getInstance(observation, ai, groq);
 const learningEngine = LongTermLearningEngine.getInstance();
 const executiveBoard = new ExecutiveBoard();
 
@@ -750,43 +762,52 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
     } else {
       if (kernel.llmMode === "strictly-online") {
-        executionChain.push("Gemini");
+        executionChain.push("Groq", "Gemini");
       } else if (kernel.llmMode === "strictly-local") {
         executionChain.push("LocalLLM");
       } else if (kernel.llmMode === "online-first") {
-        executionChain.push("Gemini", "LocalLLM");
+        executionChain.push("Groq", "Gemini", "LocalLLM");
       } else {
         // local-first (default)
-        executionChain.push("LocalLLM", "Gemini");
+        executionChain.push("LocalLLM", "Groq", "Gemini");
       }
     }
 
     // A tool-shaped request ("check that GitHub repo", "send an email...")
     // sent to the local model is exactly the fabrication risk the honest
     // local prompt above is a safety net for — but the better outcome is to
-    // not need that net at all. When Gemini is actually available and the
-    // user hasn't explicitly forced strictly-local, prefer it first so the
-    // request gets real capability instead of an honest decline.
-    if (
-      ai &&
-      kernel.llmMode !== "strictly-local" &&
-      looksToolShaped(message) &&
-      executionChain[0] === "LocalLLM" &&
-      executionChain.includes("Gemini")
-    ) {
-      const idx = executionChain.indexOf("Gemini");
-      executionChain.splice(idx, 1);
-      executionChain.unshift("Gemini");
+    // not need that net at all. Groq can call tools (unlike local), so
+    // prefer it first so the request gets real capability instead of an
+    // honest decline. Guarded on `executionChain[0] !== "Groq"` rather than
+    // `=== "LocalLLM"` specifically so this is a no-op (not a crash) if
+    // Groq's already at the front for some other reason.
+    if (kernel.llmMode !== "strictly-local" && looksToolShaped(message)) {
+      if (groq && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
+        const idx = executionChain.indexOf("Groq");
+        executionChain.splice(idx, 1);
+        executionChain.unshift("Groq");
+      } else if (!groq && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
+        // No Groq configured — fall back to promoting Gemini for tool-shaped
+        // requests, restoring this codebase's pre-Groq behavior rather than
+        // silently losing tool-calling capability to LocalLLM's honest decline.
+        const idx = executionChain.indexOf("Gemini");
+        executionChain.splice(idx, 1);
+        executionChain.unshift("Gemini");
+      }
     }
 
     // A live camera frame is only genuinely usable by Gemini's multimodal
-    // input — the local llama-cpp path has no vision support here. Same
-    // "don't let a backend fake capability it doesn't have" rule as above.
+    // input — neither the local llama-cpp path nor Groq's hosted text
+    // models have vision support. Checked AFTER the tool-shaped promotion
+    // above (not instead of it) and guarded on `!== "Gemini"` (not
+    // `executionChain[0] === "LocalLLM"`) so an image always wins the front
+    // slot even when the same message also looks tool-shaped and Groq was
+    // just promoted there a moment ago.
     if (
       ai &&
       image &&
       kernel.llmMode !== "strictly-local" &&
-      executionChain[0] === "LocalLLM" &&
+      executionChain[0] !== "Gemini" &&
       executionChain.includes("Gemini")
     ) {
       const idx = executionChain.indexOf("Gemini");
@@ -907,6 +928,98 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
           observation.logTelemetry("info", "Cognition", "Local LLM content streaming completed successfully.");
         } catch (err: any) {
           observation.logTelemetry("warn", "Cognition", `Local LLM generation failed: ${err.message || err}`);
+        }
+      }
+
+      else if (step === "Groq") {
+        if (groq) {
+          try {
+            observation.incrementMetric("groqApiCalls");
+            session.updateState({
+              currentThought: "Querying Groq",
+              executiveStatus: "Executing",
+              activeCapability: "Groq LLM Generation"
+            }, observation);
+
+            const groqTools = toGroqTools(getAllToolDeclarations());
+            const messages: any[] = [
+              { role: "system", content: systemInstruction },
+              { role: "user", content: message },
+            ];
+            const groqModels = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+
+            let response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+            let toolCalls = response.choices[0]?.message?.tool_calls || [];
+            let guard = 0;
+
+            while (toolCalls.length > 0 && guard < 3) {
+              guard++;
+              const assistantMessage = response.choices[0].message;
+              messages.push({
+                role: "assistant",
+                content: assistantMessage.content,
+                tool_calls: assistantMessage.tool_calls,
+              });
+
+              const toolResponseMessages: any[] = [];
+              for (const call of toolCalls) {
+                let args: Record<string, any> = {};
+                try {
+                  args = JSON.parse(call.function.arguments || "{}");
+                } catch {
+                  // Malformed arguments from the model — executeTool below
+                  // fails cleanly on whatever this leaves args as, same as
+                  // a genuinely empty-args call would.
+                }
+
+                const result = await executeTool(
+                  call.function.name || "",
+                  args,
+                  req.username,
+                  ai,
+                  kernel.localLlmEndpoint,
+                  { alreadyAttached: false, supportsRoundTrip: true }
+                );
+
+                // Mirrors the Gemini branch's identical handling below.
+                if (result.needsClientAction === "capture_screen") {
+                  res.write("data: request_screen\n\n");
+                  res.write("data: [DONE]\n\n");
+                  res.end();
+                  success = true;
+                  succeededStep = "Groq";
+                  return;
+                }
+
+                if (result.displayDirective) {
+                  res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
+                }
+
+                toolCallsExecuted.push({ name: result.name, ok: result.ok });
+                toolResponseMessages.push({
+                  role: "tool",
+                  tool_call_id: call.id,
+                  content: JSON.stringify(result.ok ? { output: result.output } : { error: result.error }),
+                });
+              }
+              messages.push(...toolResponseMessages);
+
+              response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+              toolCalls = response.choices[0]?.message?.tool_calls || [];
+            }
+
+            const finalText = response.choices[0]?.message?.content || "";
+            if (finalText) {
+              for (const word of finalText.split(" ")) {
+                fullReply += word + " ";
+                res.write(`data: ${word} \n\n`);
+              }
+              success = true;
+              succeededStep = "Groq";
+            }
+          } catch (err: any) {
+            observation.logTelemetry("warn", "Cognition", `Groq generation failed: ${err.message || err}`);
+          }
         }
       }
 
@@ -1056,16 +1169,16 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         .catch(() => {});
 
       // Write side of style/mistake learning — see reflection.ts. Needs
-      // Gemini specifically (structured JSON output), independent of which
+      // Groq specifically (structured JSON output), independent of which
       // backend actually answered the user.
-      if (ai) {
-        reflectAndLearn(ai, message, fullReply).catch(() => {});
+      if (groq) {
+        reflectAndLearn(groq, message, fullReply).catch(() => {});
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
-        knowledgeGraph.extractAndStore(ai, message, fullReply).catch(() => {});
+        knowledgeGraph.extractAndStore(groq, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see cognition/identity.ts.
-        identity.extractSelfReflection(ai, message, fullReply).catch(() => {});
+        identity.extractSelfReflection(groq, message, fullReply).catch(() => {});
       }
     }
 
@@ -1332,9 +1445,9 @@ app.get("/api/identity/reflections", validateApiKey, async (req: any, res: any) 
 // On-demand generation of a proactive thought (the scheduled job in
 // scheduler.ts runs the same real synthesis on a timer without being asked).
 app.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
-  if (!ai) return res.status(503).json({ error: "Requires GEMINI_API_KEY to be configured." });
+  if (!groq) return res.status(503).json({ error: "Requires GROQ_API_KEY to be configured." });
   try {
-    const result = await identity.generateProactiveThought(ai);
+    const result = await identity.generateProactiveThought(groq);
     if (!result) {
       return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
     }
@@ -1732,7 +1845,7 @@ app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (r
     // QA runs immediately, synchronously, right here — no CI polling (see
     // design spec's "Decisions"). CI's own result speaks for itself on
     // GitHub, same as any other PR.
-    const qaSummary = await departments.reviewCodeDiff(updated.objective, files, ai);
+    const qaSummary = await departments.reviewCodeDiff(updated.objective, files, groq);
     await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
 
     scheduler.pushNotification(
@@ -1843,7 +1956,7 @@ app.post("/api/system/ingest/command-result", validateApiKey, async (req: any, r
 // scheduler.ts runs the same real synthesis on a timer without being asked.
 app.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
   try {
-    const result = await briefing.generateBriefing(ai, req.username);
+    const result = await briefing.generateBriefing(groq, req.username);
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
     } catch (err: any) {
@@ -2450,12 +2563,12 @@ initDatabase().then(async (ready) => {
     }
 
     observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
-    await liveVoice.bridgeVoiceSession(ai, ws, username);
+    await liveVoice.bridgeVoiceSession(ai, groq, ws, username);
   });
 
   scheduler.startEmailWatchJob();
-  scheduler.startBriefingJob(ai);
-  scheduler.startSelfReflectionJob(ai);
+  scheduler.startBriefingJob(groq);
+  scheduler.startSelfReflectionJob(groq);
   scheduler.startMcpHealthCheckJob();
 });
 

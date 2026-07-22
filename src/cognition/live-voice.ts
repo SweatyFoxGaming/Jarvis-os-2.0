@@ -1,4 +1,5 @@
 import { GoogleGenAI, Modality } from "@google/genai";
+import Groq from "groq-sdk";
 import type WebSocket from "ws";
 import { ObservationPlatform } from "../observation/index.js";
 import { buildIdentityContext } from "./identity.js";
@@ -77,7 +78,7 @@ async function buildVoiceSystemInstruction(): Promise<string> {
  * server-side via the same executeTool() /api/chat uses — the client never
  * sees a raw toolCall message, only its eventual effect on the conversation.
  */
-export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocket, username: string): Promise<void> {
+export async function bridgeVoiceSession(ai: GoogleGenAI, groq: Groq | null, clientSocket: WebSocket, username: string): Promise<void> {
   let liveSession: Awaited<ReturnType<typeof ai.live.connect>> | null = null;
 
   // Accumulates each turn's transcription (arrives as incremental chunks,
@@ -111,9 +112,9 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, clientSocket: WebSocke
         memoryStore
           .remember(username, `User said (voice): "${userText}" — Jarvis replied: "${replyText.slice(0, 500)}"`, ai, null)
           .catch(() => {});
-        reflectAndLearn(ai, userText, replyText).catch(() => {});
-        knowledgeGraph.extractAndStore(ai, userText, replyText).catch(() => {});
-        identity.extractSelfReflection(ai, userText, replyText).catch(() => {});
+        reflectAndLearn(groq, userText, replyText).catch(() => {});
+        knowledgeGraph.extractAndStore(groq, userText, replyText).catch(() => {});
+        identity.extractSelfReflection(groq, userText, replyText).catch(() => {});
       }
     }
 

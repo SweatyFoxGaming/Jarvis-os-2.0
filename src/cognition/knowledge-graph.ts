@@ -1,4 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
+import Groq from "groq-sdk";
+import { toGroqSchema } from "./groq-client.js";
 import { ObservationPlatform } from "../observation/index.js";
 import * as kgRepo from "../data/knowledge-graph-repo.js";
 
@@ -50,27 +52,26 @@ const EXTRACTION_SCHEMA = {
  * Fire-and-forget, same as reflectAndLearn: must never block or slow down
  * the reply the user is waiting on.
  */
-export async function extractAndStore(ai: GoogleGenAI, userMessage: string, replyText: string): Promise<void> {
+export async function extractAndStore(groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
+  if (!groq) return;
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{
+    const response = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{
         role: "user",
-        parts: [{
-          text:
-            "Extract any concrete, new facts and relationships about specific named entities (people, projects, tools, preferences, decisions, organizations) " +
-            "from this exchange. Only include something if it was actually stated — never invent or infer beyond what's written. " +
-            "If nothing concrete was said, return empty arrays.\n\n" +
-            `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
-        }],
+        content:
+          "Extract any concrete, new facts and relationships about specific named entities (people, projects, tools, preferences, decisions, organizations) " +
+          "from this exchange. Only include something if it was actually stated — never invent or infer beyond what's written. " +
+          "If nothing concrete was said, return empty arrays.\n\n" +
+          `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
       }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: EXTRACTION_SCHEMA,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "entity_extraction", schema: toGroqSchema(EXTRACTION_SCHEMA), strict: true },
       },
     });
 
-    const parsed = JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const entities: { name: string; entityType: string; fact: string }[] = Array.isArray(parsed.entities) ? parsed.entities : [];
     const relationships: { fromEntity: string; toEntity: string; relationship: string }[] = Array.isArray(parsed.relationships) ? parsed.relationships : [];
 

@@ -14,7 +14,9 @@ import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/
 import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/execution/scheduler.js";
-import { buildIdentityContext, generateProactiveThought } from "../src/cognition/identity.js";
+import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/cognition/identity.js";
+import { extractAndStore } from "../src/cognition/knowledge-graph.js";
+import { reflectAndLearn } from "../src/cognition/reflection.js";
 import { ConfidenceModel } from "../src/cognition/kernel/confidence.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/data/mcp-servers-repo.js";
 import {
@@ -27,6 +29,7 @@ import {
 } from "../src/data/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
 import * as departments from "../src/execution/departments.js";
+import { toGroqSchema, toGroqTools } from "../src/cognition/groq-client.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -701,7 +704,7 @@ registerTest("Objectives", "markCheckedIn never throws, even with no DB or an em
 });
 
 // ---------- Briefing Tests ----------
-import { prioritizeSignals } from "../src/execution/briefing.js";
+import { prioritizeSignals, synthesizeBriefing } from "../src/execution/briefing.js";
 
 registerTest("Briefing", "prioritizeSignals scores a near-due objective as high urgency", () => {
   const soon = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10); // tomorrow
@@ -750,6 +753,14 @@ registerTest("Briefing", "prioritizeSignals scores an objective with no target d
   }
 });
 
+registerTest("Briefing", "synthesizeBriefing falls back to a plain list with no Groq client", async () => {
+  const items = [{ id: "email:1", source: "email" as const, urgency: "high" as const, summary: "test item" }];
+  const text = await synthesizeBriefing(null, items, []);
+  if (!text.includes("test item")) {
+    throw new Error(`Briefing: expected the plain-list fallback to include the raw item summary, got: "${text}"`);
+  }
+});
+
 // ---------- Command Outcome Tracking Tests (no live Postgres in this test process) ----------
 
 registerTest("CommandOutcomes", "recordCommandOutcome degrades cleanly when Postgres isn't reachable", async () => {
@@ -786,6 +797,41 @@ registerTest("Identity", "generateProactiveThought never fabricates a thought wh
   const result = await generateProactiveThought(fakeAi);
   if (result !== null) {
     throw new Error("Identity: expected null (no real history to draw from), got a fabricated result");
+  }
+});
+
+registerTest("Identity", "extractSelfReflection no-ops with no Groq client", async () => {
+  // Must return (not throw) immediately on the `if (!groq) return;` guard,
+  // without ever touching the database or a Groq client. If the guard were
+  // missing/broken, calling groq.chat.completions.create on null would throw
+  // inside the try/catch and log a "warn" telemetry event instead — so we
+  // assert no such warn entry was appended, not just that nothing threw.
+  const obs = ObservationPlatform.getInstance();
+  const before = obs.getTelemetry().length;
+  await extractSelfReflection(null, "hello", "some reply");
+  const newEntries = obs.getTelemetry().slice(before);
+  if (newEntries.some(e => e.level === "warn" && e.subsystem === "Identity")) {
+    throw new Error("Identity: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
+  }
+});
+
+registerTest("KnowledgeGraph", "extractAndStore no-ops with no Groq client", async () => {
+  const obs = ObservationPlatform.getInstance();
+  const before = obs.getTelemetry().length;
+  await extractAndStore(null, "hello", "some reply");
+  const newEntries = obs.getTelemetry().slice(before);
+  if (newEntries.some(e => e.level === "warn" && e.subsystem === "KnowledgeGraph")) {
+    throw new Error("KnowledgeGraph: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
+  }
+});
+
+registerTest("Learning", "reflectAndLearn no-ops with no Groq client", async () => {
+  const obs = ObservationPlatform.getInstance();
+  const before = obs.getTelemetry().length;
+  await reflectAndLearn(null, "hello", "some reply");
+  const newEntries = obs.getTelemetry().slice(before);
+  if (newEntries.some(e => e.level === "warn" && e.subsystem === "Learning")) {
+    throw new Error("Learning: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
   }
 });
 
@@ -1070,6 +1116,67 @@ registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client",
   const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], null);
   if (!result.includes("No capable model was available")) {
     throw new Error(`Departments: expected the no-AI degrade message, got: ${result}`);
+  }
+});
+
+// ---------- Groq Client Tests (pure functions, no network) ----------
+
+registerTest("GroqClient", "toGroqSchema lowercases a simple type field", () => {
+  const result = toGroqSchema({ type: "STRING", description: "x" });
+  if (result.type !== "string") {
+    throw new Error(`GroqClient: expected lowercase "string", got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("GroqClient", "toGroqSchema recursively lowercases a nested object/array schema", () => {
+  const geminiShaped = {
+    type: "OBJECT",
+    properties: {
+      steps: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            step: { type: "STRING" },
+            department: { type: "STRING" },
+          },
+          required: ["step", "department"],
+        },
+      },
+    },
+    required: ["steps"],
+  };
+  const result = toGroqSchema(geminiShaped);
+  if (
+    result.type !== "object" ||
+    result.properties.steps.type !== "array" ||
+    result.properties.steps.items.type !== "object" ||
+    result.properties.steps.items.properties.step.type !== "string"
+  ) {
+    throw new Error(`GroqClient: expected fully recursive lowercasing, got: ${JSON.stringify(result)}`);
+  }
+  // Non-type fields must survive untouched.
+  if (result.properties.steps.items.required?.[0] !== "step") {
+    throw new Error("GroqClient: expected the 'required' array to survive untouched");
+  }
+});
+
+registerTest("GroqClient", "toGroqSchema is idempotent on an already-lowercase (MCP-style) schema", () => {
+  const alreadyLowercase = { type: "object", properties: { name: { type: "string" } }, required: ["name"] };
+  const result = toGroqSchema(alreadyLowercase);
+  if (result.type !== "object" || result.properties.name.type !== "string") {
+    throw new Error(`GroqClient: expected an already-lowercase schema to pass through unchanged, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("GroqClient", "toGroqTools wraps a declaration in Groq's function-tool shape", () => {
+  const declarations = [{ name: "search_web", description: "Search the web", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } }];
+  const result = toGroqTools(declarations);
+  if (result.length !== 1 || result[0].type !== "function" || result[0].function.name !== "search_web") {
+    throw new Error(`GroqClient: expected one function-shaped tool, got: ${JSON.stringify(result)}`);
+  }
+  if (result[0].function.parameters.type !== "object") {
+    throw new Error("GroqClient: expected the wrapped parameters schema to be lowercased too");
   }
 });
 
