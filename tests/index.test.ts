@@ -1246,13 +1246,32 @@ registerTest("ToolRouting", "looksTrivial rejects a short message that isn't a r
 });
 
 registerTest("ToolRouting", "looksToolShaped takes precedence over looksTrivial for an ambiguous message", () => {
-  const message = "thanks, what's on my calendar today?";
+  const message = "yes schedule a meeting";
+
+  // Both sub-conditions must independently hold for this test to actually
+  // exercise the precedence contract — otherwise it can pass for the wrong
+  // reason (e.g. a call site that dropped the "!looksToolShaped(message) &&"
+  // guard entirely would still pass if looksTrivial alone were false).
+  if (!looksTrivial(message)) {
+    throw new Error("ToolRouting: expected \"yes schedule a meeting\" to be classified as trivial in isolation (starts with the trivial phrase \"yes\")");
+  }
+  if (!looksToolShaped(message)) {
+    throw new Error("ToolRouting: expected \"yes schedule a meeting\" to be classified as tool-shaped in isolation (matches the \"schedule a\" trigger word)");
+  }
+
   // This is the precedence contract every call site must honor: check
   // looksToolShaped first, and only treat a message as eligible for the
   // trivial fast path when it is BOTH tool-shaped-negative AND trivial.
   const eligibleForFastPath = !looksToolShaped(message) && looksTrivial(message);
   if (eligibleForFastPath) {
     throw new Error("ToolRouting: a message matching a tool trigger word must never be treated as trivial, even if it also matches a trivial phrase");
+  }
+});
+
+registerTest("ToolRouting", "looksTrivial rejects a long message even when it starts with a trivial phrase", () => {
+  const message = "hi there, I wanted to ask you something important about my schedule";
+  if (looksTrivial(message)) {
+    throw new Error("ToolRouting: a message over TRIVIAL_MAX_LENGTH must not be classified as trivial, even though it starts with the trivial phrase \"hi\"");
   }
 });
 

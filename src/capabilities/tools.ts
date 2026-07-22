@@ -659,8 +659,8 @@ export function looksToolShaped(message: string): boolean {
  * attached to the request AT ALL for a Groq turn — a false positive here
  * would silently remove real tool capability from a substantive request, so
  * it requires the trivial phrase to be the message's actual content (exact
- * match, or the message's first word(s) followed by a space/comma), not
- * merely present somewhere inside a longer message, and caps message length
+ * match, or the message's first word(s) followed by a space), not merely
+ * present somewhere inside a longer message, and caps message length
  * so a genuine multi-part request can never qualify no matter how it opens.
  */
 const TRIVIAL_PHRASES = [
