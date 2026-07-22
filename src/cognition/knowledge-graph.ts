@@ -1,6 +1,6 @@
 import { Type } from "@google/genai";
 import Groq from "groq-sdk";
-import { toGroqSchema } from "./groq-client.js";
+import { toGroqSchema } from "../runtime/groq-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as kgRepo from "../kernel/state/knowledge-graph-repo.js";
 

@@ -1,4 +1,4 @@
-import { CognitiveWorkspace } from "./workspace.js";
+import { CognitiveWorkspace } from "../cognition/workspace.js";
 
 /**
  * Offline reply generator used when no local LLM endpoint and no

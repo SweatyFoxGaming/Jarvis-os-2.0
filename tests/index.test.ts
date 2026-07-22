@@ -29,7 +29,7 @@ import {
 } from "../src/kernel/state/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
-import { toGroqSchema, toGroqTools } from "../src/cognition/groq-client.js";
+import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
