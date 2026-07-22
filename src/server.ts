@@ -1066,9 +1066,9 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         .catch(() => {});
 
       // Write side of style/mistake learning — see reflection.ts. Needs
-      // Gemini specifically (structured JSON output), independent of which
+      // Groq specifically (structured JSON output), independent of which
       // backend actually answered the user.
-      if (ai) {
+      if (groq) {
         reflectAndLearn(groq, message, fullReply).catch(() => {});
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from

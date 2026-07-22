@@ -794,16 +794,37 @@ registerTest("Identity", "generateProactiveThought never fabricates a thought wh
 
 registerTest("Identity", "extractSelfReflection no-ops with no Groq client", async () => {
   // Must return (not throw) immediately on the `if (!groq) return;` guard,
-  // without ever touching the database or a Groq client.
+  // without ever touching the database or a Groq client. If the guard were
+  // missing/broken, calling groq.chat.completions.create on null would throw
+  // inside the try/catch and log a "warn" telemetry event instead — so we
+  // assert no such warn entry was appended, not just that nothing threw.
+  const obs = ObservationPlatform.getInstance();
+  const before = obs.getTelemetry().length;
   await extractSelfReflection(null, "hello", "some reply");
+  const newEntries = obs.getTelemetry().slice(before);
+  if (newEntries.some(e => e.level === "warn" && e.subsystem === "Identity")) {
+    throw new Error("Identity: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
+  }
 });
 
 registerTest("KnowledgeGraph", "extractAndStore no-ops with no Groq client", async () => {
+  const obs = ObservationPlatform.getInstance();
+  const before = obs.getTelemetry().length;
   await extractAndStore(null, "hello", "some reply");
+  const newEntries = obs.getTelemetry().slice(before);
+  if (newEntries.some(e => e.level === "warn" && e.subsystem === "KnowledgeGraph")) {
+    throw new Error("KnowledgeGraph: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
+  }
 });
 
 registerTest("Learning", "reflectAndLearn no-ops with no Groq client", async () => {
+  const obs = ObservationPlatform.getInstance();
+  const before = obs.getTelemetry().length;
   await reflectAndLearn(null, "hello", "some reply");
+  const newEntries = obs.getTelemetry().slice(before);
+  if (newEntries.some(e => e.level === "warn" && e.subsystem === "Learning")) {
+    throw new Error("Learning: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
+  }
 });
 
 // ---------- HTTP Boundary ----------
