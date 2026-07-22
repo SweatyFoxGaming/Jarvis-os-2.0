@@ -65,7 +65,7 @@ without needing to understand the routing logic underneath it.
   awareness beyond what's already visible in this repo.
 - *Reason*: real via the local `llama-cpp` model (default) or Gemini; canned
   templates only as the last-resort fallback if both are unreachable.
-- *Plan*: real step decomposition (`src/execution/autonomous_executive.ts`),
+- *Plan*: real step decomposition (`src/executive/autonomous_executive.ts`),
   reachable both as its own endpoint (`/api/executive/run`) and — as of this
   pass — as a `decompose_plan` chat tool, so "make me a step-by-step plan for
   X" reaches it directly mid-conversation.
@@ -139,7 +139,7 @@ Fixed with two layers, both live-verified:
   the migration path for a *newly added* capability on an already-existing
   table (`executive.plan`, added this pass) — it backfills for admin instead
   of silently leaving it ungranted.
-- **Automatic style/mistake learning capture** (`src/cognition/reflection.ts`)
+- **Automatic style/mistake learning capture** (`src/adaptation/reflection.ts`)
   — verified live against the real Gemini API: correctly extracted an actual
   mistake discussed earlier in a conversation and a stated style-preference
   change (flipping naming convention/architecture to values that didn't
@@ -244,7 +244,7 @@ decision quality. The vision explicitly says success should be measured by
 
 **"Understand, reason, learn, and collaborate with people over a
 lifetime."** Real, and further along than it looks from outside: the
-continuity-of-self system (`src/cognition/identity.ts`) extracts genuine
+continuity-of-self system (`src/self/identity.ts`) extracts genuine
 self-reflections from conversations and feeds them back into future system
 prompts (`buildIdentityContext`), and semantic memory (`memory-store.ts`,
 pgvector-backed) recalls relevant past exchanges automatically. Both write
@@ -268,8 +268,8 @@ fixable contradiction of the new vision's own words currently in the code.
 
 **"Universal cognitive operating system... orchestrating millions of
 capabilities."** Not started, and worth being precise about the distance:
-there are 18 real capabilities today (`src/execution/tools.ts`,
-`src/execution/permissions.ts`), each hand-written as its own `case` in one
+there are 18 real capabilities today (`src/capabilities/tools.ts`,
+`src/kernel/security.ts`), each hand-written as its own `case` in one
 `switch` statement, each requiring a code change and a new PR to add. The
 `JARVIS_MARKETPLACE_URL` variable documented in `.env.example` is pure
 vestige — zero lines of code anywhere in `src/` read it, route to it, or

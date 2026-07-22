@@ -1,5 +1,5 @@
 // Jarvis OS service worker — exists for exactly one reason: receive Push
-// API events (from src/integrations/push.ts, via scheduler.pushNotification)
+// API events (from src/interaction/push.ts, via scheduler.pushNotification)
 // and show them as real OS-level notifications, even when no Jarvis tab is
 // open. Deliberately does NOT do offline caching/asset pre-fetching — this
 // app depends on a live backend connection for everything real it does, so

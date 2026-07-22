@@ -35,7 +35,7 @@ Not a phase to execute — a summary of what's already real, so the rest of
 this document doesn't re-litigate it:
 
 - **Memory & continuity**: pgvector-backed semantic recall, self-reflection
-  continuity (`src/cognition/identity.ts`), conversation history that
+  continuity (`src/self/identity.ts`), conversation history that
   survives a restart.
 - **Real tool delegation, human-gated**: GitHub, email, TTS, calendar,
   objective planning, and screen viewing each sit behind an explicit,
@@ -86,7 +86,7 @@ concept of a goal that persists and gets checked in on without being
 re-prompted — VISION.md's example: "help me train for a marathon by
 October" is forgotten the moment the conversation ends, unless you bring it
 up again yourself. The proactive-briefing infrastructure
-(`src/execution/scheduler.ts`, `src/execution/briefing.ts`) already proves
+(`src/kernel/scheduler.ts`, `src/world/briefing.ts`) already proves
 Jarvis can act on a schedule without being asked — this phase extends that
 same muscle from "summarize what happened" to "track what you're trying to
 accomplish."
@@ -146,7 +146,7 @@ merge") — executing the plan was deliberately treated as a separate,
 later decision, which is what happened here.
 
 **The gap:** every tool Jarvis has is a hand-written `case` in one `switch`
-statement in `src/execution/tools.ts` — 24 of them as of Phase 3's
+statement in `src/capabilities/tools.ts` — 24 of them as of Phase 3's
 completion (up from 18 when this roadmap was first written), each
 requiring a code change and a PR to add. The vision names "orchestrating
 millions of capabilities" — getting there isn't a matter of writing tools
