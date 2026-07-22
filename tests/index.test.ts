@@ -27,6 +27,7 @@ import {
 } from "../src/data/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
 import * as departments from "../src/execution/departments.js";
+import { toGroqSchema, toGroqTools } from "../src/cognition/groq-client.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -1070,6 +1071,67 @@ registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client",
   const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], null);
   if (!result.includes("No capable model was available")) {
     throw new Error(`Departments: expected the no-AI degrade message, got: ${result}`);
+  }
+});
+
+// ---------- Groq Client Tests (pure functions, no network) ----------
+
+registerTest("GroqClient", "toGroqSchema lowercases a simple type field", () => {
+  const result = toGroqSchema({ type: "STRING", description: "x" });
+  if (result.type !== "string") {
+    throw new Error(`GroqClient: expected lowercase "string", got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("GroqClient", "toGroqSchema recursively lowercases a nested object/array schema", () => {
+  const geminiShaped = {
+    type: "OBJECT",
+    properties: {
+      steps: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            step: { type: "STRING" },
+            department: { type: "STRING" },
+          },
+          required: ["step", "department"],
+        },
+      },
+    },
+    required: ["steps"],
+  };
+  const result = toGroqSchema(geminiShaped);
+  if (
+    result.type !== "object" ||
+    result.properties.steps.type !== "array" ||
+    result.properties.steps.items.type !== "object" ||
+    result.properties.steps.items.properties.step.type !== "string"
+  ) {
+    throw new Error(`GroqClient: expected fully recursive lowercasing, got: ${JSON.stringify(result)}`);
+  }
+  // Non-type fields must survive untouched.
+  if (result.properties.steps.items.required?.[0] !== "step") {
+    throw new Error("GroqClient: expected the 'required' array to survive untouched");
+  }
+});
+
+registerTest("GroqClient", "toGroqSchema is idempotent on an already-lowercase (MCP-style) schema", () => {
+  const alreadyLowercase = { type: "object", properties: { name: { type: "string" } }, required: ["name"] };
+  const result = toGroqSchema(alreadyLowercase);
+  if (result.type !== "object" || result.properties.name.type !== "string") {
+    throw new Error(`GroqClient: expected an already-lowercase schema to pass through unchanged, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("GroqClient", "toGroqTools wraps a declaration in Groq's function-tool shape", () => {
+  const declarations = [{ name: "search_web", description: "Search the web", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } }];
+  const result = toGroqTools(declarations);
+  if (result.length !== 1 || result[0].type !== "function" || result[0].function.name !== "search_web") {
+    throw new Error(`GroqClient: expected one function-shaped tool, got: ${JSON.stringify(result)}`);
+  }
+  if (result[0].function.parameters.type !== "object") {
+    throw new Error("GroqClient: expected the wrapped parameters schema to be lowercased too");
   }
 });
 
