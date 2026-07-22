@@ -6,7 +6,7 @@ import * as emailIntegration from "../integrations/email.js";
 import * as tts from "../integrations/tts.js";
 import { hasGrant } from "../kernel/security.js";
 import { ObservationPlatform } from "../kernel/observation.js";
-import { AutonomousExecutive } from "./autonomous_executive.js";
+import { AutonomousExecutive } from "../executive/autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
 import * as calendar from "../integrations/calendar.js";
 import * as briefing from "../world/briefing.js";

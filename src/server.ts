@@ -9,9 +9,9 @@ import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./cognition/groq-client.js";
 import Groq from "groq-sdk";
 import { ObservationPlatform } from "./kernel/observation.js";
-import { AutonomousExecutive } from "./execution/autonomous_executive.js";
+import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./cognition/long_term_learning.js";
-import { ExecutiveBoard } from "./execution/executive_board.js";
+import { ExecutiveBoard } from "./executive/executive_board.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./cognition/local_engine.js";
 import * as github from "./integrations/github.js";
@@ -50,7 +50,7 @@ import * as mcpServersRepo from "./kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./execution/mcp-registry.js";
 import * as push from "./integrations/push.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
-import * as departments from "./execution/departments.js";
+import * as departments from "./executive/departments.js";
 
 dotenv.config();
 

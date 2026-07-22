@@ -7,9 +7,9 @@
 import { CognitiveWorkspace } from "../src/cognition/workspace.js";
 import { SessionState, getSession } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/kernel/observation.js";
-import { AutonomousExecutive } from "../src/execution/autonomous_executive.js";
+import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/cognition/long_term_learning.js";
-import { ExecutiveBoard } from "../src/execution/executive_board.js";
+import { ExecutiveBoard } from "../src/executive/executive_board.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
 import { executeTool, getAllToolDeclarations } from "../src/execution/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
@@ -28,7 +28,7 @@ import {
   rejectCode as rejectBuildCode,
 } from "../src/kernel/state/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools } from "../src/execution/mcp-registry.js";
-import * as departments from "../src/execution/departments.js";
+import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/cognition/groq-client.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
