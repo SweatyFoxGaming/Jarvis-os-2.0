@@ -25,7 +25,7 @@ import * as usersRepo from "./kernel/state/users-repo.js";
 import * as memoryRepo from "./kernel/state/memory-repo.js";
 import * as sessionRepo from "./kernel/state/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
-import { getAllToolDeclarations, executeTool, looksToolShaped } from "./capabilities/tools.js";
+import { getAllToolDeclarations, executeTool, looksToolShaped, looksTrivial } from "./capabilities/tools.js";
 import * as permissions from "./kernel/security.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
@@ -941,14 +941,28 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               activeCapability: "Groq LLM Generation"
             }, observation);
 
-            const groqTools = toGroqTools(getAllToolDeclarations());
+            // Trivial conversational filler ("thanks", "good morning") never
+            // needs a tool — skip attaching the tool schema at all (real
+            // token savings, and a message with no tools present structurally
+            // cannot trigger the tool-hallucination failure mode observed
+            // live during Groq verification) and prefer the faster model.
+            // looksToolShaped always wins any ambiguous case: a message must
+            // be BOTH tool-shaped-negative AND trivial to take this path.
+            const isFastPath = !looksToolShaped(message) && looksTrivial(message);
+            const groqTools = isFastPath ? null : toGroqTools(getAllToolDeclarations());
             const messages: any[] = [
               { role: "system", content: systemInstruction },
               { role: "user", content: message },
             ];
-            const groqModels = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+            const groqModels = isFastPath
+              ? ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+              : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 
-            let response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+            let response = await generateGroqWithFallback(
+              groq,
+              groqTools ? { messages, tools: groqTools } : { messages },
+              groqModels
+            );
             let toolCalls = response.choices[0]?.message?.tool_calls || [];
             let guard = 0;
 
