@@ -781,16 +781,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // honest decline. Guarded on `executionChain[0] !== "Groq"` rather than
     // `=== "LocalLLM"` specifically so this is a no-op (not a crash) if
     // Groq's already at the front for some other reason.
-    if (
-      groq &&
-      kernel.llmMode !== "strictly-local" &&
-      looksToolShaped(message) &&
-      executionChain[0] !== "Groq" &&
-      executionChain.includes("Groq")
-    ) {
-      const idx = executionChain.indexOf("Groq");
-      executionChain.splice(idx, 1);
-      executionChain.unshift("Groq");
+    if (kernel.llmMode !== "strictly-local" && looksToolShaped(message)) {
+      if (groq && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
+        const idx = executionChain.indexOf("Groq");
+        executionChain.splice(idx, 1);
+        executionChain.unshift("Groq");
+      } else if (!groq && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
+        // No Groq configured — fall back to promoting Gemini for tool-shaped
+        // requests, restoring this codebase's pre-Groq behavior rather than
+        // silently losing tool-calling capability to LocalLLM's honest decline.
+        const idx = executionChain.indexOf("Gemini");
+        executionChain.splice(idx, 1);
+        executionChain.unshift("Gemini");
+      }
     }
 
     // A live camera frame is only genuinely usable by Gemini's multimodal

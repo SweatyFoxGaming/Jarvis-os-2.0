@@ -136,7 +136,7 @@ export async function runResearch(objective: string, groq: Groq | null): Promise
     return {
       summary:
         "No capable model is available right now, so I couldn't do real research on this — " +
-        "I'd need Gemini reachable to plan and synthesize findings.",
+        "I'd need Groq reachable to plan and synthesize findings.",
     };
   }
 

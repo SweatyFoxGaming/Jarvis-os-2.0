@@ -24,6 +24,7 @@ import * as scheduler from "./scheduler.js";
 export class AutonomousExecutive {
   private static instance: AutonomousExecutive | null = null;
   private observation: ObservationPlatform;
+  // Kept for future needs (per the Groq-migration design) even though no current internal call reads it — every departments.* call below uses this.groq.
   private ai: GoogleGenAI | null;
   private groq: Groq | null;
 
