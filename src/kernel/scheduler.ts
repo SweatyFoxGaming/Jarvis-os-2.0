@@ -126,6 +126,9 @@ export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000)
     const result = await briefing.generateBriefing(groq, "admin");
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
+      obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {
+        observation.logTelemetry("warn", "Interaction", `Failed to write briefing vault entry: ${err.message}`);
+      });
     } catch (err: any) {
       observation.logTelemetry("warn", "Briefing", `Failed to persist briefing: ${err.message}`);
     }
@@ -170,6 +173,9 @@ export function startSelfReflectionJob(groq: Groq | null, intervalMs = 6 * 60 * 
     if (!result) return;
     try {
       await identityRepo.saveProactiveThought(result.content, result.basedOnCount);
+      obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {
+        observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
+      });
     } catch (err: any) {
       observation.logTelemetry("warn", "Identity", `Failed to persist proactive thought: ${err.message}`);
     }

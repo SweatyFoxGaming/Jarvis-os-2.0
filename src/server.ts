@@ -1467,6 +1467,9 @@ app.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
       return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
     }
     await identityRepo.saveProactiveThought(result.content, result.basedOnCount);
+    obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {
+      observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
+    });
     res.json({ available: true, ...result });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1995,6 +1998,9 @@ app.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
     const result = await briefing.generateBriefing(groq, req.username);
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
+      obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {
+        observation.logTelemetry("warn", "Interaction", `Failed to write briefing vault entry: ${err.message}`);
+      });
     } catch (err: any) {
       observation.logTelemetry("warn", "Briefing", `Failed to persist on-demand briefing: ${err.message}`);
     }

@@ -279,3 +279,32 @@ export async function writeOrUpdateCodingNote(
     }
   );
 }
+
+function todayNotePath(section: "Reflections" | "Briefings"): string {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return `${section}/${today}`;
+}
+
+/**
+ * Reflections and briefings are much higher-frequency than research/coding
+ * (a self-reflection can fire after almost every reply; briefings run
+ * hourly) — one note per day, appended to, keeps the vault browsable
+ * instead of accumulating hundreds of tiny files.
+ */
+export async function appendReflectionEntry(category: string, content: string): Promise<void> {
+  const timestamp = new Date().toISOString();
+  await appendToNote(
+    todayNotePath("Reflections"),
+    `\n## ${timestamp} — ${category}\n\n${content}\n`,
+    { createIfMissing: true }
+  );
+}
+
+export async function appendBriefingEntry(text: string, itemCount: number): Promise<void> {
+  const timestamp = new Date().toISOString();
+  await appendToNote(
+    todayNotePath("Briefings"),
+    `\n## ${timestamp} (${itemCount} item(s))\n\n${text}\n`,
+    { createIfMissing: true }
+  );
+}
