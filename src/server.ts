@@ -1958,8 +1958,9 @@ app.post("/api/system/vault/note", validateApiKey, async (req: any, res: any) =>
   }
   try {
     const result = await obsidian.createNote(notePath, content);
+    const indexPath = result.path.endsWith(".md") ? result.path : `${result.path}.md`;
     try {
-      await obsidian.syncNoteToIndex(result.path);
+      await obsidian.syncNoteToIndex(indexPath);
     } catch (err: any) {
       observation.logTelemetry("warn", "Interaction", `Failed to sync dashboard-written note "${result.path}" to index: ${err.message}`);
     }
