@@ -77,6 +77,13 @@ app.delete("/workspaces/:id", async (req, res) => {
 const PORT = 4100;
 app.listen(PORT, "0.0.0.0", async () => {
   console.log(`[jarvis-builder] listening on port ${PORT}`);
-  await ensureSandboxImage();
+  try {
+    await ensureSandboxImage();
+  } catch (err: any) {
+    console.error(
+      `[jarvis-builder] failed to ensure sandbox image is ready: ${err?.message || err}. ` +
+        "Workspace creation will fail until this is resolved and the service is restarted."
+    );
+  }
   startReaper();
 });
