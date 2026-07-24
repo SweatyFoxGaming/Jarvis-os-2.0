@@ -45,6 +45,7 @@ services:
       - tts
       - llama-cpp
       - whisper-cpp
+      - jarvis-builder
 
   # Offline-first local inference: serves a GGUF model you already have on
   # disk over an OpenAI-compatible API, entirely inside the Docker network —
@@ -89,4 +90,28 @@ services:
       - API_KEY=${TTS_API_KEY}
     ports:
       - "5051:5050"
+    restart: unless-stopped
+
+  # The only service in this stack with access to the host's Docker
+  # socket — see docs/superpowers/specs/2026-07-24-agentic-coding-department-design.md
+  # for why this is split out from the main api service instead of
+  # mounting the socket there directly. Deliberately has no LLM/chat/
+  # business logic of its own: it only creates, execs into, and destroys
+  # per-build-request sandbox containers on api's behalf, over an
+  # internal-only API gated by JARVIS_BUILDER_SECRET.
+  jarvis-builder:
+    build:
+      context: ./jarvis-builder
+      dockerfile: Dockerfile
+    container_name: jarvis-builder
+    environment:
+      - JARVIS_BUILDER_SECRET=${JARVIS_BUILDER_SECRET}
+      - JARVIS_REPO_HOST_PATH=${JARVIS_REPO_HOST_PATH:-/mnt/jarvis_home/llm}
+    volumes:
+      # Mounted at the SAME path it has on the real host, not remapped
+      # (unlike api's `.:/app`) — see this plan's Global Constraints.
+      - ${JARVIS_REPO_HOST_PATH:-/mnt/jarvis_home/llm}:${JARVIS_REPO_HOST_PATH:-/mnt/jarvis_home/llm}
+      - /var/run/docker.sock:/var/run/docker.sock
+    # No ports: — never published to the host or reachable outside this
+    # compose network. api reaches it at http://jarvis-builder:4100.
     restart: unless-stopped
