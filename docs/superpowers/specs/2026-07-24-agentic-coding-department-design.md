@@ -18,19 +18,28 @@ This spec replaces `draftCodeChanges`/`reviewCodeDiff`'s internals with a genuin
 
 When a build request moves from `direction_confirmed` to `coding` (same transition that exists today), a dedicated git worktree is created via `git worktree add` off the repository's default branch, on a fresh branch named `jarvis/build-request-<id>` (the exact branch name the existing PR-opening code already uses — unchanged). The worktree lives at a dedicated path (e.g. `<repo>/.jarvis-build-workspaces/br-<id>/`), fully separate from the live production checkout at `/mnt/jarvis_home/llm` that the running `jarvis-os-api` container actually serves from. The live checkout is never reachable from, or mutated by, this workspace.
 
-### Sandboxed execution: one ephemeral Docker container per build request
+### Sandboxed execution: a dedicated builder service, not Docker socket access on the main app
 
-The coding agent needs "free reign" to run arbitrary commands — but "free reign" is scoped *by the isolation*, not by filtering which commands are allowed. That isolation is a dedicated, ephemeral Docker container per build request:
+The `jarvis-os-api` container is itself a Docker container. For it to create the per-build-request sandbox containers this design needs, *something* needs access to the host's Docker socket (`/var/run/docker.sock`) — there's no other way for a containerized process to create sibling containers. Granting that socket directly to `jarvis-os-api` would mean the same process that handles chat, the vault, and everything else in this app also has effective host-level control — too broad a blast radius if that process is ever compromised.
+
+Instead, a new, minimal service, **`jarvis-builder`**, is the only thing with Docker socket access:
+
+- A small dedicated container (added to `docker-compose.yml`) with `/var/run/docker.sock` bind-mounted, and nothing else — no application logic beyond sandbox lifecycle management.
+- Exposes a narrow internal-only HTTP API, reachable solely from `jarvis-os-api` over the existing internal Docker network (never published to the host, never reachable from outside the compose network) — gated by a shared-secret header, the same "internal API key" pattern already used elsewhere in this codebase, not left open on the internal network by assumption alone.
+- Endpoints: create a workspace (git worktree + a fresh, resource-bounded sandbox container for a given build request id), execute a shell command inside that workspace's container, and destroy a workspace (container + worktree, torn down together).
+- `jarvis-os-api` never touches Docker directly — it only calls `jarvis-builder`'s internal API. `jarvis-builder` itself contains no LLM/chat/business logic at all, keeping its own attack surface as small as possible given the privilege it holds.
+
+Each sandbox container `jarvis-builder` creates, per build request:
 
 - Built from the same base as this repo's existing `Dockerfile` (`node:20-alpine`), plus `git` (not currently installed in that image).
 - Only that one build request's worktree directory is bind-mounted in (at a fixed path, e.g. `/workspace`) — no other host path, no Docker socket, no privileged mode, no host device access. A command that does something destructive can only affect its own container's filesystem and that one bind-mounted directory — never the host, never other containers, never other build requests' workspaces.
 - Resource-bounded: CPU/memory caps (`docker run --cpus --memory`) and a wall-clock timeout on the overall coding session, to bound a runaway or stuck process.
 - No GitHub credentials and no production secrets (`.env`) are present in this container at all — during the free-reign coding phase, the sandbox has no path to the internet beyond what package installation needs (the npm registry). This is a deliberate, explicit exception, not a hardened egress firewall — noted under Explicitly Out of Scope. It directly delivers what the user asked for: whatever Jarvis is coding stays local until a human confirms it's ready to leave the sandbox.
-- Torn down (`docker rm`, `git worktree remove`) once the build request reaches a terminal state (`pr_opened`, `rejected_at_code`, or `error`) — never left running indefinitely.
+- Torn down (`docker rm` via `jarvis-builder`, `git worktree remove`) once the build request reaches a terminal state (`pr_opened`, `rejected_at_code`, or `error`) — never left running indefinitely.
 
 ### The one tool: `run_shell_command`
 
-Rather than a curated tool-per-action set (a separate Read tool, Edit tool, etc.), the coding agent gets exactly one tool: `run_shell_command(command: string): { stdout, stderr, exitCode }`, executed via `docker exec` into that build request's sandbox container, cwd fixed to `/workspace`. Reading a file is `cat`; editing is a heredoc or `sed`; testing is `npm test`; checking types is `npx tsc --noEmit`; inspecting history is `git diff`/`git log`. This is deliberately the simplest, most powerful primitive rather than reimplementing a bespoke toolbox — matching the "free reign within the isolation boundary" the user asked for.
+Rather than a curated tool-per-action set (a separate Read tool, Edit tool, etc.), the coding agent gets exactly one tool: `run_shell_command(command: string): { stdout, stderr, exitCode }`. `jarvis-os-api` implements this by calling `jarvis-builder`'s exec endpoint for that build request's workspace, which runs the command via `docker exec` into the sandbox container, cwd fixed to `/workspace`. Reading a file is `cat`; editing is a heredoc or `sed`; testing is `npm test`; checking types is `npx tsc --noEmit`; inspecting history is `git diff`/`git log`. This is deliberately the simplest, most powerful primitive rather than reimplementing a bespoke toolbox — matching the "free reign within the isolation boundary" the user asked for.
 
 ### The agentic loop
 
@@ -64,7 +73,7 @@ This coding-agent loop runs against NVIDIA NIM's OpenAI-compatible API (the user
 - **Hardened network egress filtering for the sandbox.** The container has no GitHub credentials and no production secrets, but is not sitting behind an allowlist-based egress proxy — package-registry access during the coding phase is an accepted, explicit exception, not a fully locked-down network boundary. A stronger egress control is a reasonable future follow-up, not bundled here.
 - **Any change to the research department, direction-confirmation flow, or the chat agent's own Groq/Gemini usage.** This spec touches only what happens between `direction_confirmed` and `pr_opened`.
 - **Automatic merge.** This gets a build request to an opened PR; merging remains a separate, human (or existing tooling) action, same as today.
-- **Docker socket access, privileged containers, or any host-escape-capable configuration.** Never granted, no exceptions — this is the one hard line the whole safety model depends on.
+- **Docker socket access on `jarvis-os-api` or any per-build-request sandbox container.** The socket lives only on the new, minimal `jarvis-builder` service, which carries no other application logic — this is the one hard line the whole safety model depends on. Privileged containers or host-escape-capable configuration are never granted anywhere, including inside `jarvis-builder` itself.
 - **A curated/allowlisted command set.** Explicitly rejected per the user's direction — the isolation boundary, not command filtering, is the safety mechanism inside the sandbox.
 
 ## Testing
@@ -81,3 +90,4 @@ This coding-agent loop runs against NVIDIA NIM's OpenAI-compatible API (the user
 - **No GitHub credentials or production secrets during the free-reign coding phase** — directly per the user's "keep whatever Jarvis is coding off the internet" framing; secrets and GitHub access only enter the picture at the final, human-confirmed deployment step.
 - **NVIDIA NIM as a separate provider for this agent only**, not routed through the existing Groq client — explicit user choice, motivated by Groq's rate-limit ceiling already being hit once this session.
 - **Visibility is pull-based (a transcript the user can open on demand), not push-based** — explicit user direction ("viewing is upon request").
+- **A separate `jarvis-builder` service holds the Docker socket, not the main `jarvis-os-api` container** — a gap the controller flagged mid-brainstorming (the spec's original draft didn't say how the containerized app would create sibling containers at all); the user chose the smaller-blast-radius option over granting that power to the same process that handles everything else in the app.
