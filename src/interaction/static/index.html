@@ -69,25 +69,18 @@
             animation: hologram-float 8s ease-in-out infinite;
         }
 
-        /* The presence orb — the app's one focal visual, replacing the old
-           "quantum eye". A slow breathing glow reads as alive/idle without
-           being distracting; active/speaking states are driven by adding
-           .orb-active (see updateSensorStatusLabel / speakText) rather than
-           a separate element, so there's only ever one orb to keep in sync. */
-        @keyframes orb-breathe {
-            0%, 100% { box-shadow: 0 0 40px 6px rgba(143, 184, 232, 0.18), inset 0 0 30px rgba(143, 184, 232, 0.08); }
-            50% { box-shadow: 0 0 60px 10px rgba(143, 184, 232, 0.28), inset 0 0 40px rgba(143, 184, 232, 0.14); }
-        }
+        /* The presence orb — the app's one focal visual. Now a live canvas
+           (see NeuralOrb / focalOrbScene) supplies the glow and motion;
+           this class only supplies the circular shape and a reactive
+           border tint (see updateSensorStatusLabel / speakText for what
+           drives .orb-active). */
         .jarvis-orb {
             border-radius: 9999px;
-            border: 1.5px solid rgba(143, 184, 232, 0.55);
-            background: radial-gradient(circle at 50% 40%, rgba(143, 184, 232, 0.08), rgba(5, 6, 8, 0.9) 70%);
-            animation: orb-breathe 5s ease-in-out infinite;
+            border: 1.5px solid rgba(80, 200, 255, 0.55);
             transition: border-color 0.4s ease;
         }
         .jarvis-orb.orb-active {
-            border-color: rgba(143, 184, 232, 0.9);
-            animation: orb-breathe 1.6s ease-in-out infinite;
+            border-color: rgba(255, 120, 220, 0.75);
         }
 
         #mind-graph {
@@ -217,9 +210,9 @@
             <div id="view-home" class="view-pane flex flex-col items-center min-h-full relative py-10 px-4">
                 <div class="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto" id="home-hero">
                     <div class="relative w-40 h-40 flex items-center justify-center" id="quantum-eye-container">
-                        <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden">
+                        <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
+                            <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
                             <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-70 pointer-events-none scale-110"></video>
-                            <div id="quantum-iris" class="relative w-3 h-3 rounded-full bg-primary/70 transition-transform duration-150 ease-out z-10" id="quantum-iris"></div>
                         </div>
                     </div>
 
@@ -1007,8 +1000,6 @@
     let motionCanvas = null;
     let motionCtx = null;
     let cameraTrackerActive = false;
-    let trackingLerpX = 0;
-    let trackingLerpY = 0;
     // Ambient-awareness state derived from the same motion-diff data above —
     // a cheap proxy for "activity resumed after stillness" (32x32 pixel diff
     // can't reliably tell "someone left" vs "someone is just sitting still",
@@ -1066,9 +1057,11 @@
         if (active.length > 0) {
             if (label) { label.textContent = "Active: " + active.join(", "); label.className = "text-[11px] text-primary uppercase tracking-[0.2em]"; }
             if (orb) orb.classList.add('orb-active');
+            NeuralOrb.setState(focalOrbScene, isSpeakingNow ? 'speaking' : 'active');
         } else {
             if (label) { label.textContent = "Sensors standby"; label.className = "text-[11px] text-secondary uppercase tracking-[0.2em]"; }
             if (orb) orb.classList.remove('orb-active');
+            NeuralOrb.setState(focalOrbScene, isSpeakingNow ? 'speaking' : 'idle');
         }
     }
 
@@ -1178,10 +1171,6 @@
     function stopCameraMotionTracking() {
         cameraTrackerActive = false;
         prevFrameData = null;
-        const iris = document.getElementById('quantum-iris');
-        if (iris) {
-            iris.style.transform = 'translate(0px, 0px)';
-        }
     }
 
     // Genuine vision, not the cosmetic iris-follow tracking above: captures a
@@ -1663,23 +1652,6 @@
                     }
 
                     maybeSendAmbientNudge(count);
-
-                    if (count > 8) {
-                        const avgX = sumX / count;
-                        const avgY = sumY / count;
-
-                        // Mirrored map to translation coordinate space (-12px to 12px range)
-                        const targetX = -((avgX / 32) * 24 - 12);
-                        const targetY = ((avgY / 32) * 24 - 12);
-
-                        trackingLerpX += (targetX - trackingLerpX) * 0.12;
-                        trackingLerpY += (targetY - trackingLerpY) * 0.12;
-
-                        const iris = document.getElementById('quantum-iris');
-                        if (iris) {
-                            iris.style.transform = `translate(${trackingLerpX}px, ${trackingLerpY}px)`;
-                        }
-                    }
                 }
                 prevFrameData = data;
             } catch (e) {
@@ -2016,47 +1988,32 @@
             const url = URL.createObjectURL(blob);
             currentAudioEl = new Audio(url);
             isSpeakingNow = true;
-            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); };
-            currentAudioEl.onerror = () => { isSpeakingNow = false; };
+            updateSensorStatusLabel();
+            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); };
+            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); };
             await currentAudioEl.play();
         } catch {}
     }
 
-    // 3. CURSOR-TRACKING QUANTUM EYE & SPECTRUM
-    document.addEventListener('mousemove', (e) => {
-        if (cameraStream && cameraTrackerActive) return;
-        const eyeContainer = document.getElementById('quantum-eye-container');
-        if (!eyeContainer) return;
-        const rect = eyeContainer.getBoundingClientRect();
-        const eyeX = rect.left + rect.width / 2;
-        const eyeY = rect.top + rect.height / 2;
-        
-        const deltaX = e.clientX - eyeX;
-        const deltaY = e.clientY - eyeY;
-        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-        
-        const maxMove = 7; 
-        const angle = Math.atan2(deltaY, deltaX);
-        const moveX = Math.min(maxMove, distance / 22) * Math.cos(angle);
-        const moveY = Math.min(maxMove, distance / 22) * Math.sin(angle);
-        
-        const iris = document.getElementById('quantum-iris');
-        if (iris) {
-            iris.style.transform = `translate(${moveX}px, ${moveY}px)`;
+    // ---------- Focal Home orb: registration, click-to-open, state wiring ----------
+    const focalOrbScene = NeuralOrb.register(document.getElementById('quantum-eye-canvas'), { neuronCount: 420, dim: 1, R: 0.9, cy: 0.5 });
+
+    // Reusable: opens a specific vault note from an orb click. Unreachable
+    // until Task 5 populates focalOrbScene's neurons with real notes (no
+    // neuron has `.note` set before then), but fully correct and wired now.
+    function openVaultNoteFromOrb(path) {
+        switchTab('vault');
+        openVaultNote(encodeURIComponent(path));
+    }
+
+    document.getElementById('quantum-eye').addEventListener('click', (e) => {
+        const note = NeuralOrb.hitTest(focalOrbScene, e.clientX, e.clientY);
+        if (note) {
+            openVaultNoteFromOrb(note);
+        } else {
+            switchTab('vault');
         }
     });
-
-    function randomBlink() {
-        const eye = document.getElementById('quantum-eye');
-        if (eye) {
-            eye.style.transform = 'scaleY(0.03)';
-            setTimeout(() => {
-                eye.style.transform = 'scaleY(1)';
-            }, 140);
-        }
-        setTimeout(randomBlink, 4500 + Math.random() * 5000);
-    }
-    setTimeout(randomBlink, 3000);
 
     function animateWaveform() {
         const bars = document.querySelectorAll('.wave-bar');
