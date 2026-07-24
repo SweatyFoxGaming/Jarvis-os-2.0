@@ -4,6 +4,7 @@ import { toGroqSchema } from "../runtime/groq-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as github from "../capabilities/providers/github.js";
 import * as webSearch from "../capabilities/providers/websearch.js";
+import * as wikipedia from "../capabilities/providers/wikipedia.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 
@@ -121,8 +122,12 @@ const RESEARCH_LOOKUPS_SCHEMA = {
       type: Type.STRING,
       description: "A specific name/topic to check Jarvis's own stored knowledge for, or \"\" if not applicable.",
     },
+    wikipediaQuery: {
+      type: Type.STRING,
+      description: "A specific topic/subject name to look up on Wikipedia for background/encyclopedic context, or \"\" if not applicable.",
+    },
   },
-  required: ["webQueries", "checkThisRepo", "knowledgeQuery"],
+  required: ["webQueries", "checkThisRepo", "knowledgeQuery", "wikipediaQuery"],
 };
 
 // Real research in two Gemini calls: the first plans WHAT to look up
@@ -143,6 +148,7 @@ export async function runResearch(objective: string, groq: Groq | null): Promise
   let webQueries: string[] = [];
   let checkThisRepo = false;
   let knowledgeQuery = "";
+  let wikipediaQuery = "";
   try {
     const lookupResponse = await groq.chat.completions.create({
       model: "openai/gpt-oss-20b",
@@ -158,6 +164,7 @@ export async function runResearch(objective: string, groq: Groq | null): Promise
       : [];
     checkThisRepo = parsed.checkThisRepo === true;
     knowledgeQuery = typeof parsed.knowledgeQuery === "string" ? parsed.knowledgeQuery.trim() : "";
+    wikipediaQuery = typeof parsed.wikipediaQuery === "string" ? parsed.wikipediaQuery.trim() : "";
   } catch (err: any) {
     observation.logTelemetry("warn", "Departments", `Research lookup planning failed: ${err.message}. Falling back to a single direct web search.`);
     webQueries = [objective];
@@ -211,6 +218,20 @@ export async function runResearch(objective: string, groq: Groq | null): Promise
       }
     } catch (err: any) {
       findings.push(`Knowledge graph lookup for "${knowledgeQuery}" failed: ${err.message}`);
+    }
+  }
+
+  if (wikipediaQuery) {
+    try {
+      const results = await wikipedia.wikipediaSearch(wikipediaQuery);
+      if (results.length > 0) {
+        findings.push(
+          `Wikipedia "${wikipediaQuery}":\n` +
+            results.map((r) => `- ${r.title} (${r.url})${r.description ? `: ${r.description}` : ""}`).join("\n")
+        );
+      }
+    } catch (err: any) {
+      findings.push(`Wikipedia lookup for "${wikipediaQuery}" failed: ${err.message}`);
     }
   }
 
