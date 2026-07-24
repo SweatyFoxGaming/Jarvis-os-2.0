@@ -1,0 +1,20 @@
+{
+  "name": "jarvis-builder",
+  "version": "1.0.0",
+  "description": "Minimal internal service holding the only Docker-socket access in this stack — creates, execs into, and destroys per-build-request sandbox containers for the agentic coding department. No LLM/chat/business logic lives here, on purpose: the smaller this service's own code surface, the smaller the blast radius of the one thing in this stack that can control the host's Docker daemon.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.1",
+    "typescript": "^5.6.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0"
+  }
+}
