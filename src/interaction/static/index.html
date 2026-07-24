@@ -78,6 +78,7 @@
             border-radius: 9999px;
             border: 1.5px solid rgba(80, 200, 255, 0.55);
             transition: border-color 0.4s ease;
+            filter: drop-shadow(0 18px 22px rgba(0, 0, 0, 0.55));
         }
         .jarvis-orb.orb-active {
             border-color: rgba(255, 120, 220, 0.75);
@@ -210,9 +211,21 @@
             <div id="view-home" class="view-pane flex flex-col items-center min-h-full relative py-10 px-4">
                 <div class="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto" id="home-hero">
                     <div class="relative w-40 h-40 flex items-center justify-center" id="quantum-eye-container">
-                        <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
-                            <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
-                            <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-70 pointer-events-none scale-110"></video>
+                        <!-- Cast shadow, deliberately NOT part of the floating group below —
+                             stays anchored while the orb bobs above it, reading as an object
+                             elevated above the page rather than a flat inline element. -->
+                        <div class="absolute left-1/2 bottom-1 -translate-x-1/2 w-24 h-3 rounded-full bg-black/45 blur-md pointer-events-none" aria-hidden="true"></div>
+                        <div class="relative w-full h-full hologram-float">
+                            <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
+                                <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
+                            </div>
+                            <!-- Small picture-in-picture bubble, not the old full-orb-covering
+                                 video — the orb (and its vault-note points) stays fully visible
+                                 around it. Sits outside #quantum-eye on purpose: that div's
+                                 circular overflow-hidden mask would clip a corner-positioned
+                                 element badly. Floats together with the orb (same wrapper) so
+                                 it doesn't visually detach during the bob animation. -->
+                            <video id="eye-camera" autoplay muted playsinline class="hidden absolute bottom-0 right-0 w-9 h-9 object-cover rounded-full opacity-90 pointer-events-none border-2 border-white/25 shadow-lg z-20"></video>
                         </div>
                     </div>
 
@@ -789,12 +802,25 @@
             for (const n of scene.neurons) {
                 const [x, y, d] = project(n.x, n.y, n.z, scene.rot, cx, cy, R * 0.98);
                 const fire = 0.5 + 0.5 * Math.sin(t * n.sp + n.ph);
-                const sz = (0.5 + 1.6 * d) * (1 + 0.6 * fire);
-                g.fillStyle = n.note
-                    ? `rgba(255,140,225,${(80 + 160 * d) / 255 * dim})`
-                    : `rgba(110,215,255,${(60 + 180 * d) / 255 * dim})`;
-                g.beginPath(); g.arc(x, y, sz, 0, 6.29); g.fill();
-                if (n.note) scene.projected.push({ x, y, note: n.note });
+                const baseSz = (0.5 + 1.6 * d) * (1 + 0.6 * fire);
+                if (n.note) {
+                    // Real vault-note points read noticeably bigger/brighter
+                    // than decorative points — a soft halo plus an
+                    // oversized, more-saturated core, not just a color swap.
+                    const sz = baseSz * 2.5;
+                    const haloR = sz * 2.8;
+                    const halo = g.createRadialGradient(x, y, 0, x, y, haloR);
+                    halo.addColorStop(0, `rgba(255,170,235,${0.5 * dim})`);
+                    halo.addColorStop(1, "rgba(255,170,235,0)");
+                    g.fillStyle = halo;
+                    g.beginPath(); g.arc(x, y, haloR, 0, 6.29); g.fill();
+                    g.fillStyle = `rgba(255,195,240,${Math.min(1, (170 + 200 * d) / 255 * dim)})`;
+                    g.beginPath(); g.arc(x, y, sz, 0, 6.29); g.fill();
+                    scene.projected.push({ x, y, note: n.note });
+                } else {
+                    g.fillStyle = `rgba(110,215,255,${(60 + 180 * d) / 255 * dim})`;
+                    g.beginPath(); g.arc(x, y, baseSz, 0, 6.29); g.fill();
+                }
             }
 
             if (scene.links.length) {
