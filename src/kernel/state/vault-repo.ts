@@ -51,14 +51,29 @@ export async function deleteNote(path: string): Promise<void> {
   await db.query(`DELETE FROM vault_notes WHERE path = $1`, [path]);
 }
 
+// Wrapped in a transaction so a failure partway through never leaves a note
+// with its old links deleted but new links only partially inserted — the
+// sync job runs this on every tick for every changed note, so a transient
+// mid-loop failure without this would otherwise show a real, if
+// self-healing-next-tick, inconsistent link state in the meantime.
 export async function replaceLinksForNote(fromPath: string, targets: string[]): Promise<void> {
   const db = getPool();
-  await db.query(`DELETE FROM vault_links WHERE from_path = $1`, [fromPath]);
-  for (const target of targets) {
-    await db.query(
-      `INSERT INTO vault_links (from_path, to_path_raw, link_type) VALUES ($1, $2, 'wikilink')`,
-      [fromPath, target]
-    );
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM vault_links WHERE from_path = $1`, [fromPath]);
+    for (const target of targets) {
+      await client.query(
+        `INSERT INTO vault_links (from_path, to_path_raw, link_type) VALUES ($1, $2, 'wikilink')`,
+        [fromPath, target]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
@@ -89,11 +104,15 @@ export async function listNotes(): Promise<VaultNoteRow[]> {
 export async function searchNotes(query: string, limit = 10): Promise<VaultNoteRow[]> {
   try {
     const db = getPool();
+    // Title and tag matching are both case-insensitive (ILIKE / EXISTS+ILIKE
+    // over unnest(tags)) — a search for "Physics" should find a #physics tag
+    // the same way it'd find a "Physics Notes" title, not silently miss it
+    // over a case mismatch.
     const { rows } = await db.query(
       `SELECT * FROM vault_notes
-       WHERE title ILIKE $1 OR $2 = ANY(tags)
-       ORDER BY last_synced_at DESC LIMIT $3`,
-      [`%${query}%`, query, limit]
+       WHERE title ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) t WHERE t ILIKE $1)
+       ORDER BY last_synced_at DESC LIMIT $2`,
+      [`%${query}%`, limit]
     );
     return rows;
   } catch {
