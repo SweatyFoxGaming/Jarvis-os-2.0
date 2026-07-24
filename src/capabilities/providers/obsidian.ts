@@ -1,7 +1,9 @@
 import fs from "fs/promises";
 import path from "path";
+import crypto from "crypto";
 import { load as loadYaml, dump as dumpYaml } from "js-yaml";
 import { ObservationPlatform } from "../../kernel/observation.js";
+import * as vaultRepo from "../../kernel/state/vault-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -290,6 +292,25 @@ export async function listAllNotePaths(): Promise<string[]> {
   }
 
   return walk(root);
+}
+
+/**
+ * Re-parses one note from disk and upserts it into the Postgres-backed
+ * index (vault_notes/vault_links) — the exact per-file body
+ * startVaultSyncJob's loop already runs on every tick, extracted so a
+ * dashboard-driven write can call it directly and see the change reflected
+ * immediately, instead of waiting for the next scheduled sync tick.
+ */
+export async function syncNoteToIndex(relativePath: string): Promise<void> {
+  const raw = await readNote(relativePath);
+  const contentHash = crypto.createHash("sha256").update(raw).digest("hex");
+  const existing = await vaultRepo.getNoteByPath(relativePath);
+  if (existing && existing.content_hash === contentHash) return; // unchanged
+
+  const fallbackTitle = (relativePath.split("/").pop() || relativePath).replace(/\.md$/, "");
+  const parsed = parseNote(raw, fallbackTitle);
+  await vaultRepo.upsertNote(relativePath, parsed.title, parsed.frontmatter, parsed.tags, contentHash);
+  await vaultRepo.replaceLinksForNote(relativePath, parsed.links);
 }
 
 function buildRequestNoteBasename(buildRequestId: number, objective: string): string {

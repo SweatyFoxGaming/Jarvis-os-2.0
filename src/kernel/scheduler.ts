@@ -11,7 +11,6 @@ import * as mcpServersRepo from "./state/mcp-servers-repo.js";
 import * as mcpRegistry from "../capabilities/mcp-registry.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
 import * as vaultRepo from "./state/vault-repo.js";
-import crypto from "crypto";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -231,15 +230,7 @@ export function startVaultSyncJob(intervalMs = 15 * 60 * 1000): NodeJS.Timeout |
     const paths = await obsidian.listAllNotePaths();
     for (const notePath of paths) {
       try {
-        const raw = await obsidian.readNote(notePath);
-        const contentHash = crypto.createHash("sha256").update(raw).digest("hex");
-        const existing = await vaultRepo.getNoteByPath(notePath);
-        if (existing && existing.content_hash === contentHash) continue; // unchanged since last sync
-
-        const fallbackTitle = (notePath.split("/").pop() || notePath).replace(/\.md$/, "");
-        const parsed = obsidian.parseNote(raw, fallbackTitle);
-        await vaultRepo.upsertNote(notePath, parsed.title, parsed.frontmatter, parsed.tags, contentHash);
-        await vaultRepo.replaceLinksForNote(notePath, parsed.links);
+        await obsidian.syncNoteToIndex(notePath);
       } catch (err: any) {
         observation.logTelemetry("warn", "VaultSync", `Failed to sync "${notePath}": ${err.message}`);
       }
