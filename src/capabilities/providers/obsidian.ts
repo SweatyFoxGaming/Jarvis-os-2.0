@@ -190,8 +190,14 @@ export async function createNote(
 ): Promise<{ path: string; bytesWritten: number }> {
   await ensureRootExists();
   const target = resolveScopedPath(ensureMdExtension(relativePath));
-  await fs.mkdir(path.dirname(target), { recursive: true });
+  // Checked BEFORE mkdir, not after: assertRealPathWithinRoot walks up to
+  // the nearest existing ancestor when target doesn't exist yet, so calling
+  // it first means that ancestor is whatever's genuinely already on disk —
+  // if mkdir ran first instead, a symlinked directory partway down this
+  // path would let mkdir -p create real directories outside the vault
+  // before the check ever had a pre-mkdir ancestor to catch it against.
   await assertRealPathWithinRoot(target);
+  await fs.mkdir(path.dirname(target), { recursive: true });
   const full = frontmatter && Object.keys(frontmatter).length > 0
     ? `---\n${dumpYaml(frontmatter)}---\n\n${content}`
     : content;
@@ -217,8 +223,10 @@ export async function appendToNote(
     if (!options.createIfMissing) {
       throw new ObsidianIntegrationError(`Note "${relativePath}" does not exist.`, 404);
     }
-    await fs.mkdir(path.dirname(target), { recursive: true });
+    // Same ordering fix as createNote: check the pre-existing filesystem
+    // state before mkdir -p can create anything through a symlink.
     await assertRealPathWithinRoot(target);
+    await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, content, "utf-8");
   } else {
     await assertRealPathWithinRoot(target);
