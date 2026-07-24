@@ -1971,6 +1971,18 @@ app.post("/api/system/vault/note", validateApiKey, async (req: any, res: any) =>
   }
 });
 
+app.get("/api/system/vault/graph", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "vault.read")) {
+    return res.status(403).json({ error: 'Missing capability grant "vault.read"' });
+  }
+  const GRAPH_NOTE_LIMIT = 150;
+  const [notes, links] = await Promise.all([
+    vaultRepo.listNotes(GRAPH_NOTE_LIMIT),
+    vaultRepo.listAllLinks(GRAPH_NOTE_LIMIT),
+  ]);
+  res.json({ notes, links });
+});
+
 app.post("/api/system/commands/:id/reject", validateApiKey, async (req: any, res: any) => {
   if (!permissions.hasGrant(req.username, "system.execute")) {
     return res.status(403).json({ error: 'Missing capability grant "system.execute"' });
