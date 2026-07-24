@@ -270,7 +270,12 @@ export async function draftCodeChanges(
   }
   try {
     const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      // Not llama-3.3-70b-versatile: Groq's API rejects response_format on
+      // that model entirely (live-verified — every draft failed 400 until
+      // this changed). gpt-oss-120b is Groq's larger structured-output-
+      // capable model, preserving the "capable model for a generation-
+      // quality task" intent while actually supporting the schema.
+      model: "openai/gpt-oss-120b",
       messages: [{
         role: "user",
         content:
