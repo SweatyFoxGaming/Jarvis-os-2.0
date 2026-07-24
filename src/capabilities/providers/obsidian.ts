@@ -211,3 +211,71 @@ export async function listAllNotePaths(): Promise<string[]> {
 
   return walk(root);
 }
+
+function buildRequestNoteBasename(buildRequestId: number, objective: string): string {
+  return `${slugify(objective)}-br${buildRequestId}`;
+}
+
+/**
+ * Called once, right when a build request's research is first recorded —
+ * event-driven, not batched, matching this codebase's existing "write
+ * immediately at the point of persistence" pattern for everything else
+ * that isn't explicitly a background job.
+ */
+export async function writeResearchNote(
+  buildRequestId: number,
+  objective: string,
+  summary: string
+): Promise<void> {
+  const basename = buildRequestNoteBasename(buildRequestId, objective);
+  await createNote(
+    `Research/${basename}`,
+    `# ${objective}\n\n${summary}\n`,
+    { type: "research", build_request_id: buildRequestId, created: new Date().toISOString() }
+  );
+}
+
+export interface CodingNoteFields {
+  directionNotes?: string;
+  codeSummary?: string;
+  files?: string[];
+  prUrl?: string;
+  qaSummary?: string;
+  status?: string;
+}
+
+/**
+ * Coding notes are written/updated at several points across a build
+ * request's life (direction confirmed + code drafted, then again once the
+ * PR opens, then again once QA finishes) — always a full overwrite of the
+ * note (not an append), since each call already has the complete current
+ * state of the build request and the note should reflect that current
+ * state, not a log of every intermediate edit.
+ */
+export async function writeOrUpdateCodingNote(
+  buildRequestId: number,
+  objective: string,
+  fields: CodingNoteFields
+): Promise<void> {
+  const basename = buildRequestNoteBasename(buildRequestId, objective);
+  const researchBasename = buildRequestNoteBasename(buildRequestId, objective);
+  const lines: string[] = [`# ${objective}`, "", `[[Research/${researchBasename}]]`, ""];
+  if (fields.directionNotes) lines.push("## Direction", "", fields.directionNotes, "");
+  if (fields.codeSummary) lines.push("## Code", "", fields.codeSummary, "");
+  if (fields.files && fields.files.length > 0) {
+    lines.push("## Files", "", ...fields.files.map(f => `- \`${f}\``), "");
+  }
+  if (fields.prUrl) lines.push("## Pull Request", "", fields.prUrl, "");
+  if (fields.qaSummary) lines.push("## QA", "", fields.qaSummary, "");
+
+  await createNote(
+    `Coding/${basename}`,
+    lines.join("\n"),
+    {
+      type: "coding",
+      build_request_id: buildRequestId,
+      status: fields.status || "unknown",
+      created: new Date().toISOString(),
+    }
+  );
+}

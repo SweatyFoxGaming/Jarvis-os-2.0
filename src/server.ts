@@ -50,6 +50,7 @@ import * as mcpServersRepo from "./kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./capabilities/mcp-registry.js";
 import * as push from "./interaction/push.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
+import * as obsidian from "./capabilities/providers/obsidian.js";
 import * as departments from "./executive/departments.js";
 
 dotenv.config();
@@ -1856,11 +1857,32 @@ app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (r
 
     observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
 
+    obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
+      directionNotes: updated.direction_notes || undefined,
+      codeSummary: updated.code_summary || undefined,
+      files: files.map((f: any) => f.path),
+      prUrl: updated.pr_url || undefined,
+      status: updated.status,
+    }).catch((err: any) => {
+      observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
+    });
+
     // QA runs immediately, synchronously, right here — no CI polling (see
     // design spec's "Decisions"). CI's own result speaks for itself on
     // GitHub, same as any other PR.
     const qaSummary = await departments.reviewCodeDiff(updated.objective, files, groq);
     await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
+
+    obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
+      directionNotes: updated.direction_notes || undefined,
+      codeSummary: updated.code_summary || undefined,
+      files: files.map((f: any) => f.path),
+      prUrl: updated.pr_url || undefined,
+      qaSummary,
+      status: "qa_complete",
+    }).catch((err: any) => {
+      observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
+    });
 
     scheduler.pushNotification(
       req.username,
