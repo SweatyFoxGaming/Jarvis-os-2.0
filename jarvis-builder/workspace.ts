@@ -64,6 +64,17 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
   const branch = branchName(buildRequestId);
   const container = containerName(buildRequestId);
 
+  // Git 2.35+ refuses to operate on a repo it doesn't consider "owned" by
+  // the current process's UID (the "dubious ownership" safe-directory
+  // check added after CVE-2022-24765). The bind-mounted repo keeps the
+  // HOST's file ownership, but this container process runs as a different
+  // UID, so every git call below would otherwise fail. Scoped to exactly
+  // this one known repo path (not `*`, which would blanket-trust any
+  // bind-mounted path). `--add` is idempotent, so re-running this on every
+  // call is harmless and avoids depending on some other startup step
+  // having already run it.
+  await execFileAsync("git", ["config", "--global", "--add", "safe.directory", REPO_HOST_PATH]);
+
   await execFileAsync("mkdir", ["-p", WORKSPACES_DIR]);
   await execFileAsync("git", ["fetch", "origin", baseBranch], { cwd: REPO_HOST_PATH });
 
