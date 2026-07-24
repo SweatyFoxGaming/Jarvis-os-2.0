@@ -61,6 +61,7 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
   assertSafeBranchName(baseBranch);
 
   const dir = workspaceDir(buildRequestId);
+  const stagingDir = `${dir}.staging`;
   const branch = branchName(buildRequestId);
   const container = containerName(buildRequestId);
 
@@ -81,9 +82,21 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
   // -B resets the branch to origin/baseBranch's current tip if it already
   // exists (e.g. a prior attempt for this same build request), rather than
   // failing outright.
-  await execFileAsync("git", ["worktree", "add", "-B", branch, dir, `origin/${baseBranch}`], {
+  await execFileAsync("git", ["worktree", "add", "-B", branch, stagingDir, `origin/${baseBranch}`], {
     cwd: REPO_HOST_PATH,
   });
+
+  // Sandbox containers must never get write access to this repo's shared
+  // .git (refs/objects covering every branch, including main) — a linked
+  // worktree's .git is just a pointer into that shared directory, so
+  // mounting it directly would let the "free reign" sandbox corrupt the
+  // host repo's real refs (e.g. `git branch -D main`) no matter what
+  // command it happened to run. Cloning the staging worktree gives the
+  // sandbox its own fully independent .git (hardlinked objects, separate
+  // refs/HEAD) that only this build can ever touch; the staging worktree
+  // is discarded immediately after.
+  await execFileAsync("git", ["clone", stagingDir, dir]);
+  await execFileAsync("git", ["worktree", "remove", "--force", stagingDir], { cwd: REPO_HOST_PATH }).catch(() => {});
 
   // Deliberately no `-e`/`--env-file` here: the sandbox container starts
   // with a clean environment, no GitHub credentials, no production
@@ -137,7 +150,12 @@ export async function destroyWorkspace(buildRequestId: number): Promise<void> {
   const container = containerName(buildRequestId);
 
   await execFileAsync("docker", ["rm", "-f", container]).catch(() => {});
-  await execFileAsync("git", ["worktree", "remove", "--force", dir], { cwd: REPO_HOST_PATH }).catch(() => {});
+  // `dir` is a plain `git clone`, not a registered worktree of
+  // REPO_HOST_PATH, so `git worktree remove` doesn't apply here — a plain
+  // recursive delete is all that's needed to reclaim the disk. `worktree
+  // prune` below is still useful as a safety net for any staging worktree
+  // (see createWorkspace) that failed to clean up.
+  await execFileAsync("rm", ["-rf", dir]).catch(() => {});
   await execFileAsync("git", ["worktree", "prune"], { cwd: REPO_HOST_PATH }).catch(() => {});
 }
 
