@@ -9,6 +9,9 @@ import * as objectivesRepo from "./state/objectives-repo.js";
 import * as push from "../interaction/push.js";
 import * as mcpServersRepo from "./state/mcp-servers-repo.js";
 import * as mcpRegistry from "../capabilities/mcp-registry.js";
+import * as obsidian from "../capabilities/providers/obsidian.js";
+import * as vaultRepo from "./state/vault-repo.js";
+import crypto from "crypto";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -199,6 +202,40 @@ export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Time
         await mcpServersRepo.setMcpServerStatus(server.id, "error");
         observation.logTelemetry("warn", "McpHealthCheck", `Server "${server.name}" (#${server.id}) failed to reconnect ${failures} times in a row — marked 'error'.`);
         consecutiveFailures.delete(server.id);
+      }
+    }
+  });
+}
+
+/**
+ * Keeps vault_notes/vault_links in sync with the real vault on disk —
+ * reacting to edits the user makes directly in Obsidian, which Jarvis has
+ * no other way to observe. Only re-parses a file whose content actually
+ * changed (via a cheap content hash), so a large vault with mostly-static
+ * notes stays fast on every tick. Only runs at all if OBSIDIAN_VAULT_DIR is
+ * configured — same "absent env var means the feature quietly doesn't
+ * start" pattern as startEmailWatchJob.
+ */
+export function startVaultSyncJob(intervalMs = 15 * 60 * 1000): NodeJS.Timeout | null {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    observation.logTelemetry("info", "Scheduler", "Vault sync job not started — OBSIDIAN_VAULT_DIR not configured.");
+    return null;
+  }
+  return registerJob("vault-sync", intervalMs, async () => {
+    const paths = await obsidian.listAllNotePaths();
+    for (const notePath of paths) {
+      try {
+        const raw = await obsidian.readNote(notePath);
+        const contentHash = crypto.createHash("sha256").update(raw).digest("hex");
+        const existing = await vaultRepo.getNoteByPath(notePath);
+        if (existing && existing.content_hash === contentHash) continue; // unchanged since last sync
+
+        const fallbackTitle = (notePath.split("/").pop() || notePath).replace(/\.md$/, "");
+        const parsed = obsidian.parseNote(raw, fallbackTitle);
+        await vaultRepo.upsertNote(notePath, parsed.title, parsed.frontmatter, parsed.tags, contentHash);
+        await vaultRepo.replaceLinksForNote(notePath, parsed.links);
+      } catch (err: any) {
+        observation.logTelemetry("warn", "VaultSync", `Failed to sync "${notePath}": ${err.message}`);
       }
     }
   });

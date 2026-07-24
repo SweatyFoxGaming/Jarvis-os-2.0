@@ -2584,6 +2584,7 @@ initDatabase().then(async (ready) => {
   scheduler.startBriefingJob(groq);
   scheduler.startSelfReflectionJob(groq);
   scheduler.startMcpHealthCheckJob();
+  scheduler.startVaultSyncJob();
 });
 
 // Evict idle per-user session state (working memory, not persisted data) so
