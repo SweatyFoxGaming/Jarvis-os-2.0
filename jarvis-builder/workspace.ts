@@ -47,7 +47,19 @@ export async function ensureSandboxImage(): Promise<void> {
   });
 }
 
+// Rejects anything that could be parsed by git as a flag (e.g. a leading
+// `-`, which enables argument-injection primitives like `--upload-pack=...`)
+// rather than a plain ref name. A real branch name never needs characters
+// outside this set.
+function assertSafeBranchName(baseBranch: string): void {
+  if (baseBranch.startsWith("-") || !/^[A-Za-z0-9._/-]+$/.test(baseBranch)) {
+    throw new Error(`Refusing to use unsafe baseBranch value: ${JSON.stringify(baseBranch)}`);
+  }
+}
+
 export async function createWorkspace(buildRequestId: number, baseBranch: string): Promise<WorkspaceHandle> {
+  assertSafeBranchName(baseBranch);
+
   const dir = workspaceDir(buildRequestId);
   const branch = branchName(buildRequestId);
   const container = containerName(buildRequestId);
@@ -124,16 +136,36 @@ export function startReaper(): void {
       const { stdout } = await execFileAsync("docker", [
         "ps", "-a",
         "--filter", "label=jarvis-sandbox=true",
-        "--format", "{{.ID}}\t{{.CreatedAt}}",
+        "--format", "{{.ID}}",
       ]);
       const now = Date.now();
-      for (const line of stdout.trim().split("\n").filter(Boolean)) {
-        const [id, createdAt] = line.split("\t");
-        const createdMs = Date.parse(createdAt);
-        if (!isNaN(createdMs) && now - createdMs > MAX_CONTAINER_LIFETIME_MS) {
-          await execFileAsync("docker", ["rm", "-f", id]).catch(() => {});
-        }
-      }
+      const ids = stdout.trim().split("\n").filter(Boolean);
+
+      // `docker ps --format {{.CreatedAt}}` is locale/timezone-dependent
+      // (e.g. `2026-07-24 18:53:15 +0200 SAST`) and Node's Date.parse
+      // silently fails on non-standard timezone abbreviations like `SAST`,
+      // which would make this safety-net reaper never remove anything
+      // without any error or log. `docker inspect --format {{.Created}}`
+      // instead returns RFC3339 UTC, which Date.parse always handles.
+      // Each container is checked independently so one bad/slow ID can't
+      // stop the rest of the pass from being reaped.
+      await Promise.allSettled(
+        ids.map(async (id) => {
+          try {
+            const { stdout: createdAt } = await execFileAsync("docker", [
+              "inspect", "--format", "{{.Created}}", id,
+            ]);
+            const createdMs = Date.parse(createdAt.trim());
+            if (!isNaN(createdMs) && now - createdMs > MAX_CONTAINER_LIFETIME_MS) {
+              await execFileAsync("docker", ["rm", "-f", id]).catch(() => {});
+            }
+          } catch {
+            // Best-effort per-container — a failure here (e.g. the
+            // container vanished between `ps` and `inspect`) shouldn't
+            // stop other containers from being checked.
+          }
+        })
+      );
     } catch {
       // Best-effort — a failed reaper pass just tries again next interval.
     }
