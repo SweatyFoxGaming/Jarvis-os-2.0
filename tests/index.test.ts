@@ -31,6 +31,7 @@ import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-re
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks } from "../src/kernel/state/vault-repo.js";
+import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -1307,6 +1308,71 @@ registerTest("Vault", "getBacklinks degrades cleanly when Postgres isn't reachab
   const result = await getBacklinks("Research/quantum-physics.md");
   if (!Array.isArray(result) || result.length !== 0) {
     throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- Obsidian Parser Tests (pure functions, no I/O) ----------
+
+registerTest("ObsidianParser", "parseNote extracts a plain wikilink", () => {
+  const result = parseNote("See [[Bell's Theorem]] for details.", "fallback");
+  if (!result.links.includes("Bell's Theorem")) {
+    throw new Error(`ObsidianParser: expected to find the plain wikilink, got: ${JSON.stringify(result.links)}`);
+  }
+});
+
+registerTest("ObsidianParser", "parseNote extracts a wikilink with an alias, discarding the alias", () => {
+  const result = parseNote("See [[Bell's Theorem|the theorem]] for details.", "fallback");
+  if (!result.links.includes("Bell's Theorem") || result.links.some(l => l.includes("the theorem"))) {
+    throw new Error(`ObsidianParser: expected the alias to be discarded, got: ${JSON.stringify(result.links)}`);
+  }
+});
+
+registerTest("ObsidianParser", "parseNote keeps a #Heading suffix as part of the link target", () => {
+  const result = parseNote("See [[Quantum Physics#Entanglement]] for details.", "fallback");
+  if (!result.links.includes("Quantum Physics#Entanglement")) {
+    throw new Error(`ObsidianParser: expected the heading suffix to survive, got: ${JSON.stringify(result.links)}`);
+  }
+});
+
+registerTest("ObsidianParser", "parseNote extracts inline #tags", () => {
+  const result = parseNote("This is about #physics and #quantum-mechanics.", "fallback");
+  if (!result.tags.includes("physics") || !result.tags.includes("quantum-mechanics")) {
+    throw new Error(`ObsidianParser: expected both tags, got: ${JSON.stringify(result.tags)}`);
+  }
+});
+
+registerTest("ObsidianParser", "parseNote reads a title and tags array from YAML frontmatter", () => {
+  const raw = "---\ntitle: Quantum Physics Notes\ntags:\n  - physics\n  - research\n---\n\nBody text here.";
+  const result = parseNote(raw, "fallback");
+  if (result.title !== "Quantum Physics Notes") {
+    throw new Error(`ObsidianParser: expected the frontmatter title, got: "${result.title}"`);
+  }
+  if (!result.tags.includes("physics") || !result.tags.includes("research")) {
+    throw new Error(`ObsidianParser: expected both frontmatter tags, got: ${JSON.stringify(result.tags)}`);
+  }
+});
+
+registerTest("ObsidianParser", "parseNote falls back to the provided title when there's no frontmatter", () => {
+  const result = parseNote("Just plain body text, no frontmatter at all.", "My Fallback Title");
+  if (result.title !== "My Fallback Title") {
+    throw new Error(`ObsidianParser: expected the fallback title, got: "${result.title}"`);
+  }
+  if (result.links.length !== 0 || result.tags.length !== 0) {
+    throw new Error("ObsidianParser: expected no links/tags in plain text with none present");
+  }
+});
+
+registerTest("ObsidianParser", "slugify produces a filesystem-safe, lowercase, hyphenated name", () => {
+  const result = slugify("Create a Seamstress Agent!");
+  if (result !== "create-a-seamstress-agent") {
+    throw new Error(`ObsidianParser: expected "create-a-seamstress-agent", got: "${result}"`);
+  }
+});
+
+registerTest("ObsidianParser", "slugify never returns an empty string", () => {
+  const result = slugify("!!!");
+  if (!result || result.length === 0) {
+    throw new Error(`ObsidianParser: expected a non-empty fallback slug, got: "${result}"`);
   }
 });
 
