@@ -317,6 +317,37 @@ async function createSchema(): Promise<void> {
     );
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS push_subscriptions_username_idx ON push_subscriptions(username);`);
+
+  // The parsed, linked view of the user's real Obsidian vault — kept up to
+  // date by scheduler.ts's startVaultSyncJob. path is the vault-relative
+  // path (e.g. "Research/quantum-physics.md"), the natural primary key
+  // since it's exactly what Obsidian itself uses to identify a note.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS vault_notes (
+      path TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      frontmatter JSONB NOT NULL DEFAULT '{}',
+      tags TEXT[] NOT NULL DEFAULT '{}',
+      content_hash TEXT NOT NULL,
+      last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  // to_path_raw is kept as the literal wikilink target text (e.g. "Note
+  // Name" or "Note Name#Heading") — it may not resolve to a real note yet,
+  // since Obsidian itself allows linking to a note that doesn't exist yet.
+  // Resolution against vault_notes happens at query time (getBacklinks),
+  // not parse time.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS vault_links (
+      id SERIAL PRIMARY KEY,
+      from_path TEXT NOT NULL REFERENCES vault_notes(path) ON DELETE CASCADE,
+      to_path_raw TEXT NOT NULL,
+      link_type TEXT NOT NULL DEFAULT 'wikilink',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS vault_links_from_idx ON vault_links(from_path);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS vault_links_to_idx ON vault_links(to_path_raw);`);
 }
 
 // Kept separate from createSchema(): the pgvector extension requires a

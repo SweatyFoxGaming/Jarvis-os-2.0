@@ -50,6 +50,7 @@ import * as mcpServersRepo from "./kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./capabilities/mcp-registry.js";
 import * as push from "./interaction/push.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
+import * as obsidian from "./capabilities/providers/obsidian.js";
 import * as departments from "./executive/departments.js";
 
 dotenv.config();
@@ -1466,6 +1467,9 @@ app.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
       return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
     }
     await identityRepo.saveProactiveThought(result.content, result.basedOnCount);
+    obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {
+      observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
+    });
     res.json({ available: true, ...result });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1856,11 +1860,32 @@ app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (r
 
     observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
 
+    obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
+      directionNotes: updated.direction_notes || undefined,
+      codeSummary: updated.code_summary || undefined,
+      files: files.map((f: any) => f.path),
+      prUrl: updated.pr_url || undefined,
+      status: updated.status,
+    }).catch((err: any) => {
+      observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
+    });
+
     // QA runs immediately, synchronously, right here — no CI polling (see
     // design spec's "Decisions"). CI's own result speaks for itself on
     // GitHub, same as any other PR.
     const qaSummary = await departments.reviewCodeDiff(updated.objective, files, groq);
     await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
+
+    obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
+      directionNotes: updated.direction_notes || undefined,
+      codeSummary: updated.code_summary || undefined,
+      files: files.map((f: any) => f.path),
+      prUrl: updated.pr_url || undefined,
+      qaSummary,
+      status: "qa_complete",
+    }).catch((err: any) => {
+      observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
+    });
 
     scheduler.pushNotification(
       req.username,
@@ -1973,6 +1998,9 @@ app.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
     const result = await briefing.generateBriefing(groq, req.username);
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
+      obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {
+        observation.logTelemetry("warn", "Interaction", `Failed to write briefing vault entry: ${err.message}`);
+      });
     } catch (err: any) {
       observation.logTelemetry("warn", "Briefing", `Failed to persist on-demand briefing: ${err.message}`);
     }
@@ -2584,6 +2612,7 @@ initDatabase().then(async (ready) => {
   scheduler.startBriefingJob(groq);
   scheduler.startSelfReflectionJob(groq);
   scheduler.startMcpHealthCheckJob();
+  scheduler.startVaultSyncJob();
 });
 
 // Evict idle per-user session state (working memory, not persisted data) so

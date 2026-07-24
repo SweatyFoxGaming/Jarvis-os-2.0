@@ -3,6 +3,7 @@ import Groq from "groq-sdk";
 import { toGroqSchema } from "../runtime/groq-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as identityRepo from "../kernel/state/identity-repo.js";
+import * as obsidian from "../capabilities/providers/obsidian.js";
 import type { ReflectionCategory } from "../kernel/state/identity-repo.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -61,6 +62,9 @@ export async function extractSelfReflection(groq: Groq | null, userMessage: stri
     if (VALID_CATEGORIES.includes(category) && content) {
       await identityRepo.addSelfReflection(category, content, replyText.slice(0, 300));
       observation.logTelemetry("info", "Identity", `Recorded self-reflection (${category}): "${content.slice(0, 80)}"`);
+      obsidian.appendReflectionEntry(category, content).catch((err: any) => {
+        observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
+      });
     }
   } catch (err: any) {
     observation.logTelemetry("warn", "Identity", `Self-reflection extraction failed: ${err.message || err}`);

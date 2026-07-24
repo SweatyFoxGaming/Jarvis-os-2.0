@@ -20,6 +20,10 @@ services:
       # as its own mount, not nested under /app, so it's clearly separate
       # from the repo itself.
       - ${JARVIS_FILES_DIR}:/jarvis-files
+      # The user's real, existing Obsidian vault — same scoped-mount
+      # pattern as the jarvis-files folder above, new root (see
+      # src/capabilities/providers/obsidian.ts).
+      - ${OBSIDIAN_VAULT_DIR}:/obsidian-vault
     # Lets the container reach services on the host (e.g. a local Ollama instance
     # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
     extra_hosts:

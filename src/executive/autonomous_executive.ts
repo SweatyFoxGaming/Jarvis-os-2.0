@@ -1,4 +1,5 @@
 import { ObservationPlatform } from "../kernel/observation.js";
+import * as obsidian from "../capabilities/providers/obsidian.js";
 import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
 import { MindKernel } from "../self/kernel.js";
@@ -116,6 +117,11 @@ export class AutonomousExecutive {
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
       const research = await departments.runResearch(objective, this.groq);
       const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
+      if (recorded) {
+        obsidian.writeResearchNote(buildRequest.id, objective, research.summary).catch((err: any) => {
+          this.observation.logTelemetry("warn", "Interaction", `Failed to write research vault note: ${err.message}`);
+        });
+      }
 
       if (!recorded) {
         await buildRequestsRepo.markResearchError(buildRequest.id, "Failed to persist research findings.");
@@ -276,6 +282,14 @@ export class AutonomousExecutive {
       await buildRequestsRepo.markCodeDraftError(confirmed.id, "Failed to persist the drafted code.");
       return { ok: false, message: "Direction confirmed and code drafted, but I couldn't save it — please try again." };
     }
+    obsidian.writeOrUpdateCodingNote(confirmed.id, confirmed.objective, {
+      directionNotes,
+      codeSummary: draft.summary,
+      files: draft.files.map(f => f.path),
+      status: recorded.status,
+    }).catch((err: any) => {
+      this.observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
+    });
 
     scheduler.pushNotification(
       username,
