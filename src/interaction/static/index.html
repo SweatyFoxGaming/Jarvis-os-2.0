@@ -1998,9 +1998,9 @@
     // ---------- Focal Home orb: registration, click-to-open, state wiring ----------
     const focalOrbScene = NeuralOrb.register(document.getElementById('quantum-eye-canvas'), { neuronCount: 420, dim: 1, R: 0.9, cy: 0.5 });
 
-    // Reusable: opens a specific vault note from an orb click. Unreachable
-    // until Task 5 populates focalOrbScene's neurons with real notes (no
-    // neuron has `.note` set before then), but fully correct and wired now.
+    // Reusable: opens a specific vault note from an orb click. Reached
+    // whenever a neuron has `.note` set — see loadOrbVaultGraph, which
+    // populates focalOrbScene with real vault notes on Home-tab entry.
     function openVaultNoteFromOrb(path) {
         switchTab('vault');
         openVaultNote(encodeURIComponent(path));
