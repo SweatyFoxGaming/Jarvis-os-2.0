@@ -2006,6 +2006,46 @@
         openVaultNote(encodeURIComponent(path));
     }
 
+    const ORB_SLOT_COUNT = 480;
+
+    async function loadOrbVaultGraph() {
+        if (!CURRENT_API_KEY) {
+            NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []);
+            return;
+        }
+        try {
+            const res = await authFetch('/api/system/vault/graph', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []); return; }
+            const data = await res.json();
+            const notes = data.notes || [];
+            if (notes.length === 0) {
+                NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []);
+                return;
+            }
+
+            const neuronsByPath = new Map();
+            const neurons = notes.map(n => {
+                const slot = NeuralOrb.hashString(n.path) % ORB_SLOT_COUNT;
+                const { x, y, z } = NeuralOrb.fibonacciSpherePoint(slot, ORB_SLOT_COUNT);
+                const neuron = { x, y, z, ph: Math.random() * 6.28, sp: 0.5 + Math.random() * 1.5, note: n.path };
+                neuronsByPath.set(n.path, neuron);
+                return neuron;
+            });
+
+            const links = (data.links || [])
+                .map(l => {
+                    const a = neuronsByPath.get(l.from_path);
+                    const b = neuronsByPath.get(l.to_path);
+                    return (a && b) ? [a, b] : null;
+                })
+                .filter(Boolean);
+
+            NeuralOrb.setNeurons(focalOrbScene, neurons, links);
+        } catch {
+            NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []);
+        }
+    }
+
     document.getElementById('quantum-eye').addEventListener('click', (e) => {
         const note = NeuralOrb.hitTest(focalOrbScene, e.clientX, e.clientY);
         if (note) {
@@ -2232,6 +2272,7 @@
         if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); }
         if (tabId === 'calendar') loadCalendarEvents();
         if (tabId === 'vault') loadVaultNotes();
+        if (tabId === 'home') loadOrbVaultGraph();
     }
 
     // Fills the chat input with a suggested prompt and sends it immediately —
