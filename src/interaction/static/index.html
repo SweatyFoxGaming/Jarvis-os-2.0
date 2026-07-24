@@ -24,21 +24,23 @@
         ::-webkit-scrollbar-thumb { background: rgba(143, 184, 232, 0.18); border-radius: 9px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(143, 184, 232, 0.3); }
 
-        /* Calm panel language — a quiet, flat card instead of the previous
-           heavy-blur holographic glass. Class names kept as-is (.holo-panel
-           etc. are used throughout this file) so every existing panel picks
-           up the new look automatically without a markup rewrite. */
+        /* Frosted-glass panel language, restored on purpose — see
+           docs/superpowers/specs/2026-07-24-orbis-neural-theme-design.md.
+           Class names kept as-is (.holo-panel etc. are used throughout this
+           file) so every existing panel picks up the new look automatically
+           without a markup rewrite. */
         .glass-panel, .holo-panel {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+            background: linear-gradient(180deg, rgba(11, 24, 48, 0.55), rgba(5, 11, 24, 0.55));
+            border: 1px solid rgba(80, 200, 255, 0.28);
+            backdrop-filter: blur(14px);
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 24px rgba(50, 150, 255, 0.05);
             transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease, background 0.3s ease;
         }
 
         .holo-lift:hover {
             transform: translateY(-2px);
-            border-color: rgba(143, 184, 232, 0.22);
-            background: rgba(255, 255, 255, 0.03);
+            border-color: rgba(80, 200, 255, 0.45);
+            background: linear-gradient(180deg, rgba(14, 30, 58, 0.6), rgba(6, 14, 30, 0.6));
         }
 
         @keyframes drift {
@@ -58,12 +60,12 @@
         /* Faint luminous rule used in place of a solid divider inside panels. */
         .holo-divider {
             border-color: transparent;
-            background-image: linear-gradient(to right, transparent, rgba(143, 184, 232, 0.16), transparent);
+            background-image: linear-gradient(to right, transparent, rgba(80, 200, 255, 0.3), transparent);
             height: 1px;
         }
 
         .holo-text-glow {
-            text-shadow: 0 0 16px rgba(143, 184, 232, 0.35);
+            text-shadow: 0 0 16px rgba(80, 200, 255, 0.45);
         }
 
         /* Nested elements inside an already-styled holo-panel — flatter still,
