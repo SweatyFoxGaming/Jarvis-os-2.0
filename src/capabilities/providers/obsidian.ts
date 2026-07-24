@@ -38,6 +38,65 @@ async function ensureRootExists(): Promise<void> {
   await fs.mkdir(getRoot(), { recursive: true });
 }
 
+/**
+ * Second-stage boundary check, on top of resolveScopedPath's purely lexical
+ * one: resolves the REAL path (following any symlinks) of `target` and
+ * confirms it's still inside the vault root. A symlink placed inside the
+ * vault pointing outside it (e.g. `ln -s /etc ~/vault/escape`) passes
+ * resolveScopedPath's string-based check untouched, since that check never
+ * hits the filesystem — this is what actually stops the read/write from
+ * following it out.
+ *
+ * Deliberately NOT folded into resolveScopedPath itself: that function also
+ * computes a path for a note that doesn't exist YET (createNote writing a
+ * brand-new file, or appendToNote's createIfMissing branch), and
+ * fs.realpath throws ENOENT on a path that isn't there. So instead of
+ * requiring `target` itself to exist, this walks up to the nearest existing
+ * ancestor (the target itself for a read/append-to-existing, or the
+ * containing directory — freshly mkdir'd by the caller — for a new note)
+ * and realpath's that. Anything created below that point by this same call
+ * is a plain new file/directory we're about to write, not an
+ * already-existing symlink, so checking the nearest existing ancestor is
+ * sufficient: fs.realpath fully resolves every symlink in the chain down to
+ * that ancestor, so if the ancestor's real location is inside the root,
+ * everything created under it lexically is too.
+ *
+ * Best-effort by design (per the caller contract): callers call this right
+ * before the actual read/write, after `resolveScopedPath` + any directory
+ * creation has already happened.
+ */
+async function assertRealPathWithinRoot(target: string): Promise<void> {
+  const root = getRoot();
+  let realRoot: string;
+  try {
+    realRoot = await fs.realpath(root);
+  } catch {
+    // Root itself doesn't exist somehow (ensureRootExists should have just
+    // created it) — nothing sensible to compare against, so let the
+    // subsequent filesystem call fail on its own terms instead.
+    return;
+  }
+
+  let candidate = target;
+  for (;;) {
+    try {
+      const real = await fs.realpath(candidate);
+      if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
+        throw new ObsidianIntegrationError(
+          `Path "${target}" resolves outside the vault via a symlink — not allowed.`,
+          403
+        );
+      }
+      return;
+    } catch (err) {
+      if (err instanceof ObsidianIntegrationError) throw err;
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return; // walked to the filesystem root without finding an existing ancestor — nothing left to check
+      candidate = parent;
+    }
+  }
+}
+
 function ensureMdExtension(relativePath: string): string {
   return relativePath.endsWith(".md") ? relativePath : `${relativePath}.md`;
 }
@@ -132,6 +191,7 @@ export async function createNote(
   await ensureRootExists();
   const target = resolveScopedPath(ensureMdExtension(relativePath));
   await fs.mkdir(path.dirname(target), { recursive: true });
+  await assertRealPathWithinRoot(target);
   const full = frontmatter && Object.keys(frontmatter).length > 0
     ? `---\n${dumpYaml(frontmatter)}---\n\n${content}`
     : content;
@@ -158,8 +218,10 @@ export async function appendToNote(
       throw new ObsidianIntegrationError(`Note "${relativePath}" does not exist.`, 404);
     }
     await fs.mkdir(path.dirname(target), { recursive: true });
+    await assertRealPathWithinRoot(target);
     await fs.writeFile(target, content, "utf-8");
   } else {
+    await assertRealPathWithinRoot(target);
     await fs.appendFile(target, content, "utf-8");
   }
   observation.logTelemetry("info", "Interaction", `Appended to vault note "${relativePath}"`);
@@ -181,6 +243,7 @@ export async function readNote(relativePath: string): Promise<string> {
   if (stat.size > MAX_READ_BYTES) {
     throw new ObsidianIntegrationError(`"${relativePath}" is larger than ${MAX_READ_BYTES} bytes.`, 413);
   }
+  await assertRealPathWithinRoot(target);
   return fs.readFile(target, "utf-8");
 }
 
@@ -203,7 +266,16 @@ export async function listAllNotePaths(): Promise<string[]> {
       if (entry.isDirectory()) {
         results.push(...(await walk(full)));
       } else if (entry.isFile() && entry.name.endsWith(".md")) {
-        results.push(path.relative(root, full));
+        // Defense-in-depth against a symlinked .md file pointing outside the
+        // vault: skip (rather than throw, matching this walk's own
+        // resilience — one bad entry shouldn't abort listing the rest of
+        // the vault) and log it if the real path escapes the root.
+        try {
+          await assertRealPathWithinRoot(full);
+          results.push(path.relative(root, full));
+        } catch (err: any) {
+          observation.logTelemetry("warn", "Interaction", `Skipped vault entry "${full}" during walk: ${err.message}`);
+        }
       }
     }
     return results;
@@ -227,6 +299,10 @@ export async function writeResearchNote(
   objective: string,
   summary: string
 ): Promise<void> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    observation.logTelemetry("info", "Interaction", "Skipped writing research vault note — OBSIDIAN_VAULT_DIR not configured.");
+    return;
+  }
   const basename = buildRequestNoteBasename(buildRequestId, objective);
   await createNote(
     `Research/${basename}`,
@@ -257,9 +333,12 @@ export async function writeOrUpdateCodingNote(
   objective: string,
   fields: CodingNoteFields
 ): Promise<void> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    observation.logTelemetry("info", "Interaction", "Skipped writing coding vault note — OBSIDIAN_VAULT_DIR not configured.");
+    return;
+  }
   const basename = buildRequestNoteBasename(buildRequestId, objective);
-  const researchBasename = buildRequestNoteBasename(buildRequestId, objective);
-  const lines: string[] = [`# ${objective}`, "", `[[Research/${researchBasename}]]`, ""];
+  const lines: string[] = [`# ${objective}`, "", `[[Research/${basename}]]`, ""];
   if (fields.directionNotes) lines.push("## Direction", "", fields.directionNotes, "");
   if (fields.codeSummary) lines.push("## Code", "", fields.codeSummary, "");
   if (fields.files && fields.files.length > 0) {
@@ -292,6 +371,10 @@ function todayNotePath(section: "Reflections" | "Briefings"): string {
  * instead of accumulating hundreds of tiny files.
  */
 export async function appendReflectionEntry(category: string, content: string): Promise<void> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    observation.logTelemetry("info", "Interaction", "Skipped appending reflection vault entry — OBSIDIAN_VAULT_DIR not configured.");
+    return;
+  }
   const timestamp = new Date().toISOString();
   await appendToNote(
     todayNotePath("Reflections"),
@@ -301,6 +384,10 @@ export async function appendReflectionEntry(category: string, content: string): 
 }
 
 export async function appendBriefingEntry(text: string, itemCount: number): Promise<void> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    observation.logTelemetry("info", "Interaction", "Skipped appending briefing vault entry — OBSIDIAN_VAULT_DIR not configured.");
+    return;
+  }
   const timestamp = new Date().toISOString();
   await appendToNote(
     todayNotePath("Briefings"),

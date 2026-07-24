@@ -244,5 +244,21 @@ export function startVaultSyncJob(intervalMs = 15 * 60 * 1000): NodeJS.Timeout |
         observation.logTelemetry("warn", "VaultSync", `Failed to sync "${notePath}": ${err.message}`);
       }
     }
+
+    // Prune rows for notes deleted directly in Obsidian since the last
+    // sync — otherwise a note removed on disk lingers in the index
+    // forever, since the walk-and-upsert loop above only ever adds/updates.
+    // vault_links rows for the deleted note are handled automatically via
+    // ON DELETE CASCADE on vault_links.from_path.
+    const freshPaths = new Set(paths);
+    const indexed = await vaultRepo.listNotes();
+    for (const row of indexed) {
+      if (freshPaths.has(row.path)) continue;
+      try {
+        await vaultRepo.deleteNote(row.path);
+      } catch (err: any) {
+        observation.logTelemetry("warn", "VaultSync", `Failed to prune deleted note "${row.path}": ${err.message}`);
+      }
+    }
   });
 }
