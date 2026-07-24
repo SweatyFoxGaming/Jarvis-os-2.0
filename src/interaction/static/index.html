@@ -144,6 +144,13 @@
                 <span class="text-sm font-medium">Projects</span>
             </button>
 
+            <button onclick="switchTab('vault')" id="nav-vault" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s4.332.477 5.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+                <span class="text-sm font-medium">Vault</span>
+            </button>
+
             <button onclick="switchTab('calendar')" id="nav-calendar" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -335,6 +342,34 @@
                     </div>
                     <div id="build-requests-list" class="space-y-2.5">
                         <div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing yet — ask Jarvis to build something new to see it here.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================= VAULT: browse, search, and edit the real Obsidian vault ================= -->
+            <div id="view-vault" class="view-pane hidden space-y-6">
+                <div class="pb-2">
+                    <h2 class="font-display font-semibold text-lg text-white">Vault</h2>
+                    <p class="text-sm text-secondary mt-1 max-w-xl">Your real Obsidian vault — browse, search, and edit notes directly. Changes here write straight to disk, same as editing in Obsidian itself.</p>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                    <div class="holo-panel rounded-2xl p-5 lg:col-span-1 flex flex-col h-[560px]">
+                        <div class="flex items-center gap-2 mb-3">
+                            <input type="text" id="vault-search-input" placeholder="Search notes or tags..." class="flex-1 bg-white/[0.03] border border-white/10 focus:border-primary/40 rounded-lg px-3 py-1.5 text-sm text-white placeholder-secondary/50 focus:outline-none transition-all" onkeypress="if(event.key === 'Enter') loadVaultNotes(this.value)">
+                            <button onclick="startNewVaultNote()" class="px-2.5 py-1.5 rounded-lg border border-white/10 text-xs text-secondary hover:text-white hover:border-white/20 transition-all whitespace-nowrap">+ New</button>
+                        </div>
+                        <div id="vault-notes-list" class="flex-1 overflow-y-auto space-y-1.5 pr-1">
+                            <div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="holo-panel rounded-2xl p-5 lg:col-span-2 flex flex-col h-[560px]">
+                        <div class="flex items-center justify-between mb-2">
+                            <input type="text" id="vault-note-path-input" placeholder="path/within-vault (no .md needed)" class="flex-1 bg-white/[0.03] border border-white/10 focus:border-primary/40 rounded-lg px-3 py-1.5 text-sm text-white placeholder-secondary/50 focus:outline-none transition-all mr-2">
+                            <button onclick="saveVaultNote()" class="px-3 py-1.5 rounded-lg border border-success/25 text-success bg-success/5 text-xs font-mono font-bold uppercase tracking-widest hover:bg-success/10 whitespace-nowrap">Save</button>
+                        </div>
+                        <div id="vault-note-tags" class="flex flex-wrap gap-1.5 mb-2"></div>
+                        <textarea id="vault-note-content" placeholder="Select a note, or click + New to start one..." class="flex-1 w-full bg-white/[0.03] border border-white/10 focus:border-primary/40 rounded-lg px-3 py-2.5 text-sm text-white placeholder-secondary/50 focus:outline-none transition-all font-mono resize-none"></textarea>
+                        <div id="vault-note-backlinks" class="mt-2.5 text-xs text-secondary"></div>
                     </div>
                 </div>
             </div>
@@ -2076,6 +2111,7 @@
         if (tabId === 'learning') loadLearningDashboard();
         if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); }
         if (tabId === 'calendar') loadCalendarEvents();
+        if (tabId === 'vault') loadVaultNotes();
     }
 
     // Fills the chat input with a suggested prompt and sends it immediately —
@@ -2465,6 +2501,86 @@
             addNotification('Reject request failed.', 'danger');
         }
         loadBuildRequests();
+    }
+
+    let currentVaultNotePath = null;
+
+    async function loadVaultNotes(query) {
+        if (!CURRENT_API_KEY) return;
+        const list = document.getElementById('vault-notes-list');
+        try {
+            const q = query ? `?query=${encodeURIComponent(query)}` : '';
+            const res = await authFetch(`/api/system/vault/notes${q}`, { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs opacity-60">Couldn't load the vault.</div>`; return; }
+            const data = await res.json();
+            const notes = data.notes || [];
+            if (notes.length === 0) {
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs uppercase tracking-widest font-mono opacity-50">No notes found.</div>`;
+                return;
+            }
+            list.innerHTML = notes.map(n => `
+                <button onclick="openVaultNote('${encodeURIComponent(n.path)}')" class="w-full text-left holo-chip border border-white/10 rounded-lg p-2.5 hover:border-white/20 transition-all block">
+                    <div class="text-xs text-white font-medium truncate">${escapeHtml(n.title)}</div>
+                    <div class="text-[10px] text-secondary/70 font-mono mt-0.5 truncate">${escapeHtml(n.path)}</div>
+                    ${n.tags && n.tags.length > 0 ? `<div class="text-[9px] text-primary/80 mt-1">${n.tags.map(t => `#${escapeHtml(t)}`).join(' ')}</div>` : ''}
+                </button>
+            `).join('');
+        } catch {
+            list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-xs opacity-60">Couldn't reach the vault.</div>`;
+        }
+    }
+
+    async function openVaultNote(encodedPath) {
+        if (!CURRENT_API_KEY) return;
+        const path = decodeURIComponent(encodedPath);
+        try {
+            const res = await authFetch(`/api/system/vault/note?path=${encodeURIComponent(path)}`, { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { addNotification("Couldn't open that note.", "danger"); return; }
+            const data = await res.json();
+            currentVaultNotePath = path;
+            document.getElementById('vault-note-path-input').value = path;
+            document.getElementById('vault-note-content').value = data.content || '';
+            document.getElementById('vault-note-tags').innerHTML = (data.tags || []).map(t => `<span class="px-1.5 py-0.5 rounded border border-primary/25 text-primary bg-primary/5 text-[9px] font-mono">#${escapeHtml(t)}</span>`).join('');
+            const backlinks = data.backlinks || [];
+            document.getElementById('vault-note-backlinks').innerHTML = backlinks.length > 0
+                ? `Linked from: ${backlinks.map(b => escapeHtml(b.from_path)).join(', ')}`
+                : '';
+        } catch {
+            addNotification("Couldn't reach the vault.", "danger");
+        }
+    }
+
+    function startNewVaultNote() {
+        currentVaultNotePath = null;
+        document.getElementById('vault-note-path-input').value = '';
+        document.getElementById('vault-note-content').value = '';
+        document.getElementById('vault-note-tags').innerHTML = '';
+        document.getElementById('vault-note-backlinks').innerHTML = '';
+        document.getElementById('vault-note-path-input').focus();
+    }
+
+    async function saveVaultNote() {
+        if (!CURRENT_API_KEY) return;
+        const path = document.getElementById('vault-note-path-input').value.trim();
+        const content = document.getElementById('vault-note-content').value;
+        if (!path) { addNotification("Enter a path for this note first.", "warning"); return; }
+        try {
+            const res = await authFetch('/api/system/vault/note', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                body: JSON.stringify({ path, content })
+            });
+            if (res.ok) {
+                addNotification("Note saved.", "success");
+                currentVaultNotePath = path;
+                loadVaultNotes(document.getElementById('vault-search-input').value.trim());
+            } else {
+                const data = await res.json().catch(() => ({}));
+                addNotification(`Save failed: ${data.error || res.statusText}`, "danger");
+            }
+        } catch {
+            addNotification("Save request failed.", "danger");
+        }
     }
 
     const SEVERITY_STYLE = {
