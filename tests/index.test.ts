@@ -30,6 +30,7 @@ import {
 import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
+import { upsertNote, listNotes, searchNotes, getBacklinks } from "../src/kernel/state/vault-repo.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -1272,6 +1273,40 @@ registerTest("ToolRouting", "looksTrivial rejects a long message even when it st
   const message = "hi there, I wanted to ask you something important about my schedule";
   if (looksTrivial(message)) {
     throw new Error("ToolRouting: a message over TRIVIAL_MAX_LENGTH must not be classified as trivial, even though it starts with the trivial phrase \"hi\"");
+  }
+});
+
+// ---------- Vault Repo Tests ----------
+
+registerTest("Vault", "upsertNote degrades cleanly when Postgres isn't reachable", async () => {
+  try {
+    await upsertNote("Research/test.md", "Test", {}, [], "abc123");
+    throw new Error("Vault: expected upsertNote to reject without a live Postgres connection");
+  } catch (err: any) {
+    if (err.message?.includes("expected upsertNote to reject")) throw err;
+    // Any other thrown error (connection refused/DNS failure) is expected —
+    // upsertNote is a genuine write with no sensible fallback value.
+  }
+});
+
+registerTest("Vault", "listNotes degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listNotes();
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Vault", "searchNotes degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await searchNotes("quantum");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Vault", "getBacklinks degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getBacklinks("Research/quantum-physics.md");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
   }
 });
 
