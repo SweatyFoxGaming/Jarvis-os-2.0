@@ -30,7 +30,7 @@ import {
 import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
-import { upsertNote, listNotes, searchNotes, getBacklinks } from "../src/kernel/state/vault-repo.js";
+import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
@@ -1306,6 +1306,13 @@ registerTest("Vault", "searchNotes degrades cleanly when Postgres isn't reachabl
 
 registerTest("Vault", "getBacklinks degrades cleanly when Postgres isn't reachable", async () => {
   const result = await getBacklinks("Research/quantum-physics.md");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Vault", "listAllLinks degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await listAllLinks(150);
   if (!Array.isArray(result) || result.length !== 0) {
     throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
   }

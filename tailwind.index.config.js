@@ -8,17 +8,18 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        bg: '#050608',
-        surface: '#0B0D12',
-        card: '#12141B',
-        glass: '#0D0F15',
-        primary: '#8FB8E8',
-        accent: '#8FB8E8',
+        bg: '#01040c',
+        surface: '#050b18',
+        card: '#0b1830',
+        glass: '#0d0f15',
+        primary: '#50D2FF',
+        accent: '#50D2FF',
+        glow: '#FF78DC',
         success: '#5FBF8F',
         warning: '#D9A85C',
         danger: '#D97A7A',
         text: '#EDEFF3',
-        secondary: '#767C8C',
+        secondary: '#7fa8cc',
       },
       fontFamily: {
         sans: ['Inter', 'sans-serif'],

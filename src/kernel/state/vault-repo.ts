@@ -91,10 +91,12 @@ export async function getNoteByPath(path: string): Promise<VaultNoteRow | null> 
   }
 }
 
-export async function listNotes(): Promise<VaultNoteRow[]> {
+export async function listNotes(limit?: number): Promise<VaultNoteRow[]> {
   try {
     const db = getPool();
-    const { rows } = await db.query(`SELECT * FROM vault_notes ORDER BY last_synced_at DESC`);
+    const { rows } = limit
+      ? await db.query(`SELECT * FROM vault_notes ORDER BY last_synced_at DESC LIMIT $1`, [limit])
+      : await db.query(`SELECT * FROM vault_notes ORDER BY last_synced_at DESC`);
     return rows;
   } catch {
     return [];
@@ -139,6 +141,46 @@ export async function getBacklinks(notePath: string): Promise<VaultLinkRow[]> {
       const targetBasename = (target.split("/").pop() || target).replace(/\.md$/, "");
       return targetBasename.toLowerCase() === basename.toLowerCase();
     });
+  } catch {
+    return [];
+  }
+}
+
+// Bulk counterpart to getBacklinks — used by the neural-orb vault
+// visualization to draw connections between note-points without an N+1
+// per-note backlink lookup. Resolves each link's raw wikilink target
+// (to_path_raw, e.g. "note-b") to a real note path (e.g. "note-b.md") by
+// basename, exactly like getBacklinks already does for a single target —
+// generalized here to every note in the capped set at once. A link is
+// only returned if BOTH its source and resolved target are within the
+// capped note set, since the orb never renders a point for a note outside
+// that set.
+export async function listAllLinks(noteLimit: number): Promise<{ from_path: string; to_path: string }[]> {
+  try {
+    const db = getPool();
+    const { rows: noteRows } = await db.query(
+      `SELECT path FROM vault_notes ORDER BY last_synced_at DESC LIMIT $1`,
+      [noteLimit]
+    );
+    const paths: string[] = noteRows.map((r: { path: string }) => r.path);
+    if (paths.length === 0) return [];
+
+    const basenameOf = (p: string) => (p.split("/").pop() || p).replace(/\.md$/, "").toLowerCase();
+    const basenameToPath = new Map(paths.map((p: string) => [basenameOf(p), p]));
+
+    const { rows: linkRows } = await db.query(
+      `SELECT from_path, to_path_raw FROM vault_links WHERE from_path = ANY($1)`,
+      [paths]
+    );
+
+    const resolved: { from_path: string; to_path: string }[] = [];
+    for (const row of linkRows) {
+      const target = row.to_path_raw.replace(/#.*$/, "").trim();
+      const targetBasename = basenameOf(target);
+      const toPath = basenameToPath.get(targetBasename);
+      if (toPath) resolved.push({ from_path: row.from_path, to_path: toPath });
+    }
+    return resolved;
   } catch {
     return [];
   }

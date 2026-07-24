@@ -24,46 +24,34 @@
         ::-webkit-scrollbar-thumb { background: rgba(143, 184, 232, 0.18); border-radius: 9px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(143, 184, 232, 0.3); }
 
-        /* Calm panel language — a quiet, flat card instead of the previous
-           heavy-blur holographic glass. Class names kept as-is (.holo-panel
-           etc. are used throughout this file) so every existing panel picks
-           up the new look automatically without a markup rewrite. */
+        /* Frosted-glass panel language, restored on purpose — see
+           docs/superpowers/specs/2026-07-24-orbis-neural-theme-design.md.
+           Class names kept as-is (.holo-panel etc. are used throughout this
+           file) so every existing panel picks up the new look automatically
+           without a markup rewrite. */
         .glass-panel, .holo-panel {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+            background: linear-gradient(180deg, rgba(11, 24, 48, 0.55), rgba(5, 11, 24, 0.55));
+            border: 1px solid rgba(80, 200, 255, 0.28);
+            backdrop-filter: blur(14px);
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 24px rgba(50, 150, 255, 0.05);
             transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease, background 0.3s ease;
         }
 
         .holo-lift:hover {
             transform: translateY(-2px);
-            border-color: rgba(143, 184, 232, 0.22);
-            background: rgba(255, 255, 255, 0.03);
-        }
-
-        @keyframes drift {
-            0%, 100% { transform: translate(0, 0) scale(1); }
-            50% { transform: translate(2%, -3%) scale(1.03); }
-        }
-        .glow-accent {
-            position: absolute;
-            width: 520px;
-            height: 520px;
-            background: radial-gradient(circle, rgba(143, 184, 232, 0.05) 0%, transparent 65%);
-            pointer-events: none;
-            filter: blur(70px);
-            animation: drift 26s ease-in-out infinite;
+            border-color: rgba(80, 200, 255, 0.45);
+            background: linear-gradient(180deg, rgba(14, 30, 58, 0.6), rgba(6, 14, 30, 0.6));
         }
 
         /* Faint luminous rule used in place of a solid divider inside panels. */
         .holo-divider {
             border-color: transparent;
-            background-image: linear-gradient(to right, transparent, rgba(143, 184, 232, 0.16), transparent);
+            background-image: linear-gradient(to right, transparent, rgba(80, 200, 255, 0.3), transparent);
             height: 1px;
         }
 
         .holo-text-glow {
-            text-shadow: 0 0 16px rgba(143, 184, 232, 0.35);
+            text-shadow: 0 0 16px rgba(80, 200, 255, 0.45);
         }
 
         /* Nested elements inside an already-styled holo-panel — flatter still,
@@ -81,25 +69,19 @@
             animation: hologram-float 8s ease-in-out infinite;
         }
 
-        /* The presence orb — the app's one focal visual, replacing the old
-           "quantum eye". A slow breathing glow reads as alive/idle without
-           being distracting; active/speaking states are driven by adding
-           .orb-active (see updateSensorStatusLabel / speakText) rather than
-           a separate element, so there's only ever one orb to keep in sync. */
-        @keyframes orb-breathe {
-            0%, 100% { box-shadow: 0 0 40px 6px rgba(143, 184, 232, 0.18), inset 0 0 30px rgba(143, 184, 232, 0.08); }
-            50% { box-shadow: 0 0 60px 10px rgba(143, 184, 232, 0.28), inset 0 0 40px rgba(143, 184, 232, 0.14); }
-        }
+        /* The presence orb — the app's one focal visual. Now a live canvas
+           (see NeuralOrb / focalOrbScene) supplies the glow and motion;
+           this class only supplies the circular shape and a reactive
+           border tint (see updateSensorStatusLabel / speakText for what
+           drives .orb-active). */
         .jarvis-orb {
             border-radius: 9999px;
-            border: 1.5px solid rgba(143, 184, 232, 0.55);
-            background: radial-gradient(circle at 50% 40%, rgba(143, 184, 232, 0.08), rgba(5, 6, 8, 0.9) 70%);
-            animation: orb-breathe 5s ease-in-out infinite;
+            border: 1.5px solid rgba(80, 200, 255, 0.55);
             transition: border-color 0.4s ease;
+            filter: drop-shadow(0 18px 22px rgba(0, 0, 0, 0.55));
         }
         .jarvis-orb.orb-active {
-            border-color: rgba(143, 184, 232, 0.9);
-            animation: orb-breathe 1.6s ease-in-out infinite;
+            border-color: rgba(255, 120, 220, 0.75);
         }
 
         #mind-graph {
@@ -108,8 +90,7 @@
     </style>
 </head>
 <body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
-<div class="absolute top-24 left-1/4 glow-accent"></div>
-<div class="absolute bottom-12 right-1/4 glow-accent"></div>
+<canvas id="neural-bg-canvas" class="fixed inset-0 w-full h-full" style="z-index: 0; pointer-events: none;"></canvas>
 
 <div id="app" class="h-full w-full flex relative z-10">
     
@@ -230,9 +211,21 @@
             <div id="view-home" class="view-pane flex flex-col items-center min-h-full relative py-10 px-4">
                 <div class="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto" id="home-hero">
                     <div class="relative w-40 h-40 flex items-center justify-center" id="quantum-eye-container">
-                        <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden">
-                            <video id="eye-camera" autoplay muted playsinline class="hidden absolute inset-0 w-full h-full object-cover rounded-full opacity-70 pointer-events-none scale-110"></video>
-                            <div id="quantum-iris" class="relative w-3 h-3 rounded-full bg-primary/70 transition-transform duration-150 ease-out z-10" id="quantum-iris"></div>
+                        <!-- Cast shadow, deliberately NOT part of the floating group below —
+                             stays anchored while the orb bobs above it, reading as an object
+                             elevated above the page rather than a flat inline element. -->
+                        <div class="absolute left-1/2 bottom-1 -translate-x-1/2 w-24 h-3 rounded-full bg-black/45 blur-md pointer-events-none" aria-hidden="true"></div>
+                        <div class="relative w-full h-full hologram-float">
+                            <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
+                                <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
+                            </div>
+                            <!-- Small picture-in-picture bubble, not the old full-orb-covering
+                                 video — the orb (and its vault-note points) stays fully visible
+                                 around it. Sits outside #quantum-eye on purpose: that div's
+                                 circular overflow-hidden mask would clip a corner-positioned
+                                 element badly. Floats together with the orb (same wrapper) so
+                                 it doesn't visually detach during the bob animation. -->
+                            <video id="eye-camera" autoplay muted playsinline class="hidden absolute bottom-0 right-0 w-9 h-9 object-cover rounded-full opacity-90 pointer-events-none border-2 border-white/25 shadow-lg z-20"></video>
                         </div>
                     </div>
 
@@ -705,6 +698,195 @@
     let CURRENT_TAB = "home";
     let cy;
 
+    // ---------- Neural Orb (ambient background + focal Home orb) ----------
+    // Ported from the Orbis theme reference the user shared
+    // (orbis-s25-theme-preview.html) — a rotating wireframe sphere of
+    // particle "neurons" with a pink core glow. Both canvases this drives
+    // share ONE requestAnimationFrame loop (matching the reference file's
+    // own multi-canvas architecture), not two independent timers.
+    // See docs/superpowers/specs/2026-07-24-orbis-neural-theme-design.md.
+    const NeuralOrb = (() => {
+        // Small, dependency-free string hash (FNV-1a) — used to give a
+        // vault note a stable, deterministic sphere slot derived from its
+        // path, so it doesn't jump to a new position every time the graph
+        // reloads.
+        function hashString(str) {
+            let h = 2166136261;
+            for (let i = 0; i < str.length; i++) {
+                h ^= str.charCodeAt(i);
+                h = Math.imul(h, 16777619);
+            }
+            return h >>> 0;
+        }
+
+        // Evenly-spaced points on a unit sphere via a fibonacci lattice.
+        function fibonacciSpherePoint(i, n) {
+            const offset = 2 / n;
+            const increment = Math.PI * (3 - Math.sqrt(5));
+            const y = ((i * offset) - 1) + (offset / 2);
+            const r = Math.sqrt(Math.max(0, 1 - y * y));
+            const phi = (i % n) * increment;
+            return { x: Math.cos(phi) * r, y, z: Math.sin(phi) * r };
+        }
+
+        function randomNeurons(count) {
+            const pts = [];
+            for (let i = 0; i < count; i++) {
+                const { x, y, z } = fibonacciSpherePoint(i + Math.random(), count);
+                pts.push({ x, y, z, ph: Math.random() * 6.28, sp: 0.5 + Math.random() * 1.5, note: null });
+            }
+            return pts;
+        }
+
+        function project(x, y, z, rot, cx, cy, R) {
+            const cr = Math.cos(rot), sr = Math.sin(rot);
+            const X = x * cr - z * sr, Z = x * sr + z * cr;
+            const Y = y * Math.cos(0.3) - Z * Math.sin(0.3);
+            return [cx + X * R, cy + Y * R, (Z + 1.6) / 3.2];
+        }
+
+        const STATE_CONFIG = {
+            idle: { speed: 0.2, pinkMix: 0.35, brightness: 1 },
+            active: { speed: 0.32, pinkMix: 0.55, brightness: 1.25 },
+            speaking: { speed: 0.5, pinkMix: 0.85, brightness: 1.6 },
+        };
+
+        const scenes = [];
+        let t = 0;
+        let last = null;
+
+        function shouldPause() {
+            return (typeof sleepModeActive !== "undefined" && sleepModeActive) || document.hidden;
+        }
+
+        function draw(scene, dt) {
+            const c = scene.canvas;
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            if (Math.round(c.width) !== Math.round(c.clientWidth * dpr)) {
+                c.width = c.clientWidth * dpr;
+                c.height = c.clientHeight * dpr;
+                scene.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
+            const g = scene.ctx, W = c.clientWidth, H = c.clientHeight;
+            const cfg = STATE_CONFIG[scene.state] || STATE_CONFIG.idle;
+            scene.rot += dt * cfg.speed;
+            const cx = W / 2, cy = H * scene.cy, R = Math.min(W, H) * scene.R;
+            const dim = scene.dim * cfg.brightness;
+
+            const bg = g.createLinearGradient(0, 0, 0, H);
+            bg.addColorStop(0, "#020714"); bg.addColorStop(0.45, "#071328"); bg.addColorStop(1, "#01040c");
+            g.fillStyle = bg; g.fillRect(0, 0, W, H);
+
+            const glow = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.7);
+            glow.addColorStop(0.4, `rgba(30,100,220,${0.22 * dim})`); glow.addColorStop(1, "rgba(0,0,0,0)");
+            g.fillStyle = glow; g.beginPath(); g.arc(cx, cy, R * 1.7, 0, 6.29); g.fill();
+
+            g.strokeStyle = `rgba(90,190,255,${0.2 * dim})`; g.lineWidth = 1;
+            for (const lat of [-60, -30, 0, 30, 60]) {
+                const la = lat * Math.PI / 180, r = Math.cos(la), y = Math.sin(la);
+                g.beginPath();
+                for (let k = 0; k <= 40; k++) {
+                    const a = 6.283 * k / 40;
+                    const [x, yy] = project(r * Math.cos(a), y, r * Math.sin(a), scene.rot, cx, cy, R);
+                    k ? g.lineTo(x, yy) : g.moveTo(x, yy);
+                }
+                g.stroke();
+            }
+
+            const corePink = 0.3 + cfg.pinkMix * 0.5;
+            const core = g.createRadialGradient(cx, cy - R * 0.06, 0, cx, cy - R * 0.06, R * 0.5);
+            core.addColorStop(0, `rgba(255,120,220,${corePink * dim})`); core.addColorStop(1, "rgba(0,0,0,0)");
+            g.fillStyle = core; g.beginPath(); g.arc(cx, cy - R * 0.06, R * 0.5, 0, 6.29); g.fill();
+
+            scene.projected = [];
+            for (const n of scene.neurons) {
+                const [x, y, d] = project(n.x, n.y, n.z, scene.rot, cx, cy, R * 0.98);
+                const fire = 0.5 + 0.5 * Math.sin(t * n.sp + n.ph);
+                const baseSz = (0.5 + 1.6 * d) * (1 + 0.6 * fire);
+                if (n.note) {
+                    // Real vault-note points read noticeably bigger/brighter
+                    // than decorative points — a soft halo plus an
+                    // oversized, more-saturated core, not just a color swap.
+                    const sz = baseSz * 2.5;
+                    const haloR = sz * 2.8;
+                    const halo = g.createRadialGradient(x, y, 0, x, y, haloR);
+                    halo.addColorStop(0, `rgba(255,170,235,${0.5 * dim})`);
+                    halo.addColorStop(1, "rgba(255,170,235,0)");
+                    g.fillStyle = halo;
+                    g.beginPath(); g.arc(x, y, haloR, 0, 6.29); g.fill();
+                    g.fillStyle = `rgba(255,195,240,${Math.min(1, (170 + 200 * d) / 255 * dim)})`;
+                    g.beginPath(); g.arc(x, y, sz, 0, 6.29); g.fill();
+                    scene.projected.push({ x, y, note: n.note });
+                } else {
+                    g.fillStyle = `rgba(110,215,255,${(60 + 180 * d) / 255 * dim})`;
+                    g.beginPath(); g.arc(x, y, baseSz, 0, 6.29); g.fill();
+                }
+            }
+
+            if (scene.links.length) {
+                g.strokeStyle = `rgba(255,150,220,${0.3 * dim})`;
+                g.lineWidth = 1;
+                for (const [a, b] of scene.links) {
+                    const [ax, ay] = project(a.x, a.y, a.z, scene.rot, cx, cy, R * 0.98);
+                    const [bx, by] = project(b.x, b.y, b.z, scene.rot, cx, cy, R * 0.98);
+                    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+                }
+            }
+        }
+
+        function frame(now) {
+            if (last === null) last = now;
+            const dt = Math.min(0.05, (now - last) / 1000);
+            last = now;
+            if (!shouldPause()) {
+                t += dt;
+                scenes.forEach(s => draw(s, dt));
+            }
+            requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+
+        function register(canvas, opts) {
+            const scene = {
+                canvas,
+                ctx: canvas.getContext("2d"),
+                rot: Math.random() * 6,
+                neurons: randomNeurons(opts.neuronCount),
+                links: [],
+                dim: opts.dim,
+                R: opts.R,
+                cy: opts.cy,
+                state: "idle",
+                projected: [],
+            };
+            scenes.push(scene);
+            return scene;
+        }
+
+        function setState(scene, state) {
+            scene.state = STATE_CONFIG[state] ? state : "idle";
+            scene.canvas.dataset.orbState = scene.state;
+        }
+
+        function setNeurons(scene, neurons, links) {
+            scene.neurons = neurons;
+            scene.links = links || [];
+        }
+
+        function hitTest(scene, clientX, clientY) {
+            const rect = scene.canvas.getBoundingClientRect();
+            const x = clientX - rect.left, y = clientY - rect.top;
+            let closest = null, closestDist = 16;
+            for (const p of scene.projected) {
+                const dist = Math.hypot(p.x - x, p.y - y);
+                if (dist < closestDist) { closest = p.note; closestDist = dist; }
+            }
+            return closest;
+        }
+
+        return { register, setState, setNeurons, hitTest, randomNeurons, fibonacciSpherePoint, hashString };
+    })();
+
     // Background polling used to retry an invalid/stale key forever — every
     // 2-4s, silently, until someone noticed the server logs. Wrapping the
     // pollers' fetches in this instead clears the bad key on the first 401/403
@@ -844,8 +1026,6 @@
     let motionCanvas = null;
     let motionCtx = null;
     let cameraTrackerActive = false;
-    let trackingLerpX = 0;
-    let trackingLerpY = 0;
     // Ambient-awareness state derived from the same motion-diff data above —
     // a cheap proxy for "activity resumed after stillness" (32x32 pixel diff
     // can't reliably tell "someone left" vs "someone is just sitting still",
@@ -903,9 +1083,11 @@
         if (active.length > 0) {
             if (label) { label.textContent = "Active: " + active.join(", "); label.className = "text-[11px] text-primary uppercase tracking-[0.2em]"; }
             if (orb) orb.classList.add('orb-active');
+            NeuralOrb.setState(focalOrbScene, isSpeakingNow ? 'speaking' : 'active');
         } else {
             if (label) { label.textContent = "Sensors standby"; label.className = "text-[11px] text-secondary uppercase tracking-[0.2em]"; }
             if (orb) orb.classList.remove('orb-active');
+            NeuralOrb.setState(focalOrbScene, isSpeakingNow ? 'speaking' : 'idle');
         }
     }
 
@@ -1015,10 +1197,6 @@
     function stopCameraMotionTracking() {
         cameraTrackerActive = false;
         prevFrameData = null;
-        const iris = document.getElementById('quantum-iris');
-        if (iris) {
-            iris.style.transform = 'translate(0px, 0px)';
-        }
     }
 
     // Genuine vision, not the cosmetic iris-follow tracking above: captures a
@@ -1500,23 +1678,6 @@
                     }
 
                     maybeSendAmbientNudge(count);
-
-                    if (count > 8) {
-                        const avgX = sumX / count;
-                        const avgY = sumY / count;
-
-                        // Mirrored map to translation coordinate space (-12px to 12px range)
-                        const targetX = -((avgX / 32) * 24 - 12);
-                        const targetY = ((avgY / 32) * 24 - 12);
-
-                        trackingLerpX += (targetX - trackingLerpX) * 0.12;
-                        trackingLerpY += (targetY - trackingLerpY) * 0.12;
-
-                        const iris = document.getElementById('quantum-iris');
-                        if (iris) {
-                            iris.style.transform = `translate(${trackingLerpX}px, ${trackingLerpY}px)`;
-                        }
-                    }
                 }
                 prevFrameData = data;
             } catch (e) {
@@ -1853,47 +2014,72 @@
             const url = URL.createObjectURL(blob);
             currentAudioEl = new Audio(url);
             isSpeakingNow = true;
-            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); };
-            currentAudioEl.onerror = () => { isSpeakingNow = false; };
+            updateSensorStatusLabel();
+            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); };
+            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); };
             await currentAudioEl.play();
         } catch {}
     }
 
-    // 3. CURSOR-TRACKING QUANTUM EYE & SPECTRUM
-    document.addEventListener('mousemove', (e) => {
-        if (cameraStream && cameraTrackerActive) return;
-        const eyeContainer = document.getElementById('quantum-eye-container');
-        if (!eyeContainer) return;
-        const rect = eyeContainer.getBoundingClientRect();
-        const eyeX = rect.left + rect.width / 2;
-        const eyeY = rect.top + rect.height / 2;
-        
-        const deltaX = e.clientX - eyeX;
-        const deltaY = e.clientY - eyeY;
-        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-        
-        const maxMove = 7; 
-        const angle = Math.atan2(deltaY, deltaX);
-        const moveX = Math.min(maxMove, distance / 22) * Math.cos(angle);
-        const moveY = Math.min(maxMove, distance / 22) * Math.sin(angle);
-        
-        const iris = document.getElementById('quantum-iris');
-        if (iris) {
-            iris.style.transform = `translate(${moveX}px, ${moveY}px)`;
+    // ---------- Focal Home orb: registration, click-to-open, state wiring ----------
+    const focalOrbScene = NeuralOrb.register(document.getElementById('quantum-eye-canvas'), { neuronCount: 420, dim: 1, R: 0.9, cy: 0.5 });
+
+    // Reusable: opens a specific vault note from an orb click. Reached
+    // whenever a neuron has `.note` set — see loadOrbVaultGraph, which
+    // populates focalOrbScene with real vault notes on Home-tab entry.
+    function openVaultNoteFromOrb(path) {
+        switchTab('vault');
+        openVaultNote(encodeURIComponent(path));
+    }
+
+    const ORB_SLOT_COUNT = 480;
+
+    async function loadOrbVaultGraph() {
+        if (!CURRENT_API_KEY) {
+            NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []);
+            return;
+        }
+        try {
+            const res = await authFetch('/api/system/vault/graph', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []); return; }
+            const data = await res.json();
+            const notes = data.notes || [];
+            if (notes.length === 0) {
+                NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []);
+                return;
+            }
+
+            const neuronsByPath = new Map();
+            const neurons = notes.map(n => {
+                const slot = NeuralOrb.hashString(n.path) % ORB_SLOT_COUNT;
+                const { x, y, z } = NeuralOrb.fibonacciSpherePoint(slot, ORB_SLOT_COUNT);
+                const neuron = { x, y, z, ph: Math.random() * 6.28, sp: 0.5 + Math.random() * 1.5, note: n.path };
+                neuronsByPath.set(n.path, neuron);
+                return neuron;
+            });
+
+            const links = (data.links || [])
+                .map(l => {
+                    const a = neuronsByPath.get(l.from_path);
+                    const b = neuronsByPath.get(l.to_path);
+                    return (a && b) ? [a, b] : null;
+                })
+                .filter(Boolean);
+
+            NeuralOrb.setNeurons(focalOrbScene, neurons, links);
+        } catch {
+            NeuralOrb.setNeurons(focalOrbScene, NeuralOrb.randomNeurons(420), []);
+        }
+    }
+
+    document.getElementById('quantum-eye').addEventListener('click', (e) => {
+        const note = NeuralOrb.hitTest(focalOrbScene, e.clientX, e.clientY);
+        if (note) {
+            openVaultNoteFromOrb(note);
+        } else {
+            switchTab('vault');
         }
     });
-
-    function randomBlink() {
-        const eye = document.getElementById('quantum-eye');
-        if (eye) {
-            eye.style.transform = 'scaleY(0.03)';
-            setTimeout(() => {
-                eye.style.transform = 'scaleY(1)';
-            }, 140);
-        }
-        setTimeout(randomBlink, 4500 + Math.random() * 5000);
-    }
-    setTimeout(randomBlink, 3000);
 
     function animateWaveform() {
         const bars = document.querySelectorAll('.wave-bar');
@@ -2112,6 +2298,7 @@
         if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); }
         if (tabId === 'calendar') loadCalendarEvents();
         if (tabId === 'vault') loadVaultNotes();
+        if (tabId === 'home') loadOrbVaultGraph();
     }
 
     // Fills the chat input with a suggested prompt and sends it immediately —
@@ -3731,6 +3918,7 @@
 
     // Initializers
     window.addEventListener('DOMContentLoaded', () => {
+        NeuralOrb.register(document.getElementById('neural-bg-canvas'), { neuronCount: 300, dim: 0.35, R: 0.42, cy: 0.5 });
         initCytoscape();
         syncDashboardViewConfig();
         window.addEventListener('storage', (e) => {
