@@ -20,6 +20,8 @@ import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./mcp-registry.js";
+import * as vaultRepo from "../kernel/state/vault-repo.js";
+import * as obsidian from "./providers/obsidian.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -63,6 +65,10 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   record_command_outcome: "system.execute",
   propose_mcp_server: "system.mcp_manage",
   confirm_build_direction: "executive.plan",
+  search_vault: "vault.read",
+  get_vault_note: "vault.read",
+  get_vault_backlinks: "vault.read",
+  write_vault_note: "vault.write",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -203,6 +209,51 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       properties: {
         path: { type: Type.STRING, description: "Relative path to the file within the notes folder" },
         content: { type: Type.STRING, description: "The full text content to write" },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    name: "search_vault",
+    description: "Search the user's real Obsidian vault by note title or tag. Use this to find relevant existing notes before answering a question about something that might already be written down, or before creating a new note that might duplicate one.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "A title fragment or tag to search for" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_vault_note",
+    description: "Read the full contents of one note in the user's Obsidian vault by its vault-relative path (e.g. \"Research/quantum-physics.md\").",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "The note's vault-relative path" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "get_vault_backlinks",
+    description: "Find every note in the vault that links to a given note — what points at this, not what this points to.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "The target note's vault-relative path" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_vault_note",
+    description: "Create or overwrite a note in the user's real Obsidian vault — same full read/write trust as the Jarvis notes folder tools above.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Vault-relative path for the note" },
+        content: { type: Type.STRING, description: "The full note content (Markdown, may include [[wikilinks]] and #tags)" },
       },
       required: ["path", "content"],
     },
@@ -473,6 +524,23 @@ export async function executeTool(
       case "write_file":
         output = await files.writeFile(args.path, args.content);
         break;
+      case "search_vault":
+        output = { results: await vaultRepo.searchNotes(args.query) };
+        break;
+      case "get_vault_note": {
+        const note = await vaultRepo.getNoteByPath(args.path);
+        if (!note) {
+          return { name, ok: false, error: `No indexed note at "${args.path}" — it may not exist, or the vault sync job hasn't run since it was created.` };
+        }
+        output = { content: await obsidian.readNote(args.path), frontmatter: note.frontmatter, tags: note.tags };
+        break;
+      }
+      case "get_vault_backlinks":
+        output = { backlinks: await vaultRepo.getBacklinks(args.path) };
+        break;
+      case "write_vault_note":
+        output = await obsidian.createNote(args.path, args.content);
+        break;
       case "query_knowledge_graph":
         output = { results: await knowledgeGraph.queryKnowledge(args.query) };
         break;
@@ -612,6 +680,10 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   view_screen: ["what's on my screen", "whats on my screen", "look at my screen", "what am i looking at", "help me with this error", "what does this say"],
   set_objective: ["help me", "i want to", "track this goal", "keep me accountable", "my goal is"],
   list_objectives: ["what am i tracking", "my goals", "my objectives", "what are my goals"],
+  search_vault: ["in my vault", "in my notes", "search my vault", "find in my vault"],
+  get_vault_note: ["read my note", "open my note", "what does my note say"],
+  get_vault_backlinks: ["what links to", "backlinks for", "what references"],
+  write_vault_note: ["add this to my vault", "save this to my vault", "create a vault note"],
 };
 
 /**

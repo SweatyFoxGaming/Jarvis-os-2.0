@@ -41,6 +41,8 @@ export const ALL_CAPABILITIES = [
   "objectives.write",
   "system.execute",
   "system.mcp_manage",
+  "vault.read",
+  "vault.write",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
