@@ -22,8 +22,19 @@ services:
       - ${JARVIS_FILES_DIR}:/jarvis-files
       # The user's real, existing Obsidian vault — same scoped-mount
       # pattern as the jarvis-files folder above, new root (see
-      # src/capabilities/providers/obsidian.ts).
-      - ${OBSIDIAN_VAULT_DIR}:/obsidian-vault
+      # src/capabilities/providers/obsidian.ts). Unlike JARVIS_FILES_DIR
+      # (which always has a real value once .env is filled in),
+      # OBSIDIAN_VAULT_DIR is expected to stay blank until the user
+      # configures a real vault path — but Docker Compose's volumes: syntax
+      # fails outright on an empty host-side path (unlike a plain env var,
+      # which tolerates being blank fine), so this needs a fallback default
+      # to let the container start at all before the feature is configured.
+      # The vault sync job and every vault-writing function gate on
+      # process.env.OBSIDIAN_VAULT_DIR itself (passed through via env_file,
+      # a separate mechanism from this volume's own ${...} substitution),
+      # so they still correctly no-op even though a mount now technically
+      # exists pointing at this placeholder folder.
+      - ${OBSIDIAN_VAULT_DIR:-./obsidian-vault-unconfigured}:/obsidian-vault
     # Lets the container reach services on the host (e.g. a local Ollama instance
     # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
     extra_hosts:
