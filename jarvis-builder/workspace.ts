@@ -97,6 +97,17 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
   // is discarded immediately after.
   await execFileAsync("git", ["clone", stagingDir, dir]);
   await execFileAsync("git", ["worktree", "remove", "--force", stagingDir], { cwd: REPO_HOST_PATH }).catch(() => {});
+  // `git worktree add -B` above created a real local branch in
+  // REPO_HOST_PATH's own repo (not just the staging checkout) —
+  // `worktree remove` only unregisters the staging directory, it never
+  // deletes that branch. The branch was only scaffolding for the staging
+  // worktree: the sandbox's clone above already has everything it needs,
+  // so leaving it registered in REPO_HOST_PATH would permanently pollute
+  // the real repo's branch list on every build request, forever. `-D`
+  // (force) is safe here since the branch's commits already live in the
+  // sandbox clone's own history — this repo's own branch pointer doesn't
+  // need to be "merged" to be deleted.
+  await execFileAsync("git", ["branch", "-D", branch], { cwd: REPO_HOST_PATH }).catch(() => {});
 
   // Deliberately no `-e`/`--env-file` here: the sandbox container starts
   // with a clean environment, no GitHub credentials, no production
