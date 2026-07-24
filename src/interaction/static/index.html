@@ -43,20 +43,6 @@
             background: linear-gradient(180deg, rgba(14, 30, 58, 0.6), rgba(6, 14, 30, 0.6));
         }
 
-        @keyframes drift {
-            0%, 100% { transform: translate(0, 0) scale(1); }
-            50% { transform: translate(2%, -3%) scale(1.03); }
-        }
-        .glow-accent {
-            position: absolute;
-            width: 520px;
-            height: 520px;
-            background: radial-gradient(circle, rgba(143, 184, 232, 0.05) 0%, transparent 65%);
-            pointer-events: none;
-            filter: blur(70px);
-            animation: drift 26s ease-in-out infinite;
-        }
-
         /* Faint luminous rule used in place of a solid divider inside panels. */
         .holo-divider {
             border-color: transparent;
@@ -110,8 +96,7 @@
     </style>
 </head>
 <body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
-<div class="absolute top-24 left-1/4 glow-accent"></div>
-<div class="absolute bottom-12 right-1/4 glow-accent"></div>
+<canvas id="neural-bg-canvas" class="fixed inset-0 w-full h-full" style="z-index: 0; pointer-events: none;"></canvas>
 
 <div id="app" class="h-full w-full flex relative z-10">
     
@@ -706,6 +691,182 @@
     let CURRENT_API_KEY = localStorage.getItem('admin_api_key') || "";
     let CURRENT_TAB = "home";
     let cy;
+
+    // ---------- Neural Orb (ambient background + focal Home orb) ----------
+    // Ported from the Orbis theme reference the user shared
+    // (orbis-s25-theme-preview.html) — a rotating wireframe sphere of
+    // particle "neurons" with a pink core glow. Both canvases this drives
+    // share ONE requestAnimationFrame loop (matching the reference file's
+    // own multi-canvas architecture), not two independent timers.
+    // See docs/superpowers/specs/2026-07-24-orbis-neural-theme-design.md.
+    const NeuralOrb = (() => {
+        // Small, dependency-free string hash (FNV-1a) — used to give a
+        // vault note a stable, deterministic sphere slot derived from its
+        // path, so it doesn't jump to a new position every time the graph
+        // reloads.
+        function hashString(str) {
+            let h = 2166136261;
+            for (let i = 0; i < str.length; i++) {
+                h ^= str.charCodeAt(i);
+                h = Math.imul(h, 16777619);
+            }
+            return h >>> 0;
+        }
+
+        // Evenly-spaced points on a unit sphere via a fibonacci lattice.
+        function fibonacciSpherePoint(i, n) {
+            const offset = 2 / n;
+            const increment = Math.PI * (3 - Math.sqrt(5));
+            const y = ((i * offset) - 1) + (offset / 2);
+            const r = Math.sqrt(Math.max(0, 1 - y * y));
+            const phi = (i % n) * increment;
+            return { x: Math.cos(phi) * r, y, z: Math.sin(phi) * r };
+        }
+
+        function randomNeurons(count) {
+            const pts = [];
+            for (let i = 0; i < count; i++) {
+                const { x, y, z } = fibonacciSpherePoint(i + Math.random(), count);
+                pts.push({ x, y, z, ph: Math.random() * 6.28, sp: 0.5 + Math.random() * 1.5, note: null });
+            }
+            return pts;
+        }
+
+        function project(x, y, z, rot, cx, cy, R) {
+            const cr = Math.cos(rot), sr = Math.sin(rot);
+            const X = x * cr - z * sr, Z = x * sr + z * cr;
+            const Y = y * Math.cos(0.3) - Z * Math.sin(0.3);
+            return [cx + X * R, cy + Y * R, (Z + 1.6) / 3.2];
+        }
+
+        const STATE_CONFIG = {
+            idle: { speed: 0.2, pinkMix: 0.35, brightness: 1 },
+            active: { speed: 0.32, pinkMix: 0.55, brightness: 1.25 },
+            speaking: { speed: 0.5, pinkMix: 0.85, brightness: 1.6 },
+        };
+
+        const scenes = [];
+        let t = 0;
+        let last = null;
+
+        function shouldPause() {
+            return (typeof sleepModeActive !== "undefined" && sleepModeActive) || document.hidden;
+        }
+
+        function draw(scene, dt) {
+            const c = scene.canvas;
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            if (Math.round(c.width) !== Math.round(c.clientWidth * dpr)) {
+                c.width = c.clientWidth * dpr;
+                c.height = c.clientHeight * dpr;
+                scene.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
+            const g = scene.ctx, W = c.clientWidth, H = c.clientHeight;
+            const cfg = STATE_CONFIG[scene.state] || STATE_CONFIG.idle;
+            scene.rot += dt * cfg.speed;
+            const cx = W / 2, cy = H * scene.cy, R = Math.min(W, H) * scene.R;
+            const dim = scene.dim * cfg.brightness;
+
+            const bg = g.createLinearGradient(0, 0, 0, H);
+            bg.addColorStop(0, "#020714"); bg.addColorStop(0.45, "#071328"); bg.addColorStop(1, "#01040c");
+            g.fillStyle = bg; g.fillRect(0, 0, W, H);
+
+            const glow = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.7);
+            glow.addColorStop(0.4, `rgba(30,100,220,${0.22 * dim})`); glow.addColorStop(1, "rgba(0,0,0,0)");
+            g.fillStyle = glow; g.beginPath(); g.arc(cx, cy, R * 1.7, 0, 6.29); g.fill();
+
+            g.strokeStyle = `rgba(90,190,255,${0.2 * dim})`; g.lineWidth = 1;
+            for (const lat of [-60, -30, 0, 30, 60]) {
+                const la = lat * Math.PI / 180, r = Math.cos(la), y = Math.sin(la);
+                g.beginPath();
+                for (let k = 0; k <= 40; k++) {
+                    const a = 6.283 * k / 40;
+                    const [x, yy] = project(r * Math.cos(a), y, r * Math.sin(a), scene.rot, cx, cy, R);
+                    k ? g.lineTo(x, yy) : g.moveTo(x, yy);
+                }
+                g.stroke();
+            }
+
+            const corePink = 0.3 + cfg.pinkMix * 0.5;
+            const core = g.createRadialGradient(cx, cy - R * 0.06, 0, cx, cy - R * 0.06, R * 0.5);
+            core.addColorStop(0, `rgba(255,120,220,${corePink * dim})`); core.addColorStop(1, "rgba(0,0,0,0)");
+            g.fillStyle = core; g.beginPath(); g.arc(cx, cy - R * 0.06, R * 0.5, 0, 6.29); g.fill();
+
+            scene.projected = [];
+            for (const n of scene.neurons) {
+                const [x, y, d] = project(n.x, n.y, n.z, scene.rot, cx, cy, R * 0.98);
+                const fire = 0.5 + 0.5 * Math.sin(t * n.sp + n.ph);
+                const sz = (0.5 + 1.6 * d) * (1 + 0.6 * fire);
+                g.fillStyle = n.note
+                    ? `rgba(255,140,225,${(80 + 160 * d) / 255 * dim})`
+                    : `rgba(110,215,255,${(60 + 180 * d) / 255 * dim})`;
+                g.beginPath(); g.arc(x, y, sz, 0, 6.29); g.fill();
+                if (n.note) scene.projected.push({ x, y, note: n.note });
+            }
+
+            if (scene.links.length) {
+                g.strokeStyle = `rgba(255,150,220,${0.3 * dim})`;
+                g.lineWidth = 1;
+                for (const [a, b] of scene.links) {
+                    const [ax, ay] = project(a.x, a.y, a.z, scene.rot, cx, cy, R * 0.98);
+                    const [bx, by] = project(b.x, b.y, b.z, scene.rot, cx, cy, R * 0.98);
+                    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+                }
+            }
+        }
+
+        function frame(now) {
+            if (last === null) last = now;
+            const dt = Math.min(0.05, (now - last) / 1000);
+            last = now;
+            if (!shouldPause()) {
+                t += dt;
+                scenes.forEach(s => draw(s, dt));
+            }
+            requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+
+        function register(canvas, opts) {
+            const scene = {
+                canvas,
+                ctx: canvas.getContext("2d"),
+                rot: Math.random() * 6,
+                neurons: randomNeurons(opts.neuronCount),
+                links: [],
+                dim: opts.dim,
+                R: opts.R,
+                cy: opts.cy,
+                state: "idle",
+                projected: [],
+            };
+            scenes.push(scene);
+            return scene;
+        }
+
+        function setState(scene, state) {
+            scene.state = STATE_CONFIG[state] ? state : "idle";
+            scene.canvas.dataset.orbState = scene.state;
+        }
+
+        function setNeurons(scene, neurons, links) {
+            scene.neurons = neurons;
+            scene.links = links || [];
+        }
+
+        function hitTest(scene, clientX, clientY) {
+            const rect = scene.canvas.getBoundingClientRect();
+            const x = clientX - rect.left, y = clientY - rect.top;
+            let closest = null, closestDist = 16;
+            for (const p of scene.projected) {
+                const dist = Math.hypot(p.x - x, p.y - y);
+                if (dist < closestDist) { closest = p.note; closestDist = dist; }
+            }
+            return closest;
+        }
+
+        return { register, setState, setNeurons, hitTest, randomNeurons, fibonacciSpherePoint, hashString };
+    })();
 
     // Background polling used to retry an invalid/stale key forever — every
     // 2-4s, silently, until someone noticed the server logs. Wrapping the
@@ -3733,6 +3894,7 @@
 
     // Initializers
     window.addEventListener('DOMContentLoaded', () => {
+        NeuralOrb.register(document.getElementById('neural-bg-canvas'), { neuronCount: 300, dim: 0.35, R: 0.42, cy: 0.5 });
         initCytoscape();
         syncDashboardViewConfig();
         window.addEventListener('storage', (e) => {
