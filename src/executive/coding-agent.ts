@@ -114,7 +114,19 @@ export async function runCodingAgent(
     return { ok: false, error: `Failed to create the sandboxed workspace: ${err.message}` };
   }
 
-  const baseShaResult = await builderClient.execInWorkspace(buildRequestId, "git rev-parse HEAD");
+  // execInWorkspace can reject outright (network/transport failure against
+  // jarvis-builder), not just resolve with a nonzero exitCode — this is the
+  // same failure class proposePlan's own try/catch guards against below,
+  // and without a guard here a transport-level throw would escape
+  // runCodingAgent entirely, leaking the workspace and leaving the build
+  // request wedged in 'coding' with no recovery path.
+  let baseShaResult: { stdout: string; stderr: string; exitCode: number };
+  try {
+    baseShaResult = await builderClient.execInWorkspace(buildRequestId, "git rev-parse HEAD");
+  } catch (err: any) {
+    await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+    return { ok: false, error: `Failed to resolve the workspace's starting commit: ${err.message}` };
+  }
   if (baseShaResult.exitCode !== 0) {
     await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
     return { ok: false, error: `Failed to resolve the workspace's starting commit: ${baseShaResult.stderr}` };
