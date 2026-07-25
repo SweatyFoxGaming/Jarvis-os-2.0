@@ -294,10 +294,15 @@ const TASK_REVIEW_SCHEMA = {
 // that task's own title/description, not the whole build request's
 // objective. Returns a structured verdict (not prose, unlike reviewCodeDiff)
 // because this drives a programmatic retry/continue decision inside
-// coding-agent.ts's fix loop. Fails open (approved: true) both when no Groq
-// client is available and when the review call itself throws — an optional
-// quality gate degrading closed would turn a transient Groq hiccup into a
-// permanently-blocked build, worse than proceeding without the extra check.
+// coding-agent.ts's fix loop. Fails CLOSED (approved: false) both when no
+// Groq client is available and when the review call itself throws — this
+// used to fail open, which meant a Groq outage silently rubber-stamped
+// every task with no code ever actually reviewed, identical in the approval
+// queue to a normally-reviewed one. Failing closed doesn't loop forever: a
+// blocked task still only gets MAX_TASK_FIX_ATTEMPTS retries in
+// coding-agent.ts before the whole build request fails cleanly with this
+// message as the reason, surfaced to the human — a clear "review
+// unavailable" failure, not a silent bypass.
 export async function reviewTaskDiff(
   taskTitle: string,
   taskDescription: string,
@@ -305,7 +310,7 @@ export async function reviewTaskDiff(
   groq: Groq | null
 ): Promise<{ approved: boolean; findings: string }> {
   if (!groq) {
-    return { approved: true, findings: "No capable model was available to review this task — proceeding without review." };
+    return { approved: false, findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure GROQ_API_KEY to enable the coding agent's review gate." };
   }
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
@@ -330,6 +335,6 @@ export async function reviewTaskDiff(
     };
   } catch (err: any) {
     observation.logTelemetry("warn", "Departments", `reviewTaskDiff failed: ${err.message}`);
-    return { approved: true, findings: `Automated review failed (${err.message}) — proceeding without review.` };
+    return { approved: false, findings: `Automated review failed (${err.message}) — holding rather than shipping it unreviewed.` };
   }
 }

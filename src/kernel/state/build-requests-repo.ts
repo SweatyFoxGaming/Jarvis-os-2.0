@@ -1,4 +1,7 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export type BuildRequestStatus =
   | "researching"
@@ -49,7 +52,8 @@ export async function getBuildRequest(id: number): Promise<BuildRequestRow | nul
     const db = getPool();
     const { rows } = await db.query(`SELECT * FROM build_requests WHERE id = $1`, [id]);
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `getBuildRequest(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -65,7 +69,8 @@ export async function getLatestAwaitingConsult(username: string): Promise<BuildR
       [username]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `getLatestAwaitingConsult("${username}") failed: ${err.message}`);
     return null;
   }
 }
@@ -79,7 +84,8 @@ export async function listBuildRequests(status?: BuildRequestStatus): Promise<Bu
     }
     const { rows } = await db.query(`SELECT * FROM build_requests ORDER BY created_at DESC`);
     return rows;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `listBuildRequests(${status ?? "<all>"}) failed: ${err.message}`);
     return [];
   }
 }
@@ -93,7 +99,8 @@ export async function recordResearch(id: number, researchSummary: string): Promi
       [researchSummary, id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `recordResearch(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -105,8 +112,9 @@ export async function markResearchError(id: number, errorDetail: string): Promis
       `UPDATE build_requests SET status = 'error', error_detail = $1, updated_at = now() WHERE id = $2 AND status = 'researching'`,
       [errorDetail, id]
     );
-  } catch {
+  } catch (err: any) {
     // Best-effort — a failed error-log write is not itself worth crashing over.
+    observation.logTelemetry("warn", "BuildRequests", `markResearchError(${id}) failed: ${err.message}`);
   }
 }
 
@@ -123,7 +131,8 @@ export async function recordDirectionConfirmed(id: number, directionNotes: strin
       [directionNotes, id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `recordDirectionConfirmed(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -136,8 +145,9 @@ export async function markCoding(id: number): Promise<void> {
   try {
     const db = getPool();
     await db.query(`UPDATE build_requests SET status = 'coding', updated_at = now() WHERE id = $1 AND status = 'direction_confirmed'`, [id]);
-  } catch {
+  } catch (err: any) {
     // Best-effort — a failed write here doesn't block drafting itself.
+    observation.logTelemetry("warn", "BuildRequests", `markCoding(${id}) failed: ${err.message}`);
   }
 }
 
@@ -150,7 +160,8 @@ export async function recordCodeDraft(id: number, codeSummary: string, files: Dr
       [codeSummary, JSON.stringify(files), id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `recordCodeDraft(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -162,8 +173,9 @@ export async function markCodeDraftError(id: number, errorDetail: string): Promi
       `UPDATE build_requests SET status = 'error', error_detail = $1, updated_at = now() WHERE id = $2 AND status = 'coding'`,
       [errorDetail, id]
     );
-  } catch {
+  } catch (err: any) {
     // Best-effort.
+    observation.logTelemetry("warn", "BuildRequests", `markCodeDraftError(${id}) failed: ${err.message}`);
   }
 }
 
@@ -175,7 +187,8 @@ export async function rejectCode(id: number): Promise<BuildRequestRow | null> {
       [id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `rejectCode(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -189,7 +202,8 @@ export async function recordPrOpened(id: number, prUrl: string, prNumber: number
       [prUrl, prNumber, id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `recordPrOpened(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -201,8 +215,9 @@ export async function markPrError(id: number, errorDetail: string): Promise<void
       `UPDATE build_requests SET status = 'error', error_detail = $1, updated_at = now() WHERE id = $2 AND status = 'awaiting_code_approval'`,
       [errorDetail, id]
     );
-  } catch {
+  } catch (err: any) {
     // Best-effort.
+    observation.logTelemetry("warn", "BuildRequests", `markPrError(${id}) failed: ${err.message}`);
   }
 }
 
@@ -215,7 +230,8 @@ export async function recordQaReview(id: number, qaSummary: string): Promise<voi
       `UPDATE build_requests SET qa_summary = $1, status = 'qa_complete', updated_at = now() WHERE id = $2 AND status = 'pr_opened'`,
       [qaSummary, id]
     );
-  } catch {
+  } catch (err: any) {
     // Best-effort.
+    observation.logTelemetry("warn", "BuildRequests", `recordQaReview(${id}) failed: ${err.message}`);
   }
 }

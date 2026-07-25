@@ -1,4 +1,7 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export interface ObjectiveRow {
   id: number;
@@ -36,7 +39,8 @@ export async function listActiveObjectives(username: string): Promise<ObjectiveR
       [username]
     );
     return rows;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Objectives", `listActiveObjectives("${username}") failed: ${err.message}`);
     return [];
   }
 }
@@ -54,7 +58,8 @@ export async function updateObjectiveStatus(
       [status, id, username]
     );
     return (rowCount ?? 0) > 0;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Objectives", `updateObjectiveStatus(${id}, ${status}) failed: ${err.message}`);
     return false;
   }
 }
@@ -75,7 +80,8 @@ export async function collectDueObjectives(username: string): Promise<ObjectiveR
       [username]
     );
     return rows;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Objectives", `collectDueObjectives("${username}") failed: ${err.message}`);
     return [];
   }
 }
@@ -85,8 +91,9 @@ export async function markCheckedIn(ids: number[]): Promise<void> {
   try {
     const db = getPool();
     await db.query(`UPDATE objectives SET last_checked_at = now() WHERE id = ANY($1::int[])`, [ids]);
-  } catch {
+  } catch (err: any) {
     // Best-effort — a failed check-in stamp just means this objective may
     // surface again slightly sooner than intended, never a crash.
+    observation.logTelemetry("warn", "Objectives", `markCheckedIn(${ids.length} id(s)) failed: ${err.message}`);
   }
 }

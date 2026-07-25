@@ -103,6 +103,13 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
   // refs/HEAD) that only this build can ever touch; the staging worktree
   // is discarded immediately after.
   await execFileAsync("git", ["clone", stagingDir, dir]);
+
+  // The clone above is owned by whatever uid this (jarvis-builder) process
+  // runs as (root) — the sandbox container below runs as its image's
+  // built-in non-root `node` user (uid/gid 1000) instead, so without this
+  // it couldn't write to its own bind-mounted workspace at all.
+  await execFileAsync("chown", ["-R", "1000:1000", dir]);
+
   await execFileAsync("git", ["worktree", "remove", "--force", stagingDir], { cwd: REPO_HOST_PATH }).catch(() => {});
   // `git worktree add -B` above created a real local branch in
   // REPO_HOST_PATH's own repo (not just the staging checkout) —
@@ -126,6 +133,18 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
     "--name", container,
     "--cpus", "1",
     "--memory", "1g",
+    // Network access stays on deliberately — package-registry access
+    // (npm/pip/etc. during the coding phase) is an accepted, explicit
+    // exception per this feature's design spec, not an oversight; a
+    // fully locked-down egress boundary is a separate, larger follow-up
+    // (an allowlisting proxy), not something a flag here can do safely.
+    // What these flags remove is privilege this "free reign" shell never
+    // legitimately needs regardless of network policy: root-equivalent
+    // capabilities, privilege escalation via setuid binaries, and an
+    // unbounded process/fork count.
+    "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges:true",
+    "--pids-limit", "512",
     "--label", "jarvis-sandbox=true",
     "--label", `jarvis-build-request-id=${buildRequestId}`,
     "-v", `${dir}:/workspace`,

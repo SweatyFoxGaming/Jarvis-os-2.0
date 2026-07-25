@@ -16,12 +16,20 @@ function generateApiKey(): string {
 
 export async function createUser(username: string, password: string): Promise<string> {
   const db = getPool();
-  const existing = await db.query("SELECT 1 FROM users WHERE username = $1", [username]);
-  if ((existing.rowCount ?? 0) > 0) {
+  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  // ON CONFLICT DO NOTHING instead of check-then-insert: two concurrent
+  // registrations for the same username used to both pass the earlier
+  // SELECT before either committed, so the losing INSERT threw a raw
+  // unique-violation instead of this function's own UsernameTakenError.
+  // A single statement closes that window — whichever request's INSERT
+  // actually lands gets a row back; the other gets none.
+  const { rowCount } = await db.query(
+    "INSERT INTO users (username, password_hash) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING",
+    [username, hash]
+  );
+  if (!rowCount) {
     throw new UsernameTakenError();
   }
-  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-  await db.query("INSERT INTO users (username, password_hash) VALUES ($1, $2)", [username, hash]);
   return createApiKey(username);
 }
 

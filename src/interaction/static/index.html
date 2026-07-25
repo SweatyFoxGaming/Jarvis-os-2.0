@@ -3623,7 +3623,13 @@
                 document.getElementById('llm-mode-select').value = data.llmMode || "local-first";
                 document.getElementById('local-endpoint-input').value = data.localLlmEndpoint || "http://localhost:11434";
                 document.getElementById('local-model-input').value = data.localModelName || "llama3";
-                document.getElementById('local-key-input').value = data.localApiKey || "";
+                // The server no longer echoes the actual key back (it only
+                // ever sends whether one is set) — leave the field blank so
+                // saving other settings can't accidentally clear it, and use
+                // the placeholder to show whether one is already configured.
+                const localKeyInput = document.getElementById('local-key-input');
+                localKeyInput.value = "";
+                localKeyInput.placeholder = data.localApiKeySet ? "•••••••• (configured — leave blank to keep)" : "No local API key configured";
                 updateOfflineUIState(data.offline);
             }
         } catch (err) {
@@ -3644,11 +3650,16 @@
             'X-API-Key': CURRENT_API_KEY,
             'Content-Type': 'application/json'
         };
+        // Only send localApiKey if the user actually typed a new one — the
+        // field loads blank now (see loadSystemSettings), so omitting it
+        // here when empty leaves whatever key is already stored untouched
+        // instead of overwriting it with "".
+        const localApiKeyInput = document.getElementById('local-key-input').value.trim();
         const body = {
             llmMode: document.getElementById('llm-mode-select').value,
             localLlmEndpoint: document.getElementById('local-endpoint-input').value.trim(),
             localModelName: document.getElementById('local-model-input').value.trim(),
-            localApiKey: document.getElementById('local-key-input').value.trim()
+            ...(localApiKeyInput ? { localApiKey: localApiKeyInput } : {})
         };
 
         try {

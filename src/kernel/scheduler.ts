@@ -53,11 +53,25 @@ export function markAllRead(username: string): void {
  */
 export function registerJob(name: string, intervalMs: number, fn: () => Promise<void> | void): NodeJS.Timeout {
   observation.logTelemetry("info", "Scheduler", `Registered job "${name}" every ${Math.round(intervalMs / 1000)}s.`);
+  // vault-sync in particular walks every note on disk with no size bound —
+  // a run that outlasts its own interval used to let the next tick start a
+  // second, fully overlapping walk against the same vault_notes/vault_links
+  // rows. This flag makes every job reentrant-safe: a tick that fires while
+  // the previous one is still running just logs and skips, instead of two
+  // copies of the same job racing on shared state.
+  let inFlight = false;
   const run = async () => {
+    if (inFlight) {
+      observation.logTelemetry("warn", "Scheduler", `Job "${name}" skipped a tick — the previous run is still in flight.`);
+      return;
+    }
+    inFlight = true;
     try {
       await fn();
     } catch (err: any) {
       observation.logTelemetry("warn", "Scheduler", `Job "${name}" failed: ${err.message || err}`);
+    } finally {
+      inFlight = false;
     }
   };
   return setInterval(run, intervalMs);

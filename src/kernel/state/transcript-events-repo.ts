@@ -1,4 +1,7 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export interface TranscriptEventRow {
   id: number;
@@ -28,8 +31,9 @@ export async function recordTranscriptEvent(
       `INSERT INTO transcript_events (build_request_id, seq, command, stdout, stderr, exit_code) VALUES ($1, $2, $3, $4, $5, $6)`,
       [buildRequestId, seq, command, stdout, stderr, exitCode]
     );
-  } catch {
+  } catch (err: any) {
     // Best-effort — see comment above.
+    observation.logTelemetry("warn", "TranscriptEvents", `recordTranscriptEvent(${buildRequestId}, seq=${seq}) failed: ${err.message}`);
   }
 }
 
@@ -41,7 +45,8 @@ export async function listTranscriptEvents(buildRequestId: number): Promise<Tran
       [buildRequestId]
     );
     return rows;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "TranscriptEvents", `listTranscriptEvents(${buildRequestId}) failed: ${err.message}`);
     return [];
   }
 }
