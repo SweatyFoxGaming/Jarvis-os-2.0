@@ -61,6 +61,13 @@ export async function runCodingAgent(
     return { ok: false, error: `Failed to create the sandboxed workspace: ${err.message}` };
   }
 
+  const baseShaResult = await builderClient.execInWorkspace(buildRequestId, "git rev-parse HEAD");
+  if (baseShaResult.exitCode !== 0) {
+    await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+    return { ok: false, error: `Failed to resolve the workspace's starting commit: ${baseShaResult.stderr}` };
+  }
+  const baseSha = baseShaResult.stdout.trim();
+
   const messages: NvidiaMessage[] = [
     {
       role: "system",
@@ -150,7 +157,7 @@ export async function runCodingAgent(
       }
 
       if (finishedSummary !== null) {
-        const files = await extractChangedFiles(buildRequestId, baseBranch);
+        const files = await extractChangedFiles(buildRequestId, baseSha);
         if (files.length === 0) {
           await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
           return { ok: false, error: "The coding session finished but left no changed files to propose." };
@@ -169,15 +176,25 @@ export async function runCodingAgent(
 }
 
 // Reads back whatever the agent actually left on disk (committed or not) by
-// diffing the working tree against the base branch it started from — the
+// diffing the working tree against the commit the sandbox started from — the
 // worktree, not any model-recalled text, is the source of truth for what
-// gets proposed at the approval checkpoint. `origin/<baseBranch>` resolves
-// correctly here even after the sandbox's staging worktree is gone (Plan
-// 1's cdf56be) because it's a remote-tracking ref to already-fetched
-// objects, not a live connection to that path — confirmed live during
-// Plan 1's verification.
-async function extractChangedFiles(buildRequestId: number, baseBranch: string): Promise<DraftedFile[]> {
-  const diffResult = await builderClient.execInWorkspace(buildRequestId, `git diff --name-only origin/${baseBranch}`);
+// gets proposed at the approval checkpoint. `baseSha` (captured via `git
+// rev-parse HEAD` right after workspace creation) is used instead of a branch
+// ref because it's a plain commit SHA resolved from inside the sandbox
+// itself — it doesn't depend on a ref name meaning the same thing in two
+// different repos, so it's immune to the clone's remote-tracking-ref quirk
+// entirely. `git add -A` stages new files first so untracked additions show
+// up in the diff, not just modifications to already-tracked files.
+async function extractChangedFiles(buildRequestId: number, baseSha: string): Promise<DraftedFile[]> {
+  const addResult = await builderClient.execInWorkspace(buildRequestId, "git add -A");
+  if (addResult.exitCode !== 0) {
+    throw new Error(`git add -A failed: ${addResult.stderr}`);
+  }
+
+  const diffResult = await builderClient.execInWorkspace(buildRequestId, `git diff --name-only ${baseSha}`);
+  if (diffResult.exitCode !== 0) {
+    throw new Error(`git diff failed: ${diffResult.stderr}`);
+  }
   const paths = diffResult.stdout
     .split("\n")
     .map((line) => line.trim())
