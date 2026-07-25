@@ -321,6 +321,26 @@ async function createSchema(): Promise<void> {
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS transcript_events_build_request_idx ON transcript_events(build_request_id, seq);`);
 
+  // The task breakdown the coding loop proposes before executing anything —
+  // the "View Plan" panel's data source. One row per task, status updated
+  // in place as the loop progresses (pending -> in_progress -> done, or
+  // needs_fixes/failed on a bad review). Cascades on build_requests delete
+  // for the same reason transcript_events does.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS coding_plan_tasks (
+      id SERIAL PRIMARY KEY,
+      build_request_id INTEGER NOT NULL REFERENCES build_requests(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS coding_plan_tasks_build_request_idx ON coding_plan_tasks(build_request_id, seq);`);
+
   // Browser Push API subscriptions — one row per device/browser that's
   // opted in, keyed by the endpoint URL itself (unique per subscription,
   // not per user) since one user can have several devices subscribed at once.
