@@ -196,6 +196,14 @@ if (process.env.GROQ_API_KEY) {
 }
 briefing.configureGroq(groq);
 
+// ---------- NVIDIA NIM Client Initialization (agentic coding loop only) ----------
+const nvidiaApiKey: string | null = process.env.NVIDIA_API_KEY || null;
+if (nvidiaApiKey) {
+  observation.logTelemetry("info", "Cognition", "NVIDIA NIM API key configured — the agentic coding loop is available.");
+} else {
+  observation.logTelemetry("warn", "Cognition", "No NVIDIA_API_KEY detected. The agentic coding loop is unavailable.");
+}
+
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
   const modelsToTry = customModels || ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];

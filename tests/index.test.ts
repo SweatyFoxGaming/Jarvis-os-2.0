@@ -30,6 +30,7 @@ import {
 import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
+import { parseNvidiaChatResponse } from "../src/runtime/nvidia-client.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { spawn, ChildProcess } from "child_process";
@@ -1218,6 +1219,35 @@ registerTest("GroqClient", "toGroqTools wraps a declaration in Groq's function-t
   }
   if (result[0].function.parameters.type !== "object") {
     throw new Error("GroqClient: expected the wrapped parameters schema to be lowercased too");
+  }
+});
+
+// ---------- NVIDIA NIM Client Tests (pure functions, no network) ----------
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse extracts content with no tool calls", () => {
+  const result = parseNvidiaChatResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
+  if (result.content !== "hello" || result.toolCalls !== null) {
+    throw new Error(`NvidiaClient: expected { content: "hello", toolCalls: null }, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse extracts tool calls when present", () => {
+  const toolCalls = [{ id: "call_1", type: "function", function: { name: "run_shell_command", arguments: "{}" } }];
+  const result = parseNvidiaChatResponse({ choices: [{ message: { content: null, tool_calls: toolCalls } }] });
+  if (result.content !== null || result.toolCalls !== toolCalls) {
+    throw new Error(`NvidiaClient: expected { content: null, toolCalls: [...] }, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse throws when the response has no message", () => {
+  let threw = false;
+  try {
+    parseNvidiaChatResponse({ choices: [] });
+  } catch {
+    threw = true;
+  }
+  if (!threw) {
+    throw new Error("NvidiaClient: expected parseNvidiaChatResponse to throw when there's no message");
   }
 });
 
