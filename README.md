@@ -539,12 +539,14 @@ Until step 5 is done, every calendar route/tool returns a clear "not configured"
 ## Testing
 
 ```bash
-npm test        # hand-rolled assertion suite, 12 scenarios covering the
-                 # cognition/execution/observation core logic
+npm test        # hand-rolled assertion suite (see tests/index.test.ts for the
+                 # current scenario count — no live Postgres/network needed)
 npx tsc --noEmit # type check
 ```
 
-Both run in CI on every push (`.github/workflows/ci.yml`).
+Both run in CI on every push (`.github/workflows/ci.yml`), which also checks
+this section's test count against `tests/index.test.ts` so it can't drift
+silently the way it previously did.
 
 ## Project structure
 
@@ -552,14 +554,26 @@ Both run in CI on every push (`.github/workflows/ci.yml`).
 src/
   api.py                 FastAPI gateway — proxies to Express, supervises the
                           Node process, falls back to canned JSON if it's down
-  server.ts               Express app — all routes, auth, chat logic
-  cognition/               Kernel/state machine, workspace, long-term learning
-  execution/                Executive planner, board review
-  observation/               Telemetry, metrics, audit
-  integrations/                GitHub, email, TTS clients
-  data/                         Postgres access (users, memory records)
-  static/                       Frontend (vanilla HTML/JS, no build step)
-docker-compose.yml    api + postgres + tts services
+  server.ts              Express app — all routes, auth, chat logic
+  kernel/                 Capability grants, egress policy, scheduler,
+                          observation platform, Postgres access (state/)
+  cognition/               Per-user session state, workspace, memory,
+                           knowledge graph
+  executive/                Autonomous executive, executive board,
+                            departments, the coding agent
+  adaptation/               Reflection, long-term learning, analyzer
+  capabilities/             Tool dispatch, MCP registry, external providers
+                            (GitHub, email, calendar, news, web search, ...)
+  interaction/              TTS, whisper, live voice, push, the static
+                            frontend (vanilla HTML/JS, no build step)
+  runtime/                  LLM client wrappers (local engine, Groq, NVIDIA)
+  self/                    Identity, dialogue, attention, MindKernel settings
+  world/                   Proactive briefing synthesis
+jarvis-builder/         Sibling service — the only process with Docker socket
+                        access; creates/destroys the isolated sandbox
+                        containers the coding agent runs shell commands in
+docker-compose.yml    api + postgres + tts + llama-cpp + whisper-cpp +
+                      jarvis-builder services
 Dockerfile             Node 20 + Python 3 image running the FastAPI gateway
 ```
 

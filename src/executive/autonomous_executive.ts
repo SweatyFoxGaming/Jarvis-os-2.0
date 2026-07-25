@@ -124,6 +124,30 @@ export class AutonomousExecutive {
 
     // --- STAGE 4a: Build Request Branch (real research -> stop for consult) ---
     if (hasCodingStep) {
+      // confirmDirection() deliberately resolves against "the caller's most
+      // recent awaiting_consult row" rather than a model-recalled id — a
+      // consult conversation can run long enough for an id to scroll out of
+      // context, the same failure mode already found and fixed for
+      // record_command_outcome (see
+      // docs/superpowers/specs/2026-07-21-agent-departments-design.md's
+      // "Decisions" section). That shortcut is only actually safe if there's
+      // ever at most one such row per user — otherwise two simultaneous
+      // build requests awaiting the same user's direction cross-wire
+      // silently. This is the other half of that guarantee: don't let a
+      // second one start while one is still open, instead of trying to
+      // disambiguate after the fact.
+      const existingAwaitingConsult = await buildRequestsRepo.getLatestAwaitingConsult(username);
+      if (existingAwaitingConsult) {
+        session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
+        return {
+          objective,
+          status: "awaiting_consult",
+          buildRequestId: existingAwaitingConsult.id,
+          researchSummary: existingAwaitingConsult.research_summary || "",
+          message: `Build request #${existingAwaitingConsult.id} ("${existingAwaitingConsult.objective}") is still awaiting your direction — let's settle that one before I start research on something else.`,
+        };
+      }
+
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
       const research = await departments.runResearch(objective, this.groq);
       const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
@@ -256,7 +280,10 @@ export class AutonomousExecutive {
   // speculatively — see confirm_build_direction's tool description in
   // tools.ts). Resolves against the caller's own most recent
   // 'awaiting_consult' row rather than a model-recalled id — see this
-  // plan's Global Constraints for why.
+  // plan's Global Constraints for why. "Most recent" is unambiguous because
+  // executeObjective() (STAGE 4a, above) now refuses to open a second
+  // awaiting_consult build request for a user who already has one — the two
+  // pieces are meant to be read together.
   public async confirmDirection(username: string, directionNotes: string): Promise<{ ok: boolean; message: string }> {
     const buildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
     if (!buildRequest) {

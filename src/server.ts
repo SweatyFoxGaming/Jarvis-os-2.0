@@ -27,6 +27,7 @@ import * as sessionRepo from "./kernel/state/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
 import { getAllToolDeclarations, executeTool, looksToolShaped, looksTrivial } from "./capabilities/tools.js";
 import * as permissions from "./kernel/security.js";
+import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "./kernel/egress.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
 import { reflectAndLearn } from "./adaptation/reflection.js";
@@ -287,6 +288,25 @@ const validateApiKey = async (req: any, res: any, next: any) => {
   return res.status(401).json({ error: "Invalid API Key" });
 };
 
+// A handful of REST endpoints under /api/integrations/* perform the exact
+// same actions (send email, open a GitHub issue/PR, read/write files) that
+// executeTool() already gates behind hasGrant() for the chat tool-calling
+// path — but as plain routes they only had validateApiKey, no capability
+// check, so a zero-grant account could hit them directly and bypass the
+// grant system entirely. This factory mirrors the inline
+// `if (!hasGrant(...)) return res.status(403)...` pattern already used
+// throughout this file (e.g. the feature-requests/security/vault routes
+// below) as reusable middleware, so every action surface enforces the same
+// gate tools.ts does instead of each route re-implementing (or forgetting)
+// the check.
+const requireCapability = (capability: string) => (req: any, res: any, next: any) => {
+  if (!permissions.hasGrant(req.username, capability)) {
+    observation.logAuditEvent(req.username, "route_denied", "failed", `Missing grant "${capability}" for ${req.method} ${req.path}`);
+    return res.status(403).json({ error: `Missing capability grant "${capability}"` });
+  }
+  next();
+};
+
 // ---------- Endpoints ----------
 
 // Health Check
@@ -392,7 +412,7 @@ app.get("/api/settings/offline", validateApiKey, (req: any, res: any) => {
   res.json({ offline: kernel.offlineMode });
 });
 
-app.post("/api/settings/offline", validateApiKey, (req: any, res: any) => {
+app.post("/api/settings/offline", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
   const { offline } = req.body;
   const kernel = MindKernel.getInstance();
   kernel.offlineMode = !!offline;
@@ -401,21 +421,25 @@ app.post("/api/settings/offline", validateApiKey, (req: any, res: any) => {
   res.json({ status: "success", offline: kernel.offlineMode });
 });
 
-app.get("/api/settings", validateApiKey, (req: any, res: any) => {
+app.get("/api/settings", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
   const kernel = MindKernel.getInstance();
   res.json({
     offline: kernel.offlineMode,
     localLlmEndpoint: kernel.localLlmEndpoint,
     localModelName: kernel.localModelName,
-    localApiKey: kernel.localApiKey,
+    // Never echo the raw key back — this used to leak the local LLM's
+    // bearer credential to any authenticated user who could read this
+    // endpoint. A boolean is all a settings UI actually needs to render
+    // "configured" vs "not configured".
+    localApiKeySet: !!kernel.localApiKey,
     llmMode: kernel.llmMode
   });
 });
 
-app.post("/api/settings", validateApiKey, (req: any, res: any) => {
+app.post("/api/settings", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
   const { offline, localLlmEndpoint, localModelName, localApiKey, llmMode } = req.body;
   const kernel = MindKernel.getInstance();
-  
+
   if (offline !== undefined) kernel.offlineMode = !!offline;
   if (localLlmEndpoint !== undefined) kernel.localLlmEndpoint = localLlmEndpoint;
   if (localModelName !== undefined) kernel.localModelName = localModelName;
@@ -425,22 +449,22 @@ app.post("/api/settings", validateApiKey, (req: any, res: any) => {
   kernel.persistSettings();
 
   observation.logTelemetry(
-    "info", 
-    "System", 
+    "info",
+    "System",
     `System settings updated: offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}`
   );
-  
+
   res.json({
     status: "success",
     offline: kernel.offlineMode,
     localLlmEndpoint: kernel.localLlmEndpoint,
     localModelName: kernel.localModelName,
-    localApiKey: kernel.localApiKey,
+    localApiKeySet: !!kernel.localApiKey,
     llmMode: kernel.llmMode
   });
 });
 
-app.post("/api/settings/test-local-llm", validateApiKey, async (req: any, res: any) => {
+app.post("/api/settings/test-local-llm", validateApiKey, requireCapability("settings.write"), async (req: any, res: any) => {
   const { endpoint, model, apiKey } = req.body;
   if (!endpoint) {
     return res.status(400).json({ success: false, message: "Missing endpoint URL" });
@@ -448,13 +472,12 @@ app.post("/api/settings/test-local-llm", validateApiKey, async (req: any, res: a
 
   observation.logTelemetry("info", "Diagnostics", `Testing local LLM connection: endpoint=${endpoint}, model=${model}`);
 
-  let targetUrl = endpoint;
-  if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/generate') && !targetUrl.endsWith('/api/chat')) {
-    if (targetUrl.endsWith('/v1') || targetUrl.endsWith('/v1/')) {
-      targetUrl = targetUrl.replace(/\/$/, '') + '/chat/completions';
-    } else {
-      targetUrl = targetUrl.replace(/\/$/, '') + '/v1/chat/completions';
-    }
+  const targetUrl = normalizeLocalLlmUrl(endpoint);
+
+  try {
+    assertSafeEgressUrl(targetUrl);
+  } catch (err: any) {
+    return res.status(400).json({ success: false, message: err.message });
   }
 
   try {
@@ -500,20 +523,33 @@ app.get("/api/observation/metrics", validateApiKey, (req, res) => {
   res.json(observation.getMetrics());
 });
 
-app.get("/api/observation/telemetry", validateApiKey, (req, res) => {
+// Telemetry/diagnostics/traces are system-wide operational detail (internal
+// error messages, per-turn reasoning, latency) rather than a per-user
+// resource that can be meaningfully scoped by username — gated behind the
+// same security.read grant get_security_status already requires, instead of
+// being readable by any authenticated account regardless of trust level.
+app.get("/api/observation/telemetry", validateApiKey, requireCapability("security.read"), (req, res) => {
   res.json(observation.getTelemetry());
 });
 
-app.get("/api/observation/diagnostics", validateApiKey, (req, res) => {
+app.get("/api/observation/diagnostics", validateApiKey, requireCapability("security.read"), (req, res) => {
   res.json(observation.runDiagnostics());
 });
 
-app.get("/api/observation/traces", validateApiKey, (req, res) => {
+app.get("/api/observation/traces", validateApiKey, requireCapability("security.read"), (req, res) => {
   res.json(observation.getDecisionTraces());
 });
 
-app.get("/api/observation/audit", validateApiKey, (req, res) => {
-  res.json(observation.getAuditLogs());
+// Unlike the above, audit *is* a per-account resource — every tool call,
+// command proposal, and grant change an account performed. A non-privileged
+// caller gets their own history (still useful for "what did I just do"); a
+// security.read grant gets the full unfiltered feed, matching how
+// /api/security/* already treats that same capability.
+app.get("/api/observation/audit", validateApiKey, (req: any, res: any) => {
+  const logs = permissions.hasGrant(req.username, "security.read")
+    ? observation.getAuditLogs()
+    : observation.getAuditLogsForActor(req.username);
+  res.json(logs);
 });
 
 app.get("/api/cognition/workspace", validateApiKey, async (req: any, res: any) => {
@@ -848,14 +884,8 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
             activeCapability: `Local LLM (${kernel.localModelName})`
           }, observation);
 
-          let targetUrl = kernel.localLlmEndpoint;
-          if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/generate') && !targetUrl.endsWith('/api/chat')) {
-            if (targetUrl.endsWith('/v1') || targetUrl.endsWith('/v1/')) {
-              targetUrl = targetUrl.replace(/\/$/, '') + '/chat/completions';
-            } else {
-              targetUrl = targetUrl.replace(/\/$/, '') + '/v1/chat/completions';
-            }
-          }
+          const targetUrl = normalizeLocalLlmUrl(kernel.localLlmEndpoint);
+          assertSafeEgressUrl(targetUrl);
 
           const formattedMessages = workspace.userContext.history.map(msg => ({
             role: msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : 'user'),
@@ -2470,7 +2500,7 @@ const handleIntegrationError = (res: any, err: any) => {
   res.status(status).json({ error: err?.message || "Integration request failed" });
 };
 
-app.get("/api/integrations/github/repo", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/github/repo", validateApiKey, requireCapability("github.read"), async (req: any, res: any) => {
   const { owner, repo, path: filePath, ref } = req.query;
   if (!owner || !repo) return res.status(400).json({ error: "owner and repo are required" });
   try {
@@ -2483,7 +2513,7 @@ app.get("/api/integrations/github/repo", validateApiKey, async (req: any, res: a
   }
 });
 
-app.post("/api/integrations/github/issues", validateApiKey, async (req: any, res: any) => {
+app.post("/api/integrations/github/issues", validateApiKey, requireCapability("github.issues.create"), async (req: any, res: any) => {
   const { owner, repo, title, body, labels } = req.body;
   if (!owner || !repo || !title) return res.status(400).json({ error: "owner, repo and title are required" });
   try {
@@ -2493,7 +2523,7 @@ app.post("/api/integrations/github/issues", validateApiKey, async (req: any, res
   }
 });
 
-app.post("/api/integrations/github/issues/:number/comments", validateApiKey, async (req: any, res: any) => {
+app.post("/api/integrations/github/issues/:number/comments", validateApiKey, requireCapability("github.issues.create"), async (req: any, res: any) => {
   const { owner, repo, body } = req.body;
   if (!owner || !repo || !body) return res.status(400).json({ error: "owner, repo and body are required" });
   try {
@@ -2503,7 +2533,7 @@ app.post("/api/integrations/github/issues/:number/comments", validateApiKey, asy
   }
 });
 
-app.post("/api/integrations/github/pulls", validateApiKey, async (req: any, res: any) => {
+app.post("/api/integrations/github/pulls", validateApiKey, requireCapability("github.pulls.create"), async (req: any, res: any) => {
   const { owner, repo, title, head, base, body } = req.body;
   if (!owner || !repo || !title || !head || !base) {
     return res.status(400).json({ error: "owner, repo, title, head and base are required" });
@@ -2515,7 +2545,7 @@ app.post("/api/integrations/github/pulls", validateApiKey, async (req: any, res:
   }
 });
 
-app.get("/api/integrations/github/pulls", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/github/pulls", validateApiKey, requireCapability("github.read"), async (req: any, res: any) => {
   const { owner, repo, number, state } = req.query;
   if (!owner || !repo) return res.status(400).json({ error: "owner and repo are required" });
   try {
@@ -2528,7 +2558,7 @@ app.get("/api/integrations/github/pulls", validateApiKey, async (req: any, res: 
   }
 });
 
-app.post("/api/integrations/email/send", validateApiKey, async (req: any, res: any) => {
+app.post("/api/integrations/email/send", validateApiKey, requireCapability("email.send"), async (req: any, res: any) => {
   const { to, subject, text, html } = req.body;
   if (!to || !subject || !text) return res.status(400).json({ error: "to, subject and text are required" });
   try {
@@ -2538,7 +2568,7 @@ app.post("/api/integrations/email/send", validateApiKey, async (req: any, res: a
   }
 });
 
-app.get("/api/integrations/email/messages", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/email/messages", validateApiKey, requireCapability("email.read"), async (req: any, res: any) => {
   const limit = req.query.limit ? Number(req.query.limit) : 10;
   try {
     res.json(await emailIntegration.fetchRecentMessages(limit));
@@ -2547,7 +2577,7 @@ app.get("/api/integrations/email/messages", validateApiKey, async (req: any, res
   }
 });
 
-app.post("/api/integrations/tts/speak", validateApiKey, async (req: any, res: any) => {
+app.post("/api/integrations/tts/speak", validateApiKey, requireCapability("tts.speak"), async (req: any, res: any) => {
   const { text, voice, model } = req.body;
   if (!text) return res.status(400).json({ error: "text is required" });
   try {
@@ -2560,7 +2590,7 @@ app.post("/api/integrations/tts/speak", validateApiKey, async (req: any, res: an
 });
 
 // ---------- Local Files/Notes (scoped to one dedicated folder) ----------
-app.get("/api/integrations/files/list", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/files/list", validateApiKey, requireCapability("files.read"), async (req: any, res: any) => {
   try {
     res.json(await jarvisFiles.listFiles(req.query.path as string | undefined));
   } catch (err) {
@@ -2568,7 +2598,7 @@ app.get("/api/integrations/files/list", validateApiKey, async (req: any, res: an
   }
 });
 
-app.get("/api/integrations/files/read", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/files/read", validateApiKey, requireCapability("files.read"), async (req: any, res: any) => {
   const { path: relPath } = req.query;
   if (!relPath) return res.status(400).json({ error: "path is required" });
   try {
@@ -2578,7 +2608,7 @@ app.get("/api/integrations/files/read", validateApiKey, async (req: any, res: an
   }
 });
 
-app.post("/api/integrations/files/write", validateApiKey, async (req: any, res: any) => {
+app.post("/api/integrations/files/write", validateApiKey, requireCapability("files.write"), async (req: any, res: any) => {
   const { path: relPath, content } = req.body;
   if (!relPath || typeof content !== "string") {
     return res.status(400).json({ error: "path and content are required" });
@@ -2590,7 +2620,7 @@ app.post("/api/integrations/files/write", validateApiKey, async (req: any, res: 
   }
 });
 
-app.delete("/api/integrations/files", validateApiKey, async (req: any, res: any) => {
+app.delete("/api/integrations/files", validateApiKey, requireCapability("files.write"), async (req: any, res: any) => {
   const { path: relPath } = req.query;
   if (!relPath) return res.status(400).json({ error: "path is required" });
   try {
@@ -2606,7 +2636,7 @@ app.delete("/api/integrations/files", validateApiKey, async (req: any, res: any)
 // create these in Google Cloud. Deployment-wide, single-tenant, same as
 // GITHUB_TOKEN/EMAIL_* — not a per-registered-user OAuth flow.
 
-app.get("/api/integrations/calendar/auth-url", validateApiKey, (req: any, res: any) => {
+app.get("/api/integrations/calendar/auth-url", validateApiKey, requireCapability("calendar.write"), (req: any, res: any) => {
   try {
     res.json({ url: calendar.getAuthUrl() });
   } catch (err) {
@@ -2636,7 +2666,7 @@ app.get("/api/integrations/calendar/callback", async (req: any, res: any) => {
   }
 });
 
-app.get("/api/integrations/calendar/events", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/calendar/events", validateApiKey, requireCapability("calendar.read"), async (req: any, res: any) => {
   try {
     res.json(await calendar.listEvents(req.query.timeMinISO, req.query.timeMaxISO));
   } catch (err) {
@@ -2644,7 +2674,7 @@ app.get("/api/integrations/calendar/events", validateApiKey, async (req: any, re
   }
 });
 
-app.post("/api/integrations/calendar/events", validateApiKey, async (req: any, res: any) => {
+app.post("/api/integrations/calendar/events", validateApiKey, requireCapability("calendar.write"), async (req: any, res: any) => {
   const { summary, startISO, endISO, description } = req.body;
   if (!summary || !startISO || !endISO) {
     return res.status(400).json({ error: "summary, startISO, and endISO are required" });
@@ -2657,7 +2687,7 @@ app.post("/api/integrations/calendar/events", validateApiKey, async (req: any, r
 });
 
 // ---------- News ----------
-app.get("/api/integrations/news/headlines", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/news/headlines", validateApiKey, requireCapability("news.read"), async (req: any, res: any) => {
   try {
     const articles = await news.getTopHeadlines({
       country: req.query.country as string | undefined,
@@ -2670,7 +2700,7 @@ app.get("/api/integrations/news/headlines", validateApiKey, async (req: any, res
   }
 });
 
-app.get("/api/integrations/news/search", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/news/search", validateApiKey, requireCapability("news.read"), async (req: any, res: any) => {
   const q = req.query.q as string | undefined;
   if (!q) return res.status(400).json({ error: "q is required" });
   try {
@@ -2682,7 +2712,7 @@ app.get("/api/integrations/news/search", validateApiKey, async (req: any, res: a
 });
 
 // ---------- Web Search ----------
-app.get("/api/integrations/websearch", validateApiKey, async (req: any, res: any) => {
+app.get("/api/integrations/websearch", validateApiKey, requireCapability("web.search"), async (req: any, res: any) => {
   const q = req.query.q as string | undefined;
   if (!q) return res.status(400).json({ error: "q is required" });
   try {

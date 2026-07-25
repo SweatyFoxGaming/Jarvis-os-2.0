@@ -238,4 +238,14 @@ export class ObservationPlatform {
   public getAuditLogs(): string[] {
     return this.auditBuffer;
   }
+
+  // Every tool call, command proposal, and permission change an account has
+  // ever made — including full arguments (email bodies, proposed shell
+  // commands) — used to be visible in full to any authenticated caller via
+  // getAuditLogs(). This scopes a non-privileged caller to their own actor
+  // line; a security.read grant still gets the unfiltered feed via
+  // getAuditLogs() directly.
+  public getAuditLogsForActor(actor: string): string[] {
+    return this.auditBuffer.filter((line) => line.startsWith(`[`) && line.includes(`Actor: ${actor} |`));
+  }
 }

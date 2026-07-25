@@ -1,4 +1,7 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export interface McpServerRow {
   id: number;
@@ -32,7 +35,8 @@ export async function getMcpServer(id: number): Promise<McpServerRow | null> {
     const db = getPool();
     const { rows } = await db.query(`SELECT * FROM mcp_servers WHERE id = $1`, [id]);
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "McpServers", `getMcpServer(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -46,7 +50,8 @@ export async function listMcpServers(status?: McpServerRow["status"]): Promise<M
     }
     const { rows } = await db.query(`SELECT * FROM mcp_servers ORDER BY created_at DESC`);
     return rows;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "McpServers", `listMcpServers(${status ?? "<all>"}) failed: ${err.message}`);
     return [];
   }
 }
@@ -63,7 +68,8 @@ export async function markMcpServerApproved(id: number): Promise<McpServerRow | 
       [id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "McpServers", `markMcpServerApproved(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -75,8 +81,9 @@ export async function markMcpServerError(id: number, error: string): Promise<voi
   try {
     const db = getPool();
     await db.query(`UPDATE mcp_servers SET last_error = $1 WHERE id = $2`, [error, id]);
-  } catch {
+  } catch (err: any) {
     // Best-effort — a failed error-log write is not itself worth crashing over.
+    observation.logTelemetry("warn", "McpServers", `markMcpServerError(${id}) failed: ${err.message}`);
   }
 }
 
@@ -94,7 +101,8 @@ export async function refreshMcpServerConnection(id: number): Promise<McpServerR
       [id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "McpServers", `refreshMcpServerConnection(${id}) failed: ${err.message}`);
     return null;
   }
 }
@@ -107,7 +115,8 @@ export async function setMcpServerStatus(id: number, status: "error" | "disabled
       [status, id]
     );
     return rows[0] || null;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "McpServers", `setMcpServerStatus(${id}, ${status}) failed: ${err.message}`);
     return null;
   }
 }

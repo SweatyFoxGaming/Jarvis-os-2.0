@@ -1,4 +1,7 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export type CommandProposalStatus = "pending" | "approved" | "rejected" | "running" | "executed" | "failed";
 
@@ -114,7 +117,8 @@ export async function recordCommandOutcome(
       [outcome, id]
     );
     return (rowCount ?? 0) > 0;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "CommandProposals", `recordCommandOutcome(${id}, ${outcome}) failed: ${err.message}`);
     return false;
   }
 }
@@ -135,7 +139,8 @@ export async function getRecentOutcomeSuccessRate(): Promise<number | null> {
     if (rows.length === 0) return null;
     const worked = rows.filter((r: { outcome: string }) => r.outcome === "worked").length;
     return worked / rows.length;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "CommandProposals", `getRecentOutcomeSuccessRate() failed: ${err.message}`);
     return null;
   }
 }

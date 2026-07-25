@@ -22,19 +22,26 @@ export async function upsertNetworkDevice(
   vendor: string | null
 ): Promise<{ device: NetworkDevice; isNew: boolean }> {
   const db = getPool();
-  const { rows: existing } = await db.query(`SELECT * FROM network_devices WHERE mac_address = $1`, [mac]);
-  if (existing.length > 0) {
-    const { rows } = await db.query(
-      `UPDATE network_devices SET ip_address = $1, hostname = COALESCE($2, hostname), vendor = COALESCE($3, vendor), last_seen = now() WHERE mac_address = $4 RETURNING *`,
-      [ip, hostname, vendor, mac]
-    );
-    return { device: rows[0], isNew: false };
-  }
+  // A single INSERT ... ON CONFLICT instead of check-then-branch: two scan
+  // cycles racing on the same newly-seen MAC used to both pass the SELECT
+  // and both attempt an INSERT, with the loser throwing an uncaught
+  // unique-violation. `xmax = 0` is the standard Postgres idiom for "this
+  // row was actually inserted by this statement" vs "this row already
+  // existed and got updated" — RETURNING can't otherwise tell the two apart
+  // from a single ON CONFLICT statement.
   const { rows } = await db.query(
-    `INSERT INTO network_devices (mac_address, ip_address, hostname, vendor) VALUES ($1, $2, $3, $4) RETURNING *`,
+    `INSERT INTO network_devices (mac_address, ip_address, hostname, vendor)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (mac_address) DO UPDATE
+       SET ip_address = EXCLUDED.ip_address,
+           hostname = COALESCE(EXCLUDED.hostname, network_devices.hostname),
+           vendor = COALESCE(EXCLUDED.vendor, network_devices.vendor),
+           last_seen = now()
+     RETURNING *, (xmax = 0) AS is_new`,
     [mac, ip, hostname, vendor]
   );
-  return { device: rows[0], isNew: true };
+  const { is_new, ...device } = rows[0];
+  return { device: device as NetworkDevice, isNew: is_new as boolean };
 }
 
 export async function getNetworkDevices(): Promise<NetworkDevice[]> {

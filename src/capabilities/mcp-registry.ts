@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
 import { ObservationPlatform } from "../kernel/observation.js";
+import { assertSafeEgressUrl } from "../kernel/egress.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -63,9 +64,16 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const CALL_TIMEOUT_MS = 10_000;
 
 async function connectAndListTools(url: string): Promise<{ ok: true; tools: any[] } | { ok: false; error: string }> {
+  let safeUrl: URL;
+  try {
+    safeUrl = assertSafeEgressUrl(url);
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+
   const client = new Client({ name: "jarvis-os", version: "1.0.0" });
   try {
-    const transport = new StreamableHTTPClientTransport(new URL(url));
+    const transport = new StreamableHTTPClientTransport(safeUrl);
     await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, "MCP connect()");
     const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, "MCP listTools()");
     return { ok: true, tools };
@@ -172,7 +180,7 @@ export async function callMcpTool(
 
   const client = new Client({ name: "jarvis-os", version: "1.0.0" });
   try {
-    const transport = new StreamableHTTPClientTransport(new URL(server.url));
+    const transport = new StreamableHTTPClientTransport(assertSafeEgressUrl(server.url));
     await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, "MCP connect()");
     const result = await client.callTool({ name: toolName, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
     if ((result as any).isError) {
