@@ -1776,12 +1776,12 @@ app.get("/api/system/build-requests/:id/transcript", validateApiKey, async (req:
   }
 });
 
-// Rejects a proposed file path before any GitHub call happens. Closes a gap
-// left open by Task 3's draftCodeChanges review: that function validates
-// each path is a non-empty string but never checks for traversal or
-// absolute paths, and this route is the first (and only) place a
-// model-drafted path reaches a real GitHub write — untrusted input, real
-// repo, no prior gate.
+// Rejects a proposed file path before any GitHub call happens. Nothing
+// upstream validates these paths beyond "non-empty string" — the coding
+// agent loop reads them straight back out of the sandbox worktree, with no
+// traversal or absolute-path check anywhere — and this route is the first
+// (and only) place a model-drafted path reaches a real GitHub write:
+// untrusted input, real repo, no prior gate.
 function isUnsafeProposedPath(path: string): boolean {
   if (!path || path.startsWith("/") || path.includes("\0")) return true;
   return path.split("/").some((segment) => segment === "..");
@@ -1863,6 +1863,23 @@ app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (r
           await buildRequestsRepo.markPrError(buildRequest.id, message);
           return res.status(502).json({ error: message });
         }
+
+        // A missing/reaped sandbox container (the approval sat long enough for
+        // the reaper to reclaim it, or the coding session itself ran close to
+        // the sandbox's lifetime) surfaces here as a normal nonzero exit, not a
+        // thrown error — indistinguishable from a real test failure unless
+        // explicitly checked for. Deliberately NOT calling markPrError here:
+        // misreporting an infrastructure timing issue as a code-quality
+        // failure would permanently burn the build request. Leaving status at
+        // awaiting_code_approval means the human can still explicitly reject
+        // it to close it out cleanly.
+        const sandboxGone = verify.exitCode === 125 || /No such container/i.test(verify.stderr);
+        if (sandboxGone) {
+          const message =
+            "The sandbox workspace for this build request is no longer available (it may have expired). The proposed files are still recorded — reject this request to close it out.";
+          return res.status(503).json({ error: message });
+        }
+
         if (verify.exitCode !== 0) {
           const message = `Final verification failed (exit ${verify.exitCode}):\n${verify.stdout.slice(-2000)}\n${verify.stderr.slice(-2000)}`;
           await buildRequestsRepo.markPrError(buildRequest.id, message);

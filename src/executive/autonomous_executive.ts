@@ -9,6 +9,7 @@ import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 import * as departments from "./departments.js";
 import * as scheduler from "../kernel/scheduler.js";
 import * as codingAgent from "./coding-agent.js";
+import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
 
 /**
@@ -302,6 +303,13 @@ export class AutonomousExecutive {
 
     const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files);
     if (!recorded) {
+      // runCodingAgent deliberately leaves the sandbox workspace alive on
+      // success so the approval checkpoint can re-verify against it — but
+      // this path never reaches that checkpoint, and the approve/reject
+      // routes that normally own the teardown will never run for this build
+      // request. Without this, the container and its on-disk clone leak
+      // until the reaper's (now 24h) backstop.
+      await builderClient.destroyWorkspace(confirmed.id).catch(() => {});
       await buildRequestsRepo.markCodeDraftError(confirmed.id, "Failed to persist the drafted code.");
       return { ok: false, message: "Direction confirmed and code drafted, but I couldn't save it — please try again." };
     }

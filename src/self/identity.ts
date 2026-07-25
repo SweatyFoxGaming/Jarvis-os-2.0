@@ -124,9 +124,9 @@ export async function generateProactiveThought(groq: Groq | null, minReflections
   try {
     const response = await groq.chat.completions.create({
       // Not llama-3.3-70b-versatile: Groq's API rejects response_format on
-      // that model entirely (same live-verified failure as
-      // departments.ts's draftCodeChanges). gpt-oss-120b is Groq's larger
-      // structured-output-capable model.
+      // that model entirely (live-verified — the same failure showed up
+      // anywhere in this codebase that asked Groq for structured output).
+      // gpt-oss-120b is Groq's larger structured-output-capable model.
       model: "openai/gpt-oss-120b",
       messages: [{
         role: "user",

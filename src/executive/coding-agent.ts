@@ -157,12 +157,16 @@ export async function runCodingAgent(
       }
 
       if (finishedSummary !== null) {
-        const files = await extractChangedFiles(buildRequestId, baseSha);
+        const { files, skipped } = await extractChangedFiles(buildRequestId, baseSha);
         if (files.length === 0) {
           await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
           return { ok: false, error: "The coding session finished but left no changed files to propose." };
         }
-        return { ok: true, summary: finishedSummary, files };
+        const summary =
+          skipped.length > 0
+            ? `${finishedSummary}\n\n(Note: ${skipped.length} changed path(s) could not be read back and are not included in this proposal — likely deletions or unusual filenames: ${skipped.join(", ")})`
+            : finishedSummary;
+        return { ok: true, summary, files };
       }
     }
 
@@ -178,14 +182,23 @@ export async function runCodingAgent(
 // Reads back whatever the agent actually left on disk (committed or not) by
 // diffing the working tree against the commit the sandbox started from — the
 // worktree, not any model-recalled text, is the source of truth for what
-// gets proposed at the approval checkpoint. `baseSha` (captured via `git
+// gets proposed at the approval checkpoint. Paths the diff names but `cat`
+// can't read back (deletions, git's C-quoted non-ASCII filenames, binaries)
+// are returned separately as `skipped` rather than silently dropped or
+// thrown over: deletions are a normal part of a coding session, so failing
+// the whole session over one would be worse than proposing the rest — but
+// the human at the approval gate still has to be told something was left
+// out. `baseSha` (captured via `git
 // rev-parse HEAD` right after workspace creation) is used instead of a branch
 // ref because it's a plain commit SHA resolved from inside the sandbox
 // itself — it doesn't depend on a ref name meaning the same thing in two
 // different repos, so it's immune to the clone's remote-tracking-ref quirk
 // entirely. `git add -A` stages new files first so untracked additions show
 // up in the diff, not just modifications to already-tracked files.
-async function extractChangedFiles(buildRequestId: number, baseSha: string): Promise<DraftedFile[]> {
+async function extractChangedFiles(
+  buildRequestId: number,
+  baseSha: string
+): Promise<{ files: DraftedFile[]; skipped: string[] }> {
   const addResult = await builderClient.execInWorkspace(buildRequestId, "git add -A");
   if (addResult.exitCode !== 0) {
     throw new Error(`git add -A failed: ${addResult.stderr}`);
@@ -201,11 +214,14 @@ async function extractChangedFiles(buildRequestId: number, baseSha: string): Pro
     .filter((line) => line.length > 0);
 
   const files: DraftedFile[] = [];
+  const skipped: string[] = [];
   for (const path of paths) {
     const catResult = await builderClient.execInWorkspace(buildRequestId, `cat "${path}"`);
     if (catResult.exitCode === 0) {
       files.push({ path, content: catResult.stdout });
+    } else {
+      skipped.push(path);
     }
   }
-  return files;
+  return { files, skipped };
 }
