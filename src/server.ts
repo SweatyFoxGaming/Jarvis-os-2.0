@@ -50,6 +50,7 @@ import * as mcpServersRepo from "./kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./capabilities/mcp-registry.js";
 import * as push from "./interaction/push.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
+import * as transcriptEventsRepo from "./kernel/state/transcript-events-repo.js";
 import * as obsidian from "./capabilities/providers/obsidian.js";
 import * as vaultRepo from "./kernel/state/vault-repo.js";
 import * as departments from "./executive/departments.js";
@@ -1761,6 +1762,17 @@ app.get("/api/system/build-requests", validateApiKey, async (req: any, res: any)
     res.json({ buildRequests: await buildRequestsRepo.listBuildRequests(req.query.status as buildRequestsRepo.BuildRequestStatus | undefined) });
   } catch (err: any) {
     res.json({ buildRequests: [], error: err.message });
+  }
+});
+
+app.get("/api/system/build-requests/:id/transcript", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "github.pulls.create")) {
+    return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
+  }
+  try {
+    res.json({ events: await transcriptEventsRepo.listTranscriptEvents(Number(req.params.id)) });
+  } catch (err: any) {
+    res.json({ events: [], error: err.message });
   }
 });
 

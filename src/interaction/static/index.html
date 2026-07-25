@@ -337,6 +337,13 @@
                         <div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing yet — ask Jarvis to build something new to see it here.</div>
                     </div>
                 </div>
+                <div id="build-request-transcript-panel" class="holo-panel rounded-2xl p-5 w-full hidden">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-display font-semibold text-sm text-white">Activity — <span id="build-request-transcript-title"></span></h3>
+                        <button onclick="closeBuildRequestTranscript()" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary hover:text-white">Close</button>
+                    </div>
+                    <div id="build-request-transcript-body" class="space-y-2 max-h-[480px] overflow-y-auto font-mono text-[11px]"></div>
+                </div>
             </div>
 
             <!-- ================= VAULT: browse, search, and edit the real Obsidian vault ================= -->
@@ -2613,6 +2620,8 @@
     };
     const BUILD_REQUEST_TERMINAL_STATUSES = ['pr_opened', 'qa_complete', 'rejected_at_code', 'error'];
 
+    let BUILD_REQUESTS_CACHE = [];
+
     async function loadBuildRequests() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
@@ -2621,6 +2630,7 @@
             if (!res.ok) return;
             const data = await res.json();
             const requests = data.buildRequests || [];
+            BUILD_REQUESTS_CACHE = requests;
 
             const activeCount = requests.filter(r => !BUILD_REQUEST_TERMINAL_STATUSES.includes(r.status)).length;
             document.getElementById('build-requests-count-badge').textContent = `${activeCount} ACTIVE`;
@@ -2648,12 +2658,54 @@
                         </div>
                         ${summary ? `<p class="text-[11px] text-text/80 leading-snug mb-1.5">${escapeHtml(summary.slice(0, 300))}</p>` : ''}
                         ${prLink}
+                        <button onclick="viewBuildRequestActivity(${r.id})" class="text-[10px] text-primary underline block mt-1.5">View activity &rarr;</button>
                         ${approveReject}
                         <span class="text-[8px] text-secondary font-mono mt-1.5 block">${new Date(r.created_at).toLocaleString()}</span>
                     </div>
                 `;
             }).join('');
         } catch {}
+    }
+
+    async function viewBuildRequestActivity(id) {
+        if (!CURRENT_API_KEY) return;
+        const panel = document.getElementById('build-request-transcript-panel');
+        const title = document.getElementById('build-request-transcript-title');
+        const body = document.getElementById('build-request-transcript-body');
+        const cached = BUILD_REQUESTS_CACHE.find(r => r.id === id);
+        title.textContent = cached ? `#${id} — ${escapeHtml(cached.objective)}` : `#${id}`;
+        body.innerHTML = `<div class="text-secondary text-xs opacity-60">Loading...</div>`;
+        panel.classList.remove('hidden');
+        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const res = await authFetch(`/api/system/build-requests/${id}/transcript`, { headers });
+            const data = await res.json();
+            const events = data.events || [];
+            if (events.length === 0) {
+                body.innerHTML = `<div class="text-secondary text-xs opacity-60">No activity recorded yet.</div>`;
+                return;
+            }
+            body.innerHTML = events.map(e => {
+                const ok = e.exit_code === 0;
+                return `
+                    <div class="holo-chip border ${ok ? 'border-success/20' : 'border-danger/20'} rounded-lg p-2.5">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-white">$ ${escapeHtml(e.command)}</span>
+                            <span class="px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-widest ${ok ? 'border-success/25 text-success bg-success/5' : 'border-danger/25 text-danger bg-danger/5'}">exit ${e.exit_code}</span>
+                        </div>
+                        ${e.stdout ? `<pre class="text-text/70 whitespace-pre-wrap break-words">${escapeHtml(e.stdout.slice(0, 2000))}</pre>` : ''}
+                        ${e.stderr ? `<pre class="text-danger/70 whitespace-pre-wrap break-words">${escapeHtml(e.stderr.slice(0, 2000))}</pre>` : ''}
+                    </div>
+                `;
+            }).join('');
+        } catch {
+            body.innerHTML = `<div class="text-danger text-xs">Failed to load activity.</div>`;
+        }
+    }
+
+    function closeBuildRequestTranscript() {
+        document.getElementById('build-request-transcript-panel').classList.add('hidden');
     }
 
     async function approveBuildRequest(id) {
