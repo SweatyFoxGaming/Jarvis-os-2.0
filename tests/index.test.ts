@@ -30,7 +30,10 @@ import {
 import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
+import { parseNvidiaChatResponse } from "../src/runtime/nvidia-client.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
+import { recordTranscriptEvent, listTranscriptEvents } from "../src/kernel/state/transcript-events-repo.js";
+import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state/coding-plan-tasks-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
@@ -1107,17 +1110,17 @@ registerTest("Departments", "runResearch degrades cleanly with no AI client", as
   }
 });
 
-registerTest("Departments", "draftCodeChanges degrades cleanly with no AI client", async () => {
-  const result = await departments.draftCodeChanges("test objective", "research", "direction", null);
-  if (result.ok !== false || !result.error.includes("No capable model is available")) {
-    throw new Error(`Departments: expected a clean failure with no AI client, got: ${JSON.stringify(result)}`);
-  }
-});
-
 registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client", async () => {
   const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], null);
   if (!result.includes("No capable model was available")) {
     throw new Error(`Departments: expected the no-AI degrade message, got: ${result}`);
+  }
+});
+
+registerTest("Departments", "reviewTaskDiff degrades cleanly with no AI client", async () => {
+  const result = await departments.reviewTaskDiff("test task", "test description", [{ path: "a.ts", content: "x" }], null);
+  if (result.approved !== true || !result.findings.includes("No capable model was available")) {
+    throw new Error(`Departments: expected the no-AI degrade verdict, got: ${JSON.stringify(result)}`);
   }
 });
 
@@ -1221,6 +1224,35 @@ registerTest("GroqClient", "toGroqTools wraps a declaration in Groq's function-t
   }
 });
 
+// ---------- NVIDIA NIM Client Tests (pure functions, no network) ----------
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse extracts content with no tool calls", () => {
+  const result = parseNvidiaChatResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
+  if (result.content !== "hello" || result.toolCalls !== null) {
+    throw new Error(`NvidiaClient: expected { content: "hello", toolCalls: null }, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse extracts tool calls when present", () => {
+  const toolCalls = [{ id: "call_1", type: "function", function: { name: "run_shell_command", arguments: "{}" } }];
+  const result = parseNvidiaChatResponse({ choices: [{ message: { content: null, tool_calls: toolCalls } }] });
+  if (result.content !== null || result.toolCalls !== toolCalls) {
+    throw new Error(`NvidiaClient: expected { content: null, toolCalls: [...] }, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse throws when the response has no message", () => {
+  let threw = false;
+  try {
+    parseNvidiaChatResponse({ choices: [] });
+  } catch {
+    threw = true;
+  }
+  if (!threw) {
+    throw new Error("NvidiaClient: expected parseNvidiaChatResponse to throw when there's no message");
+  }
+});
+
 // ---------- Trivial-Message Fast Path Tests ----------
 
 registerTest("ToolRouting", "looksTrivial recognizes a short greeting", () => {
@@ -1316,6 +1348,39 @@ registerTest("Vault", "listAllLinks degrades cleanly when Postgres isn't reachab
   if (!Array.isArray(result) || result.length !== 0) {
     throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
   }
+});
+
+// ---------- TranscriptEvents Tests ----------
+
+registerTest("TranscriptEvents", "recordTranscriptEvent degrades cleanly when Postgres isn't reachable", async () => {
+  await recordTranscriptEvent(999999, 1, "echo hi", "hi\n", "", 0);
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+});
+
+registerTest("TranscriptEvents", "listTranscriptEvents degrades cleanly when Postgres isn't reachable", async () => {
+  const events = await listTranscriptEvents(999999);
+  if (!Array.isArray(events) || events.length !== 0) {
+    throw new Error(`TranscriptEvents: expected an empty array with no DB, got: ${JSON.stringify(events)}`);
+  }
+});
+
+// ---------- CodingPlanTasks Tests ----------
+
+registerTest("CodingPlanTasks", "createPlan degrades cleanly when Postgres isn't reachable", async () => {
+  await createPlan(999999, [{ seq: 1, title: "t", description: "d" }]);
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+});
+
+registerTest("CodingPlanTasks", "listPlanTasks degrades cleanly when Postgres isn't reachable", async () => {
+  const tasks = await listPlanTasks(999999);
+  if (!Array.isArray(tasks) || tasks.length !== 0) {
+    throw new Error(`CodingPlanTasks: expected an empty array with no DB, got: ${JSON.stringify(tasks)}`);
+  }
+});
+
+registerTest("CodingPlanTasks", "updateTaskStatus degrades cleanly when Postgres isn't reachable", async () => {
+  await updateTaskStatus(999999, 1, "done", "test summary");
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
 });
 
 // ---------- Obsidian Parser Tests (pure functions, no I/O) ----------

@@ -8,6 +8,9 @@ import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js
 import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 import * as departments from "./departments.js";
 import * as scheduler from "../kernel/scheduler.js";
+import * as codingAgent from "./coding-agent.js";
+import * as builderClient from "../kernel/builder-client.js";
+import * as github from "../capabilities/providers/github.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
@@ -28,24 +31,31 @@ export class AutonomousExecutive {
   // Kept for future needs (per the Groq-migration design) even though no current internal call reads it — every departments.* call below uses this.groq.
   private ai: GoogleGenAI | null;
   private groq: Groq | null;
+  private nvidiaApiKey: string | null;
 
-  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, groq: Groq | null) {
+  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, groq: Groq | null, nvidiaApiKey: string | null) {
     this.observation = observation;
     this.ai = ai;
     this.groq = groq;
+    this.nvidiaApiKey = nvidiaApiKey;
   }
 
   // A singleton (like the other cognition engines) rather than a plain
   // constructor so tools.ts's decompose_plan/confirm_build_direction tools
   // can reach the same instance server.ts already created at startup with
-  // the real ai/groq clients, instead of needing a circular import back
-  // into server.ts.
-  public static getInstance(observation?: ObservationPlatform, ai?: GoogleGenAI | null, groq?: Groq | null): AutonomousExecutive {
+  // the real ai/groq/nvidia clients, instead of needing a circular import
+  // back into server.ts.
+  public static getInstance(
+    observation?: ObservationPlatform,
+    ai?: GoogleGenAI | null,
+    groq?: Groq | null,
+    nvidiaApiKey?: string | null
+  ): AutonomousExecutive {
     if (!this.instance) {
       if (!observation) {
         throw new Error("AutonomousExecutive.getInstance() called before server.ts initialized it");
       }
-      this.instance = new AutonomousExecutive(observation, ai ?? null, groq ?? null);
+      this.instance = new AutonomousExecutive(observation, ai ?? null, groq ?? null, nvidiaApiKey ?? null);
     }
     return this.instance;
   }
@@ -260,10 +270,25 @@ export class AutonomousExecutive {
 
     await buildRequestsRepo.markCoding(confirmed.id);
 
-    const draft = await departments.draftCodeChanges(
+    let baseBranch = "main";
+    const owner = process.env.SELF_REPO_OWNER;
+    const repoName = process.env.SELF_REPO_NAME;
+    if (owner && repoName) {
+      try {
+        const repoInfo = await github.getRepo(owner, repoName);
+        baseBranch = repoInfo.default_branch;
+      } catch {
+        // Fall back to "main" — matches this codebase's degrade-cleanly convention.
+      }
+    }
+
+    const draft = await codingAgent.runCodingAgent(
+      confirmed.id,
       confirmed.objective,
       confirmed.research_summary || "",
       directionNotes,
+      baseBranch,
+      this.nvidiaApiKey,
       this.groq
     );
 
@@ -279,6 +304,13 @@ export class AutonomousExecutive {
 
     const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files);
     if (!recorded) {
+      // runCodingAgent deliberately leaves the sandbox workspace alive on
+      // success so the approval checkpoint can re-verify against it — but
+      // this path never reaches that checkpoint, and the approve/reject
+      // routes that normally own the teardown will never run for this build
+      // request. Without this, the container and its on-disk clone leak
+      // until the reaper's (now 24h) backstop.
+      await builderClient.destroyWorkspace(confirmed.id).catch(() => {});
       await buildRequestsRepo.markCodeDraftError(confirmed.id, "Failed to persist the drafted code.");
       return { ok: false, message: "Direction confirmed and code drafted, but I couldn't save it — please try again." };
     }

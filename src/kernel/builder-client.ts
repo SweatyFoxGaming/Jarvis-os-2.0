@@ -1,7 +1,9 @@
+import * as http from "node:http";
 import { ObservationPlatform } from "./observation.js";
 
 const observation = ObservationPlatform.getInstance();
-const BUILDER_URL = "http://jarvis-builder:4100";
+const BUILDER_HOST = "jarvis-builder";
+const BUILDER_PORT = 4100;
 
 export class BuilderClientError extends Error {
   constructor(message: string, public status = 500) {
@@ -20,26 +22,82 @@ function getSecret(): string {
   return secret;
 }
 
-async function builderRequest(path: string, init: RequestInit = {}): Promise<any> {
+// Long-running exec calls (a fresh `npm ci && npm test && npx tsc --noEmit`,
+// or any shell command the coding agent issues) can legitimately take
+// minutes — global `fetch`'s underlying undici dispatcher enforces a ~300s
+// headersTimeout with no way to disable it via RequestInit, so a slow-but-
+// healthy verification pass would be indistinguishable from a real timeout,
+// and the client giving up doesn't cancel the still-running `docker exec`
+// server-side (verified empirically: UND_ERR_HEADERS_TIMEOUT at 301s on this
+// runtime). node:http has no such default, and jarvis-builder is a fixed
+// plain-HTTP internal service (http://jarvis-builder:4100), so this avoids
+// adding a dependency just to configure fetch's dispatcher. 30 minutes is a
+// generous-but-bounded backstop, not truly unbounded.
+const REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
+
+function builderRequest(path: string, method: string, body?: string): Promise<any> {
   const secret = getSecret();
-  const res = await fetch(`${BUILDER_URL}${path}`, {
-    ...init,
-    headers: {
-      "X-Builder-Secret": secret,
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...init.headers,
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    observation.logTelemetry(
-      "warn",
-      "Executive",
-      `jarvis-builder request failed: ${init.method || "GET"} ${path} -> ${res.status} ${body}`
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: BUILDER_HOST,
+        port: BUILDER_PORT,
+        path,
+        method,
+        headers: {
+          "X-Builder-Secret": secret,
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("error", (err: any) => {
+          reject(new BuilderClientError(`jarvis-builder response failed: ${err.message}`, 502));
+        });
+        res.on("close", () => {
+          if (!res.complete) {
+            reject(new BuilderClientError("jarvis-builder closed the connection before the response completed", 502));
+          }
+        });
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          const status = res.statusCode || 500;
+          if (status < 200 || status >= 300) {
+            observation.logTelemetry(
+              "warn",
+              "Executive",
+              `jarvis-builder request failed: ${method} ${path} -> ${status} ${text}`
+            );
+            reject(new BuilderClientError(`jarvis-builder error (${status}): ${text}`, status));
+            return;
+          }
+          try {
+            resolve(text ? JSON.parse(text) : undefined);
+          } catch (err: any) {
+            reject(new BuilderClientError(`jarvis-builder returned invalid JSON: ${err.message}`, 502));
+          }
+        });
+      }
     );
-    throw new BuilderClientError(`jarvis-builder error (${res.status}): ${body}`, res.status);
-  }
-  return res.json();
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(
+        new BuilderClientError(
+          `jarvis-builder request timed out after ${REQUEST_TIMEOUT_MS / 60000} minutes`,
+          504
+        )
+      );
+    });
+    req.on("error", (err: any) => {
+      reject(
+        err instanceof BuilderClientError
+          ? err
+          : new BuilderClientError(`jarvis-builder request failed: ${err.message}`, 502)
+      );
+    });
+    if (body) req.write(body);
+    req.end();
+  });
 }
 
 export interface WorkspaceHandle {
@@ -49,22 +107,16 @@ export interface WorkspaceHandle {
 }
 
 export async function createWorkspace(buildRequestId: number, baseBranch: string): Promise<WorkspaceHandle> {
-  return builderRequest("/workspaces", {
-    method: "POST",
-    body: JSON.stringify({ buildRequestId, baseBranch }),
-  });
+  return builderRequest("/workspaces", "POST", JSON.stringify({ buildRequestId, baseBranch }));
 }
 
 export async function execInWorkspace(
   buildRequestId: number,
   command: string
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return builderRequest(`/workspaces/${buildRequestId}/exec`, {
-    method: "POST",
-    body: JSON.stringify({ command }),
-  });
+  return builderRequest(`/workspaces/${buildRequestId}/exec`, "POST", JSON.stringify({ command }));
 }
 
 export async function destroyWorkspace(buildRequestId: number): Promise<void> {
-  await builderRequest(`/workspaces/${buildRequestId}`, { method: "DELETE" });
+  await builderRequest(`/workspaces/${buildRequestId}`, "DELETE");
 }

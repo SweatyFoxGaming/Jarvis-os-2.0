@@ -258,73 +258,6 @@ export async function runResearch(objective: string, groq: Groq | null): Promise
   }
 }
 
-export type CodeDraftResult = { ok: true; summary: string; files: DraftedFile[] } | { ok: false; error: string };
-
-const CODE_DRAFT_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    summary: { type: Type.STRING, description: "A short, plain-language summary of what this code change does, suitable for a PR description." },
-    files: {
-      type: Type.ARRAY,
-      description: "The complete files to create or overwrite. At least one file is required.",
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          path: { type: Type.STRING, description: "Relative path from the repository root, e.g. \"src/foo/bar.ts\"" },
-          content: { type: Type.STRING, description: "The complete file content" },
-        },
-        required: ["path", "content"],
-      },
-    },
-  },
-  required: ["summary", "files"],
-};
-
-export async function draftCodeChanges(
-  objective: string,
-  researchSummary: string,
-  directionNotes: string,
-  groq: Groq | null
-): Promise<CodeDraftResult> {
-  if (!groq) {
-    return { ok: false, error: "No capable model is available right now to draft real code — Groq must be reachable for this." };
-  }
-  try {
-    const response = await groq.chat.completions.create({
-      // Not llama-3.3-70b-versatile: Groq's API rejects response_format on
-      // that model entirely (live-verified — every draft failed 400 until
-      // this changed). gpt-oss-120b is Groq's larger structured-output-
-      // capable model, preserving the "capable model for a generation-
-      // quality task" intent while actually supporting the schema.
-      model: "openai/gpt-oss-120b",
-      messages: [{
-        role: "user",
-        content:
-          "Draft real, complete file changes for this repository to accomplish the objective below. Only include files " +
-          "that genuinely need to be created or changed. Write complete, working file contents, not snippets or " +
-          "placeholders.\n\n" +
-          `Objective: ${objective}\n\nResearch findings:\n${researchSummary}\n\nConfirmed direction from the user:\n${directionNotes}`,
-      }],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "code_draft", schema: toGroqSchema(CODE_DRAFT_SCHEMA), strict: true },
-      },
-    });
-    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
-    const files: DraftedFile[] = Array.isArray(parsed.files)
-      ? parsed.files.filter((f: any) => typeof f.path === "string" && f.path.trim() && typeof f.content === "string")
-      : [];
-    if (files.length === 0) {
-      return { ok: false, error: "The model didn't produce any concrete file changes for this objective." };
-    }
-    const summary = typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim() : `Implements: ${objective}`;
-    return { ok: true, summary, files };
-  } catch (err: any) {
-    observation.logTelemetry("warn", "Departments", `draftCodeChanges failed: ${err.message}`);
-    return { ok: false, error: err.message || String(err) };
-  }
-}
-
 export async function reviewCodeDiff(objective: string, files: DraftedFile[], groq: Groq | null): Promise<string> {
   if (!groq) {
     return "No capable model was available to review this change — please review the diff yourself before merging.";
@@ -345,5 +278,58 @@ export async function reviewCodeDiff(objective: string, files: DraftedFile[], gr
   } catch (err: any) {
     observation.logTelemetry("warn", "Departments", `reviewCodeDiff failed: ${err.message}`);
     return `Automated review failed (${err.message}) — please review the diff yourself before merging.`;
+  }
+}
+
+const TASK_REVIEW_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    approved: { type: Type.BOOLEAN },
+    findings: { type: Type.STRING },
+  },
+  required: ["approved", "findings"],
+};
+
+// A task-scoped gate, not a merge review — judges one task's diff against
+// that task's own title/description, not the whole build request's
+// objective. Returns a structured verdict (not prose, unlike reviewCodeDiff)
+// because this drives a programmatic retry/continue decision inside
+// coding-agent.ts's fix loop. Fails open (approved: true) both when no Groq
+// client is available and when the review call itself throws — an optional
+// quality gate degrading closed would turn a transient Groq hiccup into a
+// permanently-blocked build, worse than proceeding without the extra check.
+export async function reviewTaskDiff(
+  taskTitle: string,
+  taskDescription: string,
+  files: DraftedFile[],
+  groq: Groq | null
+): Promise<{ approved: boolean; findings: string }> {
+  if (!groq) {
+    return { approved: true, findings: "No capable model was available to review this task — proceeding without review." };
+  }
+  try {
+    const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{
+        role: "user",
+        content:
+          "Review this task's drafted code change against what the task was supposed to accomplish. Approve only if it " +
+          "genuinely satisfies the task with no real bugs, missing error handling, or security issues. Be concise in findings.\n\n" +
+          `Task: ${taskTitle} — ${taskDescription}\n\nFiles:\n${filesText}`,
+      }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "task_review", schema: toGroqSchema(TASK_REVIEW_SCHEMA), strict: true },
+      },
+    });
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
+    return {
+      approved: parsed.approved === true,
+      findings: typeof parsed.findings === "string" ? parsed.findings : "",
+    };
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Departments", `reviewTaskDiff failed: ${err.message}`);
+    return { approved: true, findings: `Automated review failed (${err.message}) — proceeding without review.` };
   }
 }

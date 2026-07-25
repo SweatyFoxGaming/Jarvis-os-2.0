@@ -11,9 +11,16 @@ const WORKSPACES_DIR = `${REPO_HOST_PATH}/.jarvis-build-workspaces`;
 const SANDBOX_IMAGE = "jarvis-sandbox:latest";
 
 // Defense-in-depth backstop, independent of whatever wall-clock budget the
-// (separate, later) agentic loop enforces on itself — catches the case
-// where that loop hangs or crashes without calling destroyWorkspace.
-const MAX_CONTAINER_LIFETIME_MS = 60 * 60 * 1000;
+// agentic loop enforces on itself — catches the case where that loop hangs
+// or crashes without calling destroyWorkspace. Deliberately much larger than
+// a coding session's own budget: this clock starts at createWorkspace, but a
+// workspace must survive all the way through the *human* approval checkpoint
+// (approve-code re-verifies against this exact container), and a human can
+// legitimately take far longer than an hour to review. Reaping a workspace
+// that's merely awaiting approval permanently burns the build request, so
+// 24h — still a backstop, not a session budget. Override with
+// JARVIS_SANDBOX_MAX_LIFETIME_MS if a deployment needs a different bound.
+const MAX_CONTAINER_LIFETIME_MS = Number(process.env.JARVIS_SANDBOX_MAX_LIFETIME_MS) || 24 * 60 * 60 * 1000;
 
 function workspaceDir(buildRequestId: number): string {
   return `${WORKSPACES_DIR}/br-${buildRequestId}`;
@@ -187,17 +194,31 @@ export function startReaper(): void {
       // which would make this safety-net reaper never remove anything
       // without any error or log. `docker inspect --format {{.Created}}`
       // instead returns RFC3339 UTC, which Date.parse always handles.
+      // The build-request-id label (set at `docker run` time) comes back in
+      // the same inspect call so the on-disk workspace clone can be removed
+      // alongside the container — removing only the container would leak the
+      // clone directory's disk forever, which the approval checkpoint makes
+      // a routine path rather than a rare one.
       // Each container is checked independently so one bad/slow ID can't
       // stop the rest of the pass from being reaped.
       await Promise.allSettled(
         ids.map(async (id) => {
           try {
-            const { stdout: createdAt } = await execFileAsync("docker", [
-              "inspect", "--format", "{{.Created}}", id,
+            const { stdout: inspected } = await execFileAsync("docker", [
+              "inspect",
+              "--format",
+              '{{.Created}} {{index .Config.Labels "jarvis-build-request-id"}}',
+              id,
             ]);
-            const createdMs = Date.parse(createdAt.trim());
+            const [createdAt, buildRequestId] = inspected.trim().split(/\s+/);
+            const createdMs = Date.parse((createdAt || "").trim());
             if (!isNaN(createdMs) && now - createdMs > MAX_CONTAINER_LIFETIME_MS) {
               await execFileAsync("docker", ["rm", "-f", id]).catch(() => {});
+              // Only ever derived from the label, and only when it's a plain
+              // integer — never an arbitrary string interpolated into a path.
+              if (buildRequestId && /^\d+$/.test(buildRequestId)) {
+                await execFileAsync("rm", ["-rf", workspaceDir(Number(buildRequestId))]).catch(() => {});
+              }
             }
           } catch {
             // Best-effort per-container — a failure here (e.g. the

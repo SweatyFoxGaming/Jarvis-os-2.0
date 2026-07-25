@@ -303,6 +303,47 @@ async function createSchema(): Promise<void> {
   await db.query(`CREATE INDEX IF NOT EXISTS build_requests_status_idx ON build_requests(status);`);
   await db.query(`CREATE INDEX IF NOT EXISTS build_requests_requested_by_idx ON build_requests(requested_by, status);`);
 
+  // One row per run_shell_command call the agentic coding loop makes,
+  // in call order — the "View Activity" panel's data source. Cascades on
+  // build_requests delete since a transcript is meaningless without its
+  // parent build request.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS transcript_events (
+      id SERIAL PRIMARY KEY,
+      build_request_id INTEGER NOT NULL REFERENCES build_requests(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      command TEXT NOT NULL,
+      stdout TEXT NOT NULL,
+      stderr TEXT NOT NULL,
+      exit_code INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS transcript_events_build_request_idx ON transcript_events(build_request_id, seq);`);
+
+  // The task breakdown the coding loop proposes before executing anything —
+  // the "View Plan" panel's data source. One row per task, status updated
+  // in place as the loop progresses (pending -> in_progress -> done, or
+  // needs_fixes/failed on a bad review). Cascades on build_requests delete
+  // for the same reason transcript_events does.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS coding_plan_tasks (
+      id SERIAL PRIMARY KEY,
+      build_request_id INTEGER NOT NULL REFERENCES build_requests(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  // UNIQUE, not a plain index — currently unreachable in practice (a build
+  // request can't re-enter the coding loop once past 'coding'), but makes
+  // that invariant structural rather than relying on caller discipline.
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS coding_plan_tasks_build_request_idx ON coding_plan_tasks(build_request_id, seq);`);
+
   // Browser Push API subscriptions — one row per device/browser that's
   // opted in, keyed by the endpoint URL itself (unique per subscription,
   // not per user) since one user can have several devices subscribed at once.
