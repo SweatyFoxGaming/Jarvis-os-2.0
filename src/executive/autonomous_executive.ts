@@ -288,7 +288,8 @@ export class AutonomousExecutive {
       confirmed.research_summary || "",
       directionNotes,
       baseBranch,
-      this.nvidiaApiKey
+      this.nvidiaApiKey,
+      this.groq
     );
 
     if (!draft.ok) {
