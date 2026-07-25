@@ -33,7 +33,7 @@ import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
 import { parseNvidiaChatResponse } from "../src/runtime/nvidia-client.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
 import { recordTranscriptEvent, listTranscriptEvents } from "../src/kernel/state/transcript-events-repo.js";
-import { createPlan, listPlanTasks } from "../src/kernel/state/coding-plan-tasks-repo.js";
+import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state/coding-plan-tasks-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
@@ -1369,6 +1369,11 @@ registerTest("CodingPlanTasks", "listPlanTasks degrades cleanly when Postgres is
   if (!Array.isArray(tasks) || tasks.length !== 0) {
     throw new Error(`CodingPlanTasks: expected an empty array with no DB, got: ${JSON.stringify(tasks)}`);
   }
+});
+
+registerTest("CodingPlanTasks", "updateTaskStatus degrades cleanly when Postgres isn't reachable", async () => {
+  await updateTaskStatus(999999, 1, "done", "test summary");
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
 });
 
 // ---------- Obsidian Parser Tests (pure functions, no I/O) ----------
