@@ -52,6 +52,14 @@ function builderRequest(path: string, method: string, body?: string): Promise<an
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (chunk) => chunks.push(chunk));
+        res.on("error", (err: any) => {
+          reject(new BuilderClientError(`jarvis-builder response failed: ${err.message}`, 502));
+        });
+        res.on("close", () => {
+          if (!res.complete) {
+            reject(new BuilderClientError("jarvis-builder closed the connection before the response completed", 502));
+          }
+        });
         res.on("end", () => {
           const text = Buffer.concat(chunks).toString("utf8");
           const status = res.statusCode || 500;

@@ -1873,7 +1873,7 @@ app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (r
         // failure would permanently burn the build request. Leaving status at
         // awaiting_code_approval means the human can still explicitly reject
         // it to close it out cleanly.
-        const sandboxGone = verify.exitCode === 125 || /No such container/i.test(verify.stderr);
+        const sandboxGone = verify.exitCode === 125 || /No such container|is not running/i.test(verify.stderr);
         if (sandboxGone) {
           const message =
             "The sandbox workspace for this build request is no longer available (it may have expired). The proposed files are still recorded — reject this request to close it out.";
