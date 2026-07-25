@@ -13,6 +13,7 @@ import * as obsidian from "../capabilities/providers/obsidian.js";
 import * as vaultRepo from "./state/vault-repo.js";
 import * as sessionRepo from "./state/session-repo.js";
 import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
+import { positiveIntegerEnv } from "./env.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -247,20 +248,12 @@ export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Time
 // windows are configurable since "how long is worth keeping" is a genuine
 // operator judgment call, not something this codebase should hardcode
 // confidently on someone else's behalf.
-// `Number(x) || fallback` looks safe but isn't: -1 is truthy in JS, so a
-// misconfigured negative value would sail through unchanged. That's not
-// cosmetic here — it reaches straight into `now() - ($1 * interval '1
-// day')` in the prune queries below, and a negative retention days flips
-// the comparison to `created_at < now() + 1 day`, which matches every row
-// in the table. Reject anything that isn't a positive integer instead of
-// trusting truthiness.
-function positiveIntegerOrDefault(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const CONVERSATION_RETENTION_DAYS = positiveIntegerOrDefault(process.env.CONVERSATION_RETENTION_DAYS, 180);
-const TRANSCRIPT_RETENTION_DAYS = positiveIntegerOrDefault(process.env.TRANSCRIPT_RETENTION_DAYS, 30);
+// positiveIntegerEnv, not `Number(x) || fallback`: a negative retention-days
+// value would otherwise flip the prune queries' `now() - ($1 * interval '1
+// day')` into matching (and deleting) every row in the table — see
+// kernel/env.ts for the full story on why `||` isn't safe here.
+const CONVERSATION_RETENTION_DAYS = positiveIntegerEnv(process.env.CONVERSATION_RETENTION_DAYS, 180);
+const TRANSCRIPT_RETENTION_DAYS = positiveIntegerEnv(process.env.TRANSCRIPT_RETENTION_DAYS, 30);
 
 export function startDataRetentionJob(intervalMs = 24 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("data-retention", intervalMs, async () => {

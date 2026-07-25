@@ -3,9 +3,11 @@ import * as builderClient from "../kernel/builder-client.js";
 import { recordTranscriptEvent } from "../kernel/state/transcript-events-repo.js";
 import * as codingPlanTasksRepo from "../kernel/state/coding-plan-tasks-repo.js";
 import type { PlannedTaskInput } from "../kernel/state/coding-plan-tasks-repo.js";
+import { incrementTokenUsage } from "../kernel/state/build-requests-repo.js";
 import { callNvidiaChat, NvidiaMessage, NvidiaTool } from "../runtime/nvidia-client.js";
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
+import { positiveIntegerEnv } from "../kernel/env.js";
 import Groq from "groq-sdk";
 
 const observation = ObservationPlatform.getInstance();
@@ -21,6 +23,20 @@ const MAX_TURNS = 40;
 const MAX_TASK_TURNS = 30;
 const MAX_TASK_FIX_ATTEMPTS = 2;
 const MAX_PLAN_TASKS = 10;
+
+// Turn caps alone bound *how many* NVIDIA calls a session can make (up to
+// 300: MAX_PLAN_TASKS × MAX_TASK_TURNS), not how much any of them actually
+// cost — a worst case of 300 calls with a large, growing conversation
+// history could still run up real spend with nothing tracking it. This is
+// a token count, not a dollar figure, deliberately: NVIDIA NIM pricing
+// varies by model and this codebase isn't going to guess a number it can't
+// verify. Convert to a dollar ceiling yourself via
+// JARVIS_CODING_AGENT_TOKEN_BUDGET based on your actual NVIDIA pricing tier
+// — see .env.example. 4,000,000 is a first-pass, deliberately generous
+// backstop (a session that legitimately needs more than that is unusual),
+// not a carefully tuned number — the point is having *a* ceiling where
+// today there is none, the same spirit as MAX_TURNS/MAX_TASK_TURNS above.
+const MAX_TOKENS_PER_SESSION = positiveIntegerEnv(process.env.JARVIS_CODING_AGENT_TOKEN_BUDGET, 4_000_000);
 
 const RUN_SHELL_TOOL: NvidiaTool = {
   type: "function",
@@ -133,19 +149,30 @@ export async function runCodingAgent(
   }
   const baseSha = baseShaResult.stdout.trim();
 
-  const plan = await proposePlan(nvidiaApiKey, objective, researchSummary, directionNotes);
+  const planResult = await proposePlan(buildRequestId, nvidiaApiKey, objective, researchSummary, directionNotes);
 
-  if (plan === null) {
+  if (planResult.tasks === null) {
     // Planning couldn't produce a usable task list after a retry — fall
     // back to running the whole objective through the flat loop rather
     // than failing the build request outright. Planning is meant to
     // improve reliability, not become a new single point of failure.
-    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, nvidiaApiKey);
+    // planResult.tokensUsed seeds the flat loop's own counter so planning's
+    // spend still counts against the one session budget, not a separate
+    // allowance outside it.
+    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, nvidiaApiKey, planResult.tokensUsed);
   }
+  const plan = planResult.tasks;
 
   await codingPlanTasksRepo.createPlan(buildRequestId, plan);
 
   let seq = 0;
+  // Shared across every task in the plan, not reset per task — the budget
+  // bounds the whole session's spend, the same way MAX_TASK_TURNS bounds
+  // one task's turns but the overall 300-call ceiling (MAX_PLAN_TASKS ×
+  // MAX_TASK_TURNS) is what actually bounds the session today. Seeded with
+  // planResult.tokensUsed for the same reason as the flat-loop fallback
+  // above — planning's own NVIDIA calls count against this same budget.
+  let tokensUsed = planResult.tokensUsed;
   const completedSummaries: string[] = [];
 
   try {
@@ -189,6 +216,7 @@ export async function runCodingAgent(
       let taskApproved = false;
       let taskSummary = "";
       let hitTurnCap = false;
+      let hitBudgetCap = false;
       let lastFindings = "";
 
       for (let fixAttempt = 0; fixAttempt <= MAX_TASK_FIX_ATTEMPTS && !taskApproved; fixAttempt++) {
@@ -199,9 +227,28 @@ export async function runCodingAgent(
             hitTurnCap = true;
             break;
           }
+          if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
+            hitBudgetCap = true;
+            break;
+          }
           taskTurns++;
 
           const response = await callNvidiaChat(nvidiaApiKey, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL]);
+          if (response.totalTokens) {
+            tokensUsed += response.totalTokens;
+            await incrementTokenUsage(buildRequestId, response.totalTokens);
+          }
+          // Checked again immediately after this call, not just before the
+          // next one: the pre-call check above only ever catches a session
+          // that was ALREADY over budget — without this, the exact call
+          // that first crosses the cap still gets its tool calls processed,
+          // including a finish_task that would let the task complete as if
+          // nothing were wrong, one call past where the session was
+          // supposed to stop.
+          if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
+            hitBudgetCap = true;
+            break;
+          }
 
           if (!response.toolCalls || response.toolCalls.length === 0) {
             messages.push({ role: "assistant", content: response.content });
@@ -318,11 +365,16 @@ export async function runCodingAgent(
       }
 
       if (!taskApproved) {
-        // hitTurnCap alone doesn't mean no review ever ran — a task can be
-        // reviewed, rejected, and then run out of turn budget while acting
-        // on those findings. lastFindings distinguishes "never got
-        // reviewed" from "was reviewed, and here's why it still failed."
-        const failureReason = hitTurnCap
+        // hitTurnCap/hitBudgetCap alone doesn't mean no review ever ran — a
+        // task can be reviewed, rejected, and then run out of turns or
+        // budget while acting on those findings. lastFindings distinguishes
+        // "never got reviewed" from "was reviewed, and here's why it still
+        // failed."
+        const failureReason = hitBudgetCap
+          ? lastFindings
+            ? `ran out of its ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget before fixing the review findings: ${lastFindings}`
+            : `hit the ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget without calling finish_task`
+          : hitTurnCap
           ? lastFindings
             ? `ran out of its ${MAX_TASK_TURNS}-turn budget before fixing the review findings: ${lastFindings}`
             : `hit its ${MAX_TASK_TURNS}-turn limit without calling finish_task`
@@ -351,17 +403,28 @@ export async function runCodingAgent(
   }
 }
 
+interface ProposePlanResult {
+  tasks: PlannedTaskInput[] | null;
+  // Counted against the same MAX_TOKENS_PER_SESSION meter the caller's main
+  // loop uses — planning is capped at 2 attempts so this is normally small,
+  // but a failed plan followed by the flat-loop fallback must not spend
+  // this outside the session's budget just because it happened before
+  // tokensUsed existed in the caller.
+  tokensUsed: number;
+}
+
 // One forced tool call asking the model to decompose the objective before
 // any code gets written. Retries once with a corrective nudge on a missing
-// or malformed call; returns null (triggering the flat-loop fallback in
-// runCodingAgent) rather than failing the whole build request if planning
-// itself can't produce a usable list.
+// or malformed call; returns tasks: null (triggering the flat-loop fallback
+// in runCodingAgent) rather than failing the whole build request if
+// planning itself can't produce a usable list.
 async function proposePlan(
+  buildRequestId: number,
   nvidiaApiKey: string,
   objective: string,
   researchSummary: string,
   directionNotes: string
-): Promise<PlannedTaskInput[] | null> {
+): Promise<ProposePlanResult> {
   const messages: NvidiaMessage[] = [
     {
       role: "system",
@@ -375,9 +438,15 @@ async function proposePlan(
     { role: "user", content: "Begin." },
   ];
 
+  let tokensUsed = 0;
+
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await callNvidiaChat(nvidiaApiKey, messages, [PROPOSE_PLAN_TOOL]);
+      if (response.totalTokens) {
+        tokensUsed += response.totalTokens;
+        await incrementTokenUsage(buildRequestId, response.totalTokens);
+      }
       const call = response.toolCalls?.find((c) => c.function.name === "propose_plan");
 
       if (call) {
@@ -392,7 +461,7 @@ async function proposePlan(
             .map((t: any, i: number) => ({ seq: i + 1, title: t.title, description: t.description }));
 
           if (tasks.length > 0 && tasks.length <= MAX_PLAN_TASKS) {
-            return tasks;
+            return { tasks, tokensUsed };
           }
         } catch {
           // Malformed arguments — fall through to the retry nudge below.
@@ -420,7 +489,7 @@ async function proposePlan(
       });
     }
 
-    return null;
+    return { tasks: null, tokensUsed };
   } catch (err: any) {
     // Any NVIDIA call failure here (rate limit, cold-start error, network
     // issue) must degrade to the flat-loop fallback, not escape and wedge
@@ -430,7 +499,7 @@ async function proposePlan(
     // leak it and leave the build request permanently stuck in 'coding'
     // with no recovery path.
     observation.logTelemetry("warn", "Executive", `Plan phase failed: ${err.message}. Falling back to the flat coding loop.`);
-    return null;
+    return { tasks: null, tokensUsed };
   }
 }
 
@@ -445,7 +514,14 @@ async function runFlatCodingLoop(
   researchSummary: string,
   directionNotes: string,
   baseSha: string,
-  nvidiaApiKey: string
+  nvidiaApiKey: string,
+  // Seeds this loop's own budget counter with whatever the (failed)
+  // planning attempt already spent — see the call site in runCodingAgent —
+  // so the two phases share one session budget instead of planning's spend
+  // living outside it. Defaults to 0 for the (currently nonexistent, but
+  // cheap to keep honest) case of a direct caller that skipped planning
+  // entirely.
+  initialTokensUsed = 0
 ): Promise<CodingAgentResult> {
   const messages: NvidiaMessage[] = [
     {
@@ -460,10 +536,34 @@ async function runFlatCodingLoop(
   ];
 
   let seq = 0;
+  let tokensUsed = initialTokensUsed;
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
+      if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
+        await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+        return {
+          ok: false,
+          error: `The coding session hit its ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget without calling finish_coding.`,
+        };
+      }
+
       const response = await callNvidiaChat(nvidiaApiKey, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL]);
+      if (response.totalTokens) {
+        tokensUsed += response.totalTokens;
+        await incrementTokenUsage(buildRequestId, response.totalTokens);
+      }
+      // Same reasoning as the per-task loop's post-call check: without
+      // this, the exact call that first crosses the cap still gets its
+      // tool calls processed, including a finish_coding that would let the
+      // whole session complete as if it never went over budget.
+      if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
+        await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+        return {
+          ok: false,
+          error: `The coding session hit its ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget without calling finish_coding.`,
+        };
+      }
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
         messages.push({ role: "assistant", content: response.content });

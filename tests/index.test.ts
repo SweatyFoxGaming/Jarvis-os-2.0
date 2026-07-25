@@ -35,6 +35,9 @@ import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "
 import { recordTranscriptEvent, listTranscriptEvents } from "../src/kernel/state/transcript-events-repo.js";
 import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state/coding-plan-tasks-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
+import { computePendingMigrations, ALL_MIGRATIONS, Migration } from "../src/kernel/state/migrations/index.js";
+import { positiveIntegerEnv } from "../src/kernel/env.js";
+import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -1182,6 +1185,36 @@ registerTest("BuildRequests", "rejectCode degrades cleanly when Postgres isn't r
   }
 });
 
+// ---------- ObjectiveRuns Tests (no live Postgres in this test process) ----------
+// startRun's real job — turning away a second concurrent run for the same
+// user via a Postgres unique-violation — can only be exercised against a
+// live database (two INSERTs actually racing needs a real transaction
+// boundary); that part is deploy-time-verified like every other live DB
+// round trip in this codebase. What's testable here is the degrade path
+// startRun and finishRun must both take instead of throwing when Postgres
+// is unreachable — this is exactly what makes executeObjective() keep
+// working with no live DB (see the "Executive 2.0" test above), instead of
+// a lock-check turning into a new hard dependency on Postgres being up.
+
+registerTest("ObjectiveRuns", "startRun degrades to 'unavailable' (not a throw) when Postgres isn't reachable", async () => {
+  const result = await objectiveRunsRepo.startRun("test_user", "test objective");
+  if (result.ok !== false || result.reason !== "unavailable") {
+    throw new Error(`ObjectiveRuns: expected { ok: false, reason: "unavailable" } with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("ObjectiveRuns", "finishRun is a safe no-op when Postgres isn't reachable", async () => {
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+  await objectiveRunsRepo.finishRun(999999, "done", null);
+});
+
+registerTest("ObjectiveRuns", "finishRun is a safe no-op given a null runId (the 'no lock was held' case)", async () => {
+  // Exercises the exact path executeObjective() takes when startRun already
+  // degraded to "unavailable" — finishRun must short-circuit before ever
+  // touching the database, not just happen to degrade cleanly if it did.
+  await objectiveRunsRepo.finishRun(null, "failed", null, "some error");
+});
+
 // ---------- Departments Tests (no live AI/network in this test process) ----------
 
 registerTest("Departments", "decomposeObjective falls back to a single research step with no AI client", async () => {
@@ -1351,6 +1384,81 @@ registerTest("NvidiaClient", "parseNvidiaChatResponse throws when the response h
   }
 });
 
+registerTest("NvidiaClient", "parseNvidiaChatResponse extracts totalTokens when usage is present", () => {
+  const result = parseNvidiaChatResponse({
+    choices: [{ message: { content: "hello", tool_calls: [] } }],
+    usage: { total_tokens: 1234 },
+  });
+  if (result.totalTokens !== 1234) {
+    throw new Error(`NvidiaClient: expected totalTokens 1234, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse's totalTokens is null when usage is absent — this is what coding-agent.ts's budget tracking must tolerate", () => {
+  const result = parseNvidiaChatResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
+  if (result.totalTokens !== null) {
+    throw new Error(`NvidiaClient: expected totalTokens null with no usage field, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse rejects a negative total_tokens instead of letting it erode the session budget counter", () => {
+  const result = parseNvidiaChatResponse({
+    choices: [{ message: { content: "hello", tool_calls: [] } }],
+    usage: { total_tokens: -5 },
+  });
+  if (result.totalTokens !== null) {
+    throw new Error(`NvidiaClient: expected totalTokens null for a negative value, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse rejects a non-integer total_tokens", () => {
+  const result = parseNvidiaChatResponse({
+    choices: [{ message: { content: "hello", tool_calls: [] } }],
+    usage: { total_tokens: 12.5 },
+  });
+  if (result.totalTokens !== null) {
+    throw new Error(`NvidiaClient: expected totalTokens null for a fractional value, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- kernel/env.ts Tests (pure functions) ----------
+
+registerTest("Env", "positiveIntegerEnv accepts a valid positive integer string", () => {
+  if (positiveIntegerEnv("42", 7) !== 42) {
+    throw new Error("Env: expected \"42\" to parse to 42");
+  }
+});
+
+registerTest("Env", "positiveIntegerEnv falls back on a negative value — the exact bug class this exists to prevent", () => {
+  if (positiveIntegerEnv("-1", 30) !== 30) {
+    throw new Error("Env: expected \"-1\" to fall back to the default, not pass through as -1 (a bare `Number(x) || fallback` would get this wrong, since -1 is truthy)");
+  }
+});
+
+registerTest("Env", "positiveIntegerEnv falls back on zero", () => {
+  if (positiveIntegerEnv("0", 30) !== 30) {
+    throw new Error("Env: expected \"0\" to fall back to the default");
+  }
+});
+
+registerTest("Env", "positiveIntegerEnv falls back on a non-numeric string", () => {
+  if (positiveIntegerEnv("not-a-number", 30) !== 30) {
+    throw new Error("Env: expected a non-numeric string to fall back to the default");
+  }
+});
+
+registerTest("Env", "positiveIntegerEnv falls back on undefined (the unset-env-var case)", () => {
+  if (positiveIntegerEnv(undefined, 30) !== 30) {
+    throw new Error("Env: expected undefined to fall back to the default");
+  }
+});
+
+registerTest("Env", "positiveIntegerEnv falls back on a non-integer value", () => {
+  if (positiveIntegerEnv("1.5", 30) !== 30) {
+    throw new Error("Env: expected a fractional value to fall back to the default");
+  }
+});
+
 // ---------- Trivial-Message Fast Path Tests ----------
 
 registerTest("ToolRouting", "looksTrivial recognizes a short greeting", () => {
@@ -1479,6 +1587,61 @@ registerTest("CodingPlanTasks", "listPlanTasks degrades cleanly when Postgres is
 registerTest("CodingPlanTasks", "updateTaskStatus degrades cleanly when Postgres isn't reachable", async () => {
   await updateTaskStatus(999999, 1, "done", "test summary");
   // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+});
+
+// ---------- Migrations Tests (pure functions, no live Postgres) ----------
+// The actual live-apply behavior (BEGIN/INSERT INTO schema_migrations/COMMIT
+// against a real database) is deploy-time-verified like every other DB
+// round trip in this codebase — what's unit-testable without a live
+// Postgres is the pure "which migrations still need to run" logic, and a
+// structural sanity check that ALL_MIGRATIONS itself is well-formed (no
+// duplicate/empty ids) before it's ever handed to a real database.
+
+registerTest("Migrations", "computePendingMigrations excludes already-applied ids, preserving declared order", () => {
+  const all: Migration[] = [
+    { id: "001_a", description: "a", up: async () => {} },
+    { id: "002_b", description: "b", up: async () => {} },
+    { id: "003_c", description: "c", up: async () => {} },
+  ];
+  const pending = computePendingMigrations(all, new Set(["002_b"]));
+  if (pending.length !== 2 || pending[0].id !== "001_a" || pending[1].id !== "003_c") {
+    throw new Error(`Migrations: expected ["001_a","003_c"] in order, got ${JSON.stringify(pending.map((m) => m.id))}`);
+  }
+});
+
+registerTest("Migrations", "computePendingMigrations returns everything when nothing is applied yet", () => {
+  const all: Migration[] = [{ id: "001_a", description: "a", up: async () => {} }];
+  const pending = computePendingMigrations(all, new Set());
+  if (pending.length !== 1 || pending[0].id !== "001_a") {
+    throw new Error(`Migrations: expected the single migration to be pending, got ${JSON.stringify(pending)}`);
+  }
+});
+
+registerTest("Migrations", "computePendingMigrations returns nothing once everything is applied", () => {
+  const all: Migration[] = [{ id: "001_a", description: "a", up: async () => {} }];
+  const pending = computePendingMigrations(all, new Set(["001_a"]));
+  if (pending.length !== 0) {
+    throw new Error(`Migrations: expected no pending migrations, got ${JSON.stringify(pending)}`);
+  }
+});
+
+registerTest("Migrations", "ALL_MIGRATIONS has unique, non-empty ids in the order they'll actually be applied", () => {
+  if (ALL_MIGRATIONS.length === 0) {
+    throw new Error("Migrations: ALL_MIGRATIONS is empty — the migration table itself should still exist once the framework lands");
+  }
+  const seen = new Set<string>();
+  for (const m of ALL_MIGRATIONS) {
+    if (!m.id || typeof m.id !== "string") {
+      throw new Error(`Migrations: found a migration with a missing/invalid id: ${JSON.stringify(m)}`);
+    }
+    if (seen.has(m.id)) {
+      throw new Error(`Migrations: duplicate migration id "${m.id}" — ids must be unique and permanent once shipped`);
+    }
+    seen.add(m.id);
+    if (typeof m.up !== "function") {
+      throw new Error(`Migrations: migration "${m.id}" has no up() function`);
+    }
+  }
 });
 
 // ---------- Obsidian Parser Tests (pure functions, no I/O) ----------

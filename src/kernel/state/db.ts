@@ -1,5 +1,6 @@
 import pg from "pg";
 import { ObservationPlatform } from "../observation.js";
+import { runMigrations, ALL_MIGRATIONS } from "./migrations/index.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -35,6 +36,15 @@ export function getPool(): pg.Pool {
   return pool;
 }
 
+// FROZEN BASELINE — every fresh install and every existing deployment
+// already has exactly this schema (createSchema's own idempotent
+// CREATE TABLE IF NOT EXISTS / ALTER ... IF NOT EXISTS calls are what make
+// that safe to re-run on every boot). Do NOT add a new table, column, or
+// index here. Every schema change from this point forward is a new file in
+// ./migrations/ instead — see migrations/runner.ts for why: an ALTER TABLE
+// added here with no record of when it ran, applied on every single boot
+// with no way to know if it's new or ancient, is exactly the "no version
+// tracking, no rollback path" gap that pattern existed to close.
 async function createSchema(): Promise<void> {
   const db = getPool();
   await db.query(`
@@ -440,6 +450,11 @@ export async function initDatabase(retries = 5, delayMs = 2000): Promise<boolean
     try {
       await createSchema();
       observation.logTelemetry("info", "Database", "Postgres schema verified/initialized.");
+      // Runs after createSchema (some migrations reference tables it owns,
+      // e.g. objective_runs -> build_requests) and before pgvector, whose
+      // own failure is already handled separately and shouldn't block
+      // migrations from being recorded as applied.
+      await runMigrations(getPool(), ALL_MIGRATIONS);
       try {
         await createVectorSchema();
         observation.logTelemetry("info", "Database", "pgvector schema ready — semantic memory enabled.");
