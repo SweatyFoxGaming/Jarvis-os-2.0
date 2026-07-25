@@ -173,7 +173,8 @@ export async function runCodingAgent(
             `Your current task: ${task.title} — ${task.description}\n\n` +
             `You have exactly one tool for doing work — run_shell_command — plus finish_task to end this task once it's ` +
             `fully implemented. Read files with cat, edit with heredocs or sed, run tests with the project's test command, ` +
-            `check types, use git to inspect and commit your work.`,
+            `check types, and use git to inspect your changes. Don't worry about committing — that happens automatically ` +
+            `once your work passes review.`,
         },
       ];
 
