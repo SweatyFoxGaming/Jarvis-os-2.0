@@ -53,6 +53,7 @@ import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
 import * as obsidian from "./capabilities/providers/obsidian.js";
 import * as vaultRepo from "./kernel/state/vault-repo.js";
 import * as departments from "./executive/departments.js";
+import * as builderClient from "./kernel/builder-client.js";
 
 dotenv.config();
 
@@ -1810,99 +1811,132 @@ app.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (r
       return res.status(422).json({ error: message });
     }
 
-    const branchName = `jarvis/build-request-${buildRequest.id}`;
-
-    let repoInfo: any;
+    // From here on, this build request's sandbox workspace (Plan 1) is
+    // still alive — it was deliberately kept alive since coding-agent.ts's
+    // finish_coding, specifically so this verification pass can run
+    // against the exact on-disk state the coding session actually left,
+    // not any residual/stateful assumption about it. Whatever happens next
+    // (success or any failure below), the workspace's job ends here — torn
+    // down exactly once, in `finally`, so no future edit to any branch
+    // below can forget to.
     try {
-      repoInfo = await github.getRepo(owner, repoName);
-    } catch (err: any) {
-      await buildRequestsRepo.markPrError(buildRequest.id, `Failed to read repo default branch: ${err.message}`);
-      return res.status(502).json({ error: `Failed to read repo default branch: ${err.message}` });
-    }
-    const baseBranch = repoInfo.default_branch;
-
-    try {
-      await github.createBranch(owner, repoName, branchName, baseBranch);
-    } catch (err: any) {
-      await buildRequestsRepo.markPrError(buildRequest.id, `Failed to create branch: ${err.message}`);
-      return res.status(502).json({ error: `Failed to create branch: ${err.message}` });
-    }
-
-    for (const file of files) {
+      // Final verification: a fresh install and the full test suite/typecheck
+      // — not trusting whatever state the free-reign coding session happened
+      // to leave the container in — so this reflects exactly what's about to
+      // be committed, per the design spec's testing-and-deployment checkpoint.
+      let verify: { stdout: string; stderr: string; exitCode: number };
       try {
-        await github.commitFile(
-          owner,
-          repoName,
-          file.path,
-          file.content,
-          `Build request #${buildRequest.id}: ${buildRequest.code_summary || buildRequest.objective}`,
-          branchName
+        verify = await builderClient.execInWorkspace(
+          buildRequest.id,
+          "rm -rf node_modules && npm ci && npm test && npx tsc --noEmit"
         );
       } catch (err: any) {
-        await buildRequestsRepo.markPrError(
-          buildRequest.id,
-          `Failed to commit "${file.path}": ${err.message}. Branch "${branchName}" may exist with a partial commit — review it manually.`
-        );
-        return res.status(502).json({ error: `Failed to commit "${file.path}": ${err.message}` });
+        const message = `Final verification could not run: ${err.message}`;
+        await buildRequestsRepo.markPrError(buildRequest.id, message);
+        return res.status(502).json({ error: message });
       }
-    }
+      if (verify.exitCode !== 0) {
+        const message = `Final verification failed (exit ${verify.exitCode}):\n${verify.stdout.slice(-2000)}\n${verify.stderr.slice(-2000)}`;
+        await buildRequestsRepo.markPrError(buildRequest.id, message);
+        return res.status(422).json({ error: message });
+      }
 
-    let pr: any;
-    try {
-      pr = await github.createPullRequest(
-        owner,
-        repoName,
-        `Build request #${buildRequest.id}: ${buildRequest.objective}`,
-        branchName,
-        baseBranch,
-        buildRequest.code_summary || undefined
+      const branchName = `jarvis/build-request-${buildRequest.id}`;
+
+      let repoInfo: any;
+      try {
+        repoInfo = await github.getRepo(owner, repoName);
+      } catch (err: any) {
+        await buildRequestsRepo.markPrError(buildRequest.id, `Failed to read repo default branch: ${err.message}`);
+        return res.status(502).json({ error: `Failed to read repo default branch: ${err.message}` });
+      }
+      const baseBranch = repoInfo.default_branch;
+
+      try {
+        await github.createBranch(owner, repoName, branchName, baseBranch);
+      } catch (err: any) {
+        await buildRequestsRepo.markPrError(buildRequest.id, `Failed to create branch: ${err.message}`);
+        return res.status(502).json({ error: `Failed to create branch: ${err.message}` });
+      }
+
+      for (const file of files) {
+        try {
+          await github.commitFile(
+            owner,
+            repoName,
+            file.path,
+            file.content,
+            `Build request #${buildRequest.id}: ${buildRequest.code_summary || buildRequest.objective}`,
+            branchName
+          );
+        } catch (err: any) {
+          await buildRequestsRepo.markPrError(
+            buildRequest.id,
+            `Failed to commit "${file.path}": ${err.message}. Branch "${branchName}" may exist with a partial commit — review it manually.`
+          );
+          return res.status(502).json({ error: `Failed to commit "${file.path}": ${err.message}` });
+        }
+      }
+
+      let pr: any;
+      try {
+        pr = await github.createPullRequest(
+          owner,
+          repoName,
+          `Build request #${buildRequest.id}: ${buildRequest.objective}`,
+          branchName,
+          baseBranch,
+          buildRequest.code_summary || undefined
+        );
+      } catch (err: any) {
+        await buildRequestsRepo.markPrError(buildRequest.id, `Branch and commits succeeded but opening the PR failed: ${err.message}`);
+        return res.status(502).json({ error: `Failed to open PR: ${err.message}` });
+      }
+
+      const updated = await buildRequestsRepo.recordPrOpened(buildRequest.id, pr.html_url, pr.number);
+      if (!updated) {
+        return res.status(500).json({ error: "PR was opened but couldn't be recorded — check GitHub directly." });
+      }
+
+      observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
+
+      obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
+        directionNotes: updated.direction_notes || undefined,
+        codeSummary: updated.code_summary || undefined,
+        files: files.map((f: any) => f.path),
+        prUrl: updated.pr_url || undefined,
+        status: updated.status,
+      }).catch((err: any) => {
+        observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
+      });
+
+      // QA runs immediately, synchronously, right here — no CI polling (see
+      // design spec's "Decisions"). CI's own result speaks for itself on
+      // GitHub, same as any other PR.
+      const qaSummary = await departments.reviewCodeDiff(updated.objective, files, groq);
+      await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
+
+      obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
+        directionNotes: updated.direction_notes || undefined,
+        codeSummary: updated.code_summary || undefined,
+        files: files.map((f: any) => f.path),
+        prUrl: updated.pr_url || undefined,
+        qaSummary,
+        status: "qa_complete",
+      }).catch((err: any) => {
+        observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
+      });
+
+      scheduler.pushNotification(
+        req.username,
+        `Opened the pull request for build request #${updated.id}, sir: ${pr.html_url}. QA review: ${qaSummary.slice(0, 300)}${qaSummary.length > 300 ? "..." : ""} Check GitHub for CI status.`,
+        "info"
       );
-    } catch (err: any) {
-      await buildRequestsRepo.markPrError(buildRequest.id, `Branch and commits succeeded but opening the PR failed: ${err.message}`);
-      return res.status(502).json({ error: `Failed to open PR: ${err.message}` });
+
+      res.json({ ...updated, qa_summary: qaSummary });
+    } finally {
+      await builderClient.destroyWorkspace(buildRequest.id).catch(() => {});
     }
-
-    const updated = await buildRequestsRepo.recordPrOpened(buildRequest.id, pr.html_url, pr.number);
-    if (!updated) {
-      return res.status(500).json({ error: "PR was opened but couldn't be recorded — check GitHub directly." });
-    }
-
-    observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
-
-    obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
-      directionNotes: updated.direction_notes || undefined,
-      codeSummary: updated.code_summary || undefined,
-      files: files.map((f: any) => f.path),
-      prUrl: updated.pr_url || undefined,
-      status: updated.status,
-    }).catch((err: any) => {
-      observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
-    });
-
-    // QA runs immediately, synchronously, right here — no CI polling (see
-    // design spec's "Decisions"). CI's own result speaks for itself on
-    // GitHub, same as any other PR.
-    const qaSummary = await departments.reviewCodeDiff(updated.objective, files, groq);
-    await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
-
-    obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
-      directionNotes: updated.direction_notes || undefined,
-      codeSummary: updated.code_summary || undefined,
-      files: files.map((f: any) => f.path),
-      prUrl: updated.pr_url || undefined,
-      qaSummary,
-      status: "qa_complete",
-    }).catch((err: any) => {
-      observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
-    });
-
-    scheduler.pushNotification(
-      req.username,
-      `Opened the pull request for build request #${updated.id}, sir: ${pr.html_url}. QA review: ${qaSummary.slice(0, 300)}${qaSummary.length > 300 ? "..." : ""} Check GitHub for CI status.`,
-      "info"
-    );
-
-    res.json({ ...updated, qa_summary: qaSummary });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1915,6 +1949,7 @@ app.post("/api/system/build-requests/:id/reject-code", validateApiKey, async (re
   try {
     const updated = await buildRequestsRepo.rejectCode(Number(req.params.id));
     if (!updated) return res.status(404).json({ error: "Build request not found or not awaiting code approval" });
+    await builderClient.destroyWorkspace(updated.id).catch(() => {});
     observation.logAuditEvent(req.username, "build_request_code_rejected", "success", `#${updated.id}`);
     res.json(updated);
   } catch (err: any) {
