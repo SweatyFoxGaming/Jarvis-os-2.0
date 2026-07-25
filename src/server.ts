@@ -430,12 +430,13 @@ app.get("/api/settings/offline", validateApiKey, (req: any, res: any) => {
   res.json({ offline: kernel.offlineMode });
 });
 
-app.post("/api/settings/offline", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
+app.post("/api/settings/offline", validateApiKey, requireCapability("settings.write"), async (req: any, res: any) => {
   const { offline } = req.body;
   const kernel = MindKernel.getInstance();
   kernel.offlineMode = !!offline;
-  kernel.persistSettings();
+  await kernel.persistSettings(req.username);
   observation.logTelemetry("info", "System", `Offline Mode changed to: ${kernel.offlineMode}`);
+  observation.logAuditEvent(req.username, "update_settings", "success", `offline_mode -> ${kernel.offlineMode}`);
   res.json({ status: "success", offline: kernel.offlineMode });
 });
 
@@ -454,7 +455,7 @@ app.get("/api/settings", validateApiKey, requireCapability("settings.write"), (r
   });
 });
 
-app.post("/api/settings", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
+app.post("/api/settings", validateApiKey, requireCapability("settings.write"), async (req: any, res: any) => {
   const { offline, localLlmEndpoint, localModelName, localApiKey, llmMode } = req.body;
   const kernel = MindKernel.getInstance();
 
@@ -464,12 +465,21 @@ app.post("/api/settings", validateApiKey, requireCapability("settings.write"), (
   if (localApiKey !== undefined) kernel.localApiKey = localApiKey;
   if (llmMode !== undefined) kernel.llmMode = llmMode;
 
-  kernel.persistSettings();
+  await kernel.persistSettings(req.username);
 
   observation.logTelemetry(
     "info",
     "System",
     `System settings updated: offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}`
+  );
+  // Doesn't echo localApiKey's value (see the redaction note on GET above) —
+  // "the key changed" is still worth an auditable record, just not what it
+  // changed to.
+  observation.logAuditEvent(
+    req.username,
+    "update_settings",
+    "success",
+    `offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}, localApiKeyChanged=${localApiKey !== undefined}`
   );
 
   res.json({
@@ -2797,6 +2807,15 @@ initDatabase().then(async (ready) => {
       await permissions.loadGrantsFromDb();
     } catch (err: any) {
       observation.logTelemetry("warn", "Database", `Failed to load capability grants: ${err.message}`);
+    }
+    try {
+      // After migrations (part of initDatabase() above) so system_settings
+      // is guaranteed to exist by the time this queries it. A failure here
+      // just leaves MindKernel's hardcoded defaults in place — see its own
+      // hydrateFromDb() doc comment.
+      await MindKernel.getInstance().hydrateFromDb();
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Database", `Failed to hydrate system settings: ${err.message}`);
     }
   }
   const httpServer = app.listen(PORT, "0.0.0.0", () => {
