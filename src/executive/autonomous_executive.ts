@@ -91,16 +91,29 @@ export class AutonomousExecutive {
     // reverts to. finishRun no-ops on a null runId, so this reads as "no
     // lock held" consistently below.
     const runId = started.ok ? started.runId : null;
+    // Mutated by executeObjectiveLocked the moment it creates a build
+    // request (STAGE 4a below), so that if something throws afterward
+    // (e.g. departments.runResearch), this catch can still close out the
+    // objective_runs row with the real build_request_id instead of null —
+    // otherwise the audit trail would show a failed run with no link to
+    // the build request that actually failed as part of it.
+    const runContext: { buildRequestId: number | null } = { buildRequestId: null };
 
     try {
-      return await this.executeObjectiveLocked(objective, session, username, runId);
+      return await this.executeObjectiveLocked(objective, session, username, runId, runContext);
     } catch (err: any) {
-      await objectiveRunsRepo.finishRun(runId, "failed", null, err.message);
+      await objectiveRunsRepo.finishRun(runId, "failed", runContext.buildRequestId, err.message);
       throw err;
     }
   }
 
-  private async executeObjectiveLocked(objective: string, session: SessionState, username: string, runId: number | null): Promise<any> {
+  private async executeObjectiveLocked(
+    objective: string,
+    session: SessionState,
+    username: string,
+    runId: number | null,
+    runContext: { buildRequestId: number | null }
+  ): Promise<any> {
     const kernel = MindKernel.getInstance();
     const workspace = session.workspace;
 
@@ -190,6 +203,7 @@ export class AutonomousExecutive {
       }
 
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
+      runContext.buildRequestId = buildRequest.id;
       const research = await departments.runResearch(objective, this.groq);
       const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
       if (recorded) {

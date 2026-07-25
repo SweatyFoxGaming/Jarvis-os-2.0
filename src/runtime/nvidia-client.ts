@@ -52,10 +52,19 @@ export function parseNvidiaChatResponse(data: any): NvidiaChatResult {
   if (!message) {
     throw new NvidiaIntegrationError("NVIDIA NIM response had no message content.");
   }
+  // A negative or fractional value would be truthy in coding-agent.ts's
+  // `if (response.totalTokens)` check, get added to (in the negative case,
+  // subtracted from) the in-memory session token counter, and then get
+  // silently dropped by incrementTokenUsage's own `tokens <= 0` guard when
+  // persisting — meaning a malformed value could quietly erode the budget
+  // counter in memory while never showing up in the persisted total.
+  // Treating anything but a genuine non-negative safe integer as "unknown"
+  // (null) keeps a malformed response from ever reaching that counter at all.
+  const rawTotalTokens = data?.usage?.total_tokens;
   return {
     content: message.content ?? null,
     toolCalls: Array.isArray(message.tool_calls) && message.tool_calls.length > 0 ? message.tool_calls : null,
-    totalTokens: typeof data?.usage?.total_tokens === "number" ? data.usage.total_tokens : null,
+    totalTokens: typeof rawTotalTokens === "number" && Number.isSafeInteger(rawTotalTokens) && rawTotalTokens >= 0 ? rawTotalTokens : null,
   };
 }
 

@@ -1401,6 +1401,26 @@ registerTest("NvidiaClient", "parseNvidiaChatResponse's totalTokens is null when
   }
 });
 
+registerTest("NvidiaClient", "parseNvidiaChatResponse rejects a negative total_tokens instead of letting it erode the session budget counter", () => {
+  const result = parseNvidiaChatResponse({
+    choices: [{ message: { content: "hello", tool_calls: [] } }],
+    usage: { total_tokens: -5 },
+  });
+  if (result.totalTokens !== null) {
+    throw new Error(`NvidiaClient: expected totalTokens null for a negative value, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("NvidiaClient", "parseNvidiaChatResponse rejects a non-integer total_tokens", () => {
+  const result = parseNvidiaChatResponse({
+    choices: [{ message: { content: "hello", tool_calls: [] } }],
+    usage: { total_tokens: 12.5 },
+  });
+  if (result.totalTokens !== null) {
+    throw new Error(`NvidiaClient: expected totalTokens null for a fractional value, got: ${JSON.stringify(result)}`);
+  }
+});
+
 // ---------- kernel/env.ts Tests (pure functions) ----------
 
 registerTest("Env", "positiveIntegerEnv accepts a valid positive integer string", () => {
