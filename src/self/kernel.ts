@@ -49,20 +49,26 @@ export class MindKernel {
     this.llmMode = row.llm_mode;
   }
 
-  // updatedBy is who made this change (an admin/settings.write-granted
-  // username) — always recorded, giving this a real audit trail the old
-  // JSON file never had.
-  public async persistSettings(updatedBy: string): Promise<void> {
-    await systemSettingsRepo.updateSystemSettings(
-      {
-        offlineMode: this.offlineMode,
-        localLlmEndpoint: this.localLlmEndpoint,
-        localModelName: this.localModelName,
-        localApiKey: this.localApiKey,
-        llmMode: this.llmMode,
-      },
-      updatedBy
-    );
+  // Takes the caller's explicit partial update (only the fields THIS
+  // request actually changed) rather than snapshotting every current
+  // in-memory field. That distinction matters now that persisting is async:
+  // two concurrent /api/settings* requests interleave in-memory (each reads
+  // the fields it cares about, mutates them, then awaits its own DB write),
+  // and a full-snapshot write can carry a field's value as it stood *before*
+  // the other request's write actually reaches Postgres — whichever UPDATE
+  // lands second then clobbers the other request's change back to a stale
+  // value, even though both requests' in-memory state was already correct.
+  // A partial update only ever touches the field(s) this call actually
+  // changed; system-settings-repo.ts's COALESCE already preserves everything
+  // else regardless of interleaving. Returns whether the write actually
+  // succeeded — the in-memory fields above are already mutated by the
+  // caller either way (matches this codebase's existing capability-grant
+  // pattern: the change is live for this process immediately, durability is
+  // separate), but callers need to know if it failed to log an honest audit
+  // outcome instead of unconditionally claiming "success".
+  public async persistSettings(updatedBy: string, changed: systemSettingsRepo.SystemSettingsUpdate): Promise<boolean> {
+    const updated = await systemSettingsRepo.updateSystemSettings(changed, updatedBy);
+    return updated !== null;
   }
 
   public static getInstance(): MindKernel {

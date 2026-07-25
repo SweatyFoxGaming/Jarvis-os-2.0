@@ -1248,7 +1248,14 @@ registerTest("SystemSettings", "MindKernel.hydrateFromDb() keeps hardcoded defau
 
 registerTest("SystemSettings", "MindKernel.persistSettings() does not throw when Postgres isn't reachable", async () => {
   // No throw is the assertion — matches this file's existing degrade-cleanly tests.
-  await MindKernel.getInstance().persistSettings("test_user");
+  await MindKernel.getInstance().persistSettings("test_user", { offlineMode: true });
+});
+
+registerTest("SystemSettings", "MindKernel.persistSettings() returns false when the write doesn't actually succeed", async () => {
+  const persisted = await MindKernel.getInstance().persistSettings("test_user", { offlineMode: true });
+  if (persisted !== false) {
+    throw new Error(`SystemSettings: expected persistSettings() to return false with no live Postgres, got: ${persisted}`);
+  }
 });
 
 // ---------- Departments Tests (no live AI/network in this test process) ----------

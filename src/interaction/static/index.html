@@ -3514,6 +3514,11 @@
                     addNotification("System connected to cloud neural models.", "info");
                     speakText("Cloud cognitive models connected.");
                 }
+                // Active for this session either way — persisted: false just
+                // means it won't survive a restart, worth knowing about.
+                if (data.persisted === false) {
+                    addNotification("This mode change couldn't be saved and will revert on restart.", "warning");
+                }
             }
         } catch {}
     }
@@ -3669,8 +3674,18 @@
                 body: JSON.stringify(body)
             });
             if (res.ok) {
-                addNotification("Cognitive Sync Matrix updated.", "success");
-                speakText("Local first configuration updated successfully.");
+                const data = await res.json();
+                // The change is already active for this running session
+                // either way — `persisted: false` means the write to
+                // Postgres itself failed, so it won't survive a restart.
+                // Worth a distinct warning rather than the same success
+                // toast as a real, durable save.
+                if (data.persisted === false) {
+                    addNotification("Settings applied for this session, but couldn't be saved — they'll revert on restart.", "warning");
+                } else {
+                    addNotification("Cognitive Sync Matrix updated.", "success");
+                    speakText("Local first configuration updated successfully.");
+                }
             } else {
                 addNotification("Failed to save matrix configuration.", "danger");
             }
