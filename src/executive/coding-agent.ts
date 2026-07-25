@@ -176,6 +176,13 @@ export async function runCodingAgent(
             `check types, and use git to inspect your changes. Don't worry about committing — that happens automatically ` +
             `once your work passes review.`,
         },
+        // NVIDIA NIM rejects a `tools`-bearing request whose messages array
+        // has no user-role message at all — confirmed live: "Cannot put
+        // tools in the first user message when there's no first user
+        // message." A short synthetic user turn satisfies this without
+        // changing what's actually being asked (that's all in the system
+        // message above).
+        { role: "user", content: "Begin." },
       ];
 
       let taskTurns = 0;
@@ -363,6 +370,9 @@ async function proposePlan(
         `list of small, self-contained tasks (at most ${MAX_PLAN_TASKS}). Call propose_plan exactly once with the full list.\n\n` +
         `Objective: ${objective}\n\nResearch summary:\n${researchSummary || "(none)"}\n\nConfirmed direction:\n${directionNotes}`,
     },
+    // See the identical note in the per-task loop above — NVIDIA NIM
+    // requires a user-role message before it will accept `tools`.
+    { role: "user", content: "Begin." },
   ];
 
   try {
