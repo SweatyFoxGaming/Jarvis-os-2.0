@@ -11,6 +11,7 @@ import * as scheduler from "../kernel/scheduler.js";
 import * as codingAgent from "./coding-agent.js";
 import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
+import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
@@ -60,7 +61,46 @@ export class AutonomousExecutive {
     return this.instance;
   }
 
+  // Real lock, not just bookkeeping — see objective-runs-repo.ts. Two
+  // concurrent /api/executive/run calls for the same user used to race on
+  // the bare in-memory SessionState singleton below (session.dialogue.clear()
+  // and repeated session.updateState() calls with nothing serializing them);
+  // now the second call is turned away before touching any of that shared
+  // state, structurally (a Postgres unique-violation), not by caller
+  // discipline. The actual work happens in executeObjectiveLocked(), a
+  // near-verbatim copy of what used to be this method's entire body — kept
+  // as a separate method specifically so this wrapper's try/catch can
+  // guarantee the lock is always released (finishRun), including on a path
+  // that throws, without re-indenting that whole body into a single
+  // try block.
   public async executeObjective(objective: string, session: SessionState, username: string): Promise<any> {
+    const started = await objectiveRunsRepo.startRun(username, objective);
+    if (!started.ok && started.reason === "already_running") {
+      return {
+        objective,
+        status: "already_running",
+        message: "I'm already working on something for you, sir — let's let that finish before I start on this one.",
+      };
+    }
+    // "unavailable" (Postgres unreachable) degrades to proceeding without
+    // the lock, not blocking the objective — this executive already runs
+    // fine with no live Postgres (e.g. the no-AI-client research fallback
+    // below has never needed a DB either), and making the whole feature
+    // newly depend on Postgres being up just to check a concurrency lock
+    // would be a worse regression than the rare-race-condition risk it
+    // reverts to. finishRun no-ops on a null runId, so this reads as "no
+    // lock held" consistently below.
+    const runId = started.ok ? started.runId : null;
+
+    try {
+      return await this.executeObjectiveLocked(objective, session, username, runId);
+    } catch (err: any) {
+      await objectiveRunsRepo.finishRun(runId, "failed", null, err.message);
+      throw err;
+    }
+  }
+
+  private async executeObjectiveLocked(objective: string, session: SessionState, username: string, runId: number | null): Promise<any> {
     const kernel = MindKernel.getInstance();
     const workspace = session.workspace;
 
@@ -139,6 +179,7 @@ export class AutonomousExecutive {
       const existingAwaitingConsult = await buildRequestsRepo.getLatestAwaitingConsult(username);
       if (existingAwaitingConsult) {
         session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
+        await objectiveRunsRepo.finishRun(runId, "awaiting_consult", existingAwaitingConsult.id);
         return {
           objective,
           status: "awaiting_consult",
@@ -161,6 +202,7 @@ export class AutonomousExecutive {
         await buildRequestsRepo.markResearchError(buildRequest.id, "Failed to persist research findings.");
         session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
         workspace.mission.status = "failed";
+        await objectiveRunsRepo.finishRun(runId, "failed", buildRequest.id, "Failed to persist research findings.");
         return {
           objective,
           status: "error",
@@ -201,6 +243,7 @@ export class AutonomousExecutive {
         confidence: calculatedConfidence / 100
       });
 
+      await objectiveRunsRepo.finishRun(runId, "awaiting_consult", buildRequest.id);
       return {
         objective,
         status: "awaiting_consult",
@@ -272,6 +315,7 @@ export class AutonomousExecutive {
       confidence: calculatedConfidence / 100
     });
 
+    await objectiveRunsRepo.finishRun(runId, "done", null);
     return finalReport;
   }
 

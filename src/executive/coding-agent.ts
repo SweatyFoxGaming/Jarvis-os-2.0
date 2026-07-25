@@ -3,9 +3,11 @@ import * as builderClient from "../kernel/builder-client.js";
 import { recordTranscriptEvent } from "../kernel/state/transcript-events-repo.js";
 import * as codingPlanTasksRepo from "../kernel/state/coding-plan-tasks-repo.js";
 import type { PlannedTaskInput } from "../kernel/state/coding-plan-tasks-repo.js";
+import { incrementTokenUsage } from "../kernel/state/build-requests-repo.js";
 import { callNvidiaChat, NvidiaMessage, NvidiaTool } from "../runtime/nvidia-client.js";
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
+import { positiveIntegerEnv } from "../kernel/env.js";
 import Groq from "groq-sdk";
 
 const observation = ObservationPlatform.getInstance();
@@ -21,6 +23,20 @@ const MAX_TURNS = 40;
 const MAX_TASK_TURNS = 30;
 const MAX_TASK_FIX_ATTEMPTS = 2;
 const MAX_PLAN_TASKS = 10;
+
+// Turn caps alone bound *how many* NVIDIA calls a session can make (up to
+// 300: MAX_PLAN_TASKS × MAX_TASK_TURNS), not how much any of them actually
+// cost — a worst case of 300 calls with a large, growing conversation
+// history could still run up real spend with nothing tracking it. This is
+// a token count, not a dollar figure, deliberately: NVIDIA NIM pricing
+// varies by model and this codebase isn't going to guess a number it can't
+// verify. Convert to a dollar ceiling yourself via
+// JARVIS_CODING_AGENT_TOKEN_BUDGET based on your actual NVIDIA pricing tier
+// — see .env.example. 4,000,000 is a first-pass, deliberately generous
+// backstop (a session that legitimately needs more than that is unusual),
+// not a carefully tuned number — the point is having *a* ceiling where
+// today there is none, the same spirit as MAX_TURNS/MAX_TASK_TURNS above.
+const MAX_TOKENS_PER_SESSION = positiveIntegerEnv(process.env.JARVIS_CODING_AGENT_TOKEN_BUDGET, 4_000_000);
 
 const RUN_SHELL_TOOL: NvidiaTool = {
   type: "function",
@@ -146,6 +162,11 @@ export async function runCodingAgent(
   await codingPlanTasksRepo.createPlan(buildRequestId, plan);
 
   let seq = 0;
+  // Shared across every task in the plan, not reset per task — the budget
+  // bounds the whole session's spend, the same way MAX_TASK_TURNS bounds
+  // one task's turns but the overall 300-call ceiling (MAX_PLAN_TASKS ×
+  // MAX_TASK_TURNS) is what actually bounds the session today.
+  let tokensUsed = 0;
   const completedSummaries: string[] = [];
 
   try {
@@ -189,6 +210,7 @@ export async function runCodingAgent(
       let taskApproved = false;
       let taskSummary = "";
       let hitTurnCap = false;
+      let hitBudgetCap = false;
       let lastFindings = "";
 
       for (let fixAttempt = 0; fixAttempt <= MAX_TASK_FIX_ATTEMPTS && !taskApproved; fixAttempt++) {
@@ -199,9 +221,17 @@ export async function runCodingAgent(
             hitTurnCap = true;
             break;
           }
+          if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
+            hitBudgetCap = true;
+            break;
+          }
           taskTurns++;
 
           const response = await callNvidiaChat(nvidiaApiKey, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL]);
+          if (response.totalTokens) {
+            tokensUsed += response.totalTokens;
+            await incrementTokenUsage(buildRequestId, response.totalTokens);
+          }
 
           if (!response.toolCalls || response.toolCalls.length === 0) {
             messages.push({ role: "assistant", content: response.content });
@@ -318,11 +348,16 @@ export async function runCodingAgent(
       }
 
       if (!taskApproved) {
-        // hitTurnCap alone doesn't mean no review ever ran — a task can be
-        // reviewed, rejected, and then run out of turn budget while acting
-        // on those findings. lastFindings distinguishes "never got
-        // reviewed" from "was reviewed, and here's why it still failed."
-        const failureReason = hitTurnCap
+        // hitTurnCap/hitBudgetCap alone doesn't mean no review ever ran — a
+        // task can be reviewed, rejected, and then run out of turns or
+        // budget while acting on those findings. lastFindings distinguishes
+        // "never got reviewed" from "was reviewed, and here's why it still
+        // failed."
+        const failureReason = hitBudgetCap
+          ? lastFindings
+            ? `ran out of its ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget before fixing the review findings: ${lastFindings}`
+            : `hit the ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget without calling finish_task`
+          : hitTurnCap
           ? lastFindings
             ? `ran out of its ${MAX_TASK_TURNS}-turn budget before fixing the review findings: ${lastFindings}`
             : `hit its ${MAX_TASK_TURNS}-turn limit without calling finish_task`
@@ -460,10 +495,23 @@ async function runFlatCodingLoop(
   ];
 
   let seq = 0;
+  let tokensUsed = 0;
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
+      if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
+        await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+        return {
+          ok: false,
+          error: `The coding session hit its ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget without calling finish_coding.`,
+        };
+      }
+
       const response = await callNvidiaChat(nvidiaApiKey, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL]);
+      if (response.totalTokens) {
+        tokensUsed += response.totalTokens;
+        await incrementTokenUsage(buildRequestId, response.totalTokens);
+      }
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
         messages.push({ role: "assistant", content: response.content });

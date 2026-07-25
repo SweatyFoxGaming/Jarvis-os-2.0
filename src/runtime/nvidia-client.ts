@@ -36,11 +36,17 @@ export interface NvidiaTool {
 export interface NvidiaChatResult {
   content: string | null;
   toolCalls: NvidiaToolCall[] | null;
+  // OpenAI-compatible `usage.total_tokens` — null if the endpoint omitted
+  // it (some OpenAI-compatible backends don't always include usage). This
+  // is what lets coding-agent.ts enforce a real spend ceiling instead of
+  // only bounding a session by turn count.
+  totalTokens: number | null;
 }
 
-// Extracts the {content, toolCalls} shape this module's callers actually
-// need from a raw OpenAI-compatible chat-completions response body — split
-// out from callNvidiaChat so it's testable without a real network call.
+// Extracts the {content, toolCalls, totalTokens} shape this module's
+// callers actually need from a raw OpenAI-compatible chat-completions
+// response body — split out from callNvidiaChat so it's testable without a
+// real network call.
 export function parseNvidiaChatResponse(data: any): NvidiaChatResult {
   const message = data?.choices?.[0]?.message;
   if (!message) {
@@ -49,6 +55,7 @@ export function parseNvidiaChatResponse(data: any): NvidiaChatResult {
   return {
     content: message.content ?? null,
     toolCalls: Array.isArray(message.tool_calls) && message.tool_calls.length > 0 ? message.tool_calls : null,
+    totalTokens: typeof data?.usage?.total_tokens === "number" ? data.usage.total_tokens : null,
   };
 }
 
