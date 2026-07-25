@@ -1117,6 +1117,13 @@ registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client",
   }
 });
 
+registerTest("Departments", "reviewTaskDiff degrades cleanly with no AI client", async () => {
+  const result = await departments.reviewTaskDiff("test task", "test description", [{ path: "a.ts", content: "x" }], null);
+  if (result.approved !== true || !result.findings.includes("No capable model was available")) {
+    throw new Error(`Departments: expected the no-AI degrade verdict, got: ${JSON.stringify(result)}`);
+  }
+});
+
 // ---------- Groq Client Tests (pure functions, no network) ----------
 
 registerTest("GroqClient", "toGroqSchema lowercases a simple type field", () => {

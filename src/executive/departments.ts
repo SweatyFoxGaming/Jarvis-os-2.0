@@ -280,3 +280,56 @@ export async function reviewCodeDiff(objective: string, files: DraftedFile[], gr
     return `Automated review failed (${err.message}) — please review the diff yourself before merging.`;
   }
 }
+
+const TASK_REVIEW_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    approved: { type: Type.BOOLEAN },
+    findings: { type: Type.STRING },
+  },
+  required: ["approved", "findings"],
+};
+
+// A task-scoped gate, not a merge review — judges one task's diff against
+// that task's own title/description, not the whole build request's
+// objective. Returns a structured verdict (not prose, unlike reviewCodeDiff)
+// because this drives a programmatic retry/continue decision inside
+// coding-agent.ts's fix loop. Fails open (approved: true) both when no Groq
+// client is available and when the review call itself throws — an optional
+// quality gate degrading closed would turn a transient Groq hiccup into a
+// permanently-blocked build, worse than proceeding without the extra check.
+export async function reviewTaskDiff(
+  taskTitle: string,
+  taskDescription: string,
+  files: DraftedFile[],
+  groq: Groq | null
+): Promise<{ approved: boolean; findings: string }> {
+  if (!groq) {
+    return { approved: true, findings: "No capable model was available to review this task — proceeding without review." };
+  }
+  try {
+    const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{
+        role: "user",
+        content:
+          "Review this task's drafted code change against what the task was supposed to accomplish. Approve only if it " +
+          "genuinely satisfies the task with no real bugs, missing error handling, or security issues. Be concise in findings.\n\n" +
+          `Task: ${taskTitle} — ${taskDescription}\n\nFiles:\n${filesText}`,
+      }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "task_review", schema: toGroqSchema(TASK_REVIEW_SCHEMA), strict: true },
+      },
+    });
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
+    return {
+      approved: parsed.approved === true,
+      findings: typeof parsed.findings === "string" ? parsed.findings : "",
+    };
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Departments", `reviewTaskDiff failed: ${err.message}`);
+    return { approved: true, findings: `Automated review failed (${err.message}) — proceeding without review.` };
+  }
+}
