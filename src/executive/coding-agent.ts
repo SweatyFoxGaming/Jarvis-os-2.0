@@ -168,12 +168,17 @@ export async function runCodingAgent(
       let taskTurns = 0;
       let taskApproved = false;
       let taskSummary = "";
+      let hitTurnCap = false;
+      let lastFindings = "";
 
       for (let fixAttempt = 0; fixAttempt <= MAX_TASK_FIX_ATTEMPTS && !taskApproved; fixAttempt++) {
         let finishedSummary: string | null = null;
 
         while (finishedSummary === null) {
-          if (taskTurns >= MAX_TASK_TURNS) break;
+          if (taskTurns >= MAX_TASK_TURNS) {
+            hitTurnCap = true;
+            break;
+          }
           taskTurns++;
 
           const response = await callNvidiaChat(nvidiaApiKey, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL]);
@@ -256,6 +261,7 @@ export async function runCodingAgent(
 
         const { files: taskFiles, skipped: taskSkipped } = await extractChangedFiles(buildRequestId, taskBaseSha);
         const verdict = await departments.reviewTaskDiff(task.title, task.description, taskFiles, groq);
+        lastFindings = verdict.findings;
 
         if (verdict.approved) {
           taskApproved = true;
@@ -268,15 +274,18 @@ export async function runCodingAgent(
           await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "needs_fixes");
           messages.push({
             role: "user",
-            content: `The review found issues with this task — please fix them and call finish_task again once resolved:\n\n${verdict.findings}`,
+            content: `The review found issues with this task — please fix them and call finish_task again once resolved:\n\n${verdict.findings || "(the reviewer returned no specific findings — re-verify the task against its description.)"}`,
           });
         }
       }
 
       if (!taskApproved) {
-        await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "failed");
+        const failureReason = hitTurnCap
+          ? `hit its ${MAX_TASK_TURNS}-turn limit without calling finish_task`
+          : `did not pass review after ${MAX_TASK_FIX_ATTEMPTS + 1} attempt(s)${lastFindings ? `: ${lastFindings}` : ""}`;
+        await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "failed", failureReason);
         await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
-        return { ok: false, error: `Task "${task.title}" did not pass review after ${MAX_TASK_FIX_ATTEMPTS + 1} attempt(s).` };
+        return { ok: false, error: `Task "${task.title}" ${failureReason}.` };
       }
 
       completedSummaries.push(`- ${task.title}: ${taskSummary}`);
@@ -319,37 +328,63 @@ async function proposePlan(
     },
   ];
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await callNvidiaChat(nvidiaApiKey, messages, [PROPOSE_PLAN_TOOL]);
-    const call = response.toolCalls?.find((c) => c.function.name === "propose_plan");
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await callNvidiaChat(nvidiaApiKey, messages, [PROPOSE_PLAN_TOOL]);
+      const call = response.toolCalls?.find((c) => c.function.name === "propose_plan");
 
-    if (call) {
-      try {
-        const parsed = JSON.parse(call.function.arguments);
-        const rawTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
-        const tasks: PlannedTaskInput[] = rawTasks
-          .filter(
-            (t: any) =>
-              typeof t.title === "string" && t.title.trim() && typeof t.description === "string" && t.description.trim()
-          )
-          .map((t: any, i: number) => ({ seq: i + 1, title: t.title, description: t.description }));
+      if (call) {
+        try {
+          const parsed = JSON.parse(call.function.arguments);
+          const rawTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
+          const tasks: PlannedTaskInput[] = rawTasks
+            .filter(
+              (t: any) =>
+                typeof t.title === "string" && t.title.trim() && typeof t.description === "string" && t.description.trim()
+            )
+            .map((t: any, i: number) => ({ seq: i + 1, title: t.title, description: t.description }));
 
-        if (tasks.length > 0 && tasks.length <= MAX_PLAN_TASKS) {
-          return tasks;
+          if (tasks.length > 0 && tasks.length <= MAX_PLAN_TASKS) {
+            return tasks;
+          }
+        } catch {
+          // Malformed arguments — fall through to the retry nudge below.
         }
-      } catch {
-        // Malformed arguments — fall through to the retry nudge below.
       }
+
+      messages.push({ role: "assistant", content: response.content, tool_calls: response.toolCalls || undefined });
+      // Every tool_call in the assistant message above needs a matching
+      // tool response, or the next request is a structurally invalid
+      // conversation that an OpenAI-compatible endpoint will reject outright
+      // — this is exactly the retry path meant to rescue a malformed plan,
+      // so it has to itself be well-formed.
+      if (response.toolCalls) {
+        for (const toolCall of response.toolCalls) {
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ error: "That did not produce a usable plan — see the instructions that follow." }),
+          });
+        }
+      }
+      messages.push({
+        role: "user",
+        content: `That didn't produce a usable plan. Call propose_plan exactly once with a "tasks" array of 1-${MAX_PLAN_TASKS} items, each with a "title" and "description".`,
+      });
     }
 
-    messages.push({ role: "assistant", content: response.content, tool_calls: response.toolCalls || undefined });
-    messages.push({
-      role: "user",
-      content: `That didn't produce a usable plan. Call propose_plan exactly once with a "tasks" array of 1-${MAX_PLAN_TASKS} items, each with a "title" and "description".`,
-    });
+    return null;
+  } catch (err: any) {
+    // Any NVIDIA call failure here (rate limit, cold-start error, network
+    // issue) must degrade to the flat-loop fallback, not escape and wedge
+    // the build request — this is the single most likely failure point in
+    // the whole session (the first NVIDIA call), and by this point the
+    // sandbox workspace already exists, so an uncaught throw here would
+    // leak it and leave the build request permanently stuck in 'coding'
+    // with no recovery path.
+    observation.logTelemetry("warn", "Executive", `Plan phase failed: ${err.message}. Falling back to the flat coding loop.`);
+    return null;
   }
-
-  return null;
 }
 
 // The pre-Plan-3 behavior, unchanged: one continuous conversation covering
