@@ -34,3 +34,11 @@ echo "[*] Wrote $OUT_FILE ($(du -h "$OUT_FILE" | cut -f1))"
 cd "$BACKUP_DIR"
 ls -1t "jarvis-${POSTGRES_DB}"-*.sql.gz 2>/dev/null | tail -n "+$((RETAIN + 1))" | xargs -r rm --
 echo "[*] Retained the ${RETAIN} most recent backups in $BACKUP_DIR"
+
+# A correct script that silently stopped running (cron entry removed, a
+# systemd timer disabled, the host itself down) is indistinguishable from
+# "backups are fine" until the day a restore is actually needed — this
+# heartbeat is what scripts/check-backup-freshness.sh checks the age of, so
+# staleness itself becomes an observable, alertable condition instead of a
+# silent gap discovered too late.
+date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_DIR/.last-success"

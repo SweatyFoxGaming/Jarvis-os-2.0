@@ -1,0 +1,12 @@
+[Unit]
+Description=Check that a Jarvis OS Postgres backup has run recently
+
+[Service]
+Type=oneshot
+WorkingDirectory=/mnt/jarvis_home/llm
+ExecStart=/mnt/jarvis_home/llm/scripts/check-backup-freshness.sh
+# A non-zero exit here is exactly the "backups have gone stale" signal —
+# systemd logs it to the journal on its own. If you want a real page/notify
+# instead of just a journal entry, point OnFailure= at a notification unit
+# of your own (e.g. one that curls a webhook) — not something this codebase
+# invents a fake integration for.

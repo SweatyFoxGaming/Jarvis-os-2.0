@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Jarvis OS Postgres backup daily
+
+[Timer]
+OnCalendar=daily
+# Runs a missed backup on the next boot if the host was off at 03:00 —
+# systemd timers (unlike plain cron) can do this natively.
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

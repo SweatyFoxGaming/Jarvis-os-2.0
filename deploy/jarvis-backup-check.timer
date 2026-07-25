@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Jarvis OS backup freshness daily, offset from the backup itself
+
+[Timer]
+# Runs a few hours after the default daily backup window (see
+# jarvis-backup.timer's OnCalendar=daily, ~00:00 + up to a 15m random
+# delay) so a normal run has clearly finished before this checks for it.
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

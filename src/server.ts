@@ -152,6 +152,24 @@ const authLimiter = rateLimit({
   message: { error: "Too many attempts, try again later" },
 });
 
+// authLimiter alone only bounds guesses from a single IP — a distributed
+// attacker (many source IPs) could otherwise throw unlimited password
+// guesses at one specific username with no per-account backoff. This is
+// the same 20-per-15-minutes budget as authLimiter, just keyed on the
+// submitted username instead of the caller's address, so the two limits
+// apply independently and in combination. Lowercased so varying case can't
+// be used to split one account's guesses across multiple buckets. Applied
+// only to /api/login, not /api/register — a taken-username check on
+// registration isn't a credential-guessing surface the way a login attempt is.
+const loginUsernameLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any) => (typeof req.body?.username === "string" ? req.body.username.toLowerCase() : "unknown"),
+  message: { error: "Too many attempts for this account, try again later" },
+});
+
 // Chat/executive/board routes call out to a real (billed) Gemini API with no
 // cap otherwise — a leaked key, or a runaway client-side retry loop, could
 // otherwise generate unbounded cost. Keyed per authenticated user (not IP) so
@@ -372,7 +390,7 @@ app.post("/api/register", authLimiter, async (req, res) => {
   }
 });
 
-app.post("/api/login", authLimiter, async (req, res) => {
+app.post("/api/login", authLimiter, loginUsernameLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: "Username and password required" });
@@ -2820,6 +2838,7 @@ initDatabase().then(async (ready) => {
   scheduler.startSelfReflectionJob(groq);
   scheduler.startMcpHealthCheckJob();
   scheduler.startVaultSyncJob();
+  scheduler.startDataRetentionJob();
 });
 
 // Evict idle per-user session state (working memory, not persisted data) so

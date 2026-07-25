@@ -1,4 +1,7 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export interface HistoryMessage {
   role: "user" | "assistant" | "system";
@@ -30,4 +33,24 @@ export async function loadRecentHistory(username: string): Promise<HistoryMessag
     content: row.content,
     timestamp: new Date(row.created_at),
   }));
+}
+
+// loadRecentHistory only ever reads the most recent HISTORY_LIMIT rows per
+// user, so this table grows forever with nothing that would ever read the
+// older rows back — pure storage growth with no read-side benefit. Called
+// by the scheduler's data-retention job (src/kernel/scheduler.ts), never
+// inline on a request path. Returns the deleted row count for the job's own
+// logging, not surfaced to any user-facing endpoint.
+export async function pruneOldMessages(retentionDays: number): Promise<number> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `DELETE FROM conversation_history WHERE created_at < now() - ($1 * interval '1 day')`,
+      [retentionDays]
+    );
+    return rowCount ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Session", `pruneOldMessages(${retentionDays}) failed: ${err.message}`);
+    return 0;
+  }
 }
