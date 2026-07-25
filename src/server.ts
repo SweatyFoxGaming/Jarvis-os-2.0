@@ -51,6 +51,7 @@ import * as mcpRegistry from "./capabilities/mcp-registry.js";
 import * as push from "./interaction/push.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
 import * as transcriptEventsRepo from "./kernel/state/transcript-events-repo.js";
+import * as codingPlanTasksRepo from "./kernel/state/coding-plan-tasks-repo.js";
 import * as obsidian from "./capabilities/providers/obsidian.js";
 import * as vaultRepo from "./kernel/state/vault-repo.js";
 import * as departments from "./executive/departments.js";
@@ -1773,6 +1774,17 @@ app.get("/api/system/build-requests/:id/transcript", validateApiKey, async (req:
     res.json({ events: await transcriptEventsRepo.listTranscriptEvents(Number(req.params.id)) });
   } catch (err: any) {
     res.json({ events: [], error: err.message });
+  }
+});
+
+app.get("/api/system/build-requests/:id/plan", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "github.pulls.create")) {
+    return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
+  }
+  try {
+    res.json({ tasks: await codingPlanTasksRepo.listPlanTasks(Number(req.params.id)) });
+  } catch (err: any) {
+    res.json({ tasks: [], error: err.message });
   }
 });
 
