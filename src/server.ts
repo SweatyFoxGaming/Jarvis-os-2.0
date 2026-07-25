@@ -227,7 +227,7 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai, groq);
+const executive = AutonomousExecutive.getInstance(observation, ai, groq, nvidiaApiKey);
 const learningEngine = LongTermLearningEngine.getInstance();
 const executiveBoard = new ExecutiveBoard();
 

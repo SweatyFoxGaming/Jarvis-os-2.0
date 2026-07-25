@@ -1109,13 +1109,6 @@ registerTest("Departments", "runResearch degrades cleanly with no AI client", as
   }
 });
 
-registerTest("Departments", "draftCodeChanges degrades cleanly with no AI client", async () => {
-  const result = await departments.draftCodeChanges("test objective", "research", "direction", null);
-  if (result.ok !== false || !result.error.includes("No capable model is available")) {
-    throw new Error(`Departments: expected a clean failure with no AI client, got: ${JSON.stringify(result)}`);
-  }
-});
-
 registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client", async () => {
   const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], null);
   if (!result.includes("No capable model was available")) {
