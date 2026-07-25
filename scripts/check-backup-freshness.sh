@@ -25,14 +25,19 @@ fi
 
 LAST_SUCCESS_EPOCH="$(date -u -d "$(cat "$HEARTBEAT_FILE")" +%s 2>/dev/null || echo 0)"
 NOW_EPOCH="$(date -u +%s)"
-AGE_HOURS=$(( (NOW_EPOCH - LAST_SUCCESS_EPOCH) / 3600 ))
+# Compare in whole seconds, not truncated hours — integer division alone
+# would let a heartbeat that's 30h59m old report AGE_HOURS=30 and pass a
+# 30h threshold. AGE_HOURS below is for the human-readable message only.
+AGE_SECONDS=$(( NOW_EPOCH - LAST_SUCCESS_EPOCH ))
+MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
+AGE_HOURS=$(( AGE_SECONDS / 3600 ))
 
 if [ "$LAST_SUCCESS_EPOCH" -eq 0 ]; then
   echo "[!] $HEARTBEAT_FILE exists but couldn't be parsed as a timestamp — treating as stale." >&2
   exit 1
 fi
 
-if [ "$AGE_HOURS" -gt "$MAX_AGE_HOURS" ]; then
+if [ "$AGE_SECONDS" -gt "$MAX_AGE_SECONDS" ]; then
   echo "[!] Last successful backup was ${AGE_HOURS}h ago (threshold: ${MAX_AGE_HOURS}h). Check the backup schedule (cron -l, or 'systemctl status jarvis-backup.timer')." >&2
   exit 1
 fi

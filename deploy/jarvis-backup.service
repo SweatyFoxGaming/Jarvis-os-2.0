@@ -8,5 +8,7 @@ After=jarvis-os.service
 
 [Service]
 Type=oneshot
+# Adjust both paths below if your checkout lives somewhere else — same
+# caveat as jarvis-os.service's own WorkingDirectory.
 WorkingDirectory=/mnt/jarvis_home/llm
 ExecStart=/mnt/jarvis_home/llm/scripts/backup-postgres.sh

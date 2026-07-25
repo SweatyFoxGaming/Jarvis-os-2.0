@@ -6,7 +6,13 @@ Description=Check Jarvis OS backup freshness daily, offset from the backup itsel
 # jarvis-backup.timer's OnCalendar=daily, ~00:00 + up to a 15m random
 # delay) so a normal run has clearly finished before this checks for it.
 OnCalendar=*-*-* 06:00:00
-Persistent=true
+# Deliberately NOT Persistent=true, unlike jarvis-backup.timer: if the host
+# was off across both scheduled times, catch-up here would run the
+# freshness check immediately against yesterday's heartbeat, before the
+# backup job's own (Persistent=true) catch-up has had a chance to run —
+# a false "stale" failure racing a backup that's about to fix it. Missing
+# one scheduled freshness check after a reboot is harmless; the next day's
+# run covers it.
 
 [Install]
 WantedBy=timers.target

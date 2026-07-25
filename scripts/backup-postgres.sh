@@ -40,5 +40,8 @@ echo "[*] Retained the ${RETAIN} most recent backups in $BACKUP_DIR"
 # "backups are fine" until the day a restore is actually needed — this
 # heartbeat is what scripts/check-backup-freshness.sh checks the age of, so
 # staleness itself becomes an observable, alertable condition instead of a
-# silent gap discovered too late.
-date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_DIR/.last-success"
+# silent gap discovered too late. Relative to `.` (not `$BACKUP_DIR` again)
+# because the `cd "$BACKUP_DIR"` above already put us there — re-prefixing
+# it would double up into "$BACKUP_DIR/$BACKUP_DIR/.last-success" whenever
+# JARVIS_BACKUP_DIR is set to a relative path.
+date -u +%Y-%m-%dT%H:%M:%SZ > .last-success
