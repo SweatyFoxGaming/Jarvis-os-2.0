@@ -430,13 +430,22 @@ app.get("/api/settings/offline", validateApiKey, (req: any, res: any) => {
   res.json({ offline: kernel.offlineMode });
 });
 
-app.post("/api/settings/offline", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
+app.post("/api/settings/offline", validateApiKey, requireCapability("settings.write"), async (req: any, res: any) => {
   const { offline } = req.body;
   const kernel = MindKernel.getInstance();
   kernel.offlineMode = !!offline;
-  kernel.persistSettings();
+  // Only this one field, not a snapshot of every kernel.* value — see
+  // persistSettings' own comment on why a full snapshot can lose a
+  // concurrent request's change.
+  const persisted = await kernel.persistSettings(req.username, { offlineMode: kernel.offlineMode });
   observation.logTelemetry("info", "System", `Offline Mode changed to: ${kernel.offlineMode}`);
-  res.json({ status: "success", offline: kernel.offlineMode });
+  observation.logAuditEvent(
+    req.username,
+    "update_settings",
+    persisted ? "success" : "failed",
+    `offline_mode -> ${kernel.offlineMode}${persisted ? "" : " (in effect for this session — persistence failed, will revert on restart)"}`
+  );
+  res.json({ status: "success", offline: kernel.offlineMode, persisted });
 });
 
 app.get("/api/settings", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
@@ -454,26 +463,42 @@ app.get("/api/settings", validateApiKey, requireCapability("settings.write"), (r
   });
 });
 
-app.post("/api/settings", validateApiKey, requireCapability("settings.write"), (req: any, res: any) => {
+app.post("/api/settings", validateApiKey, requireCapability("settings.write"), async (req: any, res: any) => {
   const { offline, localLlmEndpoint, localModelName, localApiKey, llmMode } = req.body;
   const kernel = MindKernel.getInstance();
 
-  if (offline !== undefined) kernel.offlineMode = !!offline;
-  if (localLlmEndpoint !== undefined) kernel.localLlmEndpoint = localLlmEndpoint;
-  if (localModelName !== undefined) kernel.localModelName = localModelName;
-  if (localApiKey !== undefined) kernel.localApiKey = localApiKey;
-  if (llmMode !== undefined) kernel.llmMode = llmMode;
+  // Only the fields THIS request actually sent go into the partial update —
+  // see persistSettings' own comment. Building `changed` alongside the
+  // kernel.* mutations (not deriving it from kernel's full current state
+  // afterward) keeps the two impossible to drift apart.
+  const changed: import("./kernel/state/system-settings-repo.js").SystemSettingsUpdate = {};
+  if (offline !== undefined) { kernel.offlineMode = !!offline; changed.offlineMode = kernel.offlineMode; }
+  if (localLlmEndpoint !== undefined) { kernel.localLlmEndpoint = localLlmEndpoint; changed.localLlmEndpoint = localLlmEndpoint; }
+  if (localModelName !== undefined) { kernel.localModelName = localModelName; changed.localModelName = localModelName; }
+  if (localApiKey !== undefined) { kernel.localApiKey = localApiKey; changed.localApiKey = localApiKey; }
+  if (llmMode !== undefined) { kernel.llmMode = llmMode; changed.llmMode = llmMode; }
 
-  kernel.persistSettings();
+  const persisted = await kernel.persistSettings(req.username, changed);
 
   observation.logTelemetry(
     "info",
     "System",
     `System settings updated: offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}`
   );
+  // Doesn't echo localApiKey's value (see the redaction note on GET above) —
+  // "the key changed" is still worth an auditable record, just not what it
+  // changed to.
+  observation.logAuditEvent(
+    req.username,
+    "update_settings",
+    persisted ? "success" : "failed",
+    `offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}, localApiKeyChanged=${localApiKey !== undefined}` +
+      (persisted ? "" : " (in effect for this session — persistence failed, will revert on restart)")
+  );
 
   res.json({
     status: "success",
+    persisted,
     offline: kernel.offlineMode,
     localLlmEndpoint: kernel.localLlmEndpoint,
     localModelName: kernel.localModelName,
@@ -2797,6 +2822,15 @@ initDatabase().then(async (ready) => {
       await permissions.loadGrantsFromDb();
     } catch (err: any) {
       observation.logTelemetry("warn", "Database", `Failed to load capability grants: ${err.message}`);
+    }
+    try {
+      // After migrations (part of initDatabase() above) so system_settings
+      // is guaranteed to exist by the time this queries it. A failure here
+      // just leaves MindKernel's hardcoded defaults in place — see its own
+      // hydrateFromDb() doc comment.
+      await MindKernel.getInstance().hydrateFromDb();
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Database", `Failed to hydrate system settings: ${err.message}`);
     }
   }
   const httpServer = app.listen(PORT, "0.0.0.0", () => {

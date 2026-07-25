@@ -38,6 +38,8 @@ import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { computePendingMigrations, ALL_MIGRATIONS, Migration } from "../src/kernel/state/migrations/index.js";
 import { positiveIntegerEnv } from "../src/kernel/env.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
+import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js";
+import { MindKernel } from "../src/self/kernel.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 
@@ -1213,6 +1215,47 @@ registerTest("ObjectiveRuns", "finishRun is a safe no-op given a null runId (the
   // degraded to "unavailable" — finishRun must short-circuit before ever
   // touching the database, not just happen to degrade cleanly if it did.
   await objectiveRunsRepo.finishRun(null, "failed", null, "some error");
+});
+
+// ---------- SystemSettings Tests (no live Postgres in this test process) ----------
+// MindKernel.hydrateFromDb()/persistSettings() both depend on these
+// degrading cleanly rather than throwing — a Postgres outage must leave the
+// in-memory singleton on its hardcoded defaults (hydrateFromDb) or just fail
+// to persist a change (persistSettings), never crash the settings routes.
+
+registerTest("SystemSettings", "getSystemSettings degrades to null when Postgres isn't reachable", async () => {
+  const result = await systemSettingsRepo.getSystemSettings();
+  if (result !== null) {
+    throw new Error(`SystemSettings: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("SystemSettings", "updateSystemSettings degrades to null when Postgres isn't reachable", async () => {
+  const result = await systemSettingsRepo.updateSystemSettings({ offlineMode: true }, "test_user");
+  if (result !== null) {
+    throw new Error(`SystemSettings: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("SystemSettings", "MindKernel.hydrateFromDb() keeps hardcoded defaults when Postgres isn't reachable", async () => {
+  const kernel = MindKernel.getInstance();
+  const before = { ...kernel };
+  await kernel.hydrateFromDb();
+  if (kernel.offlineMode !== before.offlineMode || kernel.llmMode !== before.llmMode || kernel.localLlmEndpoint !== before.localLlmEndpoint) {
+    throw new Error("SystemSettings: hydrateFromDb() should leave MindKernel's fields unchanged when getSystemSettings() degrades to null");
+  }
+});
+
+registerTest("SystemSettings", "MindKernel.persistSettings() does not throw when Postgres isn't reachable", async () => {
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+  await MindKernel.getInstance().persistSettings("test_user", { offlineMode: true });
+});
+
+registerTest("SystemSettings", "MindKernel.persistSettings() returns false when the write doesn't actually succeed", async () => {
+  const persisted = await MindKernel.getInstance().persistSettings("test_user", { offlineMode: true });
+  if (persisted !== false) {
+    throw new Error(`SystemSettings: expected persistSettings() to return false with no live Postgres, got: ${persisted}`);
+  }
 });
 
 // ---------- Departments Tests (no live AI/network in this test process) ----------

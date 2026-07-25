@@ -75,8 +75,8 @@ relying on anything not listed in "What's implemented."
    actual current behavior, not a typo carried over from an earlier draft.
 
 5. **Prefer a different local backend (e.g. Ollama) instead?** Change the endpoint/model
-   in the Settings tab — it's saved to `data/settings.json` and survives restarts. One
-   thing to know if you go that route: Ollama binds to `127.0.0.1` only by default, which
+   in the Settings tab — it's saved to Postgres (`system_settings`) and survives restarts,
+   same as everything else this app persists. One thing to know if you go that route: Ollama binds to `127.0.0.1` only by default, which
    no container can reach (not even via `host.docker.internal`, which this compose file
    maps for exactly this case) — you'd need `OLLAMA_HOST=0.0.0.0` and a restart on the
    host for it to be reachable at all. The `llama-cpp` service above avoids this whole
