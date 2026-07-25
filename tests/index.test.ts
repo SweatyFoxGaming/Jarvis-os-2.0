@@ -32,6 +32,7 @@ import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
 import { parseNvidiaChatResponse } from "../src/runtime/nvidia-client.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
+import { recordTranscriptEvent, listTranscriptEvents } from "../src/kernel/state/transcript-events-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
@@ -1345,6 +1346,20 @@ registerTest("Vault", "listAllLinks degrades cleanly when Postgres isn't reachab
   const result = await listAllLinks(150);
   if (!Array.isArray(result) || result.length !== 0) {
     throw new Error(`Vault: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- TranscriptEvents Tests ----------
+
+registerTest("TranscriptEvents", "recordTranscriptEvent degrades cleanly when Postgres isn't reachable", async () => {
+  await recordTranscriptEvent(999999, 1, "echo hi", "hi\n", "", 0);
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+});
+
+registerTest("TranscriptEvents", "listTranscriptEvents degrades cleanly when Postgres isn't reachable", async () => {
+  const events = await listTranscriptEvents(999999);
+  if (!Array.isArray(events) || events.length !== 0) {
+    throw new Error(`TranscriptEvents: expected an empty array with no DB, got: ${JSON.stringify(events)}`);
   }
 });
 
