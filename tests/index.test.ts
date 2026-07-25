@@ -392,6 +392,12 @@ registerTest("Permissions", "Default-deny grants with admin pre-seeded", async (
   if (hasGrant("brand_new_test_user", "github.read")) {
     throw new Error("Permissions: a fresh username must not have any grants by default");
   }
+  if (!hasGrant("admin", "settings.write")) {
+    throw new Error("Permissions: admin should have settings.write granted by default");
+  }
+  if (hasGrant("brand_new_test_user", "settings.write")) {
+    throw new Error("Permissions: a fresh username must not have settings.write by default — this is the exact grant guarding /api/settings");
+  }
 
   // No live Postgres in this test harness — grantCapability/revokeCapability
   // still update the in-memory cache and just log a warning on the failed
@@ -856,6 +862,12 @@ function isPortInUse(port: number): Promise<boolean> {
   });
 }
 
+// Shared by every HTTP Boundary test below so they can reuse one spawned
+// server instead of each paying their own ~cold-start cost — INTERNAL_API_KEY
+// is fixed here so admin-key assertions elsewhere in this file can rely on
+// its exact value.
+const TEST_ADMIN_API_KEY = process.env.INTERNAL_API_KEY || "test-only-smoke-test-key-not-a-real-secret";
+
 registerTest("HTTP Boundary", "Express server boots from a cold start and serves /health", async () => {
   // If something's already listening on :3000 (e.g. this suite running
   // alongside a live dev/docker instance on the same host), don't spawn a
@@ -869,7 +881,7 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
       cwd: process.cwd(),
       env: {
         ...process.env,
-        INTERNAL_API_KEY: process.env.INTERNAL_API_KEY || "test-only-smoke-test-key-not-a-real-secret",
+        INTERNAL_API_KEY: TEST_ADMIN_API_KEY,
       },
       stdio: "ignore",
     });
@@ -889,6 +901,92 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
       await new Promise((r) => setTimeout(r, 500));
     }
     throw new Error(`Server never became reachable on :3000/health: ${lastErr?.message || lastErr}`);
+  } finally {
+    if (child) child.kill();
+  }
+});
+
+// Covers the specific incident class the earlier security review found:
+// a route that performs a gated action (send email, read/write settings)
+// but only checked validateApiKey, never the matching capability grant —
+// so a request with no credentials at all must never even reach that far.
+// This can't fully exercise the "authenticated but ungranted" case without
+// a live Postgres to register a real low-privilege user against (this test
+// harness has none, same constraint every other DB-backed test here
+// already works around) — the Permissions-category unit tests above already
+// cover hasGrant()'s default-deny behavior directly for the exact
+// capabilities these routes depend on. What this test adds on top: proof,
+// against the real running server, that the route is actually wired behind
+// authentication in the first place (no key -> 401, never a 200 or a naked
+// 500 from a handler that ran anyway), and — only when this test controls
+// the server's actual INTERNAL_API_KEY, i.e. it spawned the process itself —
+// that a caller who genuinely does hold the grant (admin) reaches the real
+// handler rather than being wrongly blocked by a typo'd capability string.
+registerTest("HTTP Boundary", "newly capability-gated routes reject unauthenticated requests and admit a granted admin", async () => {
+  const alreadyRunning = await isPortInUse(3000);
+  let child: ChildProcess | null = null;
+  if (!alreadyRunning) {
+    child = spawn("npx", ["tsx", "src/server.ts"], {
+      cwd: process.cwd(),
+      env: { ...process.env, INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
+      stdio: "ignore",
+    });
+  }
+  // If a server was already running on :3000 (e.g. a real dev/docker
+  // instance on this host — confirmed to genuinely happen, not just a
+  // theoretical case, the first time this test ran), it holds its own real
+  // INTERNAL_API_KEY, which this process has no way to know — so the
+  // admin-key assertions below only run against a server this test spawned
+  // itself and therefore knows the key for. The no-key assertions are
+  // unaffected either way: they only need SOME server on :3000 to reject an
+  // absent credential, regardless of whose key it actually has configured.
+  const knowsAdminKey = !alreadyRunning;
+
+  try {
+    // Wait for the server the same way the boot test does, independent of
+    // whether this test runs before or after it.
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch("http://127.0.0.1:3000/health");
+        if (res.ok) break;
+      } catch {
+        // not up yet
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const noKeyEmail = await fetch("http://127.0.0.1:3000/api/integrations/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: "a@example.com", subject: "x", text: "x" }),
+    });
+    if (noKeyEmail.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on /api/integrations/email/send, got ${noKeyEmail.status}`);
+    }
+
+    const noKeySettings = await fetch("http://127.0.0.1:3000/api/settings");
+    if (noKeySettings.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on GET /api/settings, got ${noKeySettings.status}`);
+    }
+
+    if (knowsAdminKey) {
+      const adminSettings = await fetch("http://127.0.0.1:3000/api/settings", {
+        headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+      });
+      if (adminSettings.status === 401 || adminSettings.status === 403) {
+        throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied on GET /api/settings, got ${adminSettings.status}`);
+      }
+
+      const adminEmail = await fetch("http://127.0.0.1:3000/api/integrations/email/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+        body: JSON.stringify({ to: "a@example.com", subject: "x", text: "x" }),
+      });
+      if (adminEmail.status === 401 || adminEmail.status === 403) {
+        throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied on /api/integrations/email/send, got ${adminEmail.status}`);
+      }
+    }
   } finally {
     if (child) child.kill();
   }

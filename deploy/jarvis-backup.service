@@ -1,0 +1,14 @@
+[Unit]
+Description=Jarvis OS Postgres backup
+# Best-effort dependency only — a backup attempted while the stack happens
+# to be mid-restart still runs (docker exec against a starting/stopping
+# container just fails loudly, same as backup-postgres.sh's own set -e
+# would surface any other failure), it's just not delayed waiting for it.
+After=jarvis-os.service
+
+[Service]
+Type=oneshot
+# Adjust both paths below if your checkout lives somewhere else — same
+# caveat as jarvis-os.service's own WorkingDirectory.
+WorkingDirectory=/mnt/jarvis_home/llm
+ExecStart=/mnt/jarvis_home/llm/scripts/backup-postgres.sh

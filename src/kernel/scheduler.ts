@@ -11,6 +11,8 @@ import * as mcpServersRepo from "./state/mcp-servers-repo.js";
 import * as mcpRegistry from "../capabilities/mcp-registry.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
 import * as vaultRepo from "./state/vault-repo.js";
+import * as sessionRepo from "./state/session-repo.js";
+import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -235,6 +237,47 @@ export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Time
  * configured — same "absent env var means the feature quietly doesn't
  * start" pattern as startEmailWatchJob.
  */
+// Two tables grow forever with no other cleanup: conversation_history
+// (every chat message, every user — the read side already only ever looks
+// at the most recent 50 per user) and transcript_events (full stdout/stderr
+// per shell command in a coding session — only ever read back while that
+// build request is still under review). A daily sweep is frequent enough
+// that no single run has much to do, cheap enough not to matter, and
+// infrequent enough not to be worth a shorter interval. Both retention
+// windows are configurable since "how long is worth keeping" is a genuine
+// operator judgment call, not something this codebase should hardcode
+// confidently on someone else's behalf.
+// `Number(x) || fallback` looks safe but isn't: -1 is truthy in JS, so a
+// misconfigured negative value would sail through unchanged. That's not
+// cosmetic here — it reaches straight into `now() - ($1 * interval '1
+// day')` in the prune queries below, and a negative retention days flips
+// the comparison to `created_at < now() + 1 day`, which matches every row
+// in the table. Reject anything that isn't a positive integer instead of
+// trusting truthiness.
+function positiveIntegerOrDefault(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const CONVERSATION_RETENTION_DAYS = positiveIntegerOrDefault(process.env.CONVERSATION_RETENTION_DAYS, 180);
+const TRANSCRIPT_RETENTION_DAYS = positiveIntegerOrDefault(process.env.TRANSCRIPT_RETENTION_DAYS, 30);
+
+export function startDataRetentionJob(intervalMs = 24 * 60 * 60 * 1000): NodeJS.Timeout {
+  return registerJob("data-retention", intervalMs, async () => {
+    const [prunedMessages, prunedTranscripts] = await Promise.all([
+      sessionRepo.pruneOldMessages(CONVERSATION_RETENTION_DAYS),
+      transcriptEventsRepo.pruneOldTranscriptEvents(TRANSCRIPT_RETENTION_DAYS),
+    ]);
+    if (prunedMessages > 0 || prunedTranscripts > 0) {
+      observation.logTelemetry(
+        "info",
+        "DataRetention",
+        `Pruned ${prunedMessages} conversation message(s) older than ${CONVERSATION_RETENTION_DAYS}d and ${prunedTranscripts} transcript event(s) older than ${TRANSCRIPT_RETENTION_DAYS}d.`
+      );
+    }
+  });
+}
+
 export function startVaultSyncJob(intervalMs = 15 * 60 * 1000): NodeJS.Timeout | null {
   if (!process.env.OBSIDIAN_VAULT_DIR) {
     observation.logTelemetry("info", "Scheduler", "Vault sync job not started — OBSIDIAN_VAULT_DIR not configured.");

@@ -14,6 +14,19 @@ export function getPool(): pg.Pool {
       password: process.env.POSTGRES_PASSWORD,
       database: process.env.POSTGRES_DB,
       max: 10,
+      // Without these, a single slow query (e.g. one of the leading-wildcard
+      // ILIKE searches in knowledge-graph-repo.ts/vault-repo.ts on a large
+      // table) can hold a connection indefinitely and, with only 10 in the
+      // pool, eventually starve every other repo — auth, sessions, build
+      // requests — with nothing to bound the wait. statement_timeout caps
+      // how long Postgres itself will run a single statement;
+      // connectionTimeoutMillis caps how long a caller waits to acquire a
+      // connection from the pool when all 10 are busy, so a starved pool
+      // fails fast with a clear error instead of hanging the request.
+      statement_timeout: 30_000,
+      query_timeout: 35_000,
+      connectionTimeoutMillis: 5_000,
+      idleTimeoutMillis: 30_000,
     });
     pool.on("error", (err) => {
       observation.logTelemetry("warn", "Database", `Unexpected Postgres pool error: ${err.message}`);

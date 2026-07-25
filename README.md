@@ -426,12 +426,43 @@ knowledge graph, sessions, and identity reflections with it, permanently.
 
 `scripts/backup-postgres.sh` dumps the database to a gzip-compressed,
 timestamped file under `backups/` (gitignored — these are real dumps of
-your data, never committed) and prunes anything older than the 14 most
-recent runs. Run it manually, or put it on a daily cron:
+your data, never committed), prunes anything older than the 14 most
+recent runs by default (override with `JARVIS_BACKUP_RETAIN`), and stamps
+`backups/.last-success` with the completion time. Run it manually, or put
+it on a daily cron:
 
-```
+```sh
 0 3 * * * /path/to/jarvis-os/scripts/backup-postgres.sh >> /path/to/jarvis-os/backups/backup.log 2>&1
 ```
+
+...or, if you'd rather have it logged to `journalctl` and survive a missed
+run across a reboot, install the systemd timer instead. Both unit files
+hardcode `/mnt/jarvis_home/llm` as the checkout path (same convention as
+`deploy/jarvis-os.service`) — edit `WorkingDirectory=`/`ExecStart=` in each
+`.service` file first if your checkout lives somewhere else:
+
+```sh
+sudo cp deploy/jarvis-backup.service deploy/jarvis-backup.timer /etc/systemd/system/
+sudo systemctl enable --now jarvis-backup.timer
+```
+
+A script that's *correct* but has quietly stopped running at all (a removed
+cron line, a disabled timer) looks identical to "backups are fine" until
+someone actually needs a restore — `scripts/check-backup-freshness.sh`
+checks `.last-success`'s age against a threshold (`JARVIS_BACKUP_MAX_AGE_HOURS`,
+default 30h) and exits non-zero if it's stale or missing. Run it on its own
+schedule, independent of the backup job itself:
+
+```sh
+sudo cp deploy/jarvis-backup-check.service deploy/jarvis-backup-check.timer /etc/systemd/system/
+sudo systemctl enable --now jarvis-backup-check.timer
+```
+
+Both are oneshot systemd units — a failed run just shows up in
+`systemctl --failed` / `journalctl -u jarvis-backup-check.service`. If you
+want an actual page or notification instead of a journal entry, add an
+`OnFailure=` unit of your own; nothing here invents a fake alerting
+integration to paper over that gap.
 
 To restore a dump:
 

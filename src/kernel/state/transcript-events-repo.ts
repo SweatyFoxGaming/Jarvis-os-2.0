@@ -50,3 +50,24 @@ export async function listTranscriptEvents(buildRequestId: number): Promise<Tran
     return [];
   }
 }
+
+// Full stdout/stderr per shell command in an agentic coding session, with no
+// cap per row and no row-count cap per build request — the single most
+// concerning unbounded-growth table this codebase writes to. A build
+// request's transcript is only ever read back while that specific build is
+// still being reviewed (see server.ts's approve-code route); once it's long
+// past that, keeping the raw output forever buys nothing. Called by the
+// scheduler's data-retention job, never inline on a request path.
+export async function pruneOldTranscriptEvents(retentionDays: number): Promise<number> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `DELETE FROM transcript_events WHERE created_at < now() - ($1 * interval '1 day')`,
+      [retentionDays]
+    );
+    return rowCount ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "TranscriptEvents", `pruneOldTranscriptEvents(${retentionDays}) failed: ${err.message}`);
+    return 0;
+  }
+}
