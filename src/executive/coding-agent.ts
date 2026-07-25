@@ -281,6 +281,24 @@ export async function runCodingAgent(
             taskSkipped.length > 0
               ? `${finishedSummary}\n\n(Note: ${taskSkipped.length} changed path(s) could not be read back: ${taskSkipped.join(", ")})`
               : finishedSummary;
+          // Nothing else in this loop ever commits — extractChangedFiles only
+          // stages (`git add -A`). Without a real commit here, HEAD never
+          // moves between tasks, so every later task's taskBaseSha would
+          // silently equal this one's, and "task-scoped" review would
+          // actually be reviewing the whole session's cumulative diff
+          // against just that task's narrow title/description — the exact
+          // bug the per-task scoping exists to prevent. `-c user.email/name`
+          // sidesteps the sandbox image having no git identity configured;
+          // `--allow-empty` and `.catch(() => {})` make this best-effort —
+          // if it fails for any reason, the next task's taskBaseSha just
+          // falls back to reviewing more than its own diff, same as today,
+          // not worse.
+          await builderClient
+            .execInWorkspace(
+              buildRequestId,
+              `git -c user.email=jarvis@local -c user.name=Jarvis commit -q --allow-empty -m "Task ${task.seq} committed by Jarvis"`
+            )
+            .catch(() => {});
           await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "done", taskSummary);
         } else if (fixAttempt < MAX_TASK_FIX_ATTEMPTS) {
           await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "needs_fixes");
@@ -292,8 +310,14 @@ export async function runCodingAgent(
       }
 
       if (!taskApproved) {
+        // hitTurnCap alone doesn't mean no review ever ran — a task can be
+        // reviewed, rejected, and then run out of turn budget while acting
+        // on those findings. lastFindings distinguishes "never got
+        // reviewed" from "was reviewed, and here's why it still failed."
         const failureReason = hitTurnCap
-          ? `hit its ${MAX_TASK_TURNS}-turn limit without calling finish_task`
+          ? lastFindings
+            ? `ran out of its ${MAX_TASK_TURNS}-turn budget before fixing the review findings: ${lastFindings}`
+            : `hit its ${MAX_TASK_TURNS}-turn limit without calling finish_task`
           : `did not pass review after ${MAX_TASK_FIX_ATTEMPTS + 1} attempt(s)${lastFindings ? `: ${lastFindings}` : ""}`;
         await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "failed", failureReason);
         await builderClient.destroyWorkspace(buildRequestId).catch(() => {});

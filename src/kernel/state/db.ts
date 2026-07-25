@@ -339,7 +339,10 @@ async function createSchema(): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
-  await db.query(`CREATE INDEX IF NOT EXISTS coding_plan_tasks_build_request_idx ON coding_plan_tasks(build_request_id, seq);`);
+  // UNIQUE, not a plain index — currently unreachable in practice (a build
+  // request can't re-enter the coding loop once past 'coding'), but makes
+  // that invariant structural rather than relying on caller discipline.
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS coding_plan_tasks_build_request_idx ON coding_plan_tasks(build_request_id, seq);`);
 
   // Browser Push API subscriptions — one row per device/browser that's
   // opted in, keyed by the endpoint URL itself (unique per subscription,
