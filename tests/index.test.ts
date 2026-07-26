@@ -968,14 +968,17 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
       throw new Error(`/health: database "down" should always produce status "degraded", got: ${JSON.stringify(body.status)}`);
     }
   } finally {
-    child.kill();
-    await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 5000);
+    child.kill(); // SIGTERM
+    const exited = await new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 5000);
       child.once("exit", () => {
         clearTimeout(timeout);
-        resolve(undefined);
+        resolve(true);
       });
     });
+    // A process ignoring SIGTERM (stuck in a blocking call) would otherwise
+    // be left running silently — escalate exactly once rather than leaking it.
+    if (!exited) child.kill("SIGKILL");
   }
 });
 
