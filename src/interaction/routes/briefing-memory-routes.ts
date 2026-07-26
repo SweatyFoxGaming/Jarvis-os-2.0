@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
+import { requireCapability } from "../../kernel/security.js";
 import * as briefing from "../../world/briefing.js";
 import * as briefingRepo from "../../kernel/state/briefing-repo.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
@@ -11,10 +12,24 @@ const observation = ObservationPlatform.getInstance();
 
 export const briefingMemoryRouter = Router();
 
+// No dedicated capability exists for the memory-review queue or admin
+// consolidation controls (unlike briefing.read below) — these operate on
+// global, not per-user, state (approving/clearing the whole system's pending
+// memory queue), so they're gated the same way permissions-routes.ts already
+// gates grant/revoke: admin only. Safe to key off the literal username again
+// now that a normal account can no longer register as "admin" (closed
+// separately).
+function requireAdmin(req: any, res: any, next: any) {
+  if (req.username !== "admin") {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  next();
+}
+
 // ---------- Proactive Briefing ----------
 // GET generates and returns one right now (on demand); the scheduled job in
 // scheduler.ts runs the same real synthesis on a timer without being asked.
-briefingMemoryRouter.get("/api/briefing", validateApiKey, async (req: any, res: any) => {
+briefingMemoryRouter.get("/api/briefing", validateApiKey, requireCapability("briefing.read"), async (req: any, res: any) => {
   try {
     const result = await briefing.generateBriefing(getGroq(), req.username);
     try {
@@ -32,7 +47,7 @@ briefingMemoryRouter.get("/api/briefing", validateApiKey, async (req: any, res: 
   }
 });
 
-briefingMemoryRouter.get("/api/briefing/history", validateApiKey, async (req: any, res: any) => {
+briefingMemoryRouter.get("/api/briefing/history", validateApiKey, requireCapability("briefing.read"), async (req: any, res: any) => {
   try {
     res.json({ briefings: await briefingRepo.getRecentBriefings() });
   } catch (err: any) {
@@ -41,7 +56,7 @@ briefingMemoryRouter.get("/api/briefing/history", validateApiKey, async (req: an
 });
 
 // Admin & Memory Endpoints — persisted in Postgres, see src/data/memory-repo.ts
-briefingMemoryRouter.get("/api/memory/pending", validateApiKey, async (req: any, res: any) => {
+briefingMemoryRouter.get("/api/memory/pending", validateApiKey, requireAdmin, async (req: any, res: any) => {
   try {
     res.json(await memoryRepo.getPendingRecords());
   } catch (err: any) {
@@ -50,7 +65,7 @@ briefingMemoryRouter.get("/api/memory/pending", validateApiKey, async (req: any,
   }
 });
 
-briefingMemoryRouter.post("/api/memory/verify/:record_uuid", validateApiKey, async (req: any, res: any) => {
+briefingMemoryRouter.post("/api/memory/verify/:record_uuid", validateApiKey, requireAdmin, async (req: any, res: any) => {
   const { record_uuid } = req.params;
   try {
     const record = await memoryRepo.removeMemoryRecord(record_uuid);
@@ -64,7 +79,7 @@ briefingMemoryRouter.post("/api/memory/verify/:record_uuid", validateApiKey, asy
   }
 });
 
-briefingMemoryRouter.post("/api/memory/verify_all", validateApiKey, async (req: any, res: any) => {
+briefingMemoryRouter.post("/api/memory/verify_all", validateApiKey, requireAdmin, async (req: any, res: any) => {
   try {
     const removed = await memoryRepo.clearMemoryRecords();
     removed.forEach(rec => {
@@ -77,11 +92,11 @@ briefingMemoryRouter.post("/api/memory/verify_all", validateApiKey, async (req: 
   }
 });
 
-briefingMemoryRouter.post("/api/admin/consolidate", validateApiKey, (req, res) => {
+briefingMemoryRouter.post("/api/admin/consolidate", validateApiKey, requireAdmin, (req, res) => {
   res.json({ promoted: 0 });
 });
 
-briefingMemoryRouter.get("/api/admin/consolidation/status", validateApiKey, async (req, res) => {
+briefingMemoryRouter.get("/api/admin/consolidation/status", validateApiKey, requireAdmin, async (req, res) => {
   let pendingCount = 0;
   try {
     pendingCount = await memoryRepo.countMemoryRecords();

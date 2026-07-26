@@ -105,6 +105,9 @@ securityRouter.post("/api/security/ingest/findings", validateApiKey, async (req:
 });
 
 securityRouter.get("/api/security/devices", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.read")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.read"' });
+  }
   try {
     res.json({ devices: await securityRepo.getNetworkDevices() });
   } catch (err: any) {
@@ -126,6 +129,9 @@ securityRouter.post("/api/security/devices/:mac/acknowledge", validateApiKey, as
 });
 
 securityRouter.get("/api/security/findings", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.read")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.read"' });
+  }
   try {
     res.json({ findings: await securityRepo.getFindings(req.query.status as securityRepo.FindingStatus | undefined) });
   } catch (err: any) {
@@ -150,6 +156,9 @@ securityRouter.post("/api/security/findings/:id/status", validateApiKey, async (
 });
 
 securityRouter.get("/api/security/proposals", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "security.read")) {
+    return res.status(403).json({ error: 'Missing capability grant "security.read"' });
+  }
   try {
     res.json({ proposals: await securityRepo.getProposals(req.query.status as securityRepo.ProposalStatus | undefined) });
   } catch (err: any) {
