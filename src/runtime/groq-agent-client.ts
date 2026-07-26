@@ -11,19 +11,26 @@ import { toGroqSchema } from "./groq-client.js";
  * already constructs — no separate API key or client to manage.
  */
 
-// kimi-k2 isn't actually available on Groq's API today — live-verified
-// against a real Groq account: GET /openai/v1/models doesn't list any
-// moonshotai/* model, and a real coding session attempt failed with a 404
-// "model_not_found". openai/gpt-oss-120b is the strongest model this
-// account actually has access to with real tool-calling support — chosen
-// over the smaller openai/gpt-oss-20b (already used for department
-// decomposition elsewhere in this codebase) for the coding agent's own
-// heavier multi-turn tool-use workload. Overridable via
-// JARVIS_CODING_AGENT_MODEL without a code change, same precedent as
-// NVIDIA_MODEL before it — check your own account's available models via
-// GET https://api.groq.com/openai/v1/models before assuming a model name
-// from documentation or elsewhere is actually accessible.
-const DEFAULT_MODEL = "openai/gpt-oss-120b";
+// Two real, live-verified dead ends before landing here:
+// 1. kimi-k2 isn't actually available on this Groq account at all — GET
+//    /openai/v1/models doesn't list any moonshotai/* model, and a real
+//    coding session attempt failed with a 404 "model_not_found".
+// 2. openai/gpt-oss-120b IS available and DOES have real tool-calling
+//    support, but its free-tier rate limit is extremely tight — 8,000
+//    tokens/minute — and a real coding session (system prompt + growing
+//    multi-turn history) burns through that in a handful of turns. A real
+//    session hit "Rate limit exceeded (8000 TPM)" after only ~34,000
+//    total tokens across the whole run, nowhere near MAX_TOKENS_PER_SESSION.
+// openai/gpt-oss-20b already proved reliable under this exact free tier —
+// used for decomposeObjective and the research-lookups call elsewhere in
+// this codebase throughout this entire session's live testing with zero
+// rate-limit issues. A smaller model that reliably finishes a session beats
+// a larger one that reliably gets rate-limited partway through. Overridable
+// via JARVIS_CODING_AGENT_MODEL without a code change if your account's
+// tier/limits differ — check actual availability and rate limits via
+// GET https://api.groq.com/openai/v1/models and the 429 responses
+// themselves, not documentation or a model's name alone.
+const DEFAULT_MODEL = "openai/gpt-oss-20b";
 
 export interface AgentToolCall {
   id: string;
