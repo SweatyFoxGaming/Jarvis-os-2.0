@@ -92,14 +92,24 @@ export async function reconcileWorkspaceReservations(): Promise<void> {
           { timeout: 10_000 }
         );
         const buildRequestId = Number(label.trim());
-        if (Number.isSafeInteger(buildRequestId) && buildRequestId > 0) {
-          reservedWorkspaceIds.add(buildRequestId);
+        // A missing/invalid label or a duplicate of one already seen must
+        // also fail reconciliation, not just get silently skipped — either
+        // one means a real container exists that this Set can't correctly
+        // represent (a Set collapses two containers sharing one id into a
+        // single reservation), which is exactly the kind of undercount that
+        // would let the cap admit more than it should.
+        if (!Number.isSafeInteger(buildRequestId) || buildRequestId <= 0) {
+          throw new Error(`container ${id} has a missing/invalid jarvis-build-request-id label: ${JSON.stringify(label.trim())}`);
         }
+        if (reservedWorkspaceIds.has(buildRequestId)) {
+          throw new Error(`duplicate jarvis-build-request-id label ${buildRequestId} on container ${id}`);
+        }
+        reservedWorkspaceIds.add(buildRequestId);
       })
     );
     const failed = results.filter((r) => r.status === "rejected").length;
     if (failed > 0) {
-      throw new Error(`${failed}/${ids.length} container inspections failed`);
+      throw new Error(`${failed}/${ids.length} container inspections failed or had unusable/duplicate labels`);
     }
     reservationsReady = true;
   } catch (err: any) {
@@ -159,6 +169,22 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
     throw new WorkspaceCapacityError(
       "Refusing to create a new sandbox workspace: reservation reconciliation hasn't completed " +
         "(or failed) yet — check jarvis-builder's startup logs."
+    );
+  }
+
+  // A second call for an id that's already reserved must be rejected
+  // outright, before touching the Set at all — without this, two
+  // overlapping createWorkspace calls for the same buildRequestId (e.g. an
+  // upstream retry after builder-client.ts's own 30-minute request timeout
+  // fires while the original call is actually still running server-side)
+  // would both share one Set entry, since Set.add() on an already-present
+  // value is a no-op. If either call's own attempt then failed, its catch
+  // block below would delete that shared entry — releasing the reservation
+  // for what might actually be the OTHER call's live, still-existing
+  // workspace.
+  if (reservedWorkspaceIds.has(buildRequestId)) {
+    throw new WorkspaceCapacityError(
+      `Refusing to create a new sandbox workspace: build request #${buildRequestId} already has one reserved or in progress.`
     );
   }
 
@@ -325,16 +351,19 @@ export async function destroyWorkspace(buildRequestId: number): Promise<void> {
   const container = containerName(buildRequestId);
 
   const removed = await removeContainerConfirmed(container);
-  // `dir` is a plain `git clone`, not a registered worktree of
-  // REPO_HOST_PATH, so `git worktree remove` doesn't apply here — a plain
-  // recursive delete is all that's needed to reclaim the disk. `worktree
-  // prune` below is still useful as a safety net for any staging worktree
-  // (see createWorkspace) that failed to clean up. Disk cleanup happens
-  // regardless of container-removal outcome — the reservation, not this,
-  // is what needs to stay accurate against the cap.
-  await execFileAsync("rm", ["-rf", dir]).catch(() => {});
-  await execFileAsync("git", ["worktree", "prune"], { cwd: REPO_HOST_PATH }).catch(() => {});
   if (removed) {
+    // `dir` is a plain `git clone`, not a registered worktree of
+    // REPO_HOST_PATH, so `git worktree remove` doesn't apply here — a plain
+    // recursive delete is all that's needed to reclaim the disk. `worktree
+    // prune` below is still useful as a safety net for any staging worktree
+    // (see createWorkspace) that failed to clean up. Gated on `removed`:
+    // `dir` is bind-mounted into the container at /workspace — if removal
+    // genuinely failed (not just "already gone"), the container might
+    // still be alive and using that directory, and deleting it out from
+    // under a live container would corrupt its filesystem rather than
+    // just misaccount a reservation.
+    await execFileAsync("rm", ["-rf", dir]).catch(() => {});
+    await execFileAsync("git", ["worktree", "prune"], { cwd: REPO_HOST_PATH }).catch(() => {});
     // Idempotent (Set.delete on an absent id is a harmless no-op), so this
     // is safe even though several call sites in the main app call
     // destroyWorkspace defensively more than once for the same id.
@@ -342,7 +371,7 @@ export async function destroyWorkspace(buildRequestId: number): Promise<void> {
   } else {
     console.error(
       `[jarvis-builder] Failed to remove container ${container} for build request #${buildRequestId} — ` +
-        "keeping its reservation so the concurrency cap doesn't undercount a possibly-still-running container."
+        "keeping its reservation and workspace directory intact, since the container may still be alive and using it."
     );
   }
 }
@@ -386,8 +415,12 @@ export function startReaper(): void {
               // Only ever derived from the label, and only when it's a plain
               // integer — never an arbitrary string interpolated into a path.
               if (buildRequestId && /^\d+$/.test(buildRequestId)) {
-                await execFileAsync("rm", ["-rf", workspaceDir(Number(buildRequestId))]).catch(() => {});
                 if (removed) {
+                  // Gated on `removed`, same reasoning as destroyWorkspace:
+                  // this directory is bind-mounted into the container, so
+                  // deleting it while removal is unconfirmed risks
+                  // corrupting a container that might still be alive.
+                  await execFileAsync("rm", ["-rf", workspaceDir(Number(buildRequestId))]).catch(() => {});
                   reservedWorkspaceIds.delete(Number(buildRequestId));
                 }
               }

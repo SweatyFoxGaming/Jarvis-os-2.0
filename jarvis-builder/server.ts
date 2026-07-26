@@ -107,6 +107,14 @@ async function start(): Promise<void> {
     console.log(`[jarvis-builder] listening on port ${PORT}`);
   });
 
+  // Started right after binding, before awaiting the (potentially
+  // minutes-long) image build below: the reaper is what actually frees
+  // expired reservations, so delaying it behind a cold image build would
+  // needlessly leave the concurrency cap full for however long that build
+  // takes, on top of not reaping any already-expired containers during
+  // that window.
+  startReaper();
+
   // Not awaited before listen(): an image build can take minutes on a cold
   // start, and /health (and the reservation cap above) don't depend on it —
   // only createWorkspace()'s own `docker run` does, and that already fails
@@ -119,8 +127,6 @@ async function start(): Promise<void> {
         "Workspace creation will fail until this is resolved and the service is restarted."
     );
   }
-
-  startReaper();
 }
 
 start();
