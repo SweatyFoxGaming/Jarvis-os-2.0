@@ -61,6 +61,21 @@ const MAX_CONCURRENT_WORKSPACES = positiveIntegerEnv(process.env.JARVIS_SANDBOX_
 // many requests arrive before the 24h reaper eventually catches up.
 const reservedWorkspaceIds = new Set<number>();
 
+// False until reconcileWorkspaceReservations() below completes successfully
+// — createWorkspace() refuses everything while this is false. An
+// undercounted reservation set (from a partially-failed reconciliation) is
+// not "safely conservative," it's actively unsafe: it can admit MORE
+// workspaces than the real number of already-existing containers should
+// allow. Failing closed here, not open, matches how this file already
+// treats other boot-time failures (see ensureSandboxImage's caller in
+// server.ts) — a single-operator service where "block until a restart" is
+// an acceptable response to Docker being unreachable at startup.
+let reservationsReady = false;
+
+export function areReservationsReady(): boolean {
+  return reservationsReady;
+}
+
 export async function reconcileWorkspaceReservations(): Promise<void> {
   try {
     const { stdout } = await execFileAsync(
@@ -69,7 +84,7 @@ export async function reconcileWorkspaceReservations(): Promise<void> {
       { timeout: 10_000 }
     );
     const ids = stdout.trim().split("\n").filter(Boolean);
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       ids.map(async (id) => {
         const { stdout: label } = await execFileAsync(
           "docker",
@@ -82,10 +97,16 @@ export async function reconcileWorkspaceReservations(): Promise<void> {
         }
       })
     );
-  } catch {
-    // Best-effort — if this fails, reservations start under-counted rather
-    // than the check itself failing open, so the cap still holds (just
-    // possibly stricter than necessary) until the next restart.
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0) {
+      throw new Error(`${failed}/${ids.length} container inspections failed`);
+    }
+    reservationsReady = true;
+  } catch (err: any) {
+    console.error(
+      `[jarvis-builder] Workspace reservation reconciliation failed: ${err.message}. ` +
+        "Workspace creation is blocked until this succeeds — restart the service to retry."
+    );
   }
 }
 
@@ -133,6 +154,13 @@ function assertSafeBranchName(baseBranch: string): void {
 
 export async function createWorkspace(buildRequestId: number, baseBranch: string): Promise<WorkspaceHandle> {
   assertSafeBranchName(baseBranch);
+
+  if (!reservationsReady) {
+    throw new WorkspaceCapacityError(
+      "Refusing to create a new sandbox workspace: reservation reconciliation hasn't completed " +
+        "(or failed) yet — check jarvis-builder's startup logs."
+    );
+  }
 
   // Checked and reserved before any git fetch/clone or disk work happens
   // below, so a request that's going to be refused doesn't first do several
@@ -274,22 +302,49 @@ export async function execInWorkspace(
   }
 }
 
+// Only reports success if the container is actually confirmed gone —
+// swallowing `docker rm -f`'s error unconditionally (the previous version)
+// would still release a build request's reservation even if removal
+// genuinely failed (a Docker daemon hiccup, a permission issue), leaving a
+// container that may still be running uncounted against the cap. "No such
+// container" is Docker's own long-stable wording for "it already doesn't
+// exist" — the one failure mode that's still safe to treat as removed,
+// since destroyWorkspace is deliberately called defensively more than once
+// for the same id by several call sites in the main app.
+async function removeContainerConfirmed(nameOrId: string): Promise<boolean> {
+  try {
+    await execFileAsync("docker", ["rm", "-f", nameOrId], { timeout: 10_000 });
+    return true;
+  } catch (err: any) {
+    return String(err?.stderr || err?.message || "").includes("No such container");
+  }
+}
+
 export async function destroyWorkspace(buildRequestId: number): Promise<void> {
   const dir = workspaceDir(buildRequestId);
   const container = containerName(buildRequestId);
 
-  await execFileAsync("docker", ["rm", "-f", container]).catch(() => {});
+  const removed = await removeContainerConfirmed(container);
   // `dir` is a plain `git clone`, not a registered worktree of
   // REPO_HOST_PATH, so `git worktree remove` doesn't apply here — a plain
   // recursive delete is all that's needed to reclaim the disk. `worktree
   // prune` below is still useful as a safety net for any staging worktree
-  // (see createWorkspace) that failed to clean up.
+  // (see createWorkspace) that failed to clean up. Disk cleanup happens
+  // regardless of container-removal outcome — the reservation, not this,
+  // is what needs to stay accurate against the cap.
   await execFileAsync("rm", ["-rf", dir]).catch(() => {});
   await execFileAsync("git", ["worktree", "prune"], { cwd: REPO_HOST_PATH }).catch(() => {});
-  // Idempotent (Set.delete on an absent id is a harmless no-op), so this is
-  // safe even though several call sites in the main app call
-  // destroyWorkspace defensively more than once for the same id.
-  reservedWorkspaceIds.delete(buildRequestId);
+  if (removed) {
+    // Idempotent (Set.delete on an absent id is a harmless no-op), so this
+    // is safe even though several call sites in the main app call
+    // destroyWorkspace defensively more than once for the same id.
+    reservedWorkspaceIds.delete(buildRequestId);
+  } else {
+    console.error(
+      `[jarvis-builder] Failed to remove container ${container} for build request #${buildRequestId} — ` +
+        "keeping its reservation so the concurrency cap doesn't undercount a possibly-still-running container."
+    );
+  }
 }
 
 export function startReaper(): void {
@@ -327,12 +382,14 @@ export function startReaper(): void {
             const [createdAt, buildRequestId] = inspected.trim().split(/\s+/);
             const createdMs = Date.parse((createdAt || "").trim());
             if (!isNaN(createdMs) && now - createdMs > MAX_CONTAINER_LIFETIME_MS) {
-              await execFileAsync("docker", ["rm", "-f", id]).catch(() => {});
+              const removed = await removeContainerConfirmed(id);
               // Only ever derived from the label, and only when it's a plain
               // integer — never an arbitrary string interpolated into a path.
               if (buildRequestId && /^\d+$/.test(buildRequestId)) {
                 await execFileAsync("rm", ["-rf", workspaceDir(Number(buildRequestId))]).catch(() => {});
-                reservedWorkspaceIds.delete(Number(buildRequestId));
+                if (removed) {
+                  reservedWorkspaceIds.delete(Number(buildRequestId));
+                }
               }
             }
           } catch {

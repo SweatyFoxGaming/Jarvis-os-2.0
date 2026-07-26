@@ -87,8 +87,30 @@ app.delete("/workspaces/:id", async (req, res) => {
 });
 
 const PORT = 4100;
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log(`[jarvis-builder] listening on port ${PORT}`);
+
+async function start(): Promise<void> {
+  // Populates the in-memory concurrency-cap reservation from whatever
+  // sandbox containers already exist in Docker — a restart of this process
+  // doesn't destroy already-running containers from before it, so without
+  // this the cap would start from zero and could be exceeded by however
+  // many requests arrive before the 24h reaper eventually catches up. Runs
+  // (and is awaited) before app.listen() below, not inside its callback:
+  // the previous ordering let Express start accepting /workspaces requests
+  // against the still-default-empty reservation set while this ran
+  // concurrently in the background, wide open to exactly the
+  // over-admission this whole cap exists to prevent. createWorkspace()
+  // also checks areReservationsReady() itself as a second, independent
+  // guard against the same gap.
+  await reconcileWorkspaceReservations();
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[jarvis-builder] listening on port ${PORT}`);
+  });
+
+  // Not awaited before listen(): an image build can take minutes on a cold
+  // start, and /health (and the reservation cap above) don't depend on it —
+  // only createWorkspace()'s own `docker run` does, and that already fails
+  // with a clear Docker-level error if the image isn't there yet.
   try {
     await ensureSandboxImage();
   } catch (err: any) {
@@ -97,11 +119,8 @@ app.listen(PORT, "0.0.0.0", async () => {
         "Workspace creation will fail until this is resolved and the service is restarted."
     );
   }
-  // Populates the in-memory concurrency-cap reservation from whatever
-  // sandbox containers already exist in Docker — a restart of this process
-  // doesn't destroy already-running containers from before it, so without
-  // this the cap would start from zero and could be exceeded by however
-  // many requests arrive before the 24h reaper eventually catches up.
-  await reconcileWorkspaceReservations();
+
   startReaper();
-});
+}
+
+start();
