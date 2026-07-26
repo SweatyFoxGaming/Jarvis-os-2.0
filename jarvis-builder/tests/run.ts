@@ -49,7 +49,11 @@ async function runAll(): Promise<void> {
   console.log(`TOTALS: ${passedCount} / ${results.length} Tests Passed.`);
   console.log("=====================================================");
 
-  if (passedCount < results.length) process.exit(1);
+  // results.length === 0 must also fail — a broken import chain (e.g. a
+  // typo'd path in one of the `import "./*.test.js"` lines above, silently
+  // swallowed) would otherwise register zero tests and this loop would
+  // report "0/0 passed" as a clean exit, hiding the fact that nothing ran.
+  if (results.length === 0 || passedCount < results.length) process.exit(1);
 }
 
 runAll().catch(err => {

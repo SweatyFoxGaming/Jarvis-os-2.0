@@ -26,6 +26,7 @@ function isPortInUse(port: number): Promise<boolean> {
 registerTest("HTTP Boundary", "jarvis-builder boots and gates every route except /health behind X-Builder-Secret", async () => {
   const alreadyRunning = await isPortInUse(PORT);
   let child: ChildProcess | null = null;
+  let spawnError: Error | null = null;
   if (!alreadyRunning) {
     // Spawns the tsx binary directly rather than through the `npx` wrapper:
     // killing the npx process leaves the real tsx/node process it launches
@@ -36,6 +37,14 @@ registerTest("HTTP Boundary", "jarvis-builder boots and gates every route except
       env: { ...process.env, JARVIS_BUILDER_SECRET: TEST_SECRET },
       stdio: "ignore",
     });
+    // Without a listener, a spawn-level failure (e.g. the tsx binary itself
+    // missing) fires ChildProcess's 'error' event with nothing attached,
+    // which Node treats as an unhandled error and crashes the whole test
+    // runner instead of failing just this one test. Recorded here and
+    // surfaced below via the readiness-timeout message, rather than thrown
+    // directly from this handler — it can fire after the try block has
+    // already moved on.
+    child.on("error", (err) => { spawnError = err; });
   }
   const knowsSecret = !alreadyRunning;
 
@@ -43,6 +52,7 @@ registerTest("HTTP Boundary", "jarvis-builder boots and gates every route except
     const deadline = Date.now() + 25_000;
     let ready = false;
     while (Date.now() < deadline) {
+      if (spawnError) throw new Error(`jarvis-builder failed to spawn: ${(spawnError as Error).message}`);
       try {
         const res = await fetch(`http://127.0.0.1:${PORT}/health`);
         if (res.status === 200) { ready = true; break; }
@@ -125,15 +135,19 @@ registerTest("HTTP Boundary", "jarvis-builder boots and gates every route except
       throw new Error(`expected 400 for a missing command, got ${missingCommand.status}`);
     }
   } finally {
-    if (child) {
-      child.kill();
-      await new Promise((resolve) => {
-        const timeout = setTimeout(resolve, 5000);
+    if (child && child.exitCode === null && !child.killed) {
+      child.kill(); // SIGTERM
+      const exited = await new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(false), 5000);
         child!.once("exit", () => {
           clearTimeout(timeout);
-          resolve(undefined);
+          resolve(true);
         });
       });
+      // tsx/node ignoring SIGTERM (e.g. wedged in a slow require) would
+      // otherwise leave this process running forever — escalate exactly
+      // once rather than retrying SIGTERM in a loop.
+      if (!exited) child.kill("SIGKILL");
     }
   }
 });
