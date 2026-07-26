@@ -44,6 +44,8 @@ export const ALL_CAPABILITIES = [
   "vault.read",
   "vault.write",
   "settings.write",
+  "evolution.read",
+  "evolution.manage",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
