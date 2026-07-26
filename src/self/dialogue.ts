@@ -1,5 +1,15 @@
+// A linear execution-stage log for one autonomous-objective run, not a
+// multi-agent deliberation — every recordTurn() call site is a single
+// function (src/executive/autonomous_executive.ts) narrating its own
+// progress with a hardcoded string, not distinct reasoning agents. "CEO"/
+// "Architect"/"Security"/"Operations" previously suggested otherwise (the
+// same class of misleading framing already found and fixed once for the
+// "Executive Board," a different module removed for the same reason).
+// Stage names describe what's actually happening: the objective arrived,
+// it got planned, real department research ran, a QA pass reviewed the
+// output, and a decision/result was recorded.
 export interface DialogueTurn {
-  role: "CEO" | "Architect" | "Security" | "Research" | "Operations" | "QA" | "Decision";
+  role: "Objective" | "Plan" | "Research" | "QA" | "Decision";
   message: string;
 }
 

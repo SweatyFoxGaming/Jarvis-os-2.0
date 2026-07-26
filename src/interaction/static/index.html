@@ -2267,7 +2267,7 @@
         const roles = {
             user: "External Operator", kernel: "Mind Kernel (State)", attention: "Priority Filter",
             thought: "Reasoning Stages", confidence: "Validation System", executive: "Orchestrator Swarms",
-            dialogue: "Internal Debate Board", workspace: "Working Memory", observation: "Telemetry Logs",
+            dialogue: "Execution Stage Log", workspace: "Working Memory", observation: "Telemetry Logs",
             learning: "Adaptation Engine"
         };
         return roles[id] || "Core Node";
@@ -2281,7 +2281,7 @@
             thought: 'Tracks active mental logic pathways.',
             confidence: 'Computes system accuracy ratios via cross-verifications.',
             executive: 'Autonomous orchestrator swarm dispatcher.',
-            dialogue: 'Virtual board debate module (CEO, Architect, Security, QA).',
+            dialogue: 'Linear execution-stage narrative for the autonomous executive (objective, plan, research, QA, decision) — one narrator, not separate reasoning agents.',
             workspace: '9-compartment isolated cognitive working memory.',
             observation: 'Process logger and telemetry audit trail ledger.',
             learning: 'Caches procedural workflows and mitigations.'
@@ -2453,15 +2453,25 @@
                     return `<div class="${colorClass} flex items-center gap-2 font-mono"><span>${prefix}</span> <span>${st.toUpperCase()}</span></div>`;
                 }).join('');
 
-                // Deliberations
+                // KNOWN BUG, not yet fixed here: #internal-dialogue-pane doesn't
+                // exist anywhere in this file's markup (nor do #kernel-attention/
+                // #kernel-status/#kernel-confidence/#kernel-thought-stages above,
+                // in this same function) — this whole block has been throwing on
+                // every call and getting silently swallowed by the empty catch{}
+                // at the bottom of this function, so none of this has actually
+                // rendered for some time. Restoring the containing markup is a
+                // separate, larger task than the naming fix below (this block's
+                // own role names/copy were still corrected here so a future fix
+                // doesn't inherit stale "board debate" framing (see
+                // src/self/dialogue.ts) once the missing elements are restored).
                 const dialoguePane = document.getElementById('internal-dialogue-pane');
                 if (data.dialogueHistory.length === 0) {
-                    dialoguePane.innerHTML = `<div class="text-secondary text-center col-span-4 py-6 text-xs uppercase tracking-widest font-mono opacity-50">Zero active deliberations. Transmit goals or prompt dialogue to trigger consensus loops.</div>`;
+                    dialoguePane.innerHTML = `<div class="text-secondary text-center col-span-4 py-6 text-xs uppercase tracking-widest font-mono opacity-50">No autonomous objective in progress. Give Jarvis a goal to see its execution stages here.</div>`;
                 } else {
                     dialoguePane.innerHTML = data.dialogueHistory.map(dh => {
                         let roleColor = "text-primary border-primary/20 bg-primary/5";
-                        if (dh.role === 'CEO') roleColor = "text-white border-white/20 bg-white/5";
-                        if (dh.role === 'Security') roleColor = "text-danger border-danger/20 bg-danger/5";
+                        if (dh.role === 'Objective') roleColor = "text-white border-white/20 bg-white/5";
+                        if (dh.role === 'Decision') roleColor = "text-danger border-danger/20 bg-danger/5";
                         if (dh.role === 'QA') roleColor = "text-success border-success/20 bg-success/5";
 
                         return `
