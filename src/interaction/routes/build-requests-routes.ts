@@ -167,7 +167,6 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
         // its findings can actually be baked into the PR body itself instead
         // of arriving as a note attached after the fact.
         const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getGroq());
-        await buildRequestsRepo.recordQaReview(buildRequest.id, qaSummary);
 
         const branchName = `jarvis/build-request-${buildRequest.id}`;
 
@@ -234,6 +233,13 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
         }
 
         observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
+
+        // recordQaReview's own UPDATE only matches status = 'pr_opened' (the
+        // state recordPrOpened just set), so this must run after it, not
+        // before — the review itself was already computed above, ahead of
+        // the PR going live; only persisting the qa_complete status waits
+        // for the row to actually reach that state.
+        await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
 
         obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
           directionNotes: updated.direction_notes || undefined,

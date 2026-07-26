@@ -229,10 +229,17 @@ export async function markPrError(id: number, errorDetail: string): Promise<void
 export async function recordQaReview(id: number, qaSummary: string): Promise<void> {
   try {
     const db = getPool();
-    await db.query(
+    const { rowCount } = await db.query(
       `UPDATE build_requests SET qa_summary = $1, status = 'qa_complete', updated_at = now() WHERE id = $2 AND status = 'pr_opened'`,
       [qaSummary, id]
     );
+    // The WHERE clause's status = 'pr_opened' guard means this silently
+    // no-ops (never throws) if called before the row actually reaches that
+    // state — worth a warning since the caller has no other way to notice
+    // the qa_summary it just computed never got persisted.
+    if (!rowCount) {
+      observation.logTelemetry("warn", "BuildRequests", `recordQaReview(${id}) matched no row in status 'pr_opened' — qa_summary was not persisted`);
+    }
   } catch (err: any) {
     // Best-effort.
     observation.logTelemetry("warn", "BuildRequests", `recordQaReview(${id}) failed: ${err.message}`);
