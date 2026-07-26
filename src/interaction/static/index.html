@@ -3239,7 +3239,7 @@
         btnReflectNow.disabled = true;
         btnReflectNow.textContent = 'REFLECTING...';
         try {
-            const res = await fetch('/api/identity/thought', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            const res = await fetch('/api/identity/thought', { method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY } });
             const data = await res.json();
             if (res.ok && data.available) {
                 AudioEngine.success();

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
+import { requireCapability } from "../../kernel/security.js";
 import * as knowledgeGraph from "../../cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "../../kernel/state/knowledge-graph-repo.js";
 import * as identity from "../../self/identity.js";
@@ -15,7 +16,7 @@ export const knowledgeRouter = Router();
 // ---------- Structured Knowledge Graph ----------
 // The reliable complement to pgvector similarity recall — a real
 // entity/fact/relationship lookup by name, not a "sounds like this" guess.
-knowledgeRouter.get("/api/knowledge/search", validateApiKey, async (req: any, res: any) => {
+knowledgeRouter.get("/api/knowledge/search", validateApiKey, requireCapability("knowledge.read"), async (req: any, res: any) => {
   const q = req.query.q as string | undefined;
   if (!q) return res.status(400).json({ error: "q is required" });
   try {
@@ -26,7 +27,7 @@ knowledgeRouter.get("/api/knowledge/search", validateApiKey, async (req: any, re
   }
 });
 
-knowledgeRouter.get("/api/knowledge/entities", validateApiKey, async (req: any, res: any) => {
+knowledgeRouter.get("/api/knowledge/entities", validateApiKey, requireCapability("knowledge.read"), async (req: any, res: any) => {
   try {
     res.json({ entities: await knowledgeGraphRepo.listAllEntities() });
   } catch (err: any) {
@@ -39,7 +40,7 @@ knowledgeRouter.get("/api/knowledge/entities", validateApiKey, async (req: any, 
 // — not a claim of actual sentience (see docs/architecture/VISION.md), a
 // concrete mechanism for continuity across sessions instead of a static
 // hardcoded persona string.
-knowledgeRouter.get("/api/identity/reflections", validateApiKey, async (req: any, res: any) => {
+knowledgeRouter.get("/api/identity/reflections", validateApiKey, requireCapability("identity.read"), async (req: any, res: any) => {
   try {
     res.json({ reflections: await identity.reflectOnSelf(req.query.q as string | undefined) });
   } catch (err: any) {
@@ -49,7 +50,11 @@ knowledgeRouter.get("/api/identity/reflections", validateApiKey, async (req: any
 
 // On-demand generation of a proactive thought (the scheduled job in
 // scheduler.ts runs the same real synthesis on a timer without being asked).
-knowledgeRouter.get("/api/identity/thought", validateApiKey, async (req: any, res: any) => {
+// POST, not GET: this creates and persists a new thought (and triggers an
+// LLM call) on every hit — a GET here would let reloads/retries/prefetching
+// generate duplicate records, which is exactly the class of bug CodeRabbit
+// flagged in the earlier router-split review.
+knowledgeRouter.post("/api/identity/thought", validateApiKey, requireCapability("identity.read"), async (req: any, res: any) => {
   const groq = getGroq();
   if (!groq) return res.status(503).json({ error: "Requires GROQ_API_KEY to be configured." });
   try {
@@ -67,7 +72,7 @@ knowledgeRouter.get("/api/identity/thought", validateApiKey, async (req: any, re
   }
 });
 
-knowledgeRouter.get("/api/identity/thoughts/history", validateApiKey, async (req: any, res: any) => {
+knowledgeRouter.get("/api/identity/thoughts/history", validateApiKey, requireCapability("identity.read"), async (req: any, res: any) => {
   try {
     res.json({ thoughts: await identityRepo.getRecentProactiveThoughts() });
   } catch (err: any) {
