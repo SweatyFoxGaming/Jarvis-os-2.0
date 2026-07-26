@@ -62,10 +62,14 @@ reachable). The real code-review gate for the autonomous coding pipeline is
 - An egress-allowlisting proxy for the coding agent's sandbox (`jarvis-builder/workspace.ts`).
   Investigated as part of a security review: the sandbox's lack of an explicit `--network` flag
   turned out to already put it on Docker's plain default `bridge` network, separate from
-  `jarvis-os_default` where the rest of the stack lives — live-verified, a sandbox container
-  cannot reach `jarvis-postgres` at all, so lateral movement into this deployment's own other
-  services is already closed by Docker's ordinary behavior. Unrestricted internet egress remains
-  open, though, and closing that properly needs a real forward proxy with a curated domain
+  `jarvis-os_default`, the compose-generated network `postgres`/`jarvis-builder`/`llama-cpp`/
+  `whisper-cpp` actually run on (none of which publish a port to the host) — live-verified, a
+  sandbox container cannot reach `jarvis-postgres` at all. This is Compose-network isolation
+  specifically, not deployment-wide unreachability: `api` and `tts` do publish ports to the host,
+  so they remain reachable from the sandbox via the host's own gateway IP (also live-verified) —
+  though reaching `api` this way still requires an `X-API-Key` the sandbox has no way to obtain,
+  since it starts with a clean environment and no credentials by design. Unrestricted internet
+  egress remains open, and closing that properly needs a real forward proxy with a curated domain
   allowlist (npm/GitHub/pip, etc.) — new infrastructure, not a flag on the existing `docker run`
   call, and deliberately not attempted here.
 
