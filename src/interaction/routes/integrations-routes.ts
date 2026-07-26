@@ -174,7 +174,11 @@ integrationsRouter.get("/api/integrations/calendar/auth-url", validateApiKey, re
 integrationsRouter.get("/api/integrations/calendar/callback", async (req: any, res: any) => {
   const { code, error } = req.query;
   if (error) {
-    return res.status(400).send(`<html><body>Google Calendar authorization denied: ${error}</body></html>`);
+    // error/err.message below come from the query string or an upstream API and
+    // must never be interpolated into this HTML response (reflected-XSS risk) —
+    // log them server-side and show the browser a fixed, static message instead.
+    observation.logTelemetry("warn", "Integrations", `Calendar OAuth authorization denied: ${error}`);
+    return res.status(400).send("<html><body>Google Calendar authorization was denied.</body></html>");
   }
   if (!code) {
     return res.status(400).send("<html><body>Missing authorization code.</body></html>");
@@ -184,7 +188,7 @@ integrationsRouter.get("/api/integrations/calendar/callback", async (req: any, r
     res.send("<html><body>Google Calendar connected — you can close this tab.</body></html>");
   } catch (err: any) {
     observation.logTelemetry("error", "Integrations", `Calendar OAuth callback failed: ${err.message}`);
-    res.status(err.status || 500).send(`<html><body>Failed to connect Google Calendar: ${err.message}</body></html>`);
+    res.status(err.status || 500).send("<html><body>Failed to connect Google Calendar. Check server logs for details.</body></html>");
   }
 });
 
