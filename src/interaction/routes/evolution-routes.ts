@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
-import * as permissions from "../../kernel/security.js";
+import { requireCapability } from "../../kernel/security.js";
 import * as analyzer from "../../adaptation/analyzer.js";
 import * as evolutionRepo from "../../kernel/state/evolution-repo.js";
 
@@ -23,7 +23,12 @@ export const evolutionRouter = Router();
 // hardcoded secrets/tokens and returns matches (truncated, but still real
 // snippets) via /api/evolution/analyses and /recommendations — previously
 // readable by any authenticated user, including a self-registered
-// zero-grant account if ALLOW_REGISTRATION is ever flipped on.
+// zero-grant account if ALLOW_REGISTRATION is ever flipped on. Uses the
+// requireCapability middleware (matching the majority of this codebase's
+// other routers — briefing-memory, settings, integrations, observation,
+// knowledge) rather than an inline hasGrant check: same 403 shape, but it
+// also logs a route_denied audit event on every rejection, which an inline
+// check didn't.
 
 const ANALYZERS: Record<string, () => analyzer.AnalysisResult> = {
   architecture: analyzer.analyzeArchitecture,
@@ -33,26 +38,31 @@ const ANALYZERS: Record<string, () => analyzer.AnalysisResult> = {
 };
 
 function registerAnalysisRoute(type: string) {
-  evolutionRouter.post(`/api/evolution/analyze/${type}`, validateApiKey, async (req: any, res: any) => {
-    if (!permissions.hasGrant(req.username, "evolution.manage")) {
-      return res.status(403).json({ error: 'Missing capability grant "evolution.manage"' });
+  evolutionRouter.post(
+    `/api/evolution/analyze/${type}`,
+    validateApiKey,
+    // Requires BOTH: this response hands back result.issues directly (the
+    // same secret-scan-snippet-bearing data evolution.read gates on every
+    // other route) — a caller with only evolution.manage (e.g. permission
+    // to trigger a scheduled re-analysis) must not see that payload just
+    // because triggering it is a side effect of this one endpoint.
+    requireCapability("evolution.manage"),
+    requireCapability("evolution.read"),
+    async (req: any, res: any) => {
+      try {
+        const result = ANALYZERS[type]();
+        const stored = await evolutionRepo.saveAnalysis(type, result.score, result.issues);
+        res.json({ analysis_id: `${type}-${stored.id}`, score: result.score, issues: result.issues });
+      } catch (err: any) {
+        observation.logTelemetry("error", "Evolution", `${type} analysis failed: ${err.message}`);
+        res.status(500).json({ error: `${type} analysis failed: ${err.message}` });
+      }
     }
-    try {
-      const result = ANALYZERS[type]();
-      const stored = await evolutionRepo.saveAnalysis(type, result.score, result.issues);
-      res.json({ analysis_id: `${type}-${stored.id}`, score: result.score, issues: result.issues });
-    } catch (err: any) {
-      observation.logTelemetry("error", "Evolution", `${type} analysis failed: ${err.message}`);
-      res.status(500).json({ error: `${type} analysis failed: ${err.message}` });
-    }
-  });
+  );
 }
 for (const type of Object.keys(ANALYZERS)) registerAnalysisRoute(type);
 
-evolutionRouter.get("/api/evolution/recommendations", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.get("/api/evolution/recommendations", validateApiKey, requireCapability("evolution.read"), async (req: any, res: any) => {
   try {
     const latest = await evolutionRepo.getLatestAnalysisPerType();
     const severityRank: Record<string, number> = { high: 3, medium: 2, low: 1 };
@@ -65,10 +75,7 @@ evolutionRouter.get("/api/evolution/recommendations", validateApiKey, async (req
   }
 });
 
-evolutionRouter.get("/api/evolution/analyses", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.get("/api/evolution/analyses", validateApiKey, requireCapability("evolution.read"), async (req: any, res: any) => {
   try {
     res.json({ analyses: await evolutionRepo.getAllAnalyses() });
   } catch (err: any) {
@@ -76,10 +83,7 @@ evolutionRouter.get("/api/evolution/analyses", validateApiKey, async (req: any, 
   }
 });
 
-evolutionRouter.get("/api/evolution/dependency-graph", validateApiKey, (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.get("/api/evolution/dependency-graph", validateApiKey, requireCapability("evolution.read"), (req: any, res: any) => {
   try {
     res.json(analyzer.buildDependencyGraph());
   } catch (err: any) {
@@ -87,10 +91,7 @@ evolutionRouter.get("/api/evolution/dependency-graph", validateApiKey, (req: any
   }
 });
 
-evolutionRouter.get("/api/evolution/dashboard", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.get("/api/evolution/dashboard", validateApiKey, requireCapability("evolution.read"), async (req: any, res: any) => {
   try {
     const latest = await evolutionRepo.getLatestAnalysisPerType();
     const health_score = latest.length > 0
@@ -108,10 +109,7 @@ evolutionRouter.get("/api/evolution/dashboard", validateApiKey, async (req: any,
   }
 });
 
-evolutionRouter.get("/api/evolution/trends", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.get("/api/evolution/trends", validateApiKey, requireCapability("evolution.read"), async (req: any, res: any) => {
   try {
     const trends: Record<string, { score: number; created_at: Date }[]> = {};
     for (const type of Object.keys(ANALYZERS)) {
@@ -123,10 +121,7 @@ evolutionRouter.get("/api/evolution/trends", validateApiKey, async (req: any, re
   }
 });
 
-evolutionRouter.get("/api/evolution/forecast", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.get("/api/evolution/forecast", validateApiKey, requireCapability("evolution.read"), async (req: any, res: any) => {
   try {
     const forecast: Record<string, any> = {};
     for (const type of Object.keys(ANALYZERS)) {
@@ -154,10 +149,7 @@ evolutionRouter.get("/api/evolution/forecast", validateApiKey, async (req: any, 
   }
 });
 
-evolutionRouter.post("/api/evolution/recommendations/prioritize", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.post("/api/evolution/recommendations/prioritize", validateApiKey, requireCapability("evolution.read"), async (req: any, res: any) => {
   try {
     const latest = await evolutionRepo.getLatestAnalysisPerType();
     const severityRank: Record<string, number> = { high: 3, medium: 2, low: 1 };
@@ -170,10 +162,7 @@ evolutionRouter.post("/api/evolution/recommendations/prioritize", validateApiKey
   }
 });
 
-evolutionRouter.get("/api/evolution/goals", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.read")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.read"' });
-  }
+evolutionRouter.get("/api/evolution/goals", validateApiKey, requireCapability("evolution.read"), async (req: any, res: any) => {
   try {
     const goals = await evolutionRepo.listGoals();
     const metrics = observation.getMetrics().counters;
@@ -195,10 +184,7 @@ evolutionRouter.get("/api/evolution/goals", validateApiKey, async (req: any, res
   }
 });
 
-evolutionRouter.post("/api/evolution/goals", validateApiKey, async (req: any, res: any) => {
-  if (!permissions.hasGrant(req.username, "evolution.manage")) {
-    return res.status(403).json({ error: 'Missing capability grant "evolution.manage"' });
-  }
+evolutionRouter.post("/api/evolution/goals", validateApiKey, requireCapability("evolution.manage"), async (req: any, res: any) => {
   const { metric, targetValue, comparator } = req.body;
   if (!metric || typeof targetValue !== "number" || !["lte", "gte"].includes(comparator)) {
     return res.status(400).json({ error: "metric, targetValue (number), and comparator ('lte'|'gte') are required" });
