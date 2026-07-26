@@ -11,6 +11,7 @@ import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
 import { ExecutiveBoard } from "../src/executive/executive_board.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
+import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
@@ -420,6 +421,27 @@ registerTest("Permissions", "Default-deny grants with admin pre-seeded", async (
   await revokeCapability("brand_new_test_user", "email.send", "test-harness");
   if (hasGrant("brand_new_test_user", "email.send")) {
     throw new Error("Permissions: revokeCapability did not take effect");
+  }
+});
+
+// "admin" is the literal username auth-middleware.ts assigns to whoever holds
+// INTERNAL_API_KEY, and the one security.ts/permissions-routes.ts trust as
+// having every capability. Before this fix, nothing stopped a normal
+// self-registered account from taking that exact username and inheriting
+// that trust the moment ALLOW_REGISTRATION was ever turned on.
+registerTest("Permissions", "createUser refuses to register the reserved \"admin\" username", async () => {
+  // This check runs before createUser ever touches Postgres, so it's
+  // deterministic without a live DB connection (same as every other
+  // Postgres-backed repo test in this file that verifies pre-DB validation).
+  for (const attempt of ["admin", "Admin", "ADMIN"]) {
+    try {
+      await createUser(attempt, "irrelevant-password-1234");
+      throw new Error(`Permissions: createUser("${attempt}") should have been rejected as a reserved username`);
+    } catch (err: any) {
+      if (!(err instanceof ReservedUsernameError)) {
+        throw new Error(`Permissions: createUser("${attempt}") should throw ReservedUsernameError, got: ${err.message}`);
+      }
+    }
   }
 });
 

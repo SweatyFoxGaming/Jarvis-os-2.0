@@ -10,11 +10,31 @@ export class UsernameTakenError extends Error {
   }
 }
 
+export class ReservedUsernameError extends Error {
+  constructor() {
+    super("This username is reserved and cannot be registered");
+  }
+}
+
+// "admin" is the literal string auth-middleware.ts assigns to req.username
+// for the INTERNAL_API_KEY holder, and the one security.ts/permissions-routes.ts
+// check against to grant every capability. It must never also be obtainable
+// by registering a normal account — enforced here (the actual write path),
+// not just in the /api/register route, so any future caller of createUser
+// gets the same guarantee. Case-insensitive since permission checks could
+// reasonably become case-insensitive later; today's exact-match check makes
+// only the literal lowercase "admin" dangerous, but reserving the whole set
+// of case variants costs nothing and removes the need to keep it in sync.
+const RESERVED_USERNAMES = new Set(["admin"]);
+
 function generateApiKey(): string {
   return `jarvis_key_${crypto.randomBytes(24).toString("hex")}`;
 }
 
 export async function createUser(username: string, password: string): Promise<string> {
+  if (RESERVED_USERNAMES.has(username.toLowerCase())) {
+    throw new ReservedUsernameError();
+  }
   const db = getPool();
   const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
   // ON CONFLICT DO NOTHING instead of check-then-insert: two concurrent
