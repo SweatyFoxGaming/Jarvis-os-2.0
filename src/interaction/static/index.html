@@ -3153,7 +3153,7 @@
                         <div>
                             <span class="text-xs font-mono font-bold tracking-widest text-primary block uppercase mb-1">${cell.title}</span>
                             <p class="text-[10px] text-secondary mb-2.5">${cell.desc}</p>
-                            <pre class="bg-bg p-3 border border-white/5 rounded-xl font-mono text-[9px] text-white overflow-x-auto max-h-24 leading-normal">${JSON.stringify(cell.data, null, 2)}</pre>
+                            <pre class="bg-bg p-3 border border-white/5 rounded-xl font-mono text-[9px] text-white overflow-x-auto max-h-24 leading-normal">${escapeHtml(JSON.stringify(cell.data, null, 2))}</pre>
                         </div>
                     </div>
                 `).join('');
