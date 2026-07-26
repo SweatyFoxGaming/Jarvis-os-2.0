@@ -5,8 +5,47 @@ import { runMigrations, ALL_MIGRATIONS } from "./migrations/index.js";
 const observation = ObservationPlatform.getInstance();
 
 let pool: pg.Pool | null = null;
+let healthPool: pg.Pool | null = null;
 
 const PING_TIMEOUT_MS = 5_000;
+
+// A separate, dedicated, tiny pool used only by pingDatabase() below — never
+// shared with application traffic. Three earlier attempts at bounding a
+// health-check query all ran into the same root problem: trying to bound a
+// connection/query borrowed from the *shared* pool client-side, which either
+// leaked an abandoned-but-eventually-resolving connection (a raced
+// pool.connect() that's given up on client-side still checks out a real
+// client once it resolves — nothing ever released it), left the first
+// bootstrapping statement unbounded (a manually-issued
+// "SET statement_timeout" is itself a query that can hang before it ever
+// takes effect), or risked leaking a non-default timeout onto whatever
+// unrelated query borrowed that connection next. A dedicated pool sidesteps
+// all three: statement_timeout/connectionTimeoutMillis are baked into its
+// config from creation (applied by pg during its own internal per-connection
+// setup, before any query of ours runs), it's never touched by other repos
+// so there's nothing to leak a timeout onto, and pool.query() (rather than a
+// manually checked-out client) means node-postgres handles releasing its own
+// internally-acquired connection once its promise settles — regardless of
+// whether pingDatabase() is still waiting on it.
+function getHealthPool(): pg.Pool {
+  if (!healthPool) {
+    healthPool = new pg.Pool({
+      host: process.env.POSTGRES_HOST || "postgres",
+      port: Number(process.env.POSTGRES_PORT) || 5432,
+      user: process.env.POSTGRES_USER,
+      password: process.env.POSTGRES_PASSWORD,
+      database: process.env.POSTGRES_DB,
+      max: 2,
+      statement_timeout: PING_TIMEOUT_MS,
+      connectionTimeoutMillis: PING_TIMEOUT_MS,
+      idleTimeoutMillis: 10_000,
+    });
+    healthPool.on("error", (err) => {
+      observation.logTelemetry("warn", "Database", `Unexpected health-check pool error: ${err.message}`);
+    });
+  }
+  return healthPool;
+}
 
 // Live connectivity check for /health — server.ts's startup never actually
 // checked initDatabase()'s result before calling app.listen() regardless,
@@ -22,50 +61,24 @@ const PING_TIMEOUT_MS = 5_000;
 // process restarts — the opposite of what a health check polled repeatedly
 // over the process's lifetime needs to do.
 //
-// connectionTimeoutMillis (5s) is meant to bound acquiring a connection, but
-// live-verified in this codebase's own test environment that it doesn't
-// reliably cover a slow/failing DNS lookup for the configured host — a
-// connect() attempt can still hang well past 5s. So the connect phase below
-// is additionally raced client-side: safe to abandon, since a connection
-// that was never successfully established isn't a resource the pool is
-// holding onto — if the raced-away attempt eventually resolves later, it
-// just becomes a normal healthy idle connection.
-//
-// The query phase is different: once actually connected, racing the query
-// client-side would make pingDatabase() return in time while the query kept
-// running on its checked-out connection regardless, and repeated probes
-// against a hung-but-connectable Postgres could pile up and starve the
-// pool's 10 connections of anything to serve real traffic with. So that
-// phase is bounded server-side instead — a per-connection statement_timeout
-// set just for this probe and always reset before releasing — so a
-// timed-out query is actually killed by Postgres itself, not just abandoned
-// client-side, and the timeout never leaks onto whatever unrelated query
-// borrows this connection next.
+// The outer Promise.race here is safe in a way a race around a manually
+// checked-out client isn't (see getHealthPool()'s comment): pool.query()
+// always releases its own internally-acquired connection once ITS promise
+// settles, whether or not this race is still listening for the result — so
+// giving up early here can't leak a connection. This exists specifically
+// because connectionTimeoutMillis/statement_timeout, live-verified in this
+// codebase's own test environment, don't reliably bound a slow/queued DNS
+// lookup under load on their own — pingDatabase() previously hung 120s+
+// despite both being configured.
 export async function pingDatabase(): Promise<boolean> {
-  let client: pg.PoolClient;
   try {
-    client = await Promise.race([
-      getPool().connect(),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("connect timed out")), PING_TIMEOUT_MS)),
+    await Promise.race([
+      getHealthPool().query("SELECT 1"),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ping timed out")), PING_TIMEOUT_MS)),
     ]);
-  } catch {
-    return false;
-  }
-  try {
-    await client.query(`SET statement_timeout = ${PING_TIMEOUT_MS}`);
-    await client.query("SELECT 1");
     return true;
   } catch {
     return false;
-  } finally {
-    try {
-      await client.query("SET statement_timeout = DEFAULT");
-    } catch {
-      // Connection is presumably unhealthy at this point — release it
-      // anyway; pg-pool detects and discards broken connections on their
-      // next use rather than leaving them in the pool indefinitely.
-    }
-    client.release();
   }
 }
 
