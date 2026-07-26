@@ -1,5 +1,13 @@
 import express from "express";
-import { createWorkspace, execInWorkspace, destroyWorkspace, ensureSandboxImage, startReaper } from "./workspace.js";
+import {
+  createWorkspace,
+  execInWorkspace,
+  destroyWorkspace,
+  ensureSandboxImage,
+  startReaper,
+  reconcileWorkspaceReservations,
+  WorkspaceCapacityError,
+} from "./workspace.js";
 
 const app = express();
 app.use(express.json());
@@ -40,7 +48,11 @@ app.post("/workspaces", async (req, res) => {
     const workspace = await createWorkspace(buildRequestId, baseBranch.trim());
     res.json(workspace);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || String(err) });
+    // 503, not 500: the sandbox cap being full is expected backpressure a
+    // caller/monitoring should be able to tell apart from a genuine
+    // internal failure, not the same generic error either would produce.
+    const status = err instanceof WorkspaceCapacityError ? 503 : 500;
+    res.status(status).json({ error: err.message || String(err) });
   }
 });
 
@@ -85,5 +97,11 @@ app.listen(PORT, "0.0.0.0", async () => {
         "Workspace creation will fail until this is resolved and the service is restarted."
     );
   }
+  // Populates the in-memory concurrency-cap reservation from whatever
+  // sandbox containers already exist in Docker — a restart of this process
+  // doesn't destroy already-running containers from before it, so without
+  // this the cap would start from zero and could be exceeded by however
+  // many requests arrive before the 24h reaper eventually catches up.
+  await reconcileWorkspaceReservations();
   startReaper();
 });
