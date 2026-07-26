@@ -42,7 +42,7 @@ import { positiveIntegerEnv } from "../src/kernel/env.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
 import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
-import { spawn, ChildProcess } from "child_process";
+import { spawn } from "child_process";
 import net from "net";
 import path from "path";
 
@@ -999,32 +999,33 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
 // that a caller who genuinely does hold the grant (admin) reaches the real
 // handler rather than being wrongly blocked by a typo'd capability string.
 registerTest("HTTP Boundary", "newly capability-gated routes reject unauthenticated requests and admit a granted admin", async () => {
-  const alreadyRunning = await isPortInUse(3000);
-  let child: ChildProcess | null = null;
-  if (!alreadyRunning) {
-    child = spawn("npx", ["tsx", "src/server.ts"], {
-      cwd: process.cwd(),
-      env: { ...process.env, INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
-      stdio: "ignore",
-    });
+  // Its own dedicated port, not a reused :3000 — the old "reuse whatever's
+  // already there" fallback (kept here for a long time on the theory that
+  // it "still exercises the same assertion" against an unknown process)
+  // turned out to actively corrupt a LATER test in this same file: killing
+  // an `npx`-spawned child here doesn't kill the real tsx/node process
+  // underneath it (the exact orphaned-process bug already fixed for the
+  // cold-start and calendar-OAuth tests), so this test could leave a
+  // half-dead server squatting on :3000 — alive just long enough for the
+  // NEXT test's own isPortInUse(3000) check to find it and skip spawning
+  // its own, then die moments later mid-test, producing a bare "fetch
+  // failed" with no useful explanation. Live-caught during an actual
+  // agentic-coding-loop verification run inside a real sandbox.
+  const port = 3013;
+  if (await isPortInUse(port)) {
+    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this check against an untested process.`);
   }
-  // If a server was already running on :3000 (e.g. a real dev/docker
-  // instance on this host — confirmed to genuinely happen, not just a
-  // theoretical case, the first time this test ran), it holds its own real
-  // INTERNAL_API_KEY, which this process has no way to know — so the
-  // admin-key assertions below only run against a server this test spawned
-  // itself and therefore knows the key for. The no-key assertions are
-  // unaffected either way: they only need SOME server on :3000 to reject an
-  // absent credential, regardless of whose key it actually has configured.
-  const knowsAdminKey = !alreadyRunning;
+  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
+    stdio: "ignore",
+  });
 
   try {
-    // Wait for the server the same way the boot test does, independent of
-    // whether this test runs before or after it.
     const deadline = Date.now() + 25_000;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch("http://127.0.0.1:3000/health");
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         if (res.ok) break;
       } catch {
         // not up yet
@@ -1032,7 +1033,7 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    const noKeyEmail = await fetch("http://127.0.0.1:3000/api/integrations/email/send", {
+    const noKeyEmail = await fetch(`http://127.0.0.1:${port}/api/integrations/email/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ to: "a@example.com", subject: "x", text: "x" }),
@@ -1041,30 +1042,36 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
       throw new Error(`HTTP Boundary: expected 401 with no API key on /api/integrations/email/send, got ${noKeyEmail.status}`);
     }
 
-    const noKeySettings = await fetch("http://127.0.0.1:3000/api/settings");
+    const noKeySettings = await fetch(`http://127.0.0.1:${port}/api/settings`);
     if (noKeySettings.status !== 401) {
       throw new Error(`HTTP Boundary: expected 401 with no API key on GET /api/settings, got ${noKeySettings.status}`);
     }
 
-    if (knowsAdminKey) {
-      const adminSettings = await fetch("http://127.0.0.1:3000/api/settings", {
-        headers: { "X-API-Key": TEST_ADMIN_API_KEY },
-      });
-      if (adminSettings.status === 401 || adminSettings.status === 403) {
-        throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied on GET /api/settings, got ${adminSettings.status}`);
-      }
+    const adminSettings = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (adminSettings.status === 401 || adminSettings.status === 403) {
+      throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied on GET /api/settings, got ${adminSettings.status}`);
+    }
 
-      const adminEmail = await fetch("http://127.0.0.1:3000/api/integrations/email/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
-        body: JSON.stringify({ to: "a@example.com", subject: "x", text: "x" }),
-      });
-      if (adminEmail.status === 401 || adminEmail.status === 403) {
-        throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied on /api/integrations/email/send, got ${adminEmail.status}`);
-      }
+    const adminEmail = await fetch(`http://127.0.0.1:${port}/api/integrations/email/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+      body: JSON.stringify({ to: "a@example.com", subject: "x", text: "x" }),
+    });
+    if (adminEmail.status === 401 || adminEmail.status === 403) {
+      throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied on /api/integrations/email/send, got ${adminEmail.status}`);
     }
   } finally {
-    if (child) child.kill();
+    child.kill(); // SIGTERM
+    const exited = await new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 5000);
+      child.once("exit", () => {
+        clearTimeout(timeout);
+        resolve(true);
+      });
+    });
+    if (!exited) child.kill("SIGKILL");
   }
 });
 
@@ -1078,22 +1085,24 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
 // inside throws — a plain-array/null fallback at 200 for read paths that are
 // meant to be best-effort, a real 503/500 for the ones that aren't.
 registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are auth-gated and degrade cleanly without Postgres", async () => {
-  const alreadyRunning = await isPortInUse(3000);
-  let child: ChildProcess | null = null;
-  if (!alreadyRunning) {
-    child = spawn("npx", ["tsx", "src/server.ts"], {
-      cwd: process.cwd(),
-      env: { ...process.env, INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
-      stdio: "ignore",
-    });
+  // Own dedicated port — see the "newly capability-gated routes" test above
+  // for why reusing :3000 is unsafe (a real cross-test failure, not just a
+  // theoretical one, live-caught inside a real agentic-coding-loop sandbox).
+  const port = 3014;
+  if (await isPortInUse(port)) {
+    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this check against an untested process.`);
   }
-  const knowsAdminKey = !alreadyRunning;
+  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
+    stdio: "ignore",
+  });
 
   try {
     const deadline = Date.now() + 25_000;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch("http://127.0.0.1:3000/health");
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         if (res.ok) break;
       } catch {
         // not up yet
@@ -1110,22 +1119,20 @@ registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are aut
       "/api/feature-requests",
     ];
     for (const path of noKeyGets) {
-      const res = await fetch(`http://127.0.0.1:3000${path}`);
+      const res = await fetch(`http://127.0.0.1:${port}${path}`);
       if (res.status !== 401) {
         throw new Error(`HTTP Boundary: expected 401 with no API key on GET ${path}, got ${res.status}`);
       }
     }
 
-    const noKeyAnalyze = await fetch("http://127.0.0.1:3000/api/evolution/analyze/quality", { method: "POST" });
+    const noKeyAnalyze = await fetch(`http://127.0.0.1:${port}/api/evolution/analyze/quality`, { method: "POST" });
     if (noKeyAnalyze.status !== 401) {
       throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/evolution/analyze/quality, got ${noKeyAnalyze.status}`);
     }
 
-    if (!knowsAdminKey) return; // rest needs this test's own known INTERNAL_API_KEY — see knowsAdminKey's definition above
-
     const adminHeaders = { "X-API-Key": TEST_ADMIN_API_KEY };
 
-    const briefingHistory = await fetch("http://127.0.0.1:3000/api/briefing/history", { headers: adminHeaders });
+    const briefingHistory = await fetch(`http://127.0.0.1:${port}/api/briefing/history`, { headers: adminHeaders });
     const briefingHistoryBody = await briefingHistory.json();
     if (briefingHistory.status !== 200 || !Array.isArray(briefingHistoryBody.briefings)) {
       throw new Error(`HTTP Boundary: expected 200 + array "briefings" from /api/briefing/history, got ${briefingHistory.status} ${JSON.stringify(briefingHistoryBody)}`);
@@ -1135,42 +1142,42 @@ registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are aut
     // most repo functions in this codebase — the route itself is what
     // degrades a Postgres failure to a 503, so this is the one place in this
     // test that expects a non-200 from a route that isn't rejecting on auth.
-    const memoryPending = await fetch("http://127.0.0.1:3000/api/memory/pending", { headers: adminHeaders });
+    const memoryPending = await fetch(`http://127.0.0.1:${port}/api/memory/pending`, { headers: adminHeaders });
     if (memoryPending.status !== 503 && memoryPending.status !== 200) {
       throw new Error(`HTTP Boundary: expected 503 (no Postgres) or 200 (live Postgres) from /api/memory/pending, got ${memoryPending.status}`);
     }
 
-    const consolidationStatus = await fetch("http://127.0.0.1:3000/api/admin/consolidation/status", { headers: adminHeaders });
+    const consolidationStatus = await fetch(`http://127.0.0.1:${port}/api/admin/consolidation/status`, { headers: adminHeaders });
     const consolidationBody = await consolidationStatus.json();
     if (consolidationStatus.status !== 200 || typeof consolidationBody.pending_records !== "number") {
       throw new Error(`HTTP Boundary: expected 200 + numeric "pending_records" from /api/admin/consolidation/status, got ${consolidationStatus.status} ${JSON.stringify(consolidationBody)}`);
     }
 
-    const evolutionAnalyses = await fetch("http://127.0.0.1:3000/api/evolution/analyses", { headers: adminHeaders });
+    const evolutionAnalyses = await fetch(`http://127.0.0.1:${port}/api/evolution/analyses`, { headers: adminHeaders });
     const evolutionAnalysesBody = await evolutionAnalyses.json();
     if (evolutionAnalyses.status !== 200 || !Array.isArray(evolutionAnalysesBody.analyses)) {
       throw new Error(`HTTP Boundary: expected 200 + array "analyses" from /api/evolution/analyses, got ${evolutionAnalyses.status} ${JSON.stringify(evolutionAnalysesBody)}`);
     }
 
-    const evolutionDashboard = await fetch("http://127.0.0.1:3000/api/evolution/dashboard", { headers: adminHeaders });
+    const evolutionDashboard = await fetch(`http://127.0.0.1:${port}/api/evolution/dashboard`, { headers: adminHeaders });
     if (evolutionDashboard.status !== 200) {
       throw new Error(`HTTP Boundary: expected 200 from /api/evolution/dashboard, got ${evolutionDashboard.status}`);
     }
 
-    const ecosystemPlugins = await fetch("http://127.0.0.1:3000/api/ecosystem/plugins", { headers: adminHeaders });
+    const ecosystemPlugins = await fetch(`http://127.0.0.1:${port}/api/ecosystem/plugins`, { headers: adminHeaders });
     const ecosystemPluginsBody = await ecosystemPlugins.json();
     if (ecosystemPlugins.status !== 200 || !Array.isArray(ecosystemPluginsBody.plugins)) {
       throw new Error(`HTTP Boundary: expected 200 + array "plugins" from /api/ecosystem/plugins, got ${ecosystemPlugins.status} ${JSON.stringify(ecosystemPluginsBody)}`);
     }
 
-    const featureRequests = await fetch("http://127.0.0.1:3000/api/feature-requests", { headers: adminHeaders });
+    const featureRequests = await fetch(`http://127.0.0.1:${port}/api/feature-requests`, { headers: adminHeaders });
     const featureRequestsBody = await featureRequests.json();
     if (featureRequests.status !== 200 || !Array.isArray(featureRequestsBody.requests)) {
       throw new Error(`HTTP Boundary: expected 200 + array "requests" from /api/feature-requests, got ${featureRequests.status} ${JSON.stringify(featureRequestsBody)}`);
     }
 
     // Pure input validation, no DB touched — must reject before ever reaching updateFeatureRequestStatus.
-    const badStatus = await fetch("http://127.0.0.1:3000/api/feature-requests/1/status", {
+    const badStatus = await fetch(`http://127.0.0.1:${port}/api/feature-requests/1/status`, {
       method: "POST",
       headers: { ...adminHeaders, "Content-Type": "application/json" },
       body: JSON.stringify({ status: "not-a-real-status" }),
@@ -1179,7 +1186,15 @@ registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are aut
       throw new Error(`HTTP Boundary: expected 400 for an invalid feature-request status, got ${badStatus.status}`);
     }
   } finally {
-    if (child) child.kill();
+    child.kill(); // SIGTERM
+    const exited = await new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 5000);
+      child.once("exit", () => {
+        clearTimeout(timeout);
+        resolve(true);
+      });
+    });
+    if (!exited) child.kill("SIGKILL");
   }
 });
 
