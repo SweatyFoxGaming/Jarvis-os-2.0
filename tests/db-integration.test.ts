@@ -86,6 +86,20 @@ function registerTest(name: string, fn: () => Promise<void>): void {
 // against a persistent (non-disposable) database someone points this at.
 const RUN_ID = process.pid.toString(36) + "_" + process.hrtime.bigint().toString(36);
 
+// Best-effort, independent per statement: this suite's own
+// assertSafeToRunDestructiveTests() requires an empty database on every
+// run, so leftover rows from a prior run (a real failure part-way through,
+// or someone Ctrl-C'ing a run) would otherwise lock out every future run
+// against the same (reused, non-CI-disposable) database until manually
+// cleared. api_keys cascades on the users delete (see db.ts's schema), so
+// deleting the user row is enough there.
+async function cleanupTestData(): Promise<void> {
+  const db = getPool();
+  await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_user_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM conversation_history WHERE username = $1`, [`db_it_session_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM mcp_servers WHERE name = $1`, [`db_it_mcp_${RUN_ID}`]).catch(() => {});
+}
+
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
   const ok = await initDatabase(1, 0);
   if (!ok) throw new Error("initDatabase() returned false against a live, reachable Postgres");
@@ -197,14 +211,25 @@ async function main(): Promise<void> {
 
   let passedCount = 0;
   const results: { name: string; passed: boolean; error?: string }[] = [];
-  for (const t of tests) {
-    try {
-      await t.fn();
-      results.push({ name: t.name, passed: true });
-      passedCount++;
-    } catch (err: any) {
-      results.push({ name: t.name, passed: false, error: err.message || String(err) });
+  try {
+    for (const t of tests) {
+      try {
+        await t.fn();
+        results.push({ name: t.name, passed: true });
+        passedCount++;
+      } catch (err: any) {
+        results.push({ name: t.name, passed: false, error: err.message || String(err) });
+      }
     }
+  } finally {
+    // Runs regardless of pass/fail — a CI job's disposable Postgres service
+    // container doesn't need this (it's thrown away either way), but
+    // assertSafeToRunDestructiveTests()'s own emptiness check means anyone
+    // running this repeatedly against a real, reused local database would
+    // otherwise be permanently locked out by the previous run's own leftover
+    // rows. Independent best-effort deletes, not one failing statement
+    // blocking the rest: a partial cleanup is still strictly better than none.
+    await cleanupTestData();
   }
 
   console.log("\n=====================================================");
