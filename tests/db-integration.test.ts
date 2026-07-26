@@ -14,13 +14,63 @@
  * test:db` safe to invoke in any environment, including the current CI
  * pipeline, which has no Postgres service wired up yet. Point
  * POSTGRES_HOST/POSTGRES_PORT/POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB
- * at a real (ideally disposable) database to actually exercise these.
+ * at a real, disposable/empty database to actually exercise these — and
+ * see assertSafeToRunDestructiveTests() below for the two gates (an
+ * explicit opt-in env var, plus proof the database is actually empty) that
+ * make a reachable-but-wrong database a hard failure instead of quietly
+ * running destructive operations against it.
  */
 import { pingDatabase, initDatabase, getPool } from "../src/kernel/state/db.js";
 import { runMigrations, ALL_MIGRATIONS } from "../src/kernel/state/migrations/index.js";
 import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kernel/state/session-repo.js";
 import { proposeMcpServer, McpServerNameTakenError } from "../src/kernel/state/mcp-servers-repo.js";
+
+// pruneOldMessages(0) below deletes every row in conversation_history with
+// created_at < now() — not scoped to this test's own user, because the real
+// function it's testing isn't scoped that way either (it's a global
+// retention sweep). Reachability alone (pingDatabase()) says nothing about
+// whether POSTGRES_HOST/PORT/USER/PASSWORD/DB happen to point at a real,
+// populated database instead of a disposable one — someone with the live
+// app's env already exported in their shell running `npm run test:db` out
+// of curiosity would otherwise silently wipe every real user's conversation
+// history. Two independent gates before anything destructive runs:
+// (1) an explicit, unusual-on-purpose opt-in env var (not just "=1", which
+// is too easy to have already set for something unrelated), and (2) proof
+// the target database is actually empty of pre-existing data, not just
+// reachable — so even a mistaken opt-in against the wrong database still
+// refuses to proceed.
+const CONFIRM_ENV_VAR = "DB_INTEGRATION_TEST_CONFIRM";
+const REQUIRED_CONFIRM_VALUE = "i-accept-data-loss-in-this-database";
+
+async function assertSafeToRunDestructiveTests(): Promise<void> {
+  if (process.env[CONFIRM_ENV_VAR] !== REQUIRED_CONFIRM_VALUE) {
+    throw new Error(
+      `Refusing to run: this suite runs destructive, unscoped operations (e.g. deleting every row in ` +
+        `conversation_history) against whatever database POSTGRES_HOST/PORT/USER/PASSWORD/DB point at. ` +
+        `Set ${CONFIRM_ENV_VAR}=${REQUIRED_CONFIRM_VALUE} only once you're certain that database is disposable.`
+    );
+  }
+
+  const db = getPool();
+  for (const table of ["users", "conversation_history", "mcp_servers"]) {
+    try {
+      const { rows } = await db.query(`SELECT COUNT(*)::int AS n FROM ${table}`);
+      if (rows[0].n > 0) {
+        throw new Error(
+          `Refusing to run: table "${table}" already has ${rows[0].n} row(s) — this database doesn't look ` +
+            `disposable/empty, even though ${CONFIRM_ENV_VAR} is set. Point this at a truly fresh database instead.`
+        );
+      }
+    } catch (err: any) {
+      // Postgres error code 42P01 = "relation does not exist" — expected
+      // and safe on a genuinely fresh database that initDatabase() hasn't
+      // touched yet. Any other failure (a real connectivity/permission
+      // error) must not be swallowed as if it meant "table's empty."
+      if (err.code !== "42P01") throw err;
+    }
+  }
+}
 
 interface TestDef {
   name: string;
@@ -140,6 +190,10 @@ async function main(): Promise<void> {
     );
     return;
   }
+
+  // Deliberately a hard failure, not a skip: reachable-but-unsafe must be
+  // impossible to mistake for "ran fine" or "not applicable here."
+  await assertSafeToRunDestructiveTests();
 
   let passedCount = 0;
   const results: { name: string; passed: boolean; error?: string }[] = [];
