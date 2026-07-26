@@ -11,14 +11,19 @@ import { toGroqSchema } from "./groq-client.js";
  * already constructs — no separate API key or client to manage.
  */
 
-// moonshotai/kimi-k2-instruct: chosen for strong agentic tool-calling and
-// coding performance on Groq's free tier — see the live-verification
-// findings in this session that led to switching off NVIDIA NIM (its
-// default model unreliably wrote empty files and intermittently rejected
-// well-formed tool-calling requests outright). Overridable via
+// kimi-k2 isn't actually available on Groq's API today — live-verified
+// against a real Groq account: GET /openai/v1/models doesn't list any
+// moonshotai/* model, and a real coding session attempt failed with a 404
+// "model_not_found". openai/gpt-oss-120b is the strongest model this
+// account actually has access to with real tool-calling support — chosen
+// over the smaller openai/gpt-oss-20b (already used for department
+// decomposition elsewhere in this codebase) for the coding agent's own
+// heavier multi-turn tool-use workload. Overridable via
 // JARVIS_CODING_AGENT_MODEL without a code change, same precedent as
-// NVIDIA_MODEL before it.
-const DEFAULT_MODEL = "moonshotai/kimi-k2-instruct";
+// NVIDIA_MODEL before it — check your own account's available models via
+// GET https://api.groq.com/openai/v1/models before assuming a model name
+// from documentation or elsewhere is actually accessible.
+const DEFAULT_MODEL = "openai/gpt-oss-120b";
 
 export interface AgentToolCall {
   id: string;
