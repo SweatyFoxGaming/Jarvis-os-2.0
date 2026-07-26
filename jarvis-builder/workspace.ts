@@ -10,6 +10,15 @@ const REPO_HOST_PATH = process.env.JARVIS_REPO_HOST_PATH || "/mnt/jarvis_home/ll
 const WORKSPACES_DIR = `${REPO_HOST_PATH}/.jarvis-build-workspaces`;
 const SANDBOX_IMAGE = "jarvis-sandbox:latest";
 
+// Number(x) || fallback silently lets a negative value through (Number("-1")
+// || fallback evaluates to -1, since -1 is truthy) — used for both env vars
+// below so neither can be misconfigured into a bound that doesn't bound
+// anything.
+function positiveIntegerEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 // Defense-in-depth backstop, independent of whatever wall-clock budget the
 // agentic loop enforces on itself — catches the case where that loop hangs
 // or crashes without calling destroyWorkspace. Deliberately much larger than
@@ -20,7 +29,22 @@ const SANDBOX_IMAGE = "jarvis-sandbox:latest";
 // that's merely awaiting approval permanently burns the build request, so
 // 24h — still a backstop, not a session budget. Override with
 // JARVIS_SANDBOX_MAX_LIFETIME_MS if a deployment needs a different bound.
-const MAX_CONTAINER_LIFETIME_MS = Number(process.env.JARVIS_SANDBOX_MAX_LIFETIME_MS) || 24 * 60 * 60 * 1000;
+const MAX_CONTAINER_LIFETIME_MS = positiveIntegerEnv(process.env.JARVIS_SANDBOX_MAX_LIFETIME_MS, 24 * 60 * 60 * 1000);
+
+// Nothing previously bounded how many sandbox containers (each a full
+// `git clone` of this repo plus a running container) could exist at once —
+// the 24h reaper above only cleans up OLD ones, so ordinary sequential use
+// (not any kind of attack) could accumulate workspaces faster than the
+// reaper ever removes them and exhaust host disk. This is a plain
+// check-then-create guard, not a database-backed atomic lock (jarvis-builder
+// has no database of its own to hold one in) — a tight race between two
+// near-simultaneous createWorkspace calls could momentarily exceed this by
+// one or two. That's an acceptable gap for what this actually defends
+// against (accumulation over time from repeated normal use, not a
+// concurrent-burst exploit) — a real per-user concurrency limit already
+// exists a layer up, in Postgres, for how many build/coding sessions a
+// single user can have running at once.
+const MAX_CONCURRENT_WORKSPACES = positiveIntegerEnv(process.env.JARVIS_SANDBOX_MAX_CONCURRENT, 5);
 
 function workspaceDir(buildRequestId: number): string {
   return `${WORKSPACES_DIR}/br-${buildRequestId}`;
@@ -64,8 +88,33 @@ function assertSafeBranchName(baseBranch: string): void {
   }
 }
 
+// Same label filter the reaper uses — counts every sandbox container
+// currently known to Docker regardless of status (a stopped-but-not-yet-
+// removed one still holds its workspace clone on disk), not just running
+// ones.
+async function countLiveWorkspaces(): Promise<number> {
+  const { stdout } = await execFileAsync("docker", [
+    "ps", "-a",
+    "--filter", "label=jarvis-sandbox=true",
+    "--format", "{{.ID}}",
+  ]);
+  return stdout.trim().split("\n").filter(Boolean).length;
+}
+
 export async function createWorkspace(buildRequestId: number, baseBranch: string): Promise<WorkspaceHandle> {
   assertSafeBranchName(baseBranch);
+
+  // Checked before any git fetch/clone or disk work happens below, so a
+  // request that's going to be refused doesn't first do several seconds of
+  // wasted git/disk work only to fail at the docker run step.
+  const liveCount = await countLiveWorkspaces();
+  if (liveCount >= MAX_CONCURRENT_WORKSPACES) {
+    throw new Error(
+      `Refusing to create a new sandbox workspace: ${liveCount} already exist ` +
+        `(limit ${MAX_CONCURRENT_WORKSPACES}, override with JARVIS_SANDBOX_MAX_CONCURRENT). ` +
+        "Approve or reject a pending build request to free one up, or wait for the reaper."
+    );
+  }
 
   const dir = workspaceDir(buildRequestId);
   const stagingDir = `${dir}.staging`;
