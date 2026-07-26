@@ -1065,6 +1065,12 @@
     let liveOutputAudioCtx = null;
     let liveScriptProcessor = null;
     let liveNextPlayTime = 0;
+    // Sources already handed to source.start() keep playing to completion
+    // regardless of liveNextPlayTime — that variable only affects where the
+    // *next* chunk gets scheduled. Tracked here so an 'interrupted' message
+    // (the user actually talking over Jarvis) can call .stop() on whatever
+    // is currently mid-playback instead of just silently letting it finish.
+    let liveScheduledSources = [];
     let liveVideoFrameInterval = null;
     let liveMicStream = null;
 
@@ -1275,8 +1281,19 @@
 
         const now = liveOutputAudioCtx.currentTime;
         const startAt = Math.max(now, liveNextPlayTime);
+        source.onended = () => { liveScheduledSources = liveScheduledSources.filter(s => s !== source); };
+        liveScheduledSources.push(source);
         source.start(startAt);
         liveNextPlayTime = startAt + audioBuffer.duration;
+    }
+
+    // Actually silences whatever's mid-playback (the user talking over
+    // Jarvis) instead of only resetting the scheduling clock for future
+    // chunks — see the comment on liveScheduledSources above.
+    function stopLiveAudioPlayback() {
+        liveScheduledSources.forEach(source => { try { source.stop(); } catch {} });
+        liveScheduledSources = [];
+        liveNextPlayTime = 0;
     }
 
     // True while Jarvis's own voice is coming out of the speakers — either
@@ -1398,7 +1415,7 @@
                 } else if (msg.type === 'turnComplete') {
                     resetLiveDisarmTimer();
                 } else if (msg.type === 'interrupted') {
-                    liveNextPlayTime = 0;
+                    stopLiveAudioPlayback();
                 } else if (msg.type === 'error') {
                     if (!everConnected) {
                         // Never got a working session at all (e.g. no
@@ -1443,6 +1460,7 @@
         if (liveMicStream) { liveMicStream.getTracks().forEach(t => t.stop()); liveMicStream = null; }
         if (liveInputAudioCtx) { liveInputAudioCtx.close(); liveInputAudioCtx = null; }
         if (liveOutputAudioCtx) { liveOutputAudioCtx.close(); liveOutputAudioCtx = null; }
+        liveScheduledSources = [];
 
         micEnabled = false;
         const pulseDot = document.getElementById('mic-pulse-dot');
@@ -2026,6 +2044,26 @@
 
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
+            currentAudioEl = new Audio(url);
+            isSpeakingNow = true;
+            updateSensorStatusLabel();
+            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); };
+            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); };
+            await currentAudioEl.play();
+        } catch {}
+    }
+
+    // Plays audio the server already synthesized (the speak_text tool call,
+    // relayed as an "audio: " SSE frame — see the [DONE]/display: handling
+    // in triggerChatDialogue) instead of re-synthesizing via speakText()'s
+    // own /api/integrations/tts/speak round trip. Shares currentAudioEl so
+    // an explicit speak_text call and the auto-spoken reply never overlap.
+    async function playAudioBase64(mimeType, base64) {
+        if (!speechEnabled) return;
+        try {
+            if (currentAudioEl) { currentAudioEl.pause(); URL.revokeObjectURL(currentAudioEl.src); }
+            const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+            const url = URL.createObjectURL(new Blob([bytes], { type: mimeType || "audio/mpeg" }));
             currentAudioEl = new Audio(url);
             isSpeakingNow = true;
             updateSensorStatusLabel();
@@ -3372,6 +3410,14 @@
                             try {
                                 const directive = JSON.parse(dataStr.slice(9));
                                 renderDisplayContent(directive.type, directive.title, directive.content);
+                            } catch {}
+                            continue;
+                        }
+
+                        if (dataStr.startsWith("audio: ")) {
+                            try {
+                                const directive = JSON.parse(dataStr.slice(7));
+                                playAudioBase64(directive.mimeType, directive.base64);
                             } catch {}
                             continue;
                         }

@@ -740,6 +740,9 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 if (result.displayDirective) {
                   res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
                 }
+                if (result.audioDirective) {
+                  res.write(`data: audio: ${JSON.stringify(result.audioDirective)}\n\n`);
+                }
 
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
                 toolResponseMessages.push({
@@ -839,6 +842,9 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 // existing SSE stream as its own frame (see Task 1's design note).
                 if (result.displayDirective) {
                   res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
+                }
+                if (result.audioDirective) {
+                  res.write(`data: audio: ${JSON.stringify(result.audioDirective)}\n\n`);
                 }
 
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
