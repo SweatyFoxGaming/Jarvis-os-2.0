@@ -42,8 +42,8 @@ const VOICE_SYSTEM_INSTRUCTION_BASE =
 // which recalls against each completed utterance and prefills the result
 // into the session for the *next* turn onward, the only point a query
 // actually exists to search against.
-async function buildVoiceSystemInstruction(): Promise<string> {
-  const identityContext = await buildIdentityContext();
+async function buildVoiceSystemInstruction(username: string): Promise<string> {
+  const identityContext = await buildIdentityContext(username);
   const stylePrefs = LongTermLearningEngine.getInstance().getStylePreferences();
   const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
   return VOICE_SYSTEM_INSTRUCTION_BASE + styleContext + identityContext;
@@ -113,8 +113,8 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, groq: Groq | null, cli
           .remember(username, `User said (voice): "${userText}" — Jarvis replied: "${replyText.slice(0, 500)}"`, ai, null)
           .catch(() => {});
         reflectAndLearn(groq, userText, replyText).catch(() => {});
-        knowledgeGraph.extractAndStore(groq, userText, replyText).catch(() => {});
-        identity.extractSelfReflection(groq, userText, replyText).catch(() => {});
+        knowledgeGraph.extractAndStore(username, groq, userText, replyText).catch(() => {});
+        identity.extractSelfReflection(username, groq, userText, replyText).catch(() => {});
       }
     }
 
@@ -181,7 +181,7 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, groq: Groq | null, cli
   };
   clientSocket.on("message", handleClientMessage);
 
-  const systemInstruction = await buildVoiceSystemInstruction();
+  const systemInstruction = await buildVoiceSystemInstruction(username);
 
   try {
     liveSession = await ai.live.connect({

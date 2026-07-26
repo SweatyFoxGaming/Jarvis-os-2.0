@@ -82,3 +82,14 @@ export async function getUsernameByApiKey(key: string): Promise<string | null> {
   const result = await db.query("SELECT username FROM api_keys WHERE key = $1", [key]);
   return result.rowCount ? result.rows[0].username : null;
 }
+
+// "admin" (auth-middleware.ts's INTERNAL_API_KEY identity) is never a row in
+// this table, so it's added explicitly — callers that need every real
+// username to iterate per-user work (e.g. scheduler.ts's proactive-self-
+// reflection job, now that self_reflections/proactive_thoughts are scoped
+// per user) would otherwise silently skip the operator account.
+export async function listUsernames(): Promise<string[]> {
+  const db = getPool();
+  const { rows } = await db.query("SELECT username FROM users");
+  return ["admin", ...rows.map((r: any) => r.username)];
+}

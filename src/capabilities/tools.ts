@@ -542,10 +542,10 @@ export async function executeTool(
         output = await obsidian.createNote(args.path, args.content);
         break;
       case "query_knowledge_graph":
-        output = { results: await knowledgeGraph.queryKnowledge(args.query) };
+        output = { results: await knowledgeGraph.queryKnowledge(username, args.query) };
         break;
       case "reflect_on_self":
-        output = { reflections: await identity.reflectOnSelf(args.query) };
+        output = { reflections: await identity.reflectOnSelf(username, args.query) };
         break;
       case "get_news": {
         const articles = args.query

@@ -20,7 +20,7 @@ knowledgeRouter.get("/api/knowledge/search", validateApiKey, requireCapability("
   const q = req.query.q as string | undefined;
   if (!q) return res.status(400).json({ error: "q is required" });
   try {
-    res.json({ results: await knowledgeGraph.queryKnowledge(q) });
+    res.json({ results: await knowledgeGraph.queryKnowledge(req.username, q) });
   } catch (err: any) {
     observation.logTelemetry("warn", "KnowledgeGraph", `Search failed: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -29,7 +29,7 @@ knowledgeRouter.get("/api/knowledge/search", validateApiKey, requireCapability("
 
 knowledgeRouter.get("/api/knowledge/entities", validateApiKey, requireCapability("knowledge.read"), async (req: any, res: any) => {
   try {
-    res.json({ entities: await knowledgeGraphRepo.listAllEntities() });
+    res.json({ entities: await knowledgeGraphRepo.listAllEntities(req.username) });
   } catch (err: any) {
     res.json({ entities: [], error: err.message });
   }
@@ -42,7 +42,7 @@ knowledgeRouter.get("/api/knowledge/entities", validateApiKey, requireCapability
 // hardcoded persona string.
 knowledgeRouter.get("/api/identity/reflections", validateApiKey, requireCapability("identity.read"), async (req: any, res: any) => {
   try {
-    res.json({ reflections: await identity.reflectOnSelf(req.query.q as string | undefined) });
+    res.json({ reflections: await identity.reflectOnSelf(req.username, req.query.q as string | undefined) });
   } catch (err: any) {
     res.json({ reflections: [], error: err.message });
   }
@@ -58,11 +58,11 @@ knowledgeRouter.post("/api/identity/thought", validateApiKey, requireCapability(
   const groq = getGroq();
   if (!groq) return res.status(503).json({ error: "Requires GROQ_API_KEY to be configured." });
   try {
-    const result = await identity.generateProactiveThought(groq);
+    const result = await identity.generateProactiveThought(req.username, groq);
     if (!result) {
       return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
     }
-    await identityRepo.saveProactiveThought(result.content, result.basedOnCount);
+    await identityRepo.saveProactiveThought(req.username, result.content, result.basedOnCount);
     obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {
       observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
     });
@@ -74,7 +74,7 @@ knowledgeRouter.post("/api/identity/thought", validateApiKey, requireCapability(
 
 knowledgeRouter.get("/api/identity/thoughts/history", validateApiKey, requireCapability("identity.read"), async (req: any, res: any) => {
   try {
-    res.json({ thoughts: await identityRepo.getRecentProactiveThoughts() });
+    res.json({ thoughts: await identityRepo.getRecentProactiveThoughts(req.username) });
   } catch (err: any) {
     res.json({ thoughts: [], error: err.message });
   }

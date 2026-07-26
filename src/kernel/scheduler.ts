@@ -5,6 +5,7 @@ import * as briefing from "../world/briefing.js";
 import * as briefingRepo from "./state/briefing-repo.js";
 import * as identity from "../self/identity.js";
 import * as identityRepo from "./state/identity-repo.js";
+import * as usersRepo from "./state/users-repo.js";
 import * as objectivesRepo from "./state/objectives-repo.js";
 import * as push from "../interaction/push.js";
 import * as mcpServersRepo from "./state/mcp-servers-repo.js";
@@ -182,21 +183,32 @@ export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000)
  * no-ops (no notification, nothing persisted) when there isn't enough real
  * self-reflection history yet rather than fabricating a thought from
  * nothing.
+ *
+ * Runs once per real user (not once globally) — self_reflections/
+ * proactive_thoughts are per-user data (see migration
+ * 004_username_scope_identity_kg), so a single global thought would either
+ * mix reflections drawn from multiple users' separate conversations into
+ * one notification, or arbitrarily only ever reflect on whichever user
+ * happened to be picked. One user's slow/failed generation can't block
+ * another's — each iteration is independent and already-caught.
  */
 export function startSelfReflectionJob(groq: Groq | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-self-reflection", intervalMs, async () => {
     if (!groq) return;
-    const result = await identity.generateProactiveThought(groq);
-    if (!result) return;
-    try {
-      await identityRepo.saveProactiveThought(result.content, result.basedOnCount);
-      obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {
-        observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
-      });
-    } catch (err: any) {
-      observation.logTelemetry("warn", "Identity", `Failed to persist proactive thought: ${err.message}`);
+    const usernames = await usersRepo.listUsernames();
+    for (const username of usernames) {
+      try {
+        const result = await identity.generateProactiveThought(username, groq);
+        if (!result) continue;
+        await identityRepo.saveProactiveThought(username, result.content, result.basedOnCount);
+        obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {
+          observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
+        });
+        pushNotification(username, result.content, "info");
+      } catch (err: any) {
+        observation.logTelemetry("warn", "Identity", `Failed to generate/persist proactive thought for "${username}": ${err.message}`);
+      }
     }
-    pushNotification("admin", result.content, "info");
   });
 }
 

@@ -25,6 +25,8 @@ import { runMigrations, ALL_MIGRATIONS } from "../src/kernel/state/migrations/in
 import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kernel/state/session-repo.js";
 import { proposeMcpServer, McpServerNameTakenError } from "../src/kernel/state/mcp-servers-repo.js";
+import { upsertEntity, searchEntities, listAllEntities } from "../src/kernel/state/knowledge-graph-repo.js";
+import { addSelfReflection, getRecentSelfReflections } from "../src/kernel/state/identity-repo.js";
 
 // pruneOldMessages(0) below deletes every row in conversation_history with
 // created_at < now() — not scoped to this test's own user, because the real
@@ -98,6 +100,8 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_user_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM conversation_history WHERE username = $1`, [`db_it_session_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM mcp_servers WHERE name = $1`, [`db_it_mcp_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM kg_entities WHERE username IN ($1, $2)`, [`db_it_kg_a_${RUN_ID}`, `db_it_kg_b_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM self_reflections WHERE username IN ($1, $2)`, [`db_it_refl_a_${RUN_ID}`, `db_it_refl_b_${RUN_ID}`]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -191,6 +195,51 @@ registerTest("mcp-servers-repo: proposeMcpServer rejects a real duplicate name w
   if (!threw) throw new Error("proposeMcpServer did not throw McpServerNameTakenError for a real duplicate name");
   if (message.toLowerCase().includes("constraint") || message.toLowerCase().includes("duplicate key")) {
     throw new Error(`McpServerNameTakenError's message still looks like a raw Postgres error: "${message}"`);
+  }
+});
+
+registerTest("knowledge-graph-repo: entities are scoped per username — one user's search/list never surfaces another's", async () => {
+  const userA = `db_it_kg_a_${RUN_ID}`;
+  const userB = `db_it_kg_b_${RUN_ID}`;
+
+  await upsertEntity(userA, "SharedName", "project");
+  await upsertEntity(userB, "SharedName", "project");
+
+  // Same (name, entity_type) for both users must coexist as two distinct
+  // rows — this is exactly what the (username, name, entity_type) unique
+  // constraint (migration 004) replaces the old global (name, entity_type)
+  // constraint with. If scoping were broken, the second upsertEntity would
+  // have just updated user A's row instead of inserting a second one.
+  const aResults = await searchEntities(userA, "SharedName");
+  const bResults = await searchEntities(userB, "SharedName");
+  if (aResults.length !== 1 || bResults.length !== 1) {
+    throw new Error(`expected exactly one match per user, got ${aResults.length} for A and ${bResults.length} for B`);
+  }
+  if (aResults[0].id === bResults[0].id) {
+    throw new Error("user A and user B's searchEntities returned the same row — entities are not actually scoped per user");
+  }
+
+  const aList = await listAllEntities(userA);
+  if (aList.some(e => e.username !== userA)) {
+    throw new Error(`listAllEntities(userA) returned a row belonging to a different username: ${JSON.stringify(aList)}`);
+  }
+});
+
+registerTest("identity-repo: self-reflections are scoped per username — one user's history never leaks into another's", async () => {
+  const userA = `db_it_refl_a_${RUN_ID}`;
+  const userB = `db_it_refl_b_${RUN_ID}`;
+
+  await addSelfReflection(userA, "opinion", "User A's private opinion, never meant for user B");
+  await addSelfReflection(userB, "commitment", "User B's own commitment");
+
+  const aReflections = await getRecentSelfReflections(userA);
+  const bReflections = await getRecentSelfReflections(userB);
+
+  if (aReflections.length !== 1 || aReflections[0].content !== "User A's private opinion, never meant for user B") {
+    throw new Error(`getRecentSelfReflections(userA) returned unexpected content: ${JSON.stringify(aReflections)}`);
+  }
+  if (bReflections.some(r => r.content.includes("User A's private opinion"))) {
+    throw new Error("user B's self-reflection history leaked user A's content — the privacy bug this migration exists to fix");
   }
 });
 

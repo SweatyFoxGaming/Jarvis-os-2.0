@@ -2,6 +2,7 @@ import { getPool } from "./db.js";
 
 export interface KgEntity {
   id: number;
+  username: string;
   name: string;
   entity_type: string;
   first_seen: Date;
@@ -22,13 +23,13 @@ export interface KgRelationship {
   relationship: string;
 }
 
-export async function upsertEntity(name: string, entityType: string): Promise<number> {
+export async function upsertEntity(username: string, name: string, entityType: string): Promise<number> {
   const db = getPool();
   const { rows } = await db.query(
-    `INSERT INTO kg_entities (name, entity_type) VALUES ($1, $2)
-     ON CONFLICT (name, entity_type) DO UPDATE SET last_seen = now()
+    `INSERT INTO kg_entities (username, name, entity_type) VALUES ($1, $2, $3)
+     ON CONFLICT (username, name, entity_type) DO UPDATE SET last_seen = now()
      RETURNING id`,
-    [name, entityType]
+    [username, name, entityType]
   );
   return rows[0].id;
 }
@@ -59,11 +60,11 @@ export async function addRelationship(fromEntityId: number, toEntityId: number, 
   );
 }
 
-export async function searchEntities(query: string, limit = 10): Promise<KgEntity[]> {
+export async function searchEntities(username: string, query: string, limit = 10): Promise<KgEntity[]> {
   const db = getPool();
   const { rows } = await db.query(
-    `SELECT * FROM kg_entities WHERE name ILIKE $1 ORDER BY last_seen DESC LIMIT $2`,
-    [`%${query}%`, limit]
+    `SELECT * FROM kg_entities WHERE username = $1 AND name ILIKE $2 ORDER BY last_seen DESC LIMIT $3`,
+    [username, `%${query}%`, limit]
   );
   return rows;
 }
@@ -92,8 +93,11 @@ export async function getRelationshipsForEntity(entityId: number): Promise<{ rel
   return rows.map((r: any) => ({ relationship: r.relationship, otherEntityName: r.other_name, direction: r.direction }));
 }
 
-export async function listAllEntities(limit = 100): Promise<KgEntity[]> {
+export async function listAllEntities(username: string, limit = 100): Promise<KgEntity[]> {
   const db = getPool();
-  const { rows } = await db.query(`SELECT * FROM kg_entities ORDER BY last_seen DESC LIMIT $1`, [limit]);
+  const { rows } = await db.query(
+    `SELECT * FROM kg_entities WHERE username = $1 ORDER BY last_seen DESC LIMIT $2`,
+    [username, limit]
+  );
   return rows;
 }

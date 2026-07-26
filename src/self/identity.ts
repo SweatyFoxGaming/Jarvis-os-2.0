@@ -35,7 +35,7 @@ const SELF_REFLECTION_SCHEMA = {
  * this turn contained something genuinely worth remembering about itself;
  * empty category/content means nothing did, and nothing is stored.
  */
-export async function extractSelfReflection(groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
+export async function extractSelfReflection(username: string, groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
   if (!groq) return;
   try {
     const response = await groq.chat.completions.create({
@@ -60,7 +60,7 @@ export async function extractSelfReflection(groq: Groq | null, userMessage: stri
     const content = typeof parsed.content === "string" ? parsed.content.trim() : "";
 
     if (VALID_CATEGORIES.includes(category) && content) {
-      await identityRepo.addSelfReflection(category, content, replyText.slice(0, 300));
+      await identityRepo.addSelfReflection(username, category, content, replyText.slice(0, 300));
       observation.logTelemetry("info", "Identity", `Recorded self-reflection (${category}): "${content.slice(0, 80)}"`);
       obsidian.appendReflectionEntry(category, content).catch((err: any) => {
         observation.logTelemetry("warn", "Interaction", `Failed to write reflection vault entry: ${err.message}`);
@@ -76,9 +76,9 @@ export async function extractSelfReflection(groq: Groq | null, userMessage: stri
  * continuity comes from real past statements, not just a static persona
  * string repeated unchanged every session.
  */
-export async function buildIdentityContext(limit = 5): Promise<string> {
+export async function buildIdentityContext(username: string, limit = 5): Promise<string> {
   try {
-    const recent = await identityRepo.getRecentSelfReflections(limit);
+    const recent = await identityRepo.getRecentSelfReflections(username, limit);
     if (recent.length === 0) return "";
     const lines = recent.map(r => `- (${r.category}) ${r.content}`);
     return `\n\nThings you've genuinely said/believed/committed to recently, for continuity — reference these naturally if relevant, don't recite them:\n${lines.join("\n")}`;
@@ -88,11 +88,11 @@ export async function buildIdentityContext(limit = 5): Promise<string> {
   }
 }
 
-export async function reflectOnSelf(query?: string): Promise<identityRepo.SelfReflection[]> {
+export async function reflectOnSelf(username: string, query?: string): Promise<identityRepo.SelfReflection[]> {
   if (query && query.trim()) {
-    return identityRepo.searchSelfReflections(query.trim());
+    return identityRepo.searchSelfReflections(username, query.trim());
   }
-  return identityRepo.getRecentSelfReflections(10);
+  return identityRepo.getRecentSelfReflections(username, 10);
 }
 
 export interface ProactiveThoughtResult {
@@ -107,10 +107,10 @@ export interface ProactiveThoughtResult {
  * when there isn't enough real history to draw from yet (a fresh install,
  * or too few real conversations so far).
  */
-export async function generateProactiveThought(groq: Groq | null, minReflections = 3): Promise<ProactiveThoughtResult | null> {
+export async function generateProactiveThought(username: string, groq: Groq | null, minReflections = 3): Promise<ProactiveThoughtResult | null> {
   let recent: identityRepo.SelfReflection[];
   try {
-    recent = await identityRepo.getRecentSelfReflections(15);
+    recent = await identityRepo.getRecentSelfReflections(username, 15);
   } catch (err: any) {
     observation.logTelemetry("warn", "Identity", `Could not load self-reflection history: ${err.message}`);
     return null;
