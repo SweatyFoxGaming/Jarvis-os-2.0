@@ -136,7 +136,7 @@ const RESEARCH_LOOKUPS_SCHEMA = {
 // the raw objective; the second synthesizes whatever was actually gathered.
 // Each individual lookup degrades independently — one failing read (a
 // missing BRAVE_API_KEY, a GitHub hiccup) doesn't abort the whole pass.
-export async function runResearch(objective: string, groq: Groq | null): Promise<ResearchResult> {
+export async function runResearch(objective: string, groq: Groq | null, username: string): Promise<ResearchResult> {
   if (!groq) {
     return {
       summary:
@@ -209,7 +209,7 @@ export async function runResearch(objective: string, groq: Groq | null): Promise
 
   if (knowledgeQuery) {
     try {
-      const known = await knowledgeGraph.queryKnowledge(knowledgeQuery);
+      const known = await knowledgeGraph.queryKnowledge(username, knowledgeQuery);
       if (known.length > 0) {
         findings.push(
           `Already known about "${knowledgeQuery}": ` +

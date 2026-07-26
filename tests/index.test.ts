@@ -822,7 +822,7 @@ registerTest("Identity", "buildIdentityContext degrades cleanly when Postgres is
   // This test process never calls initDatabase(), so there's no live
   // Postgres connection here — buildIdentityContext must return "" rather
   // than throw or block the chat system-instruction it's spliced into.
-  const context = await buildIdentityContext();
+  const context = await buildIdentityContext("test_user");
   if (context !== "") {
     throw new Error(`Identity: expected empty context with no DB, got: "${context}"`);
   }
@@ -834,7 +834,7 @@ registerTest("Identity", "generateProactiveThought never fabricates a thought wh
   // the function fails toward "no thought" rather than throwing and taking
   // down the scheduler job that calls it.
   const fakeAi = {} as any;
-  const result = await generateProactiveThought(fakeAi);
+  const result = await generateProactiveThought("test_user", fakeAi);
   if (result !== null) {
     throw new Error("Identity: expected null (no real history to draw from), got a fabricated result");
   }
@@ -848,7 +848,7 @@ registerTest("Identity", "extractSelfReflection no-ops with no Groq client", asy
   // assert no such warn entry was appended, not just that nothing threw.
   const obs = ObservationPlatform.getInstance();
   const before = obs.getTelemetry().length;
-  await extractSelfReflection(null, "hello", "some reply");
+  await extractSelfReflection("test_user", null, "hello", "some reply");
   const newEntries = obs.getTelemetry().slice(before);
   if (newEntries.some(e => e.level === "warn" && e.subsystem === "Identity")) {
     throw new Error("Identity: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
@@ -858,7 +858,7 @@ registerTest("Identity", "extractSelfReflection no-ops with no Groq client", asy
 registerTest("KnowledgeGraph", "extractAndStore no-ops with no Groq client", async () => {
   const obs = ObservationPlatform.getInstance();
   const before = obs.getTelemetry().length;
-  await extractAndStore(null, "hello", "some reply");
+  await extractAndStore("test_user", null, "hello", "some reply");
   const newEntries = obs.getTelemetry().slice(before);
   if (newEntries.some(e => e.level === "warn" && e.subsystem === "KnowledgeGraph")) {
     throw new Error("KnowledgeGraph: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
@@ -1545,7 +1545,7 @@ registerTest("Departments", "decomposeObjective falls back to research when offl
 });
 
 registerTest("Departments", "runResearch degrades cleanly with no AI client", async () => {
-  const result = await departments.runResearch("test objective", null);
+  const result = await departments.runResearch("test objective", null, "test_user");
   if (!result.summary.includes("No capable model is available")) {
     throw new Error(`Departments: expected the no-AI degrade message, got: ${result.summary}`);
   }
