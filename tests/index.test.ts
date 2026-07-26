@@ -997,6 +997,53 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
+// Locks in the fix for a reflected-XSS bug CodeRabbit found in review: the
+// calendar OAuth callback used to interpolate the untrusted `error` query
+// param straight into an HTML response with no escaping, so a crafted link
+// (?error=<script>...) would execute in whoever's browser clicked it.
+registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacker-controlled error value into its HTML response", async () => {
+  const alreadyRunning = await isPortInUse(3000);
+  let child: ChildProcess | null = null;
+  if (!alreadyRunning) {
+    child = spawn("npx", ["tsx", "src/server.ts"], {
+      cwd: process.cwd(),
+      env: { ...process.env, INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
+      stdio: "ignore",
+    });
+  }
+
+  try {
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch("http://127.0.0.1:3000/health");
+        if (res.ok) break;
+      } catch {
+        // not up yet
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const payload = "<script>alert(document.cookie)</script>";
+    const res = await fetch(
+      `http://127.0.0.1:3000/api/integrations/calendar/callback?error=${encodeURIComponent(payload)}`
+    );
+    const body = await res.text();
+
+    if (res.status !== 400) {
+      throw new Error(`HTTP Boundary: expected 400 for a denied calendar OAuth callback, got ${res.status}`);
+    }
+    if (body.includes(payload) || body.includes("<script>")) {
+      throw new Error(`HTTP Boundary: calendar OAuth callback reflected an attacker-controlled value into HTML: ${body}`);
+    }
+    if (!body.includes("Google Calendar authorization was denied")) {
+      throw new Error(`HTTP Boundary: expected the fixed denial message, got: ${body}`);
+    }
+  } finally {
+    if (child) child.kill();
+  }
+});
+
 // ---------- ConfidenceModel Tests (pure, no DB) ----------
 
 registerTest("Confidence", "calculateOverallConfidence matches today's 5-input average when outcomeConfidence is omitted", () => {
