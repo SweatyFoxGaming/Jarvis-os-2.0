@@ -45,7 +45,7 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
     return res.status(403).json({ error: "Registration is currently disabled. Set ALLOW_REGISTRATION=true to enable it." });
   }
   const { username, password } = req.body;
-  if (!username || !password) {
+  if (typeof username !== "string" || !username.trim() || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
   if (typeof password !== "string" || password.length < 8) {
@@ -56,8 +56,8 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
     observation.logAuditEvent(username, "register", "success", `Registered new user: ${username}`);
     res.json({ username, api_key: apiKey });
   } catch (err: any) {
-    if (err instanceof usersRepo.UsernameTakenError) {
-      return res.status(400).json({ error: "Username already exists" });
+    if (err instanceof usersRepo.UsernameTakenError || err instanceof usersRepo.ReservedUsernameError) {
+      return res.status(400).json({ error: err.message });
     }
     observation.logTelemetry("warn", "Database", `Registration failed: ${err.message}`);
     res.status(503).json({ error: "Registration is temporarily unavailable" });
@@ -66,7 +66,7 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
 
 authRouter.post("/api/login", authLimiter, loginUsernameLimiter, async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) {
+  if (typeof username !== "string" || !username.trim() || typeof password !== "string" || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
   try {
