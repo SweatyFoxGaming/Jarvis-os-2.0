@@ -16,6 +16,11 @@ export interface McpServerRow {
 }
 
 export class InvalidMcpServerNameError extends Error {}
+export class McpServerNameTakenError extends Error {
+  constructor(name: string) {
+    super(`An MCP server named "${name}" is already registered — pick a different name or manage the existing one.`);
+  }
+}
 
 // Same bound/pattern src/capabilities/mcp-registry.ts's isValidToolSchema
 // already applies to individual tool names (kept as an independent constant
@@ -49,10 +54,21 @@ export async function proposeMcpServer(
     );
   }
   const db = getPool();
+  // ON CONFLICT DO NOTHING + a rowCount check, not a raw INSERT: without
+  // this, registering a name that's already taken threw Postgres's own raw
+  // unique-violation error straight up through executeTool()'s generic
+  // catch-and-return-err.message (tools.ts) to whoever's chatting with
+  // Jarvis — a constraint-name-and-detail leak, not a usable error message.
+  // Same pattern users-repo.ts's createUser already uses for the identical
+  // race/duplicate shape.
   const { rows } = await db.query(
-    `INSERT INTO mcp_servers (name, url, registered_by) VALUES ($1, $2, $3) RETURNING *`,
+    `INSERT INTO mcp_servers (name, url, registered_by) VALUES ($1, $2, $3)
+     ON CONFLICT (name) DO NOTHING RETURNING *`,
     [name, url, registeredBy]
   );
+  if (rows.length === 0) {
+    throw new McpServerNameTakenError(name);
+  }
   return rows[0];
 }
 
