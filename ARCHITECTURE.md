@@ -59,6 +59,16 @@ reachable). The real code-review gate for the autonomous coding pipeline is
   zero-copy IPC, swappable runtime drivers). Postgres, Docker, and Express remain exactly as they
   are; this reorg changed file locations only, never the underlying infrastructure.
 
+- An egress-allowlisting proxy for the coding agent's sandbox (`jarvis-builder/workspace.ts`).
+  Investigated as part of a security review: the sandbox's lack of an explicit `--network` flag
+  turned out to already put it on Docker's plain default `bridge` network, separate from
+  `jarvis-os_default` where the rest of the stack lives — live-verified, a sandbox container
+  cannot reach `jarvis-postgres` at all, so lateral movement into this deployment's own other
+  services is already closed by Docker's ordinary behavior. Unrestricted internet egress remains
+  open, though, and closing that properly needs a real forward proxy with a curated domain
+  allowlist (npm/GitHub/pip, etc.) — new infrastructure, not a flag on the existing `docker run`
+  call, and deliberately not attempted here.
+
 See `docs/superpowers/specs/2026-07-22-repo-cleanup-and-subsystem-reorg-design.md` and
 `docs/superpowers/specs/2026-07-21-groq-provider-design.md` for the two most recent real
 architecture decisions and their full rationale.
