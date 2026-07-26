@@ -321,13 +321,32 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
     await execFileAsync("git", ["worktree", "remove", "--force", stagingDir], { cwd: REPO_HOST_PATH, timeout: 30_000 }).catch(() => {});
     await execFileAsync("git", ["branch", "-D", branch], { cwd: REPO_HOST_PATH, timeout: 30_000 }).catch(() => {});
     await execFileAsync("rm", ["-rf", stagingDir], { timeout: 30_000 }).catch(() => {});
-    await execFileAsync("rm", ["-rf", dir], { timeout: 30_000 }).catch(() => {});
-    // The reservation above is only meant to be held for the lifetime of a
-    // workspace that actually exists — a failure anywhere in this block
-    // means no container was created (or it's about to be torn down by the
-    // caller), so release it now rather than leaking a permanently-reserved
-    // slot that nothing will ever free.
-    reservedWorkspaceIds.delete(buildRequestId);
+
+    // docker run's own 30s timeout above only SIGTERMs the CLI process —
+    // it doesn't guarantee the daemon aborted an in-flight create/start.
+    // Under exactly the kind of daemon contention a burst of concurrent
+    // createWorkspace calls (up to MAX_CONCURRENT_WORKSPACES) could cause,
+    // a real container can end up running server-side even though this
+    // promise rejected. Confirm it's actually gone (or never existed)
+    // before touching the bind-mounted directory OR releasing the
+    // reservation — same rule destroyWorkspace/the reaper already follow.
+    // An orphaned-but-real container should stay counted against the cap
+    // (undercounting it here would be the exact bug already fixed
+    // elsewhere in this file) rather than be silently forgotten; the
+    // reaper's own age-based pass operates on real `docker ps` state
+    // directly; it'll find and clean this container up once it's old
+    // enough regardless of what this function believed happened.
+    const removed = await removeContainerConfirmed(container);
+    if (removed) {
+      await execFileAsync("rm", ["-rf", dir], { timeout: 30_000 }).catch(() => {});
+      reservedWorkspaceIds.delete(buildRequestId);
+    } else {
+      console.error(
+        `[jarvis-builder] createWorkspace for build request #${buildRequestId} failed, but its container ` +
+          "may have been created anyway (docker run's own timeout doesn't guarantee the daemon aborted) — " +
+          "keeping its reservation and workspace directory intact; the reaper will find and remove it once it's old enough."
+      );
+    }
     throw err;
   }
 }
