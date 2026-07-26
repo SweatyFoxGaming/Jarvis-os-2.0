@@ -15,7 +15,12 @@ const SANDBOX_IMAGE = "jarvis-sandbox:latest";
 // below so neither can be misconfigured into a bound that doesn't bound
 // anything. Number.isSafeInteger, not Number.isInteger: the latter accepts
 // values like 1e100, which would make either limit effectively unbounded.
-function positiveIntegerEnv(value: string | undefined, fallback: number): number {
+// Exported so tests/workspace.test.ts can exercise it directly — this is a
+// pure function with no Docker/filesystem dependency, unlike everything else
+// in this file, so it doesn't need the real-Docker/shared-host-repo caveats
+// that keep the rest of this file's functions out of the test suite (see
+// that test file's own comment for why).
+export function positiveIntegerEnv(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
@@ -156,7 +161,7 @@ export async function ensureSandboxImage(): Promise<void> {
 // `-`, which enables argument-injection primitives like `--upload-pack=...`)
 // rather than a plain ref name. A real branch name never needs characters
 // outside this set.
-function assertSafeBranchName(baseBranch: string): void {
+export function assertSafeBranchName(baseBranch: string): void {
   if (baseBranch.startsWith("-") || !/^[A-Za-z0-9._/-]+$/.test(baseBranch)) {
     throw new Error(`Refusing to use unsafe baseBranch value: ${JSON.stringify(baseBranch)}`);
   }
