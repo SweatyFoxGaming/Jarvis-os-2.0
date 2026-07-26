@@ -13,6 +13,7 @@ import * as obsidian from "../capabilities/providers/obsidian.js";
 import * as vaultRepo from "./state/vault-repo.js";
 import * as sessionRepo from "./state/session-repo.js";
 import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
+import * as evolutionRepo from "./state/evolution-repo.js";
 import { positiveIntegerEnv } from "./env.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -254,18 +255,37 @@ export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Time
 // kernel/env.ts for the full story on why `||` isn't safe here.
 const CONVERSATION_RETENTION_DAYS = positiveIntegerEnv(process.env.CONVERSATION_RETENTION_DAYS, 180);
 const TRANSCRIPT_RETENTION_DAYS = positiveIntegerEnv(process.env.TRANSCRIPT_RETENTION_DAYS, 30);
+// self_reflections/proactive_thoughts are genuine identity-continuity data
+// (read back into every system prompt via buildIdentityContext), so they get
+// the same generous window as conversation_history rather than the shorter
+// transcript-log-style one. evolution_analyses is only ever manually
+// triggered (not a recurring job) and its own read functions (getTrend/
+// getAllAnalyses) only ever look at the most recent 30-50 rows per type, so
+// it can safely use a shorter window without losing anything either
+// function actually reads. Found by a follow-up security review — these
+// three had no cap at all until now, unlike the two above.
+const SELF_REFLECTION_RETENTION_DAYS = positiveIntegerEnv(process.env.SELF_REFLECTION_RETENTION_DAYS, 180);
+const PROACTIVE_THOUGHT_RETENTION_DAYS = positiveIntegerEnv(process.env.PROACTIVE_THOUGHT_RETENTION_DAYS, 180);
+const EVOLUTION_ANALYSIS_RETENTION_DAYS = positiveIntegerEnv(process.env.EVOLUTION_ANALYSIS_RETENTION_DAYS, 90);
 
 export function startDataRetentionJob(intervalMs = 24 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("data-retention", intervalMs, async () => {
-    const [prunedMessages, prunedTranscripts] = await Promise.all([
+    const [prunedMessages, prunedTranscripts, prunedReflections, prunedThoughts, prunedAnalyses] = await Promise.all([
       sessionRepo.pruneOldMessages(CONVERSATION_RETENTION_DAYS),
       transcriptEventsRepo.pruneOldTranscriptEvents(TRANSCRIPT_RETENTION_DAYS),
+      identityRepo.pruneOldSelfReflections(SELF_REFLECTION_RETENTION_DAYS),
+      identityRepo.pruneOldProactiveThoughts(PROACTIVE_THOUGHT_RETENTION_DAYS),
+      evolutionRepo.pruneOldAnalyses(EVOLUTION_ANALYSIS_RETENTION_DAYS),
     ]);
-    if (prunedMessages > 0 || prunedTranscripts > 0) {
+    if (prunedMessages > 0 || prunedTranscripts > 0 || prunedReflections > 0 || prunedThoughts > 0 || prunedAnalyses > 0) {
       observation.logTelemetry(
         "info",
         "DataRetention",
-        `Pruned ${prunedMessages} conversation message(s) older than ${CONVERSATION_RETENTION_DAYS}d and ${prunedTranscripts} transcript event(s) older than ${TRANSCRIPT_RETENTION_DAYS}d.`
+        `Pruned ${prunedMessages} conversation message(s) older than ${CONVERSATION_RETENTION_DAYS}d, ` +
+          `${prunedTranscripts} transcript event(s) older than ${TRANSCRIPT_RETENTION_DAYS}d, ` +
+          `${prunedReflections} self-reflection(s) older than ${SELF_REFLECTION_RETENTION_DAYS}d, ` +
+          `${prunedThoughts} proactive thought(s) older than ${PROACTIVE_THOUGHT_RETENTION_DAYS}d, and ` +
+          `${prunedAnalyses} evolution analysis/analyses older than ${EVOLUTION_ANALYSIS_RETENTION_DAYS}d.`
       );
     }
   });

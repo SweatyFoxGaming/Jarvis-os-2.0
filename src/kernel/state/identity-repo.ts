@@ -1,4 +1,7 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export type ReflectionCategory = "observation" | "commitment" | "opinion" | "realization";
 
@@ -47,6 +50,25 @@ export async function countSelfReflections(): Promise<number> {
   return rows[0].n;
 }
 
+// Grows on a per-chat-turn basis (see extractSelfReflection) with no cap —
+// unlike conversation_history/transcript_events, which already have a
+// retention job (src/kernel/scheduler.ts's data-retention job), this table
+// had none until a follow-up security review flagged it. Same pattern as
+// pruneOldMessages in session-repo.ts.
+export async function pruneOldSelfReflections(retentionDays: number): Promise<number> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `DELETE FROM self_reflections WHERE created_at < now() - ($1 * interval '1 day')`,
+      [retentionDays]
+    );
+    return rowCount ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Identity", `pruneOldSelfReflections(${retentionDays}) failed: ${err.message}`);
+    return 0;
+  }
+}
+
 export interface ProactiveThought {
   id: number;
   content: string;
@@ -70,4 +92,21 @@ export async function getRecentProactiveThoughts(limit = 20): Promise<ProactiveT
     [limit]
   );
   return rows;
+}
+
+// The proactive-self-reflection scheduler job (src/kernel/scheduler.ts,
+// every 6h by default) writes here indefinitely with no cap — same gap as
+// self_reflections above.
+export async function pruneOldProactiveThoughts(retentionDays: number): Promise<number> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `DELETE FROM proactive_thoughts WHERE created_at < now() - ($1 * interval '1 day')`,
+      [retentionDays]
+    );
+    return rowCount ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Identity", `pruneOldProactiveThoughts(${retentionDays}) failed: ${err.message}`);
+    return 0;
+  }
 }
