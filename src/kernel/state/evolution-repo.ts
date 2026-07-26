@@ -1,5 +1,8 @@
 import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
 import type { AnalysisIssue } from "../../adaptation/analyzer.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export interface StoredAnalysis {
   id: number;
@@ -16,6 +19,26 @@ export async function saveAnalysis(type: string, score: number, issues: Analysis
     [type, score, JSON.stringify(issues)]
   );
   return rows[0];
+}
+
+// Only ever manually triggered (POST /api/evolution/analyze/:type), not on
+// a recurring scheduler job — so this grows slower than proactive_thoughts/
+// self_reflections in practice, but still had no cap at all. getTrend/
+// getAllAnalyses only ever read the most recent 30-50 rows per type, so a
+// generous retention window doesn't lose anything either function actually
+// uses.
+export async function pruneOldAnalyses(retentionDays: number): Promise<number> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `DELETE FROM evolution_analyses WHERE created_at < now() - ($1 * interval '1 day')`,
+      [retentionDays]
+    );
+    return rowCount ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Evolution", `pruneOldAnalyses(${retentionDays}) failed: ${err.message}`);
+    return 0;
+  }
 }
 
 export async function getLatestAnalysis(type: string): Promise<StoredAnalysis | null> {
