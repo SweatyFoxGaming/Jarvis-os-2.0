@@ -9,6 +9,7 @@
     "build": "tsc",
     "lint": "tsc --noEmit",
     "test": "tsx tests/index.test.ts",
+    "test:db": "tsx tests/db-integration.test.ts",
     "install-desktop": "bash scripts/install-desktop.sh",
     "build:css": "tailwindcss -c tailwind.index.config.js -i ./src/interaction/static/css/tailwind-input.css -o ./src/interaction/static/css/tailwind-index.css --minify && tailwindcss -c tailwind.admin.config.js -i ./src/interaction/static/css/tailwind-input.css -o ./src/interaction/static/css/tailwind-admin.css --minify"
   },
