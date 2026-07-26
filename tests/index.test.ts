@@ -1154,6 +1154,19 @@ registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully e
   }
 });
 
+registerTest("Confidence", "isLowConfidence flags a score below the threshold and clears one at or above it", () => {
+  const model = new ConfidenceModel();
+  if (!model.isLowConfidence(ConfidenceModel.LOW_CONFIDENCE_THRESHOLD - 1)) {
+    throw new Error("Confidence: expected a score just below the threshold to be flagged low");
+  }
+  if (model.isLowConfidence(ConfidenceModel.LOW_CONFIDENCE_THRESHOLD)) {
+    throw new Error("Confidence: expected a score exactly at the threshold to NOT be flagged low");
+  }
+  if (model.isLowConfidence(100)) {
+    throw new Error("Confidence: expected a perfect score to NOT be flagged low");
+  }
+});
+
 // This is a linear execution-stage log for one autonomous-objective run, not
 // a multi-agent debate — locks in the honest stage-name role type
 // ("Objective"/"Plan"/"Research"/"QA"/"Decision") after a follow-up review

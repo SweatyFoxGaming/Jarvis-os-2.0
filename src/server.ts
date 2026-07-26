@@ -935,7 +935,14 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // Real confidence: derived from what actually happened this turn — which
     // backend answered, whether memory had anything relevant, whether any
     // tool calls succeeded — instead of fixed inputs keyed only on "is a
-    // Gemini key set."
+    // Gemini key set." This is deliberately observability-only here (session
+    // state + decision trace for the UI), not a gate on the reply itself:
+    // fullReply has already been streamed token-by-token to the client via
+    // SSE by this point, so there is nothing left to withhold or qualify
+    // by the time this number exists. The autonomous executive's research
+    // path (autonomous_executive.ts) computes its confidence before the
+    // work it describes finishes, so it can and does gate on it — see the
+    // low-confidence status there.
     const toolSuccessRate = toolCallsExecuted.length === 0
       ? 1.0
       : toolCallsExecuted.filter(t => t.ok).length / toolCallsExecuted.length;

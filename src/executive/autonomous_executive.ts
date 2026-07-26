@@ -292,11 +292,24 @@ export class AutonomousExecutive {
     session.dialogue.recordTurn("QA", "All steps researched for real.");
     session.dialogue.recordTurn("Decision", `Objective "${objective}" researched.`);
 
+    // calculatedConfidence's outcomeConfidence term is a real rolling
+    // success rate over past command outcomes (see commandProposalsRepo).
+    // Until now this branch reported status: "success" unconditionally
+    // regardless of that number — the score existed only for the decision
+    // trace/UI to display, with nothing downstream ever reading it. This is
+    // the one real gate it's wired into: if Jarvis's recent real-world
+    // command track record has been poor, say so plainly instead of
+    // reporting an unqualified success on the strength of research alone.
+    const lowConfidence = session.confidenceModel.isLowConfidence(calculatedConfidence);
     const finalReport = {
       objective,
-      status: "success",
+      status: lowConfidence ? "success_low_confidence" : "success",
+      confidence: calculatedConfidence,
       totalStepsExecuted: steps.length,
       findings,
+      ...(lowConfidence
+        ? { note: `Confidence is low (${calculatedConfidence}%) based on recent real-world command outcomes — worth double-checking these findings before acting on them.` }
+        : {}),
     };
 
     // calculatedConfidence was already computed once, right after Stage 3,
