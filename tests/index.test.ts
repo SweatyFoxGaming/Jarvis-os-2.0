@@ -42,7 +42,7 @@ import { positiveIntegerEnv } from "../src/kernel/env.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
 import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
-import { spawn } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
 
@@ -891,11 +891,66 @@ function isPortInUse(port: number): Promise<boolean> {
   });
 }
 
-// Shared by every HTTP Boundary test below so they can reuse one spawned
-// server instead of each paying their own ~cold-start cost — INTERNAL_API_KEY
-// is fixed here so admin-key assertions elsewhere in this file can rely on
-// its exact value.
+// Fixed here so admin-key assertions across the HTTP Boundary tests below
+// can rely on its exact value, whichever dedicated port each test spawns
+// its own server on.
 const TEST_ADMIN_API_KEY = process.env.INTERNAL_API_KEY || "test-only-smoke-test-key-not-a-real-secret";
+
+// Every HTTP Boundary test below needs the same three things: spawn a real
+// server on its own dedicated port (never reuse :3000 — see the cold-start
+// test's own comment for the real, live-caught bug that came from doing
+// that), fail clearly if it never becomes reachable rather than limping
+// into confusing "fetch failed" errors from whatever request happens to run
+// next, and tear it down completely afterward (SIGTERM, escalating to
+// SIGKILL if it's still alive after 5s) rather than leaving an orphaned
+// process squatting on its port for the next test to trip over. Centralized
+// here after that exact duplication (four near-identical copies of this
+// logic) was flagged in review — each test used to hand-roll its own
+// slightly-different version, one of which was missing the error listener a
+// spawn-level failure needs to avoid crashing the whole test runner.
+async function spawnTestServer(port: number, extraEnv: Record<string, string> = {}): Promise<ChildProcess> {
+  if (await isPortInUse(port)) {
+    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this check against an untested process.`);
+  }
+  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), ...extraEnv },
+    stdio: "ignore",
+  });
+  let spawnError: Error | null = null;
+  child.on("error", (err) => { spawnError = err; });
+
+  const deadline = Date.now() + 25_000;
+  let ready = false;
+  let lastErr: any = null;
+  while (Date.now() < deadline) {
+    if (spawnError) throw new Error(`HTTP Boundary: server on port ${port} failed to spawn: ${(spawnError as Error).message}`);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`);
+      if (res.ok) { ready = true; break; }
+      lastErr = new Error(`/health returned HTTP ${res.status}`);
+    } catch (err: any) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!ready) {
+    child.kill("SIGKILL");
+    throw new Error(`HTTP Boundary: server never became reachable on :${port}/health: ${lastErr?.message || lastErr}`);
+  }
+  return child;
+}
+
+async function stopTestServer(child: ChildProcess): Promise<void> {
+  child.kill(); // SIGTERM
+  const exited = await new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 5000);
+    child.once("exit", () => { clearTimeout(timeout); resolve(true); });
+  });
+  // A process ignoring SIGTERM (stuck in a blocking call) would otherwise
+  // be left running silently — escalate exactly once rather than leaking it.
+  if (!exited) child.kill("SIGKILL");
+}
 
 registerTest("HTTP Boundary", "Express server boots from a cold start and serves /health", async () => {
   // Deliberately its OWN dedicated port, never a reused :3000 — this test's
@@ -908,45 +963,19 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
   // instead of a fresh spawn of the current checkout, for as long as that
   // container happened to already be up). A wrong/missing field here must
   // mean a real regression in the code just checked out, not "whatever
-  // else happened to be running." Same reasoning already applied to the
-  // calendar-OAuth test below — this just extends it here too.
+  // else happened to be running."
   const port = 3012;
-  if (await isPortInUse(port)) {
-    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this cold-start check against an untested process.`);
-  }
-
-  // Spawns the tsx binary directly rather than through the `npx` wrapper:
-  // killing the npx process leaves the real tsx/node process it launches
-  // still listening — the same orphaned-process bug already found and
-  // fixed for the calendar-OAuth test below.
-  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
-    cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
-    stdio: "ignore",
-  });
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
 
   try {
-    const deadline = Date.now() + 25_000;
-    let lastErr: any = null;
-    let readyResponse: Response | null = null;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
-        // Exactly 200, not res.ok's broader 2xx range — /health's own
-        // handler documents that it always returns 200, never any other
-        // status, so this locks in that documented contract specifically.
-        if (res.status === 200) {
-          readyResponse = res;
-          break;
-        }
-        lastErr = new Error(`/health returned HTTP ${res.status}`);
-      } catch (err: any) {
-        lastErr = err;
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    if (!readyResponse) {
-      throw new Error(`Server never became reachable on :${port}/health: ${lastErr?.message || lastErr}`);
+    // Exactly 200, not res.ok's broader 2xx range — /health's own handler
+    // documents that it always returns 200, never any other status, so
+    // this locks in that documented contract specifically. spawnTestServer
+    // already confirmed a 2xx /health response; re-fetching here is just to
+    // get the body for the shape assertions below.
+    const readyResponse = await fetch(`http://127.0.0.1:${port}/health`);
+    if (readyResponse.status !== 200) {
+      throw new Error(`/health: expected exactly 200, got ${readyResponse.status}`);
     }
 
     // /health used to report Gemini-key presence and a hardcoded
@@ -954,9 +983,7 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
     // Postgres — asserting the shape here (not a specific value, since a
     // real docker-compose environment with a live Postgres would
     // legitimately report "up") locks in that a real database field exists
-    // at all, whichever way it resolves. Deliberately outside the retry
-    // loop above: a wrong shape here is a deterministic bug, not a
-    // transient "server's still booting" condition worth retrying.
+    // at all, whichever way it resolves.
     const body = await readyResponse.json();
     if (body.database !== "up" && body.database !== "down") {
       throw new Error(`/health: expected database to be "up" or "down", got: ${JSON.stringify(body.database)}`);
@@ -968,17 +995,7 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
       throw new Error(`/health: database "down" should always produce status "degraded", got: ${JSON.stringify(body.status)}`);
     }
   } finally {
-    child.kill(); // SIGTERM
-    const exited = await new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve(false), 5000);
-      child.once("exit", () => {
-        clearTimeout(timeout);
-        resolve(true);
-      });
-    });
-    // A process ignoring SIGTERM (stuck in a blocking call) would otherwise
-    // be left running silently — escalate exactly once rather than leaking it.
-    if (!exited) child.kill("SIGKILL");
+    await stopTestServer(child);
   }
 });
 
@@ -1004,35 +1021,17 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   // it "still exercises the same assertion" against an unknown process)
   // turned out to actively corrupt a LATER test in this same file: killing
   // an `npx`-spawned child here doesn't kill the real tsx/node process
-  // underneath it (the exact orphaned-process bug already fixed for the
-  // cold-start and calendar-OAuth tests), so this test could leave a
-  // half-dead server squatting on :3000 — alive just long enough for the
-  // NEXT test's own isPortInUse(3000) check to find it and skip spawning
-  // its own, then die moments later mid-test, producing a bare "fetch
-  // failed" with no useful explanation. Live-caught during an actual
-  // agentic-coding-loop verification run inside a real sandbox.
+  // underneath it (the exact orphaned-process bug spawnTestServer now
+  // avoids), so this test could leave a half-dead server squatting on
+  // :3000 — alive just long enough for the NEXT test's own isPortInUse(3000)
+  // check to find it and skip spawning its own, then die moments later
+  // mid-test, producing a bare "fetch failed" with no useful explanation.
+  // Live-caught during an actual agentic-coding-loop verification run
+  // inside a real sandbox.
   const port = 3013;
-  if (await isPortInUse(port)) {
-    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this check against an untested process.`);
-  }
-  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
-    cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
-    stdio: "ignore",
-  });
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
 
   try {
-    const deadline = Date.now() + 25_000;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
-        if (res.ok) break;
-      } catch {
-        // not up yet
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-
     const noKeyEmail = await fetch(`http://127.0.0.1:${port}/api/integrations/email/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1063,15 +1062,7 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
       throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied on /api/integrations/email/send, got ${adminEmail.status}`);
     }
   } finally {
-    child.kill(); // SIGTERM
-    const exited = await new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve(false), 5000);
-      child.once("exit", () => {
-        clearTimeout(timeout);
-        resolve(true);
-      });
-    });
-    if (!exited) child.kill("SIGKILL");
+    await stopTestServer(child);
   }
 });
 
@@ -1089,27 +1080,9 @@ registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are aut
   // for why reusing :3000 is unsafe (a real cross-test failure, not just a
   // theoretical one, live-caught inside a real agentic-coding-loop sandbox).
   const port = 3014;
-  if (await isPortInUse(port)) {
-    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this check against an untested process.`);
-  }
-  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
-    cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
-    stdio: "ignore",
-  });
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
 
   try {
-    const deadline = Date.now() + 25_000;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
-        if (res.ok) break;
-      } catch {
-        // not up yet
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-
     const noKeyGets = [
       "/api/briefing/history",
       "/api/memory/pending",
@@ -1186,55 +1159,23 @@ registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are aut
       throw new Error(`HTTP Boundary: expected 400 for an invalid feature-request status, got ${badStatus.status}`);
     }
   } finally {
-    child.kill(); // SIGTERM
-    const exited = await new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve(false), 5000);
-      child.once("exit", () => {
-        clearTimeout(timeout);
-        resolve(true);
-      });
-    });
-    if (!exited) child.kill("SIGKILL");
+    await stopTestServer(child);
   }
 });
 
 // Locks in the fix for a reflected-XSS bug CodeRabbit found in review: the
 // calendar OAuth callback used to interpolate the untrusted `error` query
 // param straight into an HTML response with no escaping, so a crafted link
-// (?error=<script>...) would execute in whoever's browser clicked it.
-//
-// Unlike the HTTP Boundary tests above, this one deliberately does NOT reuse
-// whatever's already on :3000 (CodeRabbit caught this): a security regression
-// test that silently validates an unrelated, already-running process instead
-// of this checkout's own code can pass for the wrong reason forever. It gets
-// its own dedicated port, spawns tsx's binary directly rather than through
-// the `npx` wrapper (killing the npx process leaves the real tsx/node process
-// it launches still listening — hit for real earlier in this codebase's own
-// history), and waits for that process to actually exit before returning.
+// (?error=<script>...) would execute in whoever's browser clicked it. Its
+// own dedicated port for the same reason every HTTP Boundary test above
+// uses one now (see spawnTestServer) — a security regression test that
+// silently validated an unrelated, already-running process instead of this
+// checkout's own code could pass for the wrong reason forever.
 registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacker-controlled error value into its HTML response", async () => {
   const port = 3010;
-  if (await isPortInUse(port)) {
-    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this security regression against an untested process.`);
-  }
-
-  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
-    cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
-    stdio: "ignore",
-  });
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
 
   try {
-    const deadline = Date.now() + 25_000;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
-        if (res.ok) break;
-      } catch {
-        // not up yet
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-
     const payload = "<script>alert(document.cookie)</script>";
     const res = await fetch(
       `http://127.0.0.1:${port}/api/integrations/calendar/callback?error=${encodeURIComponent(payload)}`
@@ -1251,14 +1192,7 @@ registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacke
       throw new Error(`HTTP Boundary: expected the fixed denial message, got: ${body}`);
     }
   } finally {
-    child.kill();
-    await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 5000);
-      child.once("exit", () => {
-        clearTimeout(timeout);
-        resolve(undefined);
-      });
-    });
+    await stopTestServer(child);
   }
 });
 
