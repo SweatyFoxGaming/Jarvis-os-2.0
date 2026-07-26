@@ -1049,6 +1049,121 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
+// briefing-memory-routes.ts, evolution-routes.ts, and feature-requests-routes.ts
+// had zero test coverage before this — flagged in a follow-up review. Like the
+// capability-gated-routes test above, this can't exercise real stored data
+// without a live Postgres, but it locks in two things that don't need one:
+// (1) every route here is actually wired behind validateApiKey (no key -> 401,
+// never a 200 or a raw 500 from a handler that ran anyway), and (2) each
+// route's own try/catch degrades the way its comments claim when the DB call
+// inside throws — a plain-array/null fallback at 200 for read paths that are
+// meant to be best-effort, a real 503/500 for the ones that aren't.
+registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are auth-gated and degrade cleanly without Postgres", async () => {
+  const alreadyRunning = await isPortInUse(3000);
+  let child: ChildProcess | null = null;
+  if (!alreadyRunning) {
+    child = spawn("npx", ["tsx", "src/server.ts"], {
+      cwd: process.cwd(),
+      env: { ...process.env, INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
+      stdio: "ignore",
+    });
+  }
+  const knowsAdminKey = !alreadyRunning;
+
+  try {
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch("http://127.0.0.1:3000/health");
+        if (res.ok) break;
+      } catch {
+        // not up yet
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const noKeyGets = [
+      "/api/briefing/history",
+      "/api/memory/pending",
+      "/api/admin/consolidation/status",
+      "/api/evolution/analyses",
+      "/api/evolution/dashboard",
+      "/api/feature-requests",
+    ];
+    for (const path of noKeyGets) {
+      const res = await fetch(`http://127.0.0.1:3000${path}`);
+      if (res.status !== 401) {
+        throw new Error(`HTTP Boundary: expected 401 with no API key on GET ${path}, got ${res.status}`);
+      }
+    }
+
+    const noKeyAnalyze = await fetch("http://127.0.0.1:3000/api/evolution/analyze/quality", { method: "POST" });
+    if (noKeyAnalyze.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/evolution/analyze/quality, got ${noKeyAnalyze.status}`);
+    }
+
+    if (!knowsAdminKey) return; // rest needs this test's own known INTERNAL_API_KEY — see knowsAdminKey's definition above
+
+    const adminHeaders = { "X-API-Key": TEST_ADMIN_API_KEY };
+
+    const briefingHistory = await fetch("http://127.0.0.1:3000/api/briefing/history", { headers: adminHeaders });
+    const briefingHistoryBody = await briefingHistory.json();
+    if (briefingHistory.status !== 200 || !Array.isArray(briefingHistoryBody.briefings)) {
+      throw new Error(`HTTP Boundary: expected 200 + array "briefings" from /api/briefing/history, got ${briefingHistory.status} ${JSON.stringify(briefingHistoryBody)}`);
+    }
+
+    // memory-repo.ts's getPendingRecords() has no internal try/catch, unlike
+    // most repo functions in this codebase — the route itself is what
+    // degrades a Postgres failure to a 503, so this is the one place in this
+    // test that expects a non-200 from a route that isn't rejecting on auth.
+    const memoryPending = await fetch("http://127.0.0.1:3000/api/memory/pending", { headers: adminHeaders });
+    if (memoryPending.status !== 503 && memoryPending.status !== 200) {
+      throw new Error(`HTTP Boundary: expected 503 (no Postgres) or 200 (live Postgres) from /api/memory/pending, got ${memoryPending.status}`);
+    }
+
+    const consolidationStatus = await fetch("http://127.0.0.1:3000/api/admin/consolidation/status", { headers: adminHeaders });
+    const consolidationBody = await consolidationStatus.json();
+    if (consolidationStatus.status !== 200 || typeof consolidationBody.pending_records !== "number") {
+      throw new Error(`HTTP Boundary: expected 200 + numeric "pending_records" from /api/admin/consolidation/status, got ${consolidationStatus.status} ${JSON.stringify(consolidationBody)}`);
+    }
+
+    const evolutionAnalyses = await fetch("http://127.0.0.1:3000/api/evolution/analyses", { headers: adminHeaders });
+    const evolutionAnalysesBody = await evolutionAnalyses.json();
+    if (evolutionAnalyses.status !== 200 || !Array.isArray(evolutionAnalysesBody.analyses)) {
+      throw new Error(`HTTP Boundary: expected 200 + array "analyses" from /api/evolution/analyses, got ${evolutionAnalyses.status} ${JSON.stringify(evolutionAnalysesBody)}`);
+    }
+
+    const evolutionDashboard = await fetch("http://127.0.0.1:3000/api/evolution/dashboard", { headers: adminHeaders });
+    if (evolutionDashboard.status !== 200) {
+      throw new Error(`HTTP Boundary: expected 200 from /api/evolution/dashboard, got ${evolutionDashboard.status}`);
+    }
+
+    const ecosystemPlugins = await fetch("http://127.0.0.1:3000/api/ecosystem/plugins", { headers: adminHeaders });
+    const ecosystemPluginsBody = await ecosystemPlugins.json();
+    if (ecosystemPlugins.status !== 200 || !Array.isArray(ecosystemPluginsBody.plugins)) {
+      throw new Error(`HTTP Boundary: expected 200 + array "plugins" from /api/ecosystem/plugins, got ${ecosystemPlugins.status} ${JSON.stringify(ecosystemPluginsBody)}`);
+    }
+
+    const featureRequests = await fetch("http://127.0.0.1:3000/api/feature-requests", { headers: adminHeaders });
+    const featureRequestsBody = await featureRequests.json();
+    if (featureRequests.status !== 200 || !Array.isArray(featureRequestsBody.requests)) {
+      throw new Error(`HTTP Boundary: expected 200 + array "requests" from /api/feature-requests, got ${featureRequests.status} ${JSON.stringify(featureRequestsBody)}`);
+    }
+
+    // Pure input validation, no DB touched — must reject before ever reaching updateFeatureRequestStatus.
+    const badStatus = await fetch("http://127.0.0.1:3000/api/feature-requests/1/status", {
+      method: "POST",
+      headers: { ...adminHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "not-a-real-status" }),
+    });
+    if (badStatus.status !== 400) {
+      throw new Error(`HTTP Boundary: expected 400 for an invalid feature-request status, got ${badStatus.status}`);
+    }
+  } finally {
+    if (child) child.kill();
+  }
+});
+
 // Locks in the fix for a reflected-XSS bug CodeRabbit found in review: the
 // calendar OAuth callback used to interpolate the untrusted `error` query
 // param straight into an HTML response with no escaping, so a crafted link
