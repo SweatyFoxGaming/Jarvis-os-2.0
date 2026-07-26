@@ -898,23 +898,32 @@ function isPortInUse(port: number): Promise<boolean> {
 const TEST_ADMIN_API_KEY = process.env.INTERNAL_API_KEY || "test-only-smoke-test-key-not-a-real-secret";
 
 registerTest("HTTP Boundary", "Express server boots from a cold start and serves /health", async () => {
-  // If something's already listening on :3000 (e.g. this suite running
-  // alongside a live dev/docker instance on the same host), don't spawn a
-  // second process into the same port — just confirm whatever's already
-  // there responds, which still exercises the same assertion.
-  const alreadyRunning = await isPortInUse(3000);
-  let child: ChildProcess | null = null;
-
-  if (!alreadyRunning) {
-    child = spawn("npx", ["tsx", "src/server.ts"], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        INTERNAL_API_KEY: TEST_ADMIN_API_KEY,
-      },
-      stdio: "ignore",
-    });
+  // Deliberately its OWN dedicated port, never a reused :3000 — this test's
+  // entire point is verifying a genuine cold start of THIS checkout's code,
+  // and "something's already listening on :3000, good enough" quietly
+  // defeats that on any host where a real, possibly-older instance is
+  // already running there (a live docker-compose deployment binds :3000 to
+  // the host by design — not a hypothetical, hit for real: this test
+  // silently validated a live production container running old code
+  // instead of a fresh spawn of the current checkout, for as long as that
+  // container happened to already be up). A wrong/missing field here must
+  // mean a real regression in the code just checked out, not "whatever
+  // else happened to be running." Same reasoning already applied to the
+  // calendar-OAuth test below — this just extends it here too.
+  const port = 3012;
+  if (await isPortInUse(port)) {
+    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this cold-start check against an untested process.`);
   }
+
+  // Spawns the tsx binary directly rather than through the `npx` wrapper:
+  // killing the npx process leaves the real tsx/node process it launches
+  // still listening — the same orphaned-process bug already found and
+  // fixed for the calendar-OAuth test below.
+  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
+    stdio: "ignore",
+  });
 
   try {
     const deadline = Date.now() + 25_000;
@@ -922,7 +931,7 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
     let readyResponse: Response | null = null;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch("http://127.0.0.1:3000/health");
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         // Exactly 200, not res.ok's broader 2xx range — /health's own
         // handler documents that it always returns 200, never any other
         // status, so this locks in that documented contract specifically.
@@ -937,7 +946,7 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
       await new Promise((r) => setTimeout(r, 500));
     }
     if (!readyResponse) {
-      throw new Error(`Server never became reachable on :3000/health: ${lastErr?.message || lastErr}`);
+      throw new Error(`Server never became reachable on :${port}/health: ${lastErr?.message || lastErr}`);
     }
 
     // /health used to report Gemini-key presence and a hardcoded
@@ -959,7 +968,14 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
       throw new Error(`/health: database "down" should always produce status "degraded", got: ${JSON.stringify(body.status)}`);
     }
   } finally {
-    if (child) child.kill();
+    child.kill();
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 5000);
+      child.once("exit", () => {
+        clearTimeout(timeout);
+        resolve(undefined);
+      });
+    });
   }
 });
 
