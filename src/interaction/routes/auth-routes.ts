@@ -66,7 +66,7 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
 
 authRouter.post("/api/login", authLimiter, loginUsernameLimiter, async (req, res) => {
   const { username, password } = req.body;
-  if (typeof username !== "string" || !username.trim() || !password) {
+  if (typeof username !== "string" || !username.trim() || typeof password !== "string" || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
   try {
