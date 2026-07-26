@@ -15,6 +15,22 @@ export interface McpServerRow {
   last_error: string | null;
 }
 
+export class InvalidMcpServerNameError extends Error {}
+
+// Same bound/pattern src/capabilities/mcp-registry.ts's isValidToolSchema
+// already applies to individual tool names (kept as an independent constant
+// here, not a shared import — mcp-registry.ts already imports this module,
+// so importing back from it would be circular). This server's own `name`
+// gets embedded verbatim into capability strings ("mcp.<name>.<toolName>")
+// and LLM function-declaration names once approved, so it needs the same
+// discipline: an unvalidated name could break a provider's function-name
+// validation at runtime, or — since registering a server already requires
+// the admin-level system.mcp_manage grant, so this isn't exploitable by an
+// untrusted caller today — just silently produce a broken/unusable server
+// entry that's confusing to debug.
+const MAX_SERVER_NAME_LENGTH = 64;
+const SAFE_SERVER_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 // A genuine write with no sensible fallback value — allowed to reject,
 // same reasoning as createObjective/addCommandProposal in earlier phases.
 export async function proposeMcpServer(
@@ -22,6 +38,16 @@ export async function proposeMcpServer(
   url: string,
   registeredBy: string
 ): Promise<McpServerRow> {
+  if (
+    typeof name !== "string" ||
+    name.length === 0 ||
+    name.length > MAX_SERVER_NAME_LENGTH ||
+    !SAFE_SERVER_NAME_PATTERN.test(name)
+  ) {
+    throw new InvalidMcpServerNameError(
+      `MCP server name must be 1-${MAX_SERVER_NAME_LENGTH} characters, letters/numbers/underscore/hyphen only — got: ${JSON.stringify(name)}`
+    );
+  }
   const db = getPool();
   const { rows } = await db.query(
     `INSERT INTO mcp_servers (name, url, registered_by) VALUES ($1, $2, $3) RETURNING *`,

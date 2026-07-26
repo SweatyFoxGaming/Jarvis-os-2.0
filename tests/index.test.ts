@@ -19,7 +19,7 @@ import { extractAndStore } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/adaptation/reflection.js";
 import { ConfidenceModel } from "../src/self/confidence.js";
 import { InternalDialogue } from "../src/self/dialogue.js";
-import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/kernel/state/mcp-servers-repo.js";
+import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus, InvalidMcpServerNameError } from "../src/kernel/state/mcp-servers-repo.js";
 import {
   createBuildRequest,
   getBuildRequest,
@@ -1167,6 +1167,26 @@ registerTest("McpServers", "proposeMcpServer degrades cleanly when Postgres isn'
   } catch (err: any) {
     if (err.message?.includes("expected proposeMcpServer to reject")) throw err;
     // Any other thrown error (connection refused/DNS failure) is expected here.
+  }
+});
+
+// This check runs before proposeMcpServer ever touches Postgres, so it's
+// deterministic without a live DB — same reasoning as the reserved-username
+// check on createUser. A server's own name gets embedded verbatim into
+// capability strings and LLM function-declaration names once approved, so
+// an unvalidated one could break a provider's function-name validation at
+// runtime; this mirrors the same bound/pattern already enforced on
+// individual tool names in mcp-registry.ts's isValidToolSchema.
+registerTest("McpServers", "proposeMcpServer rejects an invalid server name before touching Postgres", async () => {
+  for (const badName of ["", "has spaces", "has/slash", "a".repeat(65)]) {
+    try {
+      await proposeMcpServer(badName, "http://example.invalid/mcp", "admin");
+      throw new Error(`McpServers: proposeMcpServer(${JSON.stringify(badName)}) should have been rejected`);
+    } catch (err: any) {
+      if (!(err instanceof InvalidMcpServerNameError)) {
+        throw new Error(`McpServers: expected InvalidMcpServerNameError for ${JSON.stringify(badName)}, got: ${err.message}`);
+      }
+    }
   }
 });
 
