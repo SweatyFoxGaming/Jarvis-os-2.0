@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx tests/run.ts"
   },
   "dependencies": {
     "express": "^4.19.2"
