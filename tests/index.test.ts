@@ -42,6 +42,7 @@ import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js
 import { MindKernel } from "../src/self/kernel.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
+import path from "path";
 
 interface TestResult {
   name: string;
@@ -1001,22 +1002,32 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
 // calendar OAuth callback used to interpolate the untrusted `error` query
 // param straight into an HTML response with no escaping, so a crafted link
 // (?error=<script>...) would execute in whoever's browser clicked it.
+//
+// Unlike the HTTP Boundary tests above, this one deliberately does NOT reuse
+// whatever's already on :3000 (CodeRabbit caught this): a security regression
+// test that silently validates an unrelated, already-running process instead
+// of this checkout's own code can pass for the wrong reason forever. It gets
+// its own dedicated port, spawns tsx's binary directly rather than through
+// the `npx` wrapper (killing the npx process leaves the real tsx/node process
+// it launches still listening — hit for real earlier in this codebase's own
+// history), and waits for that process to actually exit before returning.
 registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacker-controlled error value into its HTML response", async () => {
-  const alreadyRunning = await isPortInUse(3000);
-  let child: ChildProcess | null = null;
-  if (!alreadyRunning) {
-    child = spawn("npx", ["tsx", "src/server.ts"], {
-      cwd: process.cwd(),
-      env: { ...process.env, INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
-      stdio: "ignore",
-    });
+  const port = 3010;
+  if (await isPortInUse(port)) {
+    throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this security regression against an untested process.`);
   }
+
+  const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_ADMIN_API_KEY },
+    stdio: "ignore",
+  });
 
   try {
     const deadline = Date.now() + 25_000;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch("http://127.0.0.1:3000/health");
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         if (res.ok) break;
       } catch {
         // not up yet
@@ -1026,7 +1037,7 @@ registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacke
 
     const payload = "<script>alert(document.cookie)</script>";
     const res = await fetch(
-      `http://127.0.0.1:3000/api/integrations/calendar/callback?error=${encodeURIComponent(payload)}`
+      `http://127.0.0.1:${port}/api/integrations/calendar/callback?error=${encodeURIComponent(payload)}`
     );
     const body = await res.text();
 
@@ -1040,7 +1051,14 @@ registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacke
       throw new Error(`HTTP Boundary: expected the fixed denial message, got: ${body}`);
     }
   } finally {
-    if (child) child.kill();
+    child.kill();
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 5000);
+      child.once("exit", () => {
+        clearTimeout(timeout);
+        resolve(undefined);
+      });
+    });
   }
 });
 
