@@ -203,12 +203,14 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
   }
   reservedWorkspaceIds.add(buildRequestId);
 
-  try {
-    const dir = workspaceDir(buildRequestId);
-    const stagingDir = `${dir}.staging`;
-    const branch = branchName(buildRequestId);
-    const container = containerName(buildRequestId);
+  // Declared outside the try block so the catch below can reference them
+  // for cleanup of whatever got created before the failure.
+  const dir = workspaceDir(buildRequestId);
+  const stagingDir = `${dir}.staging`;
+  const branch = branchName(buildRequestId);
+  const container = containerName(buildRequestId);
 
+  try {
     // Git 2.35+ refuses to operate on a repo it doesn't consider "owned" by
     // the current process's UID (the "dubious ownership" safe-directory
     // check added after CVE-2022-24765). The bind-mounted repo keeps the
@@ -221,13 +223,24 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
     await execFileAsync("git", ["config", "--global", "--add", "safe.directory", REPO_HOST_PATH]);
 
     await execFileAsync("mkdir", ["-p", WORKSPACES_DIR]);
-    await execFileAsync("git", ["fetch", "origin", baseBranch], { cwd: REPO_HOST_PATH });
+    // Explicit timeouts below (matching the pattern already used for the
+    // docker probe calls): without one, a hung `git fetch` against a
+    // slow/unreachable remote, or a stuck `docker run`, would leave this
+    // execFileAsync promise pending forever — neither the success return
+    // nor the catch below would ever fire, so the reservation added above
+    // would never be released. Enough stuck requests over time would
+    // permanently exhaust MAX_CONCURRENT_WORKSPACES until a restart, the
+    // exact failure mode this whole capacity design otherwise guards
+    // against. `execFile`'s timeout option kills the child process
+    // (SIGTERM) once elapsed, which reliably makes the promise reject.
+    await execFileAsync("git", ["fetch", "origin", baseBranch], { cwd: REPO_HOST_PATH, timeout: 60_000 });
 
     // -B resets the branch to origin/baseBranch's current tip if it already
     // exists (e.g. a prior attempt for this same build request), rather than
     // failing outright.
     await execFileAsync("git", ["worktree", "add", "-B", branch, stagingDir, `origin/${baseBranch}`], {
       cwd: REPO_HOST_PATH,
+      timeout: 30_000,
     });
 
     // Sandbox containers must never get write access to this repo's shared
@@ -239,15 +252,15 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
     // sandbox its own fully independent .git (hardlinked objects, separate
     // refs/HEAD) that only this build can ever touch; the staging worktree
     // is discarded immediately after.
-    await execFileAsync("git", ["clone", stagingDir, dir]);
+    await execFileAsync("git", ["clone", stagingDir, dir], { timeout: 60_000 });
 
     // The clone above is owned by whatever uid this (jarvis-builder) process
     // runs as (root) — the sandbox container below runs as its image's
     // built-in non-root `node` user (uid/gid 1000) instead, so without this
     // it couldn't write to its own bind-mounted workspace at all.
-    await execFileAsync("chown", ["-R", "1000:1000", dir]);
+    await execFileAsync("chown", ["-R", "1000:1000", dir], { timeout: 30_000 });
 
-    await execFileAsync("git", ["worktree", "remove", "--force", stagingDir], { cwd: REPO_HOST_PATH }).catch(() => {});
+    await execFileAsync("git", ["worktree", "remove", "--force", stagingDir], { cwd: REPO_HOST_PATH, timeout: 30_000 }).catch(() => {});
     // `git worktree add -B` above created a real local branch in
     // REPO_HOST_PATH's own repo (not just the staging checkout) —
     // `worktree remove` only unregisters the staging directory, it never
@@ -258,7 +271,7 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
     // (force) is safe here since the branch's commits already live in the
     // sandbox clone's own history — this repo's own branch pointer doesn't
     // need to be "merged" to be deleted.
-    await execFileAsync("git", ["branch", "-D", branch], { cwd: REPO_HOST_PATH }).catch(() => {});
+    await execFileAsync("git", ["branch", "-D", branch], { cwd: REPO_HOST_PATH, timeout: 30_000 }).catch(() => {});
 
     // Deliberately no `-e`/`--env-file` here: the sandbox container starts
     // with a clean environment, no GitHub credentials, no production
@@ -288,10 +301,27 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
       "-w", "/workspace",
       SANDBOX_IMAGE,
       "sleep", "infinity",
-    ]);
+    ], { timeout: 30_000 });
 
     return { buildRequestId, branch, containerName: container };
   } catch (err) {
+    // A failure anywhere above can still have left real on-disk artifacts
+    // behind — the clone directory, the registered staging worktree, or
+    // the scaffolding branch created for it — none of which should stick
+    // around for a failed attempt the way they do for the happy path
+    // (which needs the clone). Left in place, a retry for the same
+    // buildRequestId would fail immediately at `git worktree add`/
+    // `git clone` because the destination already exists, permanently
+    // wedging that build request until someone manually clears the
+    // directory. Each is independently best-effort (`.catch(() => {})`):
+    // none of these existing is itself an error worth reporting over the
+    // original failure, and `rm -rf`/`git worktree remove` on a path that
+    // was never created is already a safe no-op regardless of how far
+    // creation got before failing.
+    await execFileAsync("git", ["worktree", "remove", "--force", stagingDir], { cwd: REPO_HOST_PATH, timeout: 30_000 }).catch(() => {});
+    await execFileAsync("git", ["branch", "-D", branch], { cwd: REPO_HOST_PATH, timeout: 30_000 }).catch(() => {});
+    await execFileAsync("rm", ["-rf", stagingDir], { timeout: 30_000 }).catch(() => {});
+    await execFileAsync("rm", ["-rf", dir], { timeout: 30_000 }).catch(() => {});
     // The reservation above is only meant to be held for the lifetime of a
     // workspace that actually exists — a failure anywhere in this block
     // means no container was created (or it's about to be torn down by the
