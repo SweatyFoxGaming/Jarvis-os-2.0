@@ -238,6 +238,13 @@ registerTest("identity-repo: self-reflections are scoped per username — one us
   if (aReflections.length !== 1 || aReflections[0].content !== "User A's private opinion, never meant for user B") {
     throw new Error(`getRecentSelfReflections(userA) returned unexpected content: ${JSON.stringify(aReflections)}`);
   }
+  // Asserting user B's own reflection came back correctly (not just that
+  // user A's didn't leak in) matters here: a scoping bug that returned an
+  // empty array for every username would otherwise pass the leak check
+  // below trivially, while actually being just as broken.
+  if (bReflections.length !== 1 || bReflections[0].content !== "User B's own commitment") {
+    throw new Error(`getRecentSelfReflections(userB) returned unexpected content: ${JSON.stringify(bReflections)}`);
+  }
   if (bReflections.some(r => r.content.includes("User A's private opinion"))) {
     throw new Error("user B's self-reflection history leaked user A's content — the privacy bug this migration exists to fix");
   }
