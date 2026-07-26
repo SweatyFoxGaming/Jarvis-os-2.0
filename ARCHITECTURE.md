@@ -42,6 +42,16 @@ does. `server.ts` dropped from 2,885 to 1,224 lines. Two small shared modules
 reach `validateApiKey` and the already-constructed Gemini/Groq/NVIDIA clients without a circular
 import back into `server.ts`.
 
+The `board-debate` hook mentioned above (`src/executive/executive_board.ts`, "Phase XVI:
+Multi-Agent Executive Board") was later removed entirely: it was a deterministic keyword/pattern
+check, not real multi-agent reasoning (the README already said as much), it had zero callers
+anywhere in the actual autonomous coding/build-request pipeline, and its own docstring — "check...
+safety constraints... before final outputs are committed" — oversold it as a safety gate its
+`finalConsensus` type could structurally never enforce (`"REJECTED"` was declared but never
+reachable). The real code-review gate for the autonomous coding pipeline is
+`departments.reviewCodeDiff`/`reviewTaskDiff`, not this. Route count as of that removal: 112
+(server.ts down to 14).
+
 ## Not done here (tracked as follow-ups, not oversights)
 
 - Any literal kernel-as-infrastructure rewrite (sandboxed process isolation, event-sourced state,

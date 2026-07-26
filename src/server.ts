@@ -11,7 +11,6 @@ import Groq from "groq-sdk";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
-import { ExecutiveBoard } from "./executive/executive_board.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./runtime/local_engine.js";
 import * as whisper from "./interaction/whisper.js";
@@ -222,7 +221,6 @@ const learningEngine = LongTermLearningEngine.getInstance();
 // construction) rather than the routers reading them at their own
 // module-load time.
 setSharedClients(ai, groq, nvidiaApiKey);
-const executiveBoard = new ExecutiveBoard();
 
 // Users, API keys, and memory records are persisted in Postgres (src/data/) —
 // see initDatabase() near the bottom of this file, called before app.listen.
@@ -304,23 +302,6 @@ app.post("/api/executive/run", validateApiKey, aiLimiter, async (req: any, res: 
 // Long-term learning dashboard/style/mistake + /api/learn — see
 // src/interaction/routes/learning-routes.ts, mounted below.
 app.use(learningRouter);
-
-// ---------- Pass XVI: Multi-Agent Executive Board Endpoints ----------
-
-app.post("/api/executive/board/debate", validateApiKey, aiLimiter, async (req: any, res: any) => {
-  const { prompt, proposedResponse } = req.body;
-  if (!prompt || !proposedResponse) {
-    return res.status(400).json({ error: "Missing prompt or proposedResponse" });
-  }
-
-  try {
-    const debateReport = await executiveBoard.conveneDebate(prompt, proposedResponse);
-    res.json(debateReport);
-  } catch (error: any) {
-    observation.logTelemetry("error", "Executive", `Board debate failed: ${error.message}`);
-    res.status(500).json({ error: "Board debate failed" });
-  }
-});
 
 // ---------- Intelligent Action Loop ----------
 

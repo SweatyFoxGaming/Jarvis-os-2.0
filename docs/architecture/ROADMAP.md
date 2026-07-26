@@ -308,13 +308,18 @@ This document maps out the precise milestones and architectural transitions for 
 
 ---
 
-## Phase XVI: Multi-Agent Executive Board (Complete)
+## Phase XVI: Multi-Agent Executive Board (Complete, later removed)
 **Focus:** Cognitive consensus and ethical alignment checks before responses.
 
 *   **Milestones Achieved:**
     *   **Virtual Consensus Debate Loop:** Established `src/execution/executive_board.ts` to manage high-fidelity multi-agent discussions.
     *   **Diverse Ethical & Technical Perspectives:** Coordinates virtual responses between CEO (alignment), Chief Architect (modular standards), Risk Officer (credentials, safety boundaries), and QA Engineer (syntax, imports).
     *   **Amended Resolutions:** Safely modifies proposals to warn/protect against potential ESM path issues or plain-text credential declarations, raising the system's safety margin.
+*   **Later removed:** a security review found this had zero callers anywhere in the real
+    autonomous coding/build-request pipeline, was deterministic pattern-matching rather than actual
+    multi-agent reasoning (`method: "deterministic-pattern-check"`, honestly disclosed in the
+    README), and its own docstring oversold it as a safety gate its type system could never
+    actually enforce a rejection through. See `ARCHITECTURE.md`'s "Route organization" section.
 
 ---
 

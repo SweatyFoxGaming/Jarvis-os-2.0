@@ -3996,21 +3996,15 @@
         if (localStorage.getItem('admin_show_thoughts') === null) {
             localStorage.setItem('admin_show_thoughts', 'true');
         }
-        if (localStorage.getItem('admin_show_debates') === null) {
-            localStorage.setItem('admin_show_debates', 'true');
-        }
-
         const showHyperGraph = localStorage.getItem('admin_show_hyper_graph') === 'true';
         const showDispatcher = localStorage.getItem('admin_show_dispatcher') === 'true';
         const showThoughts = localStorage.getItem('admin_show_thoughts') === 'true';
-        const showDebates = localStorage.getItem('admin_show_debates') === 'true';
 
         const grid = document.getElementById('dashboard-secondary-grid');
         const hg = document.getElementById('dashboard-hyper-graph');
         const controllers = document.getElementById('dashboard-controllers');
         const dispatcher = document.getElementById('dashboard-dispatcher');
         const thoughts = document.getElementById('dashboard-thoughts');
-        const debates = document.getElementById('dashboard-debates');
 
         const anyVisible = showHyperGraph || showDispatcher || showThoughts;
 
@@ -4055,13 +4049,6 @@
             }
         }
 
-        if (debates) {
-            if (showDebates) {
-                debates.classList.remove('hidden');
-            } else {
-                debates.classList.add('hidden');
-            }
-        }
     }
 
     // Initializers

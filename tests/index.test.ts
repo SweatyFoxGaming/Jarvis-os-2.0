@@ -9,7 +9,6 @@ import { SessionState, getSession } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/kernel/observation.js";
 import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
-import { ExecutiveBoard } from "../src/executive/executive_board.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
 import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
@@ -254,36 +253,6 @@ registerTest("Learning 2.0", "Persistent style, workflow, and mistake adaptation
   const fixEntry = engine.searchFixForError("toSnapshot");
   if (!fixEntry || fixEntry.affectedFile !== "src/server.ts" || !fixEntry.successfulFix.includes("Instantiate")) {
     throw new Error("Learning Engine: Mistake log failed to match signature and locate fix");
-  }
-});
-
-// ---------- 7.6. Multi-Agent Executive Board Consensus Tests ----------
-registerTest("Consensus 2.0", "Multi-agent virtual board debate and voting", async () => {
-  const board = new ExecutiveBoard();
-  
-  // Test 1: Code with potential warnings (ESM relative imports or credentials)
-  const report = await board.conveneDebate(
-    "Implement Workspace snapshot database saving",
-    "const key = 'secret_key_123'; console.log('Saving snapshot...');"
-  );
-
-  if (report.finalConsensus !== "AMENDED") {
-    throw new Error("Executive Board: Consensus should be AMENDED due to secret disclosure warning");
-  }
-
-  const riskSpeech = report.debates.find(d => d.role === "Risk Officer");
-  if (!riskSpeech || riskSpeech.vote !== "APPROVED_WITH_CONDITIONS") {
-    throw new Error("Executive Board: Risk Officer failed to flag secret disclosure");
-  }
-
-  // Test 2: Standard safe clean proposal
-  const safeReport = await board.conveneDebate(
-    "How does memory storage work?",
-    "Memory storage works using client-side key-value pairs stored in the Working Memory cells of Cognitive Workspace 2.0."
-  );
-
-  if (safeReport.finalConsensus !== "APPROVED") {
-    throw new Error("Executive Board: Consensus should be APPROVED for safe, non-code proposals");
   }
 });
 

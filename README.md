@@ -278,10 +278,6 @@ None of this is a security issue — it's worth knowing before you rely on it:
   steps (optionally via Gemini) and narrates what each step *would* do. It does not
   write files, compile anything, or run tests. Its response includes
   `"simulated": true` and an honest `buildVerification` field for exactly this reason.
-- **`POST /api/executive/board/debate`** ("Executive Board") is a deterministic
-  pattern-matching guardrail (checks for code fences, sensitive-key mentions) — a
-  real, useful lint step, not multi-agent LLM reasoning. Its response includes
-  `"method": "deterministic-pattern-check"`.
 - **The offline chat fallback** (`src/runtime/local_engine.ts`) is keyword-matched
   canned phrasing, not a language model. It only fires if `llama-cpp` itself is
   unreachable (or `HOST_MODEL_DIR`/`LOCAL_MODEL_FILE` were never set) and no
@@ -587,8 +583,8 @@ src/
                           Node process, falls back to canned JSON if it's down
   server.ts              Express app setup, middleware, and the routes that
                           don't factor cleanly into a router — chat SSE,
-                          voice input/WebSocket, executive run/board-debate,
-                          startup, static serving
+                          voice input/WebSocket, executive run, startup,
+                          static serving
   kernel/                 Capability grants, egress policy, scheduler,
                           observation platform, auth middleware, Postgres
                           access + migrations (state/)
