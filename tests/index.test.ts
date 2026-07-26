@@ -32,7 +32,7 @@ import {
 import { isValidToolSchema, getCachedMcpTools } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
-import { parseNvidiaChatResponse } from "../src/runtime/nvidia-client.js";
+import { parseGroqAgentResponse } from "../src/runtime/groq-agent-client.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
 import { recordTranscriptEvent, listTranscriptEvents } from "../src/kernel/state/transcript-events-repo.js";
 import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state/coding-plan-tasks-repo.js";
@@ -1665,69 +1665,69 @@ registerTest("GroqClient", "toGroqTools wraps a declaration in Groq's function-t
   }
 });
 
-// ---------- NVIDIA NIM Client Tests (pure functions, no network) ----------
+// ---------- Coding Agent's Groq Client Tests (pure functions, no network) ----------
 
-registerTest("NvidiaClient", "parseNvidiaChatResponse extracts content with no tool calls", () => {
-  const result = parseNvidiaChatResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
+registerTest("GroqAgentClient", "parseGroqAgentResponse extracts content with no tool calls", () => {
+  const result = parseGroqAgentResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
   if (result.content !== "hello" || result.toolCalls !== null) {
-    throw new Error(`NvidiaClient: expected { content: "hello", toolCalls: null }, got: ${JSON.stringify(result)}`);
+    throw new Error(`GroqAgentClient: expected { content: "hello", toolCalls: null }, got: ${JSON.stringify(result)}`);
   }
 });
 
-registerTest("NvidiaClient", "parseNvidiaChatResponse extracts tool calls when present", () => {
+registerTest("GroqAgentClient", "parseGroqAgentResponse extracts tool calls when present", () => {
   const toolCalls = [{ id: "call_1", type: "function", function: { name: "run_shell_command", arguments: "{}" } }];
-  const result = parseNvidiaChatResponse({ choices: [{ message: { content: null, tool_calls: toolCalls } }] });
+  const result = parseGroqAgentResponse({ choices: [{ message: { content: null, tool_calls: toolCalls } }] });
   if (result.content !== null || result.toolCalls !== toolCalls) {
-    throw new Error(`NvidiaClient: expected { content: null, toolCalls: [...] }, got: ${JSON.stringify(result)}`);
+    throw new Error(`GroqAgentClient: expected { content: null, toolCalls: [...] }, got: ${JSON.stringify(result)}`);
   }
 });
 
-registerTest("NvidiaClient", "parseNvidiaChatResponse throws when the response has no message", () => {
+registerTest("GroqAgentClient", "parseGroqAgentResponse throws when the response has no message", () => {
   let threw = false;
   try {
-    parseNvidiaChatResponse({ choices: [] });
+    parseGroqAgentResponse({ choices: [] });
   } catch {
     threw = true;
   }
   if (!threw) {
-    throw new Error("NvidiaClient: expected parseNvidiaChatResponse to throw when there's no message");
+    throw new Error("GroqAgentClient: expected parseGroqAgentResponse to throw when there's no message");
   }
 });
 
-registerTest("NvidiaClient", "parseNvidiaChatResponse extracts totalTokens when usage is present", () => {
-  const result = parseNvidiaChatResponse({
+registerTest("GroqAgentClient", "parseGroqAgentResponse extracts totalTokens when usage is present", () => {
+  const result = parseGroqAgentResponse({
     choices: [{ message: { content: "hello", tool_calls: [] } }],
     usage: { total_tokens: 1234 },
   });
   if (result.totalTokens !== 1234) {
-    throw new Error(`NvidiaClient: expected totalTokens 1234, got: ${JSON.stringify(result)}`);
+    throw new Error(`GroqAgentClient: expected totalTokens 1234, got: ${JSON.stringify(result)}`);
   }
 });
 
-registerTest("NvidiaClient", "parseNvidiaChatResponse's totalTokens is null when usage is absent — this is what coding-agent.ts's budget tracking must tolerate", () => {
-  const result = parseNvidiaChatResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
+registerTest("GroqAgentClient", "parseGroqAgentResponse's totalTokens is null when usage is absent — this is what coding-agent.ts's budget tracking must tolerate", () => {
+  const result = parseGroqAgentResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
   if (result.totalTokens !== null) {
-    throw new Error(`NvidiaClient: expected totalTokens null with no usage field, got: ${JSON.stringify(result)}`);
+    throw new Error(`GroqAgentClient: expected totalTokens null with no usage field, got: ${JSON.stringify(result)}`);
   }
 });
 
-registerTest("NvidiaClient", "parseNvidiaChatResponse rejects a negative total_tokens instead of letting it erode the session budget counter", () => {
-  const result = parseNvidiaChatResponse({
+registerTest("GroqAgentClient", "parseGroqAgentResponse rejects a negative total_tokens instead of letting it erode the session budget counter", () => {
+  const result = parseGroqAgentResponse({
     choices: [{ message: { content: "hello", tool_calls: [] } }],
     usage: { total_tokens: -5 },
   });
   if (result.totalTokens !== null) {
-    throw new Error(`NvidiaClient: expected totalTokens null for a negative value, got: ${JSON.stringify(result)}`);
+    throw new Error(`GroqAgentClient: expected totalTokens null for a negative value, got: ${JSON.stringify(result)}`);
   }
 });
 
-registerTest("NvidiaClient", "parseNvidiaChatResponse rejects a non-integer total_tokens", () => {
-  const result = parseNvidiaChatResponse({
+registerTest("GroqAgentClient", "parseGroqAgentResponse rejects a non-integer total_tokens", () => {
+  const result = parseGroqAgentResponse({
     choices: [{ message: { content: "hello", tool_calls: [] } }],
     usage: { total_tokens: 12.5 },
   });
   if (result.totalTokens !== null) {
-    throw new Error(`NvidiaClient: expected totalTokens null for a fractional value, got: ${JSON.stringify(result)}`);
+    throw new Error(`GroqAgentClient: expected totalTokens null for a fractional value, got: ${JSON.stringify(result)}`);
   }
 });
 

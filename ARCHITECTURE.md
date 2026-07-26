@@ -40,7 +40,7 @@ below), and process startup/static serving, none of which factor into a router a
 self-contained CRUD-style resource does. `server.ts` dropped from 2,885 to 1,224 lines. Two small
 shared modules
 (`src/kernel/auth-middleware.ts`, `src/runtime/clients.ts`) exist specifically so every router can
-reach `validateApiKey` and the already-constructed Gemini/Groq/NVIDIA clients without a circular
+reach `validateApiKey` and the already-constructed Gemini/Groq clients without a circular
 import back into `server.ts`.
 
 The `board-debate` hook mentioned above (`src/executive/executive_board.ts`, "Phase XVI:

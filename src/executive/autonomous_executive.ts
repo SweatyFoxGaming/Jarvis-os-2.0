@@ -32,31 +32,28 @@ export class AutonomousExecutive {
   // Kept for future needs (per the Groq-migration design) even though no current internal call reads it — every departments.* call below uses this.groq.
   private ai: GoogleGenAI | null;
   private groq: Groq | null;
-  private nvidiaApiKey: string | null;
 
-  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, groq: Groq | null, nvidiaApiKey: string | null) {
+  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, groq: Groq | null) {
     this.observation = observation;
     this.ai = ai;
     this.groq = groq;
-    this.nvidiaApiKey = nvidiaApiKey;
   }
 
   // A singleton (like the other cognition engines) rather than a plain
   // constructor so tools.ts's decompose_plan/confirm_build_direction tools
   // can reach the same instance server.ts already created at startup with
-  // the real ai/groq/nvidia clients, instead of needing a circular import
-  // back into server.ts.
+  // the real ai/groq clients, instead of needing a circular import back
+  // into server.ts.
   public static getInstance(
     observation?: ObservationPlatform,
     ai?: GoogleGenAI | null,
-    groq?: Groq | null,
-    nvidiaApiKey?: string | null
+    groq?: Groq | null
   ): AutonomousExecutive {
     if (!this.instance) {
       if (!observation) {
         throw new Error("AutonomousExecutive.getInstance() called before server.ts initialized it");
       }
-      this.instance = new AutonomousExecutive(observation, ai ?? null, groq ?? null, nvidiaApiKey ?? null);
+      this.instance = new AutonomousExecutive(observation, ai ?? null, groq ?? null);
     }
     return this.instance;
   }
@@ -386,7 +383,6 @@ export class AutonomousExecutive {
       confirmed.research_summary || "",
       directionNotes,
       baseBranch,
-      this.nvidiaApiKey,
       this.groq
     );
 
