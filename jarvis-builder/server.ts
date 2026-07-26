@@ -1,5 +1,13 @@
 import express from "express";
-import { createWorkspace, execInWorkspace, destroyWorkspace, ensureSandboxImage, startReaper } from "./workspace.js";
+import {
+  createWorkspace,
+  execInWorkspace,
+  destroyWorkspace,
+  ensureSandboxImage,
+  startReaper,
+  reconcileWorkspaceReservations,
+  WorkspaceCapacityError,
+} from "./workspace.js";
 
 const app = express();
 app.use(express.json());
@@ -40,7 +48,11 @@ app.post("/workspaces", async (req, res) => {
     const workspace = await createWorkspace(buildRequestId, baseBranch.trim());
     res.json(workspace);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || String(err) });
+    // 503, not 500: the sandbox cap being full is expected backpressure a
+    // caller/monitoring should be able to tell apart from a genuine
+    // internal failure, not the same generic error either would produce.
+    const status = err instanceof WorkspaceCapacityError ? 503 : 500;
+    res.status(status).json({ error: err.message || String(err) });
   }
 });
 
@@ -75,8 +87,38 @@ app.delete("/workspaces/:id", async (req, res) => {
 });
 
 const PORT = 4100;
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log(`[jarvis-builder] listening on port ${PORT}`);
+
+async function start(): Promise<void> {
+  // Populates the in-memory concurrency-cap reservation from whatever
+  // sandbox containers already exist in Docker — a restart of this process
+  // doesn't destroy already-running containers from before it, so without
+  // this the cap would start from zero and could be exceeded by however
+  // many requests arrive before the 24h reaper eventually catches up. Runs
+  // (and is awaited) before app.listen() below, not inside its callback:
+  // the previous ordering let Express start accepting /workspaces requests
+  // against the still-default-empty reservation set while this ran
+  // concurrently in the background, wide open to exactly the
+  // over-admission this whole cap exists to prevent. createWorkspace()
+  // also checks areReservationsReady() itself as a second, independent
+  // guard against the same gap.
+  await reconcileWorkspaceReservations();
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[jarvis-builder] listening on port ${PORT}`);
+  });
+
+  // Started right after binding, before awaiting the (potentially
+  // minutes-long) image build below: the reaper is what actually frees
+  // expired reservations, so delaying it behind a cold image build would
+  // needlessly leave the concurrency cap full for however long that build
+  // takes, on top of not reaping any already-expired containers during
+  // that window.
+  startReaper();
+
+  // Not awaited before listen(): an image build can take minutes on a cold
+  // start, and /health (and the reservation cap above) don't depend on it —
+  // only createWorkspace()'s own `docker run` does, and that already fails
+  // with a clear Docker-level error if the image isn't there yet.
   try {
     await ensureSandboxImage();
   } catch (err: any) {
@@ -85,5 +127,6 @@ app.listen(PORT, "0.0.0.0", async () => {
         "Workspace creation will fail until this is resolved and the service is restarted."
     );
   }
-  startReaper();
-});
+}
+
+start();
