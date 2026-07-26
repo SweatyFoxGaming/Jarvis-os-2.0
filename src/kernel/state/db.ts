@@ -6,6 +6,35 @@ const observation = ObservationPlatform.getInstance();
 
 let pool: pg.Pool | null = null;
 
+// Set once by initDatabase() below on a successful boot (schema created,
+// migrations applied) — server.ts's own startup never actually checked this
+// before calling app.listen() regardless, and /health used to report
+// Gemini-key presence and a hardcoded "local_store: operational" string
+// instead of anything about Postgres. A deployment where Postgres never came
+// up (or a migration threw) could report itself fully healthy while
+// registration/login/persisted memory all silently failed, with no
+// orchestrator able to tell. isDbReady() reflects the one-time boot outcome;
+// pingDatabase() below additionally checks whether it's *still* reachable
+// right now, since a DB that came up fine at boot can still go down later.
+let dbReady = false;
+
+export function isDbReady(): boolean {
+  return dbReady;
+}
+
+// Cheap, safe to call on every /health hit: getPool()'s connectionTimeoutMillis
+// (5s) bounds how long an unreachable Postgres can make this hang, and a
+// bare SELECT 1 touches no application table so it can't be slowed down by
+// application query load.
+export async function pingDatabase(): Promise<boolean> {
+  try {
+    await getPool().query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function getPool(): pg.Pool {
   if (!pool) {
     pool = new pg.Pool({
@@ -465,6 +494,7 @@ export async function initDatabase(retries = 5, delayMs = 2000): Promise<boolean
           `pgvector setup failed (${vecErr.message}) — semantic memory disabled, everything else unaffected.`
         );
       }
+      dbReady = true;
       return true;
     } catch (err: any) {
       observation.logTelemetry(

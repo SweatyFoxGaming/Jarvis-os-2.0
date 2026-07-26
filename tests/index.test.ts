@@ -887,17 +887,36 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
   try {
     const deadline = Date.now() + 25_000;
     let lastErr: any = null;
+    let readyResponse: Response | null = null;
     while (Date.now() < deadline) {
       try {
         const res = await fetch("http://127.0.0.1:3000/health");
-        if (res.ok) return;
+        if (res.ok) {
+          readyResponse = res;
+          break;
+        }
         lastErr = new Error(`/health returned HTTP ${res.status}`);
       } catch (err: any) {
         lastErr = err;
       }
       await new Promise((r) => setTimeout(r, 500));
     }
-    throw new Error(`Server never became reachable on :3000/health: ${lastErr?.message || lastErr}`);
+    if (!readyResponse) {
+      throw new Error(`Server never became reachable on :3000/health: ${lastErr?.message || lastErr}`);
+    }
+
+    // /health used to report Gemini-key presence and a hardcoded
+    // "local_store: operational" string that had nothing to do with
+    // Postgres — asserting the shape here (not a specific value, since a
+    // real docker-compose environment with a live Postgres would
+    // legitimately report "up") locks in that a real database field exists
+    // at all, whichever way it resolves. Deliberately outside the retry
+    // loop above: a wrong shape here is a deterministic bug, not a
+    // transient "server's still booting" condition worth retrying.
+    const body = await readyResponse.json();
+    if (body.database !== "up" && body.database !== "down") {
+      throw new Error(`/health: expected database to be "up" or "down", got: ${JSON.stringify(body.database)}`);
+    }
   } finally {
     if (child) child.kill();
   }

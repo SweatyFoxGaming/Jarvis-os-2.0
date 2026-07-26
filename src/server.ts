@@ -14,7 +14,7 @@ import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./runtime/local_engine.js";
 import * as whisper from "./interaction/whisper.js";
-import { initDatabase } from "./kernel/state/db.js";
+import { initDatabase, isDbReady, pingDatabase } from "./kernel/state/db.js";
 import * as memoryRepo from "./kernel/state/memory-repo.js";
 import * as sessionRepo from "./kernel/state/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
@@ -233,12 +233,32 @@ setSharedClients(ai, groq, nvidiaApiKey);
 // ---------- Endpoints ----------
 
 // Health Check
-app.get("/health", (req, res) => {
+//
+// Deliberately always 200 here, never a non-2xx for a down database: this
+// endpoint doubles as the "is the Express process itself alive" liveness
+// signal several HTTP Boundary tests (and CI, which — same as this test
+// suite — runs with no live Postgres available) poll to confirm the server
+// booted at all, something that's true and worth knowing independently of
+// whether Postgres happens to be reachable. What was actually missing
+// wasn't a different status code, it was the database's real status ever
+// appearing in the body at all — this used to report Gemini-key presence
+// and a hardcoded "local_store: operational" string that had nothing to do
+// with Postgres, so a deployment where Postgres never came up (or a
+// migration threw) could poll this and see nothing wrong.
+app.get("/health", async (req, res) => {
   const health = observation.getHealth();
+  // isDbReady() reflects whether Postgres came up at all during startup;
+  // skipping the live ping when it never did avoids waiting out
+  // connectionTimeoutMillis on every /health hit for a DB we already know
+  // isn't there. When it was ready at boot, pingDatabase() also catches the
+  // case where it's since gone down — a stale "was fine at startup" flag
+  // isn't what a caller polling this endpoint actually needs to know.
+  const dbConnected = isDbReady() ? await pingDatabase() : false;
   res.json({
-    status: health.status === "green" ? "up" : "degraded",
+    status: health.status === "green" && dbConnected ? "up" : "degraded",
     version: "1.8.0",
     engine_ready: true,
+    database: dbConnected ? "up" : "down",
     health
   });
 });
