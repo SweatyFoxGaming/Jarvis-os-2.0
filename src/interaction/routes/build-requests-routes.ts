@@ -159,6 +159,15 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
           return res.status(422).json({ error: message });
         }
 
+        // Runs before any GitHub write happens, not after: this diff is about
+        // to become a real, public PR opened on Jarvis's own behalf, and its
+        // one independent review used to only run once that PR already
+        // existed — meaning it was live and unreviewed by anyone, human or
+        // AI, for as long as the review call took. Computing it first means
+        // its findings can actually be baked into the PR body itself instead
+        // of arriving as a note attached after the fact.
+        const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getGroq());
+
         const branchName = `jarvis/build-request-${buildRequest.id}`;
 
         let repoInfo: any;
@@ -196,6 +205,13 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
           }
         }
 
+        // The QA summary computed above goes into the PR body itself, so the
+        // review is visible from the moment the PR exists rather than
+        // arriving as a note attached some time after it's already public.
+        const prBody = [buildRequest.code_summary, "---", "**Automated QA review:**", qaSummary]
+          .filter(Boolean)
+          .join("\n\n");
+
         let pr: any;
         try {
           pr = await github.createPullRequest(
@@ -204,7 +220,7 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
             `Build request #${buildRequest.id}: ${buildRequest.objective}`,
             branchName,
             baseBranch,
-            buildRequest.code_summary || undefined
+            prBody || undefined
           );
         } catch (err: any) {
           await buildRequestsRepo.markPrError(buildRequest.id, `Branch and commits succeeded but opening the PR failed: ${err.message}`);
@@ -218,20 +234,11 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
 
         observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
 
-        obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
-          directionNotes: updated.direction_notes || undefined,
-          codeSummary: updated.code_summary || undefined,
-          files: files.map((f: any) => f.path),
-          prUrl: updated.pr_url || undefined,
-          status: updated.status,
-        }).catch((err: any) => {
-          observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
-        });
-
-        // QA runs immediately, synchronously, right here — no CI polling (see
-        // design spec's "Decisions"). CI's own result speaks for itself on
-        // GitHub, same as any other PR.
-        const qaSummary = await departments.reviewCodeDiff(updated.objective, files, getGroq());
+        // recordQaReview's own UPDATE only matches status = 'pr_opened' (the
+        // state recordPrOpened just set), so this must run after it, not
+        // before — the review itself was already computed above, ahead of
+        // the PR going live; only persisting the qa_complete status waits
+        // for the row to actually reach that state.
         await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
 
         obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
