@@ -315,7 +315,16 @@ export async function reviewTaskDiff(
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
     const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      // llama-3.3-70b-versatile (used elsewhere in this file for plain-text
+      // reviews with no response_format) doesn't support Groq's structured-
+      // output mode — live-verified: a real task review against it failed
+      // outright with "This model does not support response format
+      // json_schema." openai/gpt-oss-20b already proves this out elsewhere
+      // in this same file (decomposeObjective, the research-lookups call);
+      // using the larger 120b sibling here since a review gate's judgment
+      // quality is worth the extra capability, matching the tier
+      // coding-agent.ts's own tool-calling loop now runs on.
+      model: "openai/gpt-oss-120b",
       messages: [{
         role: "user",
         content:
