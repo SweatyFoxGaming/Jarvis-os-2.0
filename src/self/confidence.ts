@@ -8,6 +8,12 @@ export interface ConfidenceInputs {
 }
 
 export class ConfidenceModel {
+  // Below this, a caller should surface the score to whoever's relying on
+  // the result rather than reporting an unqualified success — see
+  // autonomous_executive.ts's Stage 5, the one place this is currently
+  // wired into an actual decision instead of pure telemetry.
+  public static readonly LOW_CONFIDENCE_THRESHOLD = 50;
+
   // Averages only over inputs the caller actually provided. A naive fixed
   // divisor (e.g. always /6 with a default of 1.0 for a missing input)
   // would shift every existing call site's score the moment this field was
@@ -19,5 +25,9 @@ export class ConfidenceModel {
     if (provided.length === 0) return 100;
     const avg = provided.reduce((sum, v) => sum + v, 0) / provided.length;
     return Math.round(avg * 100);
+  }
+
+  public isLowConfidence(score: number): boolean {
+    return score < ConfidenceModel.LOW_CONFIDENCE_THRESHOLD;
   }
 }
