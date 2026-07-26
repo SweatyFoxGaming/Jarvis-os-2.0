@@ -312,7 +312,7 @@ This document maps out the precise milestones and architectural transitions for 
 **Focus:** Cognitive consensus and ethical alignment checks before responses.
 
 *   **Milestones Achieved:**
-    *   **Virtual Consensus Debate Loop:** Established `src/execution/executive_board.ts` to manage high-fidelity multi-agent discussions.
+    *   **Virtual Consensus Debate Loop:** Established `src/executive/executive_board.ts` to manage high-fidelity multi-agent discussions.
     *   **Diverse Ethical & Technical Perspectives:** Coordinates virtual responses between CEO (alignment), Chief Architect (modular standards), Risk Officer (credentials, safety boundaries), and QA Engineer (syntax, imports).
     *   **Amended Resolutions:** Safely modifies proposals to warn/protect against potential ESM path issues or plain-text credential declarations, raising the system's safety margin.
 *   **Later removed:** a security review found this had zero callers anywhere in the real

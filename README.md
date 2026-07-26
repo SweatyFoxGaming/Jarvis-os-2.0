@@ -590,8 +590,7 @@ src/
                           access + migrations (state/)
   cognition/               Per-user session state, workspace, memory,
                            knowledge graph
-  executive/                Autonomous executive, executive board,
-                            departments, the coding agent
+  executive/                Autonomous executive, departments, the coding agent
   adaptation/               Reflection, long-term learning, analyzer
   capabilities/             Tool dispatch, MCP registry, external providers
                             (GitHub, email, calendar, news, web search, ...)

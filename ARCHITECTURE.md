@@ -6,7 +6,7 @@ Jarvis OS is organized into 9 subsystems, each a top-level folder under `src/`:
 |---|---|---|
 | Self | `src/self/` | Identity, self-reflection, mind/attention/confidence state |
 | World | `src/world/` | Signal collection and briefing synthesis (email, GitHub, objectives) |
-| Executive | `src/executive/` | Autonomous objective execution, department dispatch, the executive board |
+| Executive | `src/executive/` | Autonomous objective execution, department dispatch, the coding agent |
 | Cognition | `src/cognition/` | Working memory (workspace, session) and long-term knowledge (memory store, knowledge graph) |
 | Adaptation | `src/adaptation/` | Self-analysis, style/mistake reflection, long-term learning |
 | Kernel | `src/kernel/` | Postgres state store (`src/kernel/state/`), capability-grant security, the job scheduler, observability/telemetry |
@@ -35,9 +35,10 @@ from relocating a file.
 
 `src/server.ts`'s 113 Express routes were later split into 14 per-subsystem router files under
 `src/interaction/routes/` (98 routes), leaving 15 in `server.ts` itself — the chat SSE endpoint,
-voice input/WebSocket bridge, the executive run/board-debate hooks, and process startup/static
-serving, none of which factor into a router as cleanly as a self-contained CRUD-style resource
-does. `server.ts` dropped from 2,885 to 1,224 lines. Two small shared modules
+voice input/WebSocket bridge, the executive run/board-debate hooks (the latter since removed, see
+below), and process startup/static serving, none of which factor into a router as cleanly as a
+self-contained CRUD-style resource does. `server.ts` dropped from 2,885 to 1,224 lines. Two small
+shared modules
 (`src/kernel/auth-middleware.ts`, `src/runtime/clients.ts`) exist specifically so every router can
 reach `validateApiKey` and the already-constructed Gemini/Groq/NVIDIA clients without a circular
 import back into `server.ts`.
