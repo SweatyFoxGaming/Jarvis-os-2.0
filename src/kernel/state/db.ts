@@ -20,20 +20,52 @@ const PING_TIMEOUT_MS = 5_000;
 // succeed at boot": a one-way boot flag would mean a Postgres that recovers
 // after a failed startup gets permanently reported as down until the whole
 // process restarts — the opposite of what a health check polled repeatedly
-// over the process's lifetime needs to do. connectionTimeoutMillis (5s)
-// only bounds acquiring a connection from the pool, not the query itself —
-// a hung/overloaded Postgres could otherwise stall this up to
-// statement_timeout/query_timeout (30-35s), so the query itself is also
-// explicitly bounded to PING_TIMEOUT_MS below.
+// over the process's lifetime needs to do.
+//
+// connectionTimeoutMillis (5s) is meant to bound acquiring a connection, but
+// live-verified in this codebase's own test environment that it doesn't
+// reliably cover a slow/failing DNS lookup for the configured host — a
+// connect() attempt can still hang well past 5s. So the connect phase below
+// is additionally raced client-side: safe to abandon, since a connection
+// that was never successfully established isn't a resource the pool is
+// holding onto — if the raced-away attempt eventually resolves later, it
+// just becomes a normal healthy idle connection.
+//
+// The query phase is different: once actually connected, racing the query
+// client-side would make pingDatabase() return in time while the query kept
+// running on its checked-out connection regardless, and repeated probes
+// against a hung-but-connectable Postgres could pile up and starve the
+// pool's 10 connections of anything to serve real traffic with. So that
+// phase is bounded server-side instead — a per-connection statement_timeout
+// set just for this probe and always reset before releasing — so a
+// timed-out query is actually killed by Postgres itself, not just abandoned
+// client-side, and the timeout never leaks onto whatever unrelated query
+// borrows this connection next.
 export async function pingDatabase(): Promise<boolean> {
+  let client: pg.PoolClient;
   try {
-    await Promise.race([
-      getPool().query("SELECT 1"),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("ping timed out")), PING_TIMEOUT_MS)),
+    client = await Promise.race([
+      getPool().connect(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("connect timed out")), PING_TIMEOUT_MS)),
     ]);
+  } catch {
+    return false;
+  }
+  try {
+    await client.query(`SET statement_timeout = ${PING_TIMEOUT_MS}`);
+    await client.query("SELECT 1");
     return true;
   } catch {
     return false;
+  } finally {
+    try {
+      await client.query("SET statement_timeout = DEFAULT");
+    } catch {
+      // Connection is presumably unhealthy at this point — release it
+      // anyway; pg-pool detects and discards broken connections on their
+      // next use rather than leaving them in the pool indefinitely.
+    }
+    client.release();
   }
 }
 
