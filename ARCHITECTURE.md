@@ -31,11 +31,7 @@ pre-existing name collision. The file/class itself was not renamed as part of th
 folder moved) since renaming a class used throughout the codebase is a separate, higher-risk change
 from relocating a file.
 
-## Not done here (tracked as follow-ups, not oversights)
-
-- Any literal kernel-as-infrastructure rewrite (sandboxed process isolation, event-sourced state,
-  zero-copy IPC, swappable runtime drivers). Postgres, Docker, and Express remain exactly as they
-  are; this reorg changed file locations only, never the underlying infrastructure.
+## Route organization
 
 `src/server.ts`'s 113 Express routes were later split into 14 per-subsystem router files under
 `src/interaction/routes/` (98 routes), leaving 15 in `server.ts` itself — the chat SSE endpoint,
@@ -45,6 +41,12 @@ does. `server.ts` dropped from 2,885 to 1,224 lines. Two small shared modules
 (`src/kernel/auth-middleware.ts`, `src/runtime/clients.ts`) exist specifically so every router can
 reach `validateApiKey` and the already-constructed Gemini/Groq/NVIDIA clients without a circular
 import back into `server.ts`.
+
+## Not done here (tracked as follow-ups, not oversights)
+
+- Any literal kernel-as-infrastructure rewrite (sandboxed process isolation, event-sourced state,
+  zero-copy IPC, swappable runtime drivers). Postgres, Docker, and Express remain exactly as they
+  are; this reorg changed file locations only, never the underlying infrastructure.
 
 See `docs/superpowers/specs/2026-07-22-repo-cleanup-and-subsystem-reorg-design.md` and
 `docs/superpowers/specs/2026-07-21-groq-provider-design.md` for the two most recent real
