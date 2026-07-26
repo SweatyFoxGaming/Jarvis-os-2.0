@@ -131,3 +131,19 @@ export async function revokeCapability(username: string, capability: string, rev
 export function listGrants(username: string): string[] {
   return Array.from(grants.get(username) ?? []);
 }
+
+// A handful of REST endpoints (e.g. under /api/integrations/*) perform the
+// exact same actions (send email, open a GitHub issue/PR, read/write files)
+// that executeTool() already gates behind hasGrant() for the chat
+// tool-calling path — but as plain routes they only had validateApiKey, no
+// capability check, so a zero-grant account could hit them directly and
+// bypass the grant system entirely. This factory is reusable middleware for
+// exactly that gate, so every action surface enforces the same check
+// tools.ts does instead of each route re-implementing (or forgetting) it.
+export const requireCapability = (capability: string) => (req: any, res: any, next: any) => {
+  if (!hasGrant(req.username, capability)) {
+    observation.logAuditEvent(req.username, "route_denied", "failed", `Missing grant "${capability}" for ${req.method} ${req.path}`);
+    return res.status(403).json({ error: `Missing capability grant "${capability}"` });
+  }
+  next();
+};

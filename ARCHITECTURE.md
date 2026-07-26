@@ -12,7 +12,7 @@ Jarvis OS is organized into 9 subsystems, each a top-level folder under `src/`:
 | Kernel | `src/kernel/` | Postgres state store (`src/kernel/state/`), capability-grant security, the job scheduler, observability/telemetry |
 | Runtime | `src/runtime/` | LLM provider clients (Groq, the local-engine fallback) |
 | Capabilities | `src/capabilities/` | Tool dispatch, MCP registry, external-world providers (GitHub, email, calendar, web search, files, news) under `src/capabilities/providers/` |
-| Interaction | `src/interaction/` | Voice (live-voice, whisper, TTS), push notifications, the web frontend (`src/interaction/static/`), the optional desktop client |
+| Interaction | `src/interaction/` | Voice (live-voice, whisper, TTS), push notifications, the web frontend (`src/interaction/static/`), the optional desktop client, and most of the Express route handlers (`src/interaction/routes/`) |
 
 **Purpose has no dedicated module.** Values, intent, and interruption policy are implicit today —
 scattered across system-prompt text and individual policy checks (`ALLOW_REGISTRATION`,
@@ -31,9 +31,19 @@ pre-existing name collision. The file/class itself was not renamed as part of th
 folder moved) since renaming a class used throughout the codebase is a separate, higher-risk change
 from relocating a file.
 
+## Route organization
+
+`src/server.ts`'s 113 Express routes were later split into 14 per-subsystem router files under
+`src/interaction/routes/` (98 routes), leaving 15 in `server.ts` itself — the chat SSE endpoint,
+voice input/WebSocket bridge, the executive run/board-debate hooks, and process startup/static
+serving, none of which factor into a router as cleanly as a self-contained CRUD-style resource
+does. `server.ts` dropped from 2,885 to 1,224 lines. Two small shared modules
+(`src/kernel/auth-middleware.ts`, `src/runtime/clients.ts`) exist specifically so every router can
+reach `validateApiKey` and the already-constructed Gemini/Groq/NVIDIA clients without a circular
+import back into `server.ts`.
+
 ## Not done here (tracked as follow-ups, not oversights)
 
-- Splitting `src/server.ts`'s 70+ Express routes into per-subsystem router files.
 - Any literal kernel-as-infrastructure rewrite (sandboxed process isolation, event-sourced state,
   zero-copy IPC, swappable runtime drivers). Postgres, Docker, and Express remain exactly as they
   are; this reorg changed file locations only, never the underlying infrastructure.

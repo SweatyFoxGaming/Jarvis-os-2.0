@@ -585,9 +585,13 @@ silently the way it previously did.
 src/
   api.py                 FastAPI gateway — proxies to Express, supervises the
                           Node process, falls back to canned JSON if it's down
-  server.ts              Express app — all routes, auth, chat logic
+  server.ts              Express app setup, middleware, and the routes that
+                          don't factor cleanly into a router — chat SSE,
+                          voice input/WebSocket, executive run/board-debate,
+                          startup, static serving
   kernel/                 Capability grants, egress policy, scheduler,
-                          observation platform, Postgres access (state/)
+                          observation platform, auth middleware, Postgres
+                          access + migrations (state/)
   cognition/               Per-user session state, workspace, memory,
                            knowledge graph
   executive/                Autonomous executive, executive board,
@@ -596,7 +600,9 @@ src/
   capabilities/             Tool dispatch, MCP registry, external providers
                             (GitHub, email, calendar, news, web search, ...)
   interaction/              TTS, whisper, live voice, push, the static
-                            frontend (vanilla HTML/JS, no build step)
+                            frontend (vanilla HTML/JS, no build step), and
+                            most Express routes as per-subsystem routers
+                            (interaction/routes/)
   runtime/                  LLM client wrappers (local engine, Groq, NVIDIA)
   self/                    Identity, dialogue, attention, MindKernel settings
   world/                   Proactive briefing synthesis
