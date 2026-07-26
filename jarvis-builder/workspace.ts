@@ -285,13 +285,38 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
       "--memory", "1g",
       // Network access stays on deliberately — package-registry access
       // (npm/pip/etc. during the coding phase) is an accepted, explicit
-      // exception per this feature's design spec, not an oversight; a
-      // fully locked-down egress boundary is a separate, larger follow-up
-      // (an allowlisting proxy), not something a flag here can do safely.
-      // What these flags remove is privilege this "free reign" shell never
-      // legitimately needs regardless of network policy: root-equivalent
-      // capabilities, privilege escalation via setuid binaries, and an
-      // unbounded process/fork count.
+      // exception per this feature's design spec, not an oversight.
+      //
+      // Investigated as part of a later security review (no --network flag
+      // needed): no explicit --network is passed here, so this container
+      // lands on Docker's plain default `bridge` network — a different,
+      // non-routed network from `jarvis-os_default`, the compose-generated
+      // network postgres/jarvis-builder/llama-cpp/whisper-cpp actually run
+      // on (none of those publish a port to the host). Live-verified: a
+      // container on the default bridge cannot reach jarvis-postgres at
+      // all (connection times out). This is Compose-network isolation
+      // specifically, not deployment-wide unreachability, though: `api`
+      // and `tts` DO publish ports to the host (docker-compose.yml's
+      // `ports:` entries), so they remain reachable from the default
+      // bridge via the host's own gateway IP — live-verified the same way.
+      // Reaching `api` this way still requires a valid X-API-Key the
+      // sandbox has no way to obtain (it starts with a clean environment,
+      // no credentials, by this same file's own design above), so this
+      // isn't an open path to the main app, just a narrower isolation
+      // boundary than "every other service" would suggest. Unrestricted
+      // internet egress (DNS and raw IP both work fine) remains the one
+      // risk still genuinely open. Closing that needs either --network
+      // none (which breaks the npm/pip access above) or a real
+      // allowlisting egress proxy — new infrastructure (a forward proxy, a
+      // curated domain allowlist, careful verification that legitimate
+      // coding-agent traffic still works) deliberately out of scope here,
+      // not a flag this call can set safely on its own.
+      //
+      // What these cap-drop/security-opt/pids-limit flags remove is
+      // privilege this "free reign" shell never legitimately needs
+      // regardless of network policy: root-equivalent capabilities,
+      // privilege escalation via setuid binaries, and an unbounded
+      // process/fork count.
       "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges:true",
       "--pids-limit", "512",
