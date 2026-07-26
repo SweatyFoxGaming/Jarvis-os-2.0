@@ -120,8 +120,8 @@ export class AutonomousExecutive {
     this.observation.logTelemetry("info", "Executive", `Coordinator: Initiating Autonomous Objective: "${objective}"`);
 
     session.dialogue.clear();
-    session.dialogue.recordTurn("CEO", `We have received a new high-level objective: "${objective}". Let's decompose and coordinate execution.`);
-    session.dialogue.recordTurn("Architect", "We should decompose this into concrete steps, each owned by a real department.");
+    session.dialogue.recordTurn("Objective", `We have received a new high-level objective: "${objective}". Let's decompose and coordinate execution.`);
+    session.dialogue.recordTurn("Plan", "We should decompose this into concrete steps, each owned by a real department.");
 
     // --- STAGE 1: Decompose Objective ---
     session.updateState({

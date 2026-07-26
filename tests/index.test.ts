@@ -18,6 +18,7 @@ import { buildIdentityContext, generateProactiveThought, extractSelfReflection }
 import { extractAndStore } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/adaptation/reflection.js";
 import { ConfidenceModel } from "../src/self/confidence.js";
+import { InternalDialogue } from "../src/self/dialogue.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus } from "../src/kernel/state/mcp-servers-repo.js";
 import {
   createBuildRequest,
@@ -1119,6 +1120,41 @@ registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully e
   const result = model.calculateOverallConfidence({});
   if (result !== 100) {
     throw new Error(`Confidence: expected 100 for an empty input, got ${result}`);
+  }
+});
+
+// This is a linear execution-stage log for one autonomous-objective run, not
+// a multi-agent debate — locks in the honest stage-name role type
+// ("Objective"/"Plan"/"Research"/"QA"/"Decision") after a follow-up review
+// found the previous role set ("CEO"/"Architect"/"Security"/"Operations")
+// suggested distinct reasoning agents that never actually existed, the same
+// class of misleading framing already found and fixed once for the
+// "Executive Board." Had zero test coverage before this.
+registerTest("InternalDialogue", "records and retrieves turns in order, with a real summarized decision", () => {
+  const dialogue = new InternalDialogue();
+  if (dialogue.getSummarizedDecision() !== "No consensus or decision reached yet.") {
+    throw new Error("InternalDialogue: expected the default message with no turns recorded");
+  }
+
+  dialogue.recordTurn("Objective", "We have received a new high-level objective.");
+  dialogue.recordTurn("Plan", "We should decompose this into concrete steps.");
+  dialogue.recordTurn("Research", "Real research complete.");
+  dialogue.recordTurn("Decision", "Objective researched.");
+
+  const history = dialogue.getHistory();
+  if (history.length !== 4) {
+    throw new Error(`InternalDialogue: expected 4 recorded turns, got ${history.length}`);
+  }
+  if (history[0].role !== "Objective" || history[3].role !== "Decision") {
+    throw new Error("InternalDialogue: turns should be retrievable in the order they were recorded");
+  }
+  if (dialogue.getSummarizedDecision() !== "Objective researched.") {
+    throw new Error(`InternalDialogue: expected the Decision turn's message, got: ${dialogue.getSummarizedDecision()}`);
+  }
+
+  dialogue.clear();
+  if (dialogue.getHistory().length !== 0) {
+    throw new Error("InternalDialogue: clear() should empty the history");
   }
 });
 
