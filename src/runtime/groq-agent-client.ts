@@ -11,26 +11,34 @@ import { toGroqSchema } from "./groq-client.js";
  * already constructs — no separate API key or client to manage.
  */
 
-// Two real, live-verified dead ends before landing here:
+// Three real, live-verified dead ends before landing here:
 // 1. kimi-k2 isn't actually available on this Groq account at all — GET
 //    /openai/v1/models doesn't list any moonshotai/* model, and a real
 //    coding session attempt failed with a 404 "model_not_found".
 // 2. openai/gpt-oss-120b IS available and DOES have real tool-calling
 //    support, but its free-tier rate limit is extremely tight — 8,000
-//    tokens/minute — and a real coding session (system prompt + growing
-//    multi-turn history) burns through that in a handful of turns. A real
-//    session hit "Rate limit exceeded (8000 TPM)" after only ~34,000
-//    total tokens across the whole run, nowhere near MAX_TOKENS_PER_SESSION.
-// openai/gpt-oss-20b already proved reliable under this exact free tier —
-// used for decomposeObjective and the research-lookups call elsewhere in
-// this codebase throughout this entire session's live testing with zero
-// rate-limit issues. A smaller model that reliably finishes a session beats
-// a larger one that reliably gets rate-limited partway through. Overridable
-// via JARVIS_CODING_AGENT_MODEL without a code change if your account's
-// tier/limits differ — check actual availability and rate limits via
-// GET https://api.groq.com/openai/v1/models and the 429 responses
-// themselves, not documentation or a model's name alone.
-const DEFAULT_MODEL = "openai/gpt-oss-20b";
+//    tokens/minute — a real coding session hit "Rate limit exceeded
+//    (8000 TPM)" after only ~34,000 total tokens across the whole run,
+//    nowhere near MAX_TOKENS_PER_SESSION.
+// 3. openai/gpt-oss-20b avoids the rate limit, but a real multi-turn
+//    session against it hit Groq's own "Parsing failed. The model
+//    generated output that could not be parsed" (code: output_parse_failed)
+//    partway through — the gpt-oss family appears to produce plain-text
+//    reasoning output Groq's tool-call parser can't handle once a
+//    conversation has grown past a few turns of tool exchanges, even
+//    though the identical model handles a single-shot structured-output
+//    call fine (see reviewTaskDiff in departments.ts, which still uses it
+//    successfully for exactly that reason).
+// llama-3.3-70b-versatile is what's left, and it's not a guess — it's
+// already this codebase's proven-reliable multi-turn tool-calling
+// workhorse (server.ts's main chat flow drives real tool declarations
+// through it, often across several turns, throughout this entire
+// session's testing with zero parse failures). Overridable via
+// JARVIS_CODING_AGENT_MODEL without a code change if a stronger option
+// proves reliable later — check actual availability, rate limits, and
+// real multi-turn tool-calling behavior (not just a single test call)
+// before trusting a model's name alone.
+const DEFAULT_MODEL = "llama-3.3-70b-versatile";
 
 export interface AgentToolCall {
   id: string;
