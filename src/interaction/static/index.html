@@ -3857,10 +3857,16 @@
                 // just a blank/broken iframe and no escape hatch.
                 const openLink = document.createElement('div');
                 openLink.className = 'text-secondary text-xs text-center py-2';
-                openLink.innerHTML = `<a href="${escapeHtml(content.url)}" target="_blank" class="text-primary underline">Open in new tab</a>`;
+                // rel="noopener noreferrer": content.url is model/tool-supplied
+                // (only checked for http(s)-and-cross-origin by isSafeEmbedUrl
+                // above, not otherwise trusted) — without it, the opened tab
+                // keeps a live window.opener handle back to this one and could
+                // navigate it to a phishing page while attention is on the new
+                // tab.
+                openLink.innerHTML = `<a href="${escapeHtml(content.url)}" target="_blank" rel="noopener noreferrer" class="text-primary underline">Open in new tab</a>`;
                 const fallback = document.createElement('div');
                 fallback.className = 'text-secondary text-xs text-center py-8 hidden';
-                fallback.innerHTML = `This site doesn't allow embedding — <a href="${escapeHtml(content.url)}" target="_blank" class="text-primary underline">open in new tab</a> instead.`;
+                fallback.innerHTML = `This site doesn't allow embedding — <a href="${escapeHtml(content.url)}" target="_blank" rel="noopener noreferrer" class="text-primary underline">open in new tab</a> instead.`;
                 let loaded = false;
                 iframe.onload = () => { loaded = true; };
                 body.appendChild(iframe);
