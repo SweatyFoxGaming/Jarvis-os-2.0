@@ -4143,11 +4143,17 @@
         };
 
         badge.className = `flex items-center gap-2 px-4 py-3 rounded-xl border ${colors[type]} text-xs font-mono pointer-events-auto transition-all duration-300 transform translate-x-[30px] opacity-0`;
+        // msg can originate from attacker-influenceable data (a network
+        // scanner ingesting a device's self-reported hostname, or a
+        // security finding title — see security-routes.ts's /api/security/
+        // ingest/* endpoints, which build notification text directly from
+        // that data) — escape before it ever reaches innerHTML, same as
+        // every other render path in this file.
         badge.innerHTML = `
             <svg class="w-4 h-4 text-primary animate-pulse flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
-            <span class="tracking-wide">${msg}</span>
+            <span class="tracking-wide">${escapeHtml(msg)}</span>
         `;
         container.appendChild(badge);
         
