@@ -891,7 +891,10 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
     while (Date.now() < deadline) {
       try {
         const res = await fetch("http://127.0.0.1:3000/health");
-        if (res.ok) {
+        // Exactly 200, not res.ok's broader 2xx range — /health's own
+        // handler documents that it always returns 200, never any other
+        // status, so this locks in that documented contract specifically.
+        if (res.status === 200) {
           readyResponse = res;
           break;
         }
@@ -916,6 +919,12 @@ registerTest("HTTP Boundary", "Express server boots from a cold start and serves
     const body = await readyResponse.json();
     if (body.database !== "up" && body.database !== "down") {
       throw new Error(`/health: expected database to be "up" or "down", got: ${JSON.stringify(body.database)}`);
+    }
+    if (body.status !== "up" && body.status !== "degraded") {
+      throw new Error(`/health: expected status to be "up" or "degraded", got: ${JSON.stringify(body.status)}`);
+    }
+    if (body.database === "down" && body.status !== "degraded") {
+      throw new Error(`/health: database "down" should always produce status "degraded", got: ${JSON.stringify(body.status)}`);
     }
   } finally {
     if (child) child.kill();

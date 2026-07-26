@@ -14,7 +14,7 @@ import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./runtime/local_engine.js";
 import * as whisper from "./interaction/whisper.js";
-import { initDatabase, isDbReady, pingDatabase } from "./kernel/state/db.js";
+import { initDatabase, pingDatabase } from "./kernel/state/db.js";
 import * as memoryRepo from "./kernel/state/memory-repo.js";
 import * as sessionRepo from "./kernel/state/session-repo.js";
 import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } from "./cognition/session.js";
@@ -247,13 +247,13 @@ setSharedClients(ai, groq, nvidiaApiKey);
 // migration threw) could poll this and see nothing wrong.
 app.get("/health", async (req, res) => {
   const health = observation.getHealth();
-  // isDbReady() reflects whether Postgres came up at all during startup;
-  // skipping the live ping when it never did avoids waiting out
-  // connectionTimeoutMillis on every /health hit for a DB we already know
-  // isn't there. When it was ready at boot, pingDatabase() also catches the
-  // case where it's since gone down — a stale "was fine at startup" flag
-  // isn't what a caller polling this endpoint actually needs to know.
-  const dbConnected = isDbReady() ? await pingDatabase() : false;
+  // Always a live ping, deliberately not gated behind whether Postgres came
+  // up at boot: a one-way "was it ready at startup" flag would mean a
+  // database that recovers after a failed boot stays permanently reported
+  // as down until the whole process restarts. pingDatabase() bounds itself
+  // to 5s regardless of Postgres's own statement/query timeouts, so this
+  // never turns a healthy request into a slow one.
+  const dbConnected = await pingDatabase();
   res.json({
     status: health.status === "green" && dbConnected ? "up" : "degraded",
     version: "1.8.0",
