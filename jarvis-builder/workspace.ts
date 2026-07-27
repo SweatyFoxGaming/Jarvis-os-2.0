@@ -516,3 +516,220 @@ export function startReaper(): void {
     }
   }, 5 * 60 * 1000);
 }
+
+// ---------- Ad-hoc chat sandboxes ----------
+// Same isolated container recipe as the build-request sandboxes above (no
+// secrets, no network to internal services, dropped capabilities, resource
+// caps — see createWorkspace's own comments for the full reasoning) — but
+// keyed by a caller-supplied string (the requesting username) instead of a
+// build request id, and with none of the git-branch/human-approval
+// lifecycle that only makes sense for a coding session that's going to
+// produce a real PR. A chat sandbox is scratch space: a fresh local clone
+// of whatever this repo currently has checked out (not a durable branch,
+// never pushed or reviewed), reused across calls within one idle window,
+// and reaped on inactivity rather than a fixed lifetime.
+const CHAT_WORKSPACES_DIR = `${REPO_HOST_PATH}/.jarvis-chat-workspaces`;
+const CHAT_SANDBOX_MAX_IDLE_MS = positiveIntegerEnv(process.env.JARVIS_CHAT_SANDBOX_MAX_IDLE_MS, 30 * 60 * 1000);
+const MAX_CONCURRENT_CHAT_SANDBOXES = positiveIntegerEnv(process.env.JARVIS_CHAT_SANDBOX_MAX_CONCURRENT, 10);
+// Usernames aren't validated against a safe character set at registration
+// (see users-repo.ts) — this is the boundary that actually interpolates
+// one into a Docker container name and a filesystem path, so it can't
+// trust that input, regardless of what upstream callers already assume.
+const CHAT_SANDBOX_KEY_PATTERN = /^[a-zA-Z0-9_.-]{1,64}$/;
+
+export function assertSafeSandboxKey(key: string): void {
+  if (!CHAT_SANDBOX_KEY_PATTERN.test(key)) {
+    throw new Error(`Refusing to use unsafe chat sandbox key: ${JSON.stringify(key)}`);
+  }
+}
+
+function chatWorkspaceDir(key: string): string {
+  return `${CHAT_WORKSPACES_DIR}/${key}`;
+}
+
+function chatContainerName(key: string): string {
+  return `jarvis-chat-sandbox-${key}`;
+}
+
+// key -> last-used timestamp. Doubles as both the idle-reaper's clock and
+// the concurrency-cap's admission set (a key present here counts against
+// MAX_CONCURRENT_CHAT_SANDBOXES regardless of whether its container has
+// finished being created yet) — mirrors reservedWorkspaceIds' own
+// single-process-so-no-real-lock reasoning above.
+const chatSandboxLastUsed = new Map<string, number>();
+
+// Best-effort, unlike reconcileWorkspaceReservations' hard startup gate:
+// a chat sandbox never produces a PR or shares a git branch pool with
+// anything else, so the worst case of under- or over-counting here for one
+// reconciliation pass is a resource-hygiene nit, not a correctness or
+// security issue. Treats every already-running chat sandbox as "just used"
+// rather than immediately eligible for reaping, so a jarvis-builder
+// restart doesn't instantly kill sessions that were genuinely still active
+// a moment before.
+export async function reconcileChatSandboxes(): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync(
+      "docker",
+      ["ps", "-a", "--filter", "label=jarvis-sandbox-kind=chat", "--format", "{{.ID}}"],
+      { timeout: 10_000 }
+    );
+    const ids = stdout.trim().split("\n").filter(Boolean);
+    await Promise.allSettled(
+      ids.map(async (id) => {
+        const { stdout: label } = await execFileAsync(
+          "docker",
+          ["inspect", "--format", '{{index .Config.Labels "jarvis-chat-sandbox-key"}}', id],
+          { timeout: 10_000 }
+        );
+        const key = label.trim();
+        if (key) chatSandboxLastUsed.set(key, Date.now());
+      })
+    );
+  } catch (err: any) {
+    console.error(`[jarvis-builder] Chat sandbox reconciliation failed: ${err.message}. Existing chat sandboxes may be over-counted or reaped early until the next restart.`);
+  }
+}
+
+async function chatSandboxContainerExists(key: string): Promise<boolean> {
+  try {
+    await execFileAsync("docker", ["inspect", chatContainerName(key)], { timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureChatSandbox(key: string): Promise<void> {
+  assertSafeSandboxKey(key);
+
+  const alreadyTracked = chatSandboxLastUsed.has(key);
+  if (!alreadyTracked) {
+    // Checked and reserved synchronously (no await between them) — same
+    // race reservedWorkspaceIds above already had to close: two near-
+    // simultaneous requests for two different new keys could otherwise
+    // both observe room under the cap before either actually reserves it.
+    if (chatSandboxLastUsed.size >= MAX_CONCURRENT_CHAT_SANDBOXES) {
+      throw new WorkspaceCapacityError(
+        `Refusing to create a new chat sandbox: ${chatSandboxLastUsed.size} already exist ` +
+          `(limit ${MAX_CONCURRENT_CHAT_SANDBOXES}, override with JARVIS_CHAT_SANDBOX_MAX_CONCURRENT). ` +
+          "Wait for an idle one to be reaped, or try again shortly."
+      );
+    }
+    chatSandboxLastUsed.set(key, Date.now());
+  }
+
+  if (await chatSandboxContainerExists(key)) {
+    chatSandboxLastUsed.set(key, Date.now());
+    return;
+  }
+
+  const dir = chatWorkspaceDir(key);
+  const container = chatContainerName(key);
+  try {
+    // Same "dubious ownership" workaround createWorkspace needs above —
+    // idempotent, harmless to repeat here.
+    await execFileAsync("git", ["config", "--global", "--add", "safe.directory", REPO_HOST_PATH]);
+    await execFileAsync("mkdir", ["-p", CHAT_WORKSPACES_DIR]);
+    // Clears any stale leftover from a prior attempt that failed after
+    // partially cloning but before the container itself was confirmed —
+    // `git clone` refuses to write into a non-empty destination.
+    await execFileAsync("rm", ["-rf", dir]).catch(() => {});
+    // A plain local clone of whatever this repo currently has checked
+    // out — no branch, no worktree, no expectation this is ever pushed,
+    // reviewed, or merged, unlike createWorkspace's build-request clones.
+    await execFileAsync("git", ["clone", REPO_HOST_PATH, dir], { timeout: 60_000 });
+    // The clone above is owned by whatever uid this (jarvis-builder)
+    // process runs as (root) — the sandbox container below runs as its
+    // image's built-in non-root `node` user (uid/gid 1000) instead, so
+    // without this it couldn't write to its own bind-mounted workspace.
+    await execFileAsync("chown", ["-R", "1000:1000", dir], { timeout: 30_000 });
+
+    await execFileAsync("docker", [
+      "run", "-d",
+      "--name", container,
+      "--cpus", "1",
+      "--memory", "1g",
+      // Network access stays on deliberately, same as the build sandbox —
+      // package-registry access during exploration is an accepted,
+      // explicit exception, not an oversight. No explicit --network flag,
+      // so this lands on Docker's plain default bridge network, the same
+      // isolation boundary createWorkspace's own extensive comment above
+      // already documents (no route to postgres/jarvis-builder/etc.).
+      "--cap-drop", "ALL",
+      "--security-opt", "no-new-privileges:true",
+      "--pids-limit", "512",
+      "--label", "jarvis-sandbox=true",
+      "--label", "jarvis-sandbox-kind=chat",
+      "--label", `jarvis-chat-sandbox-key=${key}`,
+      "-v", `${dir}:/workspace`,
+      "-w", "/workspace",
+      SANDBOX_IMAGE,
+      "sleep", "infinity",
+    ], { timeout: 30_000 });
+    chatSandboxLastUsed.set(key, Date.now());
+  } catch (err) {
+    await removeContainerConfirmed(container).catch(() => {});
+    await execFileAsync("rm", ["-rf", dir], { timeout: 30_000 }).catch(() => {});
+    if (!alreadyTracked) chatSandboxLastUsed.delete(key);
+    throw err;
+  }
+}
+
+export async function execInChatSandbox(
+  key: string,
+  command: string
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  await ensureChatSandbox(key);
+  const container = chatContainerName(key);
+  try {
+    // Unlike execInWorkspace (bounded only by the coding loop's own
+    // token/turn budget, since a legitimate build can run `npm ci && npm
+    // test` for a long time), a chat sandbox command is a live part of an
+    // interactive conversation — a hung command here would block the
+    // user's reply indefinitely instead of just one autonomous session.
+    const { stdout, stderr } = await execFileAsync("docker", ["exec", container, "sh", "-c", command], {
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 5 * 60 * 1000,
+    });
+    chatSandboxLastUsed.set(key, Date.now());
+    return { stdout, stderr, exitCode: 0 };
+  } catch (err: any) {
+    // A non-zero exit code (a failing test, a typo'd command) — or this
+    // call's own 5-minute timeout firing — is a normal, expected outcome
+    // here, not a real error — surfaced as a result either way.
+    chatSandboxLastUsed.set(key, Date.now());
+    return {
+      stdout: err.stdout || "",
+      stderr: err.stderr || err.message || String(err),
+      exitCode: typeof err.code === "number" ? err.code : 1,
+    };
+  }
+}
+
+export async function destroyChatSandbox(key: string): Promise<void> {
+  assertSafeSandboxKey(key);
+  const dir = chatWorkspaceDir(key);
+  const container = chatContainerName(key);
+  const removed = await removeContainerConfirmed(container);
+  if (removed) {
+    await execFileAsync("rm", ["-rf", dir]).catch(() => {});
+    chatSandboxLastUsed.delete(key);
+  } else {
+    console.error(
+      `[jarvis-builder] Failed to remove chat sandbox container ${container} — ` +
+        "keeping its workspace directory intact, since the container may still be alive and using it."
+    );
+  }
+}
+
+export function startChatSandboxReaper(): void {
+  setInterval(async () => {
+    const now = Date.now();
+    const idleKeys = [...chatSandboxLastUsed.entries()]
+      .filter(([, lastUsed]) => now - lastUsed > CHAT_SANDBOX_MAX_IDLE_MS)
+      .map(([key]) => key);
+    // Each destroyed independently so one bad/slow key can't stop the rest
+    // of the pass from being reaped — same pattern as startReaper above.
+    await Promise.allSettled(idleKeys.map((key) => destroyChatSandbox(key).catch(() => {})));
+  }, 5 * 60 * 1000);
+}

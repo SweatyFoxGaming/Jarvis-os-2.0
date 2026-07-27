@@ -86,6 +86,20 @@ registerTest("HTTP Boundary", "jarvis-builder boots and gates every route except
       throw new Error(`expected 401 with no X-Builder-Secret on DELETE /workspaces/1, got ${noSecretDelete.status}`);
     }
 
+    const noSecretChatExec = await fetch(`http://127.0.0.1:${PORT}/chat-sandboxes/testuser/exec`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "echo hi" }),
+    });
+    if (noSecretChatExec.status !== 401) {
+      throw new Error(`expected 401 with no X-Builder-Secret on POST /chat-sandboxes/testuser/exec, got ${noSecretChatExec.status}`);
+    }
+
+    const noSecretChatDelete = await fetch(`http://127.0.0.1:${PORT}/chat-sandboxes/testuser`, { method: "DELETE" });
+    if (noSecretChatDelete.status !== 401) {
+      throw new Error(`expected 401 with no X-Builder-Secret on DELETE /chat-sandboxes/testuser, got ${noSecretChatDelete.status}`);
+    }
+
     if (!knowsSecret) return; // rest needs this test's own known JARVIS_BUILDER_SECRET
 
     const secretHeaders = { "X-Builder-Secret": TEST_SECRET, "Content-Type": "application/json" };
@@ -133,6 +147,32 @@ registerTest("HTTP Boundary", "jarvis-builder boots and gates every route except
     });
     if (missingCommand.status !== 400) {
       throw new Error(`expected 400 for a missing command, got ${missingCommand.status}`);
+    }
+
+    const unsafeChatKey = await fetch(`http://127.0.0.1:${PORT}/chat-sandboxes/${encodeURIComponent("../etc/passwd")}/exec`, {
+      method: "POST",
+      headers: secretHeaders,
+      body: JSON.stringify({ command: "echo hi" }),
+    });
+    if (unsafeChatKey.status !== 400) {
+      throw new Error(`expected 400 for an unsafe chat sandbox key, got ${unsafeChatKey.status}`);
+    }
+
+    const missingChatCommand = await fetch(`http://127.0.0.1:${PORT}/chat-sandboxes/testuser/exec`, {
+      method: "POST",
+      headers: secretHeaders,
+      body: JSON.stringify({}),
+    });
+    if (missingChatCommand.status !== 400) {
+      throw new Error(`expected 400 for a missing command on a chat sandbox exec, got ${missingChatCommand.status}`);
+    }
+
+    const unsafeChatDeleteKey = await fetch(`http://127.0.0.1:${PORT}/chat-sandboxes/${encodeURIComponent("evil; rm -rf /")}`, {
+      method: "DELETE",
+      headers: secretHeaders,
+    });
+    if (unsafeChatDeleteKey.status !== 400) {
+      throw new Error(`expected 400 for an unsafe chat sandbox key on delete, got ${unsafeChatDeleteKey.status}`);
     }
   } finally {
     if (child && child.exitCode === null && !child.killed) {

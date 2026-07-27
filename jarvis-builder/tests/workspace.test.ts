@@ -1,5 +1,5 @@
 import { registerTest } from "./registry.js";
-import { positiveIntegerEnv, assertSafeBranchName } from "../workspace.js";
+import { positiveIntegerEnv, assertSafeBranchName, assertSafeSandboxKey } from "../workspace.js";
 
 // These are the two pure, side-effect-free pieces of workspace.ts's logic —
 // everything else in that file shells out to git/docker and, critically,
@@ -62,4 +62,53 @@ registerTest("assertSafeBranchName", "rejects a name with shell-meaningful chara
     threw = true;
   }
   if (!threw) throw new Error("expected assertSafeBranchName to reject a name with unsafe characters");
+});
+
+// assertSafeSandboxKey is the one boundary that validates a chat sandbox
+// key (in practice, a username with no character restrictions applied at
+// registration — see users-repo.ts in the main app) before it's
+// interpolated into a Docker container name and a filesystem path.
+registerTest("assertSafeSandboxKey", "accepts an ordinary username", () => {
+  assertSafeSandboxKey("admin");
+  assertSafeSandboxKey("chad.adams-01");
+});
+
+registerTest("assertSafeSandboxKey", "rejects a key with shell/path-meaningful characters", () => {
+  let threw = false;
+  try {
+    assertSafeSandboxKey("../../etc/passwd");
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error("expected assertSafeSandboxKey to reject a path-traversal-shaped key");
+});
+
+registerTest("assertSafeSandboxKey", "rejects a key with spaces or shell metacharacters", () => {
+  let threw = false;
+  try {
+    assertSafeSandboxKey("evil; rm -rf /");
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error("expected assertSafeSandboxKey to reject a key with unsafe characters");
+});
+
+registerTest("assertSafeSandboxKey", "rejects an empty string", () => {
+  let threw = false;
+  try {
+    assertSafeSandboxKey("");
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error("expected assertSafeSandboxKey to reject an empty key");
+});
+
+registerTest("assertSafeSandboxKey", "rejects a key longer than 64 characters", () => {
+  let threw = false;
+  try {
+    assertSafeSandboxKey("a".repeat(65));
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error("expected assertSafeSandboxKey to reject an over-length key");
 });

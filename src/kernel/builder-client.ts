@@ -120,3 +120,18 @@ export async function execInWorkspace(
 export async function destroyWorkspace(buildRequestId: number): Promise<void> {
   await builderRequest(`/workspaces/${buildRequestId}`, "DELETE");
 }
+
+// Ad-hoc chat sandboxes — keyed by username, not a build request id. No
+// separate "create" call: jarvis-builder creates the sandbox on first use
+// and reuses it across calls until it's idle-reaped, so this is the only
+// function most callers (see run_sandbox_command in tools.ts) need.
+export async function execInChatSandbox(
+  username: string,
+  command: string
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return builderRequest(`/chat-sandboxes/${encodeURIComponent(username)}/exec`, "POST", JSON.stringify({ command }));
+}
+
+export async function destroyChatSandbox(username: string): Promise<void> {
+  await builderRequest(`/chat-sandboxes/${encodeURIComponent(username)}`, "DELETE");
+}

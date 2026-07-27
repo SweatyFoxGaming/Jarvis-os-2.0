@@ -543,6 +543,20 @@ registerTest("Tools", "confirm_build_direction reports cleanly when no build req
   }
 });
 
+registerTest("Tools", "run_sandbox_command denies calls without system.sandbox_execute grant", async () => {
+  const result = await executeTool("run_sandbox_command", { command: "echo hi" }, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: run_sandbox_command should deny a call with no capability grant");
+  }
+});
+
+registerTest("Tools", "reset_sandbox denies calls without system.sandbox_execute grant", async () => {
+  const result = await executeTool("reset_sandbox", {}, "ungranted_test_user");
+  if (result.ok !== false || !result.error?.toLowerCase().includes("grant")) {
+    throw new Error("Tools: reset_sandbox should deny a call with no capability grant");
+  }
+});
+
 registerTest("Tools", "executeTool reports unknown tool for a name that isn't static or a cached MCP tool", async () => {
   const result = await executeTool("not_a_real_tool", {}, "admin");
   if (result.ok !== false || !result.error?.toLowerCase().includes("unknown")) {

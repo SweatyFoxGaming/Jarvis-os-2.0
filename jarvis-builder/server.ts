@@ -7,6 +7,11 @@ import {
   startReaper,
   reconcileWorkspaceReservations,
   WorkspaceCapacityError,
+  execInChatSandbox,
+  destroyChatSandbox,
+  assertSafeSandboxKey,
+  reconcileChatSandboxes,
+  startChatSandboxReaper,
 } from "./workspace.js";
 
 const app = express();
@@ -86,6 +91,45 @@ app.delete("/workspaces/:id", async (req, res) => {
   }
 });
 
+// Ad-hoc chat sandboxes — no buildRequestId, no baseBranch, no approval
+// lifecycle. Keyed by a caller-supplied string (the main app passes the
+// requesting username); get-or-create semantics mean the caller never has
+// to make a separate "create" call before its first exec.
+app.post("/chat-sandboxes/:key/exec", async (req, res) => {
+  const { key } = req.params;
+  const { command } = req.body || {};
+  try {
+    assertSafeSandboxKey(key);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (typeof command !== "string" || !command.trim()) {
+    return res.status(400).json({ error: "command is required." });
+  }
+  try {
+    const result = await execInChatSandbox(key, command);
+    res.json(result);
+  } catch (err: any) {
+    const status = err instanceof WorkspaceCapacityError ? 503 : 500;
+    res.status(status).json({ error: err.message || String(err) });
+  }
+});
+
+app.delete("/chat-sandboxes/:key", async (req, res) => {
+  const { key } = req.params;
+  try {
+    assertSafeSandboxKey(key);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+  try {
+    await destroyChatSandbox(key);
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 const PORT = 4100;
 
 async function start(): Promise<void> {
@@ -102,6 +146,11 @@ async function start(): Promise<void> {
   // also checks areReservationsReady() itself as a second, independent
   // guard against the same gap.
   await reconcileWorkspaceReservations();
+  // Best-effort (see reconcileChatSandboxes' own comment) — not awaited
+  // ahead of listen() the way the build-workspace reconciliation above is,
+  // since chat sandboxes have no hard "block until this succeeds" gate to
+  // race against.
+  reconcileChatSandboxes();
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[jarvis-builder] listening on port ${PORT}`);
@@ -114,6 +163,7 @@ async function start(): Promise<void> {
   // takes, on top of not reaping any already-expired containers during
   // that window.
   startReaper();
+  startChatSandboxReaper();
 
   // Not awaited before listen(): an image build can take minutes on a cold
   // start, and /health (and the reservation cap above) don't depend on it —
