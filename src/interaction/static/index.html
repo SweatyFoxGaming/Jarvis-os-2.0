@@ -503,6 +503,55 @@
                         <div class="text-secondary text-center w-full py-6 text-sm opacity-60">No commands proposed yet.</div>
                     </div>
                 </div>
+
+                <!-- Self-Improvement: real, computed analyses (import graph, tsc/grep
+                     output, telemetry, secret scan — see adaptation/analyzer.ts),
+                     never applied automatically, same as everything else here. -->
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <div>
+                            <h3 class="font-display font-semibold text-sm text-white">Self-improvement</h3>
+                            <p class="text-[11px] text-secondary mt-1 max-w-lg">Jarvis analyzes its own codebase — architecture, quality, performance, security — and only ever surfaces findings for you to act on.</p>
+                        </div>
+                        <span id="evolution-health-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary whitespace-nowrap">No analyses yet</span>
+                    </div>
+                    <div class="flex flex-wrap gap-1.5 mb-4">
+                        <button onclick="runEvolutionAnalysis('architecture')" class="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-mono uppercase tracking-widest text-secondary hover:text-white transition-all">Run architecture</button>
+                        <button onclick="runEvolutionAnalysis('quality')" class="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-mono uppercase tracking-widest text-secondary hover:text-white transition-all">Run quality</button>
+                        <button onclick="runEvolutionAnalysis('performance')" class="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-mono uppercase tracking-widest text-secondary hover:text-white transition-all">Run performance</button>
+                        <button onclick="runEvolutionAnalysis('security')" class="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-mono uppercase tracking-widest text-secondary hover:text-white transition-all">Run security</button>
+                    </div>
+                    <span class="text-[11px] text-secondary uppercase tracking-wider block mb-2">Recommendations</span>
+                    <div id="evolution-recommendations-list" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                        <div class="text-secondary text-center w-full py-4 text-sm opacity-60">No analyses run yet.</div>
+                    </div>
+                </div>
+
+                <!-- Feature Requests: the bridge between "asked Jarvis for it in chat"
+                     (queue_feature_request) and a human developer actually building it —
+                     see feature-requests-repo.ts. Jarvis never writes or executes code. -->
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <h3 class="font-display font-semibold text-sm text-white">Feature requests</h3>
+                        <span id="feature-requests-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary whitespace-nowrap">0 queued</span>
+                    </div>
+                    <div id="feature-requests-list" class="space-y-2">
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing requested yet.</div>
+                    </div>
+                </div>
+
+                <!-- Briefing & History: on-demand generation of the same synthesis the
+                     scheduled hourly job produces (see world/briefing.js), plus what's
+                     already been generated and persisted. -->
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <h3 class="font-display font-semibold text-sm text-white">Briefing &amp; history</h3>
+                        <button onclick="generateBriefingNow()" id="btn-generate-briefing" class="px-2.5 py-1 bg-primary/10 hover:bg-primary/20 border border-primary/20 rounded-lg text-[10px] font-mono uppercase tracking-widest text-primary hover:text-white transition-all whitespace-nowrap">Generate now</button>
+                    </div>
+                    <div id="briefing-history-list" class="space-y-2 max-h-72 overflow-y-auto pr-1">
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">No briefings generated yet.</div>
+                    </div>
+                </div>
             </div>
 
             <div id="view-workspace" class="view-pane hidden space-y-6">
@@ -3176,6 +3225,181 @@
         } catch {}
     }
 
+    const ISSUE_SEVERITY_STYLE = {
+        high: 'border-danger/25 text-danger bg-danger/5',
+        medium: 'border-warning/25 text-warning bg-warning/5',
+        low: 'border-white/10 text-secondary bg-white/5',
+    };
+
+    async function loadEvolutionStatus() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const [dashRes, recRes] = await Promise.all([
+                authFetch('/api/evolution/dashboard', { headers }),
+                authFetch('/api/evolution/recommendations', { headers }),
+            ]);
+
+            if (dashRes.ok) {
+                const dash = await dashRes.json();
+                const badge = document.getElementById('evolution-health-badge');
+                badge.textContent = dash.health_score === null || dash.health_score === undefined
+                    ? 'No analyses yet'
+                    : `Health ${dash.health_score}/100`;
+            }
+
+            if (recRes.ok) {
+                const data = await recRes.json();
+                const recommendations = data.recommendations || [];
+                const list = document.getElementById('evolution-recommendations-list');
+                if (recommendations.length === 0) {
+                    list.innerHTML = `<div class="text-secondary text-center w-full py-4 text-sm opacity-60">No analyses run yet.</div>`;
+                    return;
+                }
+                // Already sorted high -> low severity by the server; capped here
+                // so one noisy analysis type can't push everything else out of view.
+                list.innerHTML = recommendations.slice(0, 25).map(r => {
+                    const style = ISSUE_SEVERITY_STYLE[r.severity] || ISSUE_SEVERITY_STYLE.low;
+                    return `
+                        <div class="holo-chip border ${style.split(' ')[0]} rounded-lg p-2.5">
+                            <div class="flex items-center justify-between gap-2 mb-1">
+                                <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase ${style}">${escapeHtml(r.severity)}</span>
+                                <span class="text-[8px] text-secondary font-mono uppercase tracking-widest">${escapeHtml(r.type)}</span>
+                            </div>
+                            <span class="text-[10px] text-white block leading-snug">${escapeHtml(r.message)}</span>
+                            ${r.file ? `<code class="text-[9px] text-secondary/80 font-mono block mt-1 break-all">${escapeHtml(r.file)}</code>` : ''}
+                        </div>
+                    `;
+                }).join('');
+            }
+        } catch {}
+    }
+
+    async function runEvolutionAnalysis(type) {
+        try {
+            const res = await authFetch(`/api/evolution/analyze/${type}`, {
+                method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) {
+                addNotification(`${type[0].toUpperCase()}${type.slice(1)} analysis complete.`, "success");
+                loadEvolutionStatus();
+            } else {
+                const body = await res.json().catch(() => ({}));
+                addNotification(body.error || `${type} analysis failed.`, "danger");
+            }
+        } catch {
+            addNotification(`${type} analysis failed — request could not be sent.`, "danger");
+        }
+    }
+
+    const FEATURE_REQUEST_STATUS_STYLE = {
+        queued: { label: 'QUEUED', classes: 'border-white/10 text-secondary bg-white/5' },
+        in_progress: { label: 'IN PROGRESS', classes: 'border-warning/25 text-warning bg-warning/5' },
+        shipped: { label: 'SHIPPED', classes: 'border-success/25 text-success bg-success/5' },
+        declined: { label: 'DECLINED', classes: 'border-danger/25 text-danger bg-danger/5' },
+    };
+
+    async function loadFeatureRequests() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const res = await authFetch('/api/feature-requests', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) return;
+            const data = await res.json();
+            const requests = data.requests || [];
+
+            const queuedCount = requests.filter(r => r.status === 'queued').length;
+            document.getElementById('feature-requests-badge').textContent = `${queuedCount} QUEUED`;
+
+            const list = document.getElementById('feature-requests-list');
+            if (requests.length === 0) {
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-sm opacity-60">Nothing requested yet.</div>`;
+                return;
+            }
+            list.innerHTML = requests.slice(0, 30).map(r => {
+                const style = FEATURE_REQUEST_STATUS_STYLE[r.status] || FEATURE_REQUEST_STATUS_STYLE.queued;
+                return `
+                    <div class="holo-chip border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase ${style.classes}">${style.label}</span>
+                            <span class="text-[8px] text-secondary font-mono">${new Date(r.created_at).toLocaleString()}</span>
+                        </div>
+                        <span class="text-[11px] text-white font-medium block mb-1">${escapeHtml(r.title)}</span>
+                        <p class="text-[10px] text-secondary leading-snug mb-1.5">${escapeHtml(r.description)}</p>
+                        ${r.status !== 'shipped' && r.status !== 'declined' ? `
+                            <div class="flex gap-1.5">
+                                ${r.status === 'queued' ? `<button onclick="setFeatureRequestStatus(${r.id}, 'in_progress')" class="flex-1 px-1.5 py-1 bg-warning/10 hover:bg-warning/20 border border-warning/20 rounded text-[8px] font-mono font-bold text-warning uppercase tracking-widest">START</button>` : ''}
+                                <button onclick="setFeatureRequestStatus(${r.id}, 'shipped')" class="flex-1 px-1.5 py-1 bg-success/10 hover:bg-success/20 border border-success/20 rounded text-[8px] font-mono font-bold text-success uppercase tracking-widest">SHIP</button>
+                                <button onclick="setFeatureRequestStatus(${r.id}, 'declined')" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">DECLINE</button>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        } catch {}
+    }
+
+    async function setFeatureRequestStatus(id, status) {
+        try {
+            const res = await authFetch(`/api/feature-requests/${id}/status`, {
+                method: 'POST',
+                headers: { 'X-API-Key': CURRENT_API_KEY, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status })
+            });
+            if (res.ok) { loadFeatureRequests(); }
+            else { const body = await res.json().catch(() => ({})); addNotification(body.error || "Could not update feature request.", "danger"); }
+        } catch {
+            addNotification("Could not update feature request — request could not be sent.", "danger");
+        }
+    }
+
+    async function loadBriefingHistory() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const res = await authFetch('/api/briefing/history', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) return;
+            const data = await res.json();
+            renderBriefingHistory(data.briefings || []);
+        } catch {}
+    }
+
+    function renderBriefingHistory(briefings) {
+        const list = document.getElementById('briefing-history-list');
+        if (briefings.length === 0) {
+            list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-sm opacity-60">No briefings generated yet.</div>`;
+            return;
+        }
+        list.innerHTML = briefings.map(b => `
+            <div class="holo-chip border-white/5 border rounded-xl p-3.5">
+                <div class="flex items-center justify-between mb-1.5">
+                    <span class="text-[8px] text-secondary font-mono uppercase tracking-widest">${b.item_count} item${b.item_count === 1 ? '' : 's'}</span>
+                    <span class="text-[8px] text-secondary font-mono">${new Date(b.created_at).toLocaleString()}</span>
+                </div>
+                <p class="text-[11px] text-white leading-snug whitespace-pre-wrap">${escapeHtml(b.content)}</p>
+            </div>
+        `).join('');
+    }
+
+    async function generateBriefingNow() {
+        const btn = document.getElementById('btn-generate-briefing');
+        btn.disabled = true;
+        btn.textContent = 'Generating...';
+        try {
+            const res = await authFetch('/api/briefing', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (res.ok) {
+                addNotification("Briefing generated.", "success");
+                loadBriefingHistory();
+            } else {
+                const body = await res.json().catch(() => ({}));
+                addNotification(body.error || "Briefing generation failed.", "danger");
+            }
+        } catch {
+            addNotification("Briefing generation failed — request could not be sent.", "danger");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Generate now';
+        }
+    }
+
     async function refreshWorkspaceSnapshot() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -4158,6 +4382,9 @@
         loadSecurityOps();
         loadCommandExecution();
         loadProactiveNotifications();
+        loadEvolutionStatus();
+        loadFeatureRequests();
+        loadBriefingHistory();
         initAlwaysOnSensors();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
@@ -4166,6 +4393,9 @@
         setInterval(loadSecurityOps, 20000);
         setInterval(loadCommandExecution, 10000);
         setInterval(loadProactiveNotifications, 20000);
+        setInterval(loadEvolutionStatus, 60000);
+        setInterval(loadFeatureRequests, 30000);
+        setInterval(loadBriefingHistory, 60000);
     });
 
     // Global Notification Badge
