@@ -1,5 +1,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
+import fs from "fs";
+import crypto from "crypto";
 
 const execFileAsync = promisify(execFile);
 
@@ -8,7 +10,26 @@ const execFileAsync = promisify(execFile);
 // sandbox container.
 const REPO_HOST_PATH = process.env.JARVIS_REPO_HOST_PATH || "/mnt/jarvis_home/llm";
 const WORKSPACES_DIR = `${REPO_HOST_PATH}/.jarvis-build-workspaces`;
-const SANDBOX_IMAGE = "jarvis-sandbox:latest";
+
+// Tagged by a hash of sandbox.Dockerfile's own content, not a fixed
+// "latest" — ensureSandboxImage below only builds an image if the tag
+// doesn't already exist at all, so a fixed tag would mean editing
+// sandbox.Dockerfile (e.g. changing which user it runs as) silently has no
+// effect on already-running deployments until someone remembers to
+// manually delete the stale cached image. Live-verified this actually
+// happened: the image running in production predated this file's own
+// `USER node` line by several days, so every sandbox container — both
+// build-request and chat — had genuinely been running as root the whole
+// time despite the Dockerfile's clear intent otherwise. Hashing the
+// Dockerfile's content into the tag makes a content change automatically
+// produce a new tag, which ensureSandboxImage's own "does this tag exist"
+// check then correctly treats as needing a real rebuild.
+function computeSandboxImageTag(): string {
+  const dockerfilePath = "/app/sandbox.Dockerfile";
+  const content = fs.readFileSync(dockerfilePath, "utf-8");
+  const hash = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+  return `jarvis-sandbox:${hash}`;
+}
 
 // Number(x) || fallback silently lets a negative value through (Number("-1")
 // || fallback evaluates to -1, since -1 is truthy) — used for both env vars
@@ -143,18 +164,43 @@ export interface WorkspaceHandle {
   containerName: string;
 }
 
-// Builds the shared sandbox image once, the first time it's needed —
-// subsequent calls are a fast no-op (`docker image inspect` succeeding).
-export async function ensureSandboxImage(): Promise<void> {
+// Best-effort cleanup of images left behind under a superseded content
+// hash — CodeRabbit review on this same change: a superseded tag is never
+// referenced again once the Dockerfile changes, so leaving it forever
+// would grow the image cache without bound over the service's lifetime.
+// Plain `docker rmi` (no -f) is the safety property this relies on: it
+// simply fails for a tag any container (running or stopped) still
+// references, so an old image backing a sandbox that hasn't been
+// recycled yet is left alone rather than forced out from under it — it's
+// picked up on a later call once nothing references it anymore.
+async function pruneSupersededSandboxImages(currentTag: string): Promise<void> {
   try {
-    await execFileAsync("docker", ["image", "inspect", SANDBOX_IMAGE]);
+    const { stdout } = await execFileAsync("docker", [
+      "images", "jarvis-sandbox", "--format", "{{.Repository}}:{{.Tag}}",
+    ]);
+    const staleTags = stdout.trim().split("\n").filter((t) => t && t !== currentTag);
+    await Promise.allSettled(staleTags.map((t) => execFileAsync("docker", ["rmi", t])));
+  } catch {
+    // Best-effort — a failed listing/removal here never blocks sandbox creation.
+  }
+}
+
+// Builds the shared sandbox image once per distinct Dockerfile content —
+// subsequent calls with the same content are a fast no-op (`docker image
+// inspect` succeeding against that content's tag).
+export async function ensureSandboxImage(): Promise<void> {
+  const tag = computeSandboxImageTag();
+  try {
+    await execFileAsync("docker", ["image", "inspect", tag]);
+    pruneSupersededSandboxImages(tag);
     return;
   } catch {
     // Not found yet — fall through and build it.
   }
-  await execFileAsync("docker", ["build", "-f", "sandbox.Dockerfile", "-t", SANDBOX_IMAGE, "."], {
+  await execFileAsync("docker", ["build", "-f", "sandbox.Dockerfile", "-t", tag, "."], {
     cwd: "/app",
   });
+  pruneSupersededSandboxImages(tag);
 }
 
 // Rejects anything that could be parsed by git as a flag (e.g. a leading
@@ -329,7 +375,7 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
       "--label", `jarvis-build-request-id=${buildRequestId}`,
       "-v", `${dir}:/workspace`,
       "-w", "/workspace",
-      SANDBOX_IMAGE,
+      computeSandboxImageTag(),
       "sleep", "infinity",
     ], { timeout: 30_000 });
 
@@ -671,7 +717,7 @@ export async function ensureChatSandbox(key: string): Promise<void> {
       "--label", `jarvis-chat-sandbox-key=${key}`,
       "-v", `${dir}:/workspace`,
       "-w", "/workspace",
-      SANDBOX_IMAGE,
+      computeSandboxImageTag(),
       "sleep", "infinity",
     ], { timeout: 30_000 });
     chatSandboxLastUsed.set(key, Date.now());
