@@ -216,6 +216,22 @@ securityRouter.post("/api/system/commands/:id/approve", validateApiKey, async (r
   }
 });
 
+// The list endpoint this router never had — a server proposed via the
+// register_mcp_server chat tool (see tools.ts) previously had no way to be
+// seen at all short of querying Postgres directly, let alone approved or
+// disabled from the dashboard, despite the approve/disable routes below
+// already existing.
+securityRouter.get("/api/system/mcp-servers", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "system.mcp_manage")) {
+    return res.status(403).json({ error: 'Missing capability grant "system.mcp_manage"' });
+  }
+  try {
+    res.json({ servers: await mcpServersRepo.listMcpServers(req.query.status as mcpServersRepo.McpServerRow["status"] | undefined) });
+  } catch (err: any) {
+    res.json({ servers: [], error: err.message });
+  }
+});
+
 securityRouter.post("/api/system/mcp-servers/:id/approve", validateApiKey, async (req: any, res: any) => {
   if (!permissions.hasGrant(req.username, "system.mcp_manage")) {
     return res.status(403).json({ error: 'Missing capability grant "system.mcp_manage"' });

@@ -227,13 +227,6 @@
                                     </label>
                                 </div>
 
-                                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
-                                    <span class="text-secondary text-[11px]">MULTI-AGENT DEBATE LOG</span>
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" id="toggle-debates" onchange="updateViewConfig('debates')" class="sr-only peer">
-                                        <div class="w-9 h-5 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary after:border-secondary after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-checked:after:bg-white peer-checked:after:border-white"></div>
-                                    </label>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -544,7 +537,6 @@
             document.getElementById('toggle-hyper-graph').checked = localStorage.getItem('admin_show_hyper_graph') === 'true';
             document.getElementById('toggle-dispatcher').checked = localStorage.getItem('admin_show_dispatcher') === 'true';
             document.getElementById('toggle-thoughts').checked = localStorage.getItem('admin_show_thoughts') === 'true';
-            document.getElementById('toggle-debates').checked = localStorage.getItem('admin_show_debates') === 'true';
         }
 
         function updateViewConfig(key) {

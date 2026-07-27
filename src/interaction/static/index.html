@@ -240,6 +240,17 @@
                         <div id="identity-ticker" class="hidden text-center max-w-sm">
                             <p id="identity-ticker-text" class="text-xs text-secondary/80 italic leading-snug"></p>
                         </div>
+                        <!-- Current mission/goal — real data from session.workspace
+                             (see loadLiveSystemData's "Mission Goal" block), not a
+                             placeholder: activeGoal defaults to a real value and
+                             progressPercent moves as the autonomous executive works. -->
+                        <div class="w-full max-w-xs flex flex-col items-center gap-1">
+                            <span id="goal-name" class="text-[10px] text-secondary/80 uppercase tracking-[0.15em] truncate max-w-full"></span>
+                            <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                <div id="goal-progress-bar" class="h-full bg-accent/60 transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                            <span id="goal-progress-text" class="text-[9px] text-secondary/50 font-mono"></span>
+                        </div>
                         <div class="flex items-center gap-3">
                             <button onclick="toggleCameraSensor()" id="btn-camera-toggle" title="Toggle camera" class="p-2 rounded-full border border-white/10 text-secondary hover:text-white hover:border-white/20 transition-all">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -550,6 +561,25 @@
                     </div>
                     <div id="briefing-history-list" class="space-y-2 max-h-72 overflow-y-auto pr-1">
                         <div class="text-secondary text-center w-full py-6 text-sm opacity-60">No briefings generated yet.</div>
+                    </div>
+                </div>
+
+                <!-- MCP Servers: a server is proposed via the register_mcp_server chat
+                     tool, but until now had no way to actually be seen, approved, or
+                     disabled short of a raw API call — this is that missing link.
+                     Approval only ever happens here, after a real connect()+listTools()
+                     round-trip (see capabilities/mcp-registry.js); Jarvis never
+                     self-approves a server it proposed. -->
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <div>
+                            <h3 class="font-display font-semibold text-sm text-white">MCP servers</h3>
+                            <p class="text-[11px] text-secondary mt-1 max-w-lg">Third-party tool servers Jarvis has proposed or been given — nothing here is trusted until you explicitly approve it, and a server's tools stop being offered the moment it changes them without re-approval.</p>
+                        </div>
+                        <span id="mcp-servers-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary whitespace-nowrap">0 pending</span>
+                    </div>
+                    <div id="mcp-servers-list" class="space-y-2">
+                        <div class="text-secondary text-center w-full py-6 text-sm opacity-60">No MCP servers registered yet.</div>
                     </div>
                 </div>
             </div>
@@ -3400,6 +3430,83 @@
         }
     }
 
+    const MCP_SERVER_STATUS_STYLE = {
+        pending: { label: 'PENDING REVIEW', classes: 'border-danger/30 text-danger bg-danger/5' },
+        approved: { label: 'APPROVED', classes: 'border-success/25 text-success bg-success/5' },
+        error: { label: 'ERROR', classes: 'border-warning/25 text-warning bg-warning/5' },
+        disabled: { label: 'DISABLED', classes: 'border-secondary/25 text-secondary bg-secondary/5' },
+        rejected: { label: 'REJECTED', classes: 'border-secondary/25 text-secondary bg-secondary/5' },
+    };
+
+    async function loadMcpServers() {
+        if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
+        try {
+            const res = await authFetch('/api/system/mcp-servers', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) return;
+            const data = await res.json();
+            const servers = data.servers || [];
+
+            const pendingCount = servers.filter(s => s.status === 'pending').length;
+            document.getElementById('mcp-servers-badge').textContent = `${pendingCount} PENDING`;
+
+            const list = document.getElementById('mcp-servers-list');
+            if (servers.length === 0) {
+                list.innerHTML = `<div class="text-secondary text-center w-full py-6 text-sm opacity-60">No MCP servers registered yet.</div>`;
+                return;
+            }
+            list.innerHTML = servers.map(s => {
+                const style = MCP_SERVER_STATUS_STYLE[s.status] || MCP_SERVER_STATUS_STYLE.pending;
+                return `
+                    <div class="holo-chip border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="px-1.5 py-0.5 rounded border text-[8px] font-mono font-bold tracking-widest uppercase ${style.classes}">${style.label}</span>
+                            <span class="text-[8px] text-secondary font-mono">${new Date(s.created_at).toLocaleString()}</span>
+                        </div>
+                        <span class="text-[11px] text-white font-medium block mb-1">${escapeHtml(s.name)}</span>
+                        <code class="text-[9px] text-secondary/80 font-mono block mb-1.5 break-all">${escapeHtml(s.url)}</code>
+                        <span class="text-[9px] text-secondary block mb-1.5">Registered by ${escapeHtml(s.registered_by)}${s.last_error ? ` — last error: ${escapeHtml(s.last_error)}` : ''}</span>
+                        ${s.status === 'pending' || s.status === 'error' ? `
+                            <div class="flex gap-1.5">
+                                <button onclick="approveMcpServer(${s.id})" class="flex-1 px-1.5 py-1 bg-success/10 hover:bg-success/20 border border-success/20 rounded text-[8px] font-mono font-bold text-success uppercase tracking-widest">APPROVE</button>
+                                <button onclick="disableMcpServer(${s.id})" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">${s.status === 'pending' ? 'REJECT' : 'DISABLE'}</button>
+                            </div>
+                        ` : ''}
+                        ${s.status === 'approved' ? `
+                            <div class="flex gap-1.5">
+                                <button onclick="disableMcpServer(${s.id})" class="flex-1 px-1.5 py-1 bg-danger/10 hover:bg-danger/20 border border-danger/25 rounded text-[8px] font-mono font-bold text-danger uppercase tracking-widest">DISABLE</button>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        } catch {}
+    }
+
+    async function approveMcpServer(id) {
+        if (!confirm('Approve this MCP server? Jarvis will connect to it and offer its declared tools to the LLM from now on.')) return;
+        try {
+            const res = await authFetch(`/api/system/mcp-servers/${id}/approve`, {
+                method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) { addNotification("MCP server approved.", "success"); loadMcpServers(); }
+            else { const body = await res.json().catch(() => ({})); addNotification(body.error || "Could not approve MCP server.", "danger"); }
+        } catch {
+            addNotification("Could not approve MCP server — request could not be sent.", "danger");
+        }
+    }
+
+    async function disableMcpServer(id) {
+        try {
+            const res = await authFetch(`/api/system/mcp-servers/${id}/disable`, {
+                method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY }
+            });
+            if (res.ok) { addNotification("MCP server disabled.", "info"); loadMcpServers(); }
+            else { const body = await res.json().catch(() => ({})); addNotification(body.error || "Could not disable MCP server.", "danger"); }
+        } catch {
+            addNotification("Could not disable MCP server — request could not be sent.", "danger");
+        }
+    }
+
     async function refreshWorkspaceSnapshot() {
         try {
             const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -4385,6 +4492,7 @@
         loadEvolutionStatus();
         loadFeatureRequests();
         loadBriefingHistory();
+        loadMcpServers();
         initAlwaysOnSensors();
         setInterval(loadLiveSystemData, 4000);
         setInterval(loadMindKernelData, 2000);
@@ -4396,6 +4504,7 @@
         setInterval(loadEvolutionStatus, 60000);
         setInterval(loadFeatureRequests, 30000);
         setInterval(loadBriefingHistory, 60000);
+        setInterval(loadMcpServers, 30000);
     });
 
     // Global Notification Badge
