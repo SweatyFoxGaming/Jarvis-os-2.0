@@ -1,5 +1,5 @@
 import Groq from "groq-sdk";
-import { toGroqSchema } from "./groq-client.js";
+import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 
 /**
  * The coding agent's tool-calling backend — Groq, not NVIDIA NIM. Kept as
@@ -33,12 +33,27 @@ import { toGroqSchema } from "./groq-client.js";
 // already this codebase's proven-reliable multi-turn tool-calling
 // workhorse (server.ts's main chat flow drives real tool declarations
 // through it, often across several turns, throughout this entire
-// session's testing with zero parse failures). Overridable via
-// JARVIS_CODING_AGENT_MODEL without a code change if a stronger option
-// proves reliable later — check actual availability, rate limits, and
-// real multi-turn tool-calling behavior (not just a single test call)
-// before trusting a model's name alone.
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+// session's testing with zero parse failures).
+//
+// Live-verified 4th dead end, found the same day this shipped: the coding
+// agent shares this exact model — and therefore its exact per-day token
+// quota — with server.ts's main chat backend, and a single day of this
+// session's own testing (chat traffic + one coding session) was enough to
+// hit Groq's free-tier 100,000 tokens/day cap outright ("Rate limit
+// reached ... on tokens per day (TPD): Limit 100000, Used 99928"). Unlike
+// chat, which already retries through generateWithFallback with a real
+// second model, this had none at all — a single 429 failed the whole
+// coding session with no recovery. llama-3.1-8b-instant is chat's own
+// proven fallback for real tool-calling conversations (its groqModels list
+// puts it second even for tool-shaped messages, not just trivial ones), on
+// a separate quota bucket from the 70b model — so the same list shape is
+// used here via generateWithFallback rather than inventing a new pattern.
+// Overridable via JARVIS_CODING_AGENT_MODEL (a single model, no fallback)
+// without a code change if a stronger option proves reliable later — check
+// actual availability, rate limits, and real multi-turn tool-calling
+// behavior (not just a single test call) before trusting a model's name
+// alone.
+const DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 
 export interface AgentToolCall {
   id: string;
@@ -99,7 +114,9 @@ export async function callGroqAgentChat(
   messages: AgentMessage[],
   tools: AgentTool[]
 ): Promise<AgentChatResult> {
-  const model = process.env.JARVIS_CODING_AGENT_MODEL || DEFAULT_MODEL;
+  // An explicit override means the operator wants exactly that model, not
+  // a fallback chain they didn't ask for.
+  const models = process.env.JARVIS_CODING_AGENT_MODEL ? [process.env.JARVIS_CODING_AGENT_MODEL] : DEFAULT_MODELS;
   // Groq's strict tool-schema validation requires lowercase JSON-Schema
   // type names and an explicit additionalProperties on every object node
   // (see toGroqSchema's own comment) — this module's tool definitions
@@ -111,11 +128,10 @@ export async function callGroqAgentChat(
     type: t.type,
     function: { ...t.function, parameters: toGroqSchema(t.function.parameters) },
   }));
-  const response = await groq.chat.completions.create({
-    model,
-    messages: messages as any,
-    tools: groqTools as any,
-    tool_choice: "auto",
-  });
+  const response = await generateWithFallback(
+    groq,
+    { messages: messages as any, tools: groqTools as any, tool_choice: "auto" },
+    models
+  );
   return parseGroqAgentResponse(response);
 }
