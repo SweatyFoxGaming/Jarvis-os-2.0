@@ -18,3 +18,14 @@ jobs:
         run: npx tsc --noEmit
       - name: Run test suite
         run: npm test
+      - name: Check README/docs accuracy
+        run: bash scripts/check-docs-accuracy.sh
+      - name: Install jarvis-builder dependencies
+        run: npm install
+        working-directory: jarvis-builder
+      - name: Type check jarvis-builder
+        run: npx tsc --noEmit
+        working-directory: jarvis-builder
+      - name: Run jarvis-builder test suite
+        run: npm test
+        working-directory: jarvis-builder
