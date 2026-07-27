@@ -3468,7 +3468,7 @@
                         ${s.status === 'pending' || s.status === 'error' ? `
                             <div class="flex gap-1.5">
                                 <button onclick="approveMcpServer(${s.id})" class="flex-1 px-1.5 py-1 bg-success/10 hover:bg-success/20 border border-success/20 rounded text-[8px] font-mono font-bold text-success uppercase tracking-widest">APPROVE</button>
-                                <button onclick="disableMcpServer(${s.id})" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">${s.status === 'pending' ? 'REJECT' : 'DISABLE'}</button>
+                                <button onclick="disableMcpServer(${s.id})" class="flex-1 px-1.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[8px] font-mono font-bold text-secondary uppercase tracking-widest">DISABLE</button>
                             </div>
                         ` : ''}
                         ${s.status === 'approved' ? `
