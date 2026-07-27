@@ -181,14 +181,9 @@ if (process.env.GROQ_API_KEY) {
   observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
 }
 briefing.configureGroq(groq);
-
-// ---------- NVIDIA NIM Client Initialization (agentic coding loop only) ----------
-const nvidiaApiKey: string | null = process.env.NVIDIA_API_KEY || null;
-if (nvidiaApiKey) {
-  observation.logTelemetry("info", "Cognition", "NVIDIA NIM API key configured — the agentic coding loop is available.");
-} else {
-  observation.logTelemetry("warn", "Cognition", "No NVIDIA_API_KEY detected. The agentic coding loop is unavailable.");
-}
+// The agentic coding loop (src/executive/coding-agent.ts) runs entirely on
+// this same Groq client — no separate API key to configure or log here;
+// the GROQ_API_KEY check above already covers whether it's available.
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -213,14 +208,14 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai, groq, nvidiaApiKey);
+const executive = AutonomousExecutive.getInstance(observation, ai, groq);
 const learningEngine = LongTermLearningEngine.getInstance();
 // Makes these same already-constructed clients reachable from extracted
 // routers (src/interaction/routes/) via runtime/clients.ts's getters —
 // see that module's own comment for why this must happen here (after
 // construction) rather than the routers reading them at their own
 // module-load time.
-setSharedClients(ai, groq, nvidiaApiKey);
+setSharedClients(ai, groq);
 
 // Users, API keys, and memory records are persisted in Postgres (src/data/) —
 // see initDatabase() near the bottom of this file, called before app.listen.

@@ -32,8 +32,9 @@ export interface BuildRequestRow {
   pr_number: number | null;
   qa_summary: string | null;
   error_detail: string | null;
-  // Added by migrations/002_build_request_token_usage.ts — cumulative NVIDIA
-  // token usage across the coding session, incremented by incrementTokenUsage.
+  // Added by migrations/002_build_request_token_usage.ts — cumulative coding-
+  // agent LLM token usage across the session (originally NVIDIA, now Groq;
+  // the column was already provider-agnostic), incremented by incrementTokenUsage.
   tokens_used: number;
   created_at: Date;
   updated_at: Date;
@@ -246,13 +247,13 @@ export async function recordQaReview(id: number, qaSummary: string): Promise<voi
   }
 }
 
-// Called after every NVIDIA call the coding agent makes, not just at the
+// Called after every Groq call the coding agent makes, not just at the
 // end of a session — so the running total is visible (and survives a crash)
 // even if the session never finishes cleanly. An increment, not a set: the
 // caller doesn't need to track "how much have I already persisted", it just
 // reports what this one call cost. No-ops on a non-positive amount rather
 // than issuing a pointless UPDATE for a call whose usage was unknown (see
-// NvidiaChatResult.totalTokens, which can be null).
+// AgentChatResult.totalTokens, which can be null).
 export async function incrementTokenUsage(id: number, tokens: number): Promise<void> {
   if (!Number.isFinite(tokens) || tokens <= 0) return;
   try {

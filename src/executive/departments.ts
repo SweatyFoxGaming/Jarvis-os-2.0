@@ -315,7 +315,19 @@ export async function reviewTaskDiff(
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
     const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      // llama-3.3-70b-versatile (used elsewhere in this file for plain-text
+      // reviews with no response_format) doesn't support Groq's structured-
+      // output mode — live-verified: a real task review against it failed
+      // outright with "This model does not support response format
+      // json_schema." The larger openai/gpt-oss-120b sibling does support
+      // it, but its free-tier rate limit is extremely tight (8,000
+      // tokens/minute — a real coding-agent session hit that ceiling after
+      // only ~34,000 total tokens) — live-verified against this same
+      // account. openai/gpt-oss-20b already proves reliable for structured
+      // output elsewhere in this file (decomposeObjective, the
+      // research-lookups call) with no rate-limit issues throughout this
+      // session's live testing, so this call uses it too.
+      model: "openai/gpt-oss-20b",
       messages: [{
         role: "user",
         content:

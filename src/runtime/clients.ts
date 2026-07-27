@@ -2,9 +2,9 @@ import type { GoogleGenAI } from "@google/genai";
 import type Groq from "groq-sdk";
 
 /**
- * ai/groq/nvidiaApiKey are constructed once, in server.ts, from whichever
- * API keys are actually configured in .env — never reassigned afterward.
- * Extracted routers (in src/interaction/routes/) need to reach the same
+ * ai/groq are constructed once, in server.ts, from whichever API keys are
+ * actually configured in .env — never reassigned afterward. Extracted
+ * routers (in src/interaction/routes/) need to reach the same
  * already-constructed clients server.ts's own remaining routes (chat, voice)
  * still use directly, without re-constructing their own or awkwardly
  * threading them through a router factory function for every route that
@@ -20,12 +20,10 @@ import type Groq from "groq-sdk";
  */
 let aiClient: GoogleGenAI | null = null;
 let groqClient: Groq | null = null;
-let nvidiaKey: string | null = null;
 
-export function setSharedClients(ai: GoogleGenAI | null, groq: Groq | null, nvidiaApiKey: string | null): void {
+export function setSharedClients(ai: GoogleGenAI | null, groq: Groq | null): void {
   aiClient = ai;
   groqClient = groq;
-  nvidiaKey = nvidiaApiKey;
 }
 
 export function getAi(): GoogleGenAI | null {
@@ -34,8 +32,4 @@ export function getAi(): GoogleGenAI | null {
 
 export function getGroq(): Groq | null {
   return groqClient;
-}
-
-export function getNvidiaApiKey(): string | null {
-  return nvidiaKey;
 }

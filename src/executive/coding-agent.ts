@@ -4,7 +4,7 @@ import { recordTranscriptEvent } from "../kernel/state/transcript-events-repo.js
 import * as codingPlanTasksRepo from "../kernel/state/coding-plan-tasks-repo.js";
 import type { PlannedTaskInput } from "../kernel/state/coding-plan-tasks-repo.js";
 import { incrementTokenUsage } from "../kernel/state/build-requests-repo.js";
-import { callNvidiaChat, NvidiaMessage, NvidiaTool } from "../runtime/nvidia-client.js";
+import { callGroqAgentChat, AgentMessage, AgentTool } from "../runtime/groq-agent-client.js";
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
@@ -24,21 +24,21 @@ const MAX_TASK_TURNS = 30;
 const MAX_TASK_FIX_ATTEMPTS = 2;
 const MAX_PLAN_TASKS = 10;
 
-// Turn caps alone bound *how many* NVIDIA calls a session can make (up to
+// Turn caps alone bound *how many* Groq calls a session can make (up to
 // 300: MAX_PLAN_TASKS × MAX_TASK_TURNS), not how much any of them actually
 // cost — a worst case of 300 calls with a large, growing conversation
 // history could still run up real spend with nothing tracking it. This is
-// a token count, not a dollar figure, deliberately: NVIDIA NIM pricing
-// varies by model and this codebase isn't going to guess a number it can't
-// verify. Convert to a dollar ceiling yourself via
-// JARVIS_CODING_AGENT_TOKEN_BUDGET based on your actual NVIDIA pricing tier
-// — see .env.example. 4,000,000 is a first-pass, deliberately generous
+// a token count, not a dollar figure, deliberately: Groq pricing varies by
+// model and this codebase isn't going to guess a number it can't verify.
+// Convert to a dollar ceiling yourself via JARVIS_CODING_AGENT_TOKEN_BUDGET
+// based on your actual Groq pricing tier — see .env.example. 4,000,000 is
+// a first-pass, deliberately generous
 // backstop (a session that legitimately needs more than that is unusual),
 // not a carefully tuned number — the point is having *a* ceiling where
 // today there is none, the same spirit as MAX_TURNS/MAX_TASK_TURNS above.
 const MAX_TOKENS_PER_SESSION = positiveIntegerEnv(process.env.JARVIS_CODING_AGENT_TOKEN_BUDGET, 4_000_000);
 
-const RUN_SHELL_TOOL: NvidiaTool = {
+const RUN_SHELL_TOOL: AgentTool = {
   type: "function",
   function: {
     name: "run_shell_command",
@@ -53,7 +53,7 @@ const RUN_SHELL_TOOL: NvidiaTool = {
   },
 };
 
-const FINISH_CODING_TOOL: NvidiaTool = {
+const FINISH_CODING_TOOL: AgentTool = {
   type: "function",
   function: {
     name: "finish_coding",
@@ -68,7 +68,7 @@ const FINISH_CODING_TOOL: NvidiaTool = {
   },
 };
 
-const FINISH_TASK_TOOL: NvidiaTool = {
+const FINISH_TASK_TOOL: AgentTool = {
   type: "function",
   function: {
     name: "finish_task",
@@ -82,7 +82,7 @@ const FINISH_TASK_TOOL: NvidiaTool = {
   },
 };
 
-const PROPOSE_PLAN_TOOL: NvidiaTool = {
+const PROPOSE_PLAN_TOOL: AgentTool = {
   type: "function",
   function: {
     name: "propose_plan",
@@ -117,11 +117,10 @@ export async function runCodingAgent(
   researchSummary: string,
   directionNotes: string,
   baseBranch: string,
-  nvidiaApiKey: string | null,
   groq: Groq | null
 ): Promise<CodingAgentResult> {
-  if (!nvidiaApiKey) {
-    return { ok: false, error: "No NVIDIA_API_KEY is configured — the agentic coding loop is unavailable." };
+  if (!groq) {
+    return { ok: false, error: "No Groq client is configured — the agentic coding loop is unavailable." };
   }
 
   try {
@@ -149,7 +148,7 @@ export async function runCodingAgent(
   }
   const baseSha = baseShaResult.stdout.trim();
 
-  const planResult = await proposePlan(buildRequestId, nvidiaApiKey, objective, researchSummary, directionNotes);
+  const planResult = await proposePlan(buildRequestId, groq, objective, researchSummary, directionNotes);
 
   if (planResult.tasks === null) {
     // Planning couldn't produce a usable task list after a retry — fall
@@ -159,7 +158,7 @@ export async function runCodingAgent(
     // planResult.tokensUsed seeds the flat loop's own counter so planning's
     // spend still counts against the one session budget, not a separate
     // allowance outside it.
-    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, nvidiaApiKey, planResult.tokensUsed);
+    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, groq, planResult.tokensUsed);
   }
   const plan = planResult.tasks;
 
@@ -171,7 +170,7 @@ export async function runCodingAgent(
   // one task's turns but the overall 300-call ceiling (MAX_PLAN_TASKS ×
   // MAX_TASK_TURNS) is what actually bounds the session today. Seeded with
   // planResult.tokensUsed for the same reason as the flat-loop fallback
-  // above — planning's own NVIDIA calls count against this same budget.
+  // above — planning's own Groq calls count against this same budget.
   let tokensUsed = planResult.tokensUsed;
   const completedSummaries: string[] = [];
 
@@ -190,7 +189,7 @@ export async function runCodingAgent(
       const planText = plan.map((t) => `${t.seq}. ${t.title} — ${t.description}`).join("\n");
       const completedText = completedSummaries.length > 0 ? completedSummaries.join("\n") : "(none yet)";
 
-      const messages: NvidiaMessage[] = [
+      const messages: AgentMessage[] = [
         {
           role: "system",
           content:
@@ -203,12 +202,12 @@ export async function runCodingAgent(
             `check types, and use git to inspect your changes. Don't worry about committing — that happens automatically ` +
             `once your work passes review.`,
         },
-        // NVIDIA NIM rejects a `tools`-bearing request whose messages array
-        // has no user-role message at all — confirmed live: "Cannot put
-        // tools in the first user message when there's no first user
-        // message." A short synthetic user turn satisfies this without
-        // changing what's actually being asked (that's all in the system
-        // message above).
+        // Some OpenAI-compatible tool-calling backends behave more
+        // reliably with an explicit user turn before tools are offered
+        // (NVIDIA NIM, this loop's previous backend, rejected requests
+        // with none at all) — kept as a cheap defensive habit even though
+        // Groq hasn't shown the same requirement. Doesn't change what's
+        // actually being asked (that's all in the system message above).
         { role: "user", content: "Begin." },
       ];
 
@@ -233,7 +232,7 @@ export async function runCodingAgent(
           }
           taskTurns++;
 
-          const response = await callNvidiaChat(nvidiaApiKey, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL]);
+          const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL]);
           if (response.totalTokens) {
             tokensUsed += response.totalTokens;
             await incrementTokenUsage(buildRequestId, response.totalTokens);
@@ -420,12 +419,12 @@ interface ProposePlanResult {
 // planning itself can't produce a usable list.
 async function proposePlan(
   buildRequestId: number,
-  nvidiaApiKey: string,
+  groq: Groq,
   objective: string,
   researchSummary: string,
   directionNotes: string
 ): Promise<ProposePlanResult> {
-  const messages: NvidiaMessage[] = [
+  const messages: AgentMessage[] = [
     {
       role: "system",
       content:
@@ -433,8 +432,7 @@ async function proposePlan(
         `list of small, self-contained tasks (at most ${MAX_PLAN_TASKS}). Call propose_plan exactly once with the full list.\n\n` +
         `Objective: ${objective}\n\nResearch summary:\n${researchSummary || "(none)"}\n\nConfirmed direction:\n${directionNotes}`,
     },
-    // See the identical note in the per-task loop above — NVIDIA NIM
-    // requires a user-role message before it will accept `tools`.
+    // See the identical note in the per-task loop above.
     { role: "user", content: "Begin." },
   ];
 
@@ -442,7 +440,7 @@ async function proposePlan(
 
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await callNvidiaChat(nvidiaApiKey, messages, [PROPOSE_PLAN_TOOL]);
+      const response = await callGroqAgentChat(groq, messages, [PROPOSE_PLAN_TOOL]);
       if (response.totalTokens) {
         tokensUsed += response.totalTokens;
         await incrementTokenUsage(buildRequestId, response.totalTokens);
@@ -491,10 +489,10 @@ async function proposePlan(
 
     return { tasks: null, tokensUsed };
   } catch (err: any) {
-    // Any NVIDIA call failure here (rate limit, cold-start error, network
+    // Any Groq call failure here (rate limit, cold-start error, network
     // issue) must degrade to the flat-loop fallback, not escape and wedge
     // the build request — this is the single most likely failure point in
-    // the whole session (the first NVIDIA call), and by this point the
+    // the whole session (the first Groq call), and by this point the
     // sandbox workspace already exists, so an uncaught throw here would
     // leak it and leave the build request permanently stuck in 'coding'
     // with no recovery path.
@@ -514,7 +512,7 @@ async function runFlatCodingLoop(
   researchSummary: string,
   directionNotes: string,
   baseSha: string,
-  nvidiaApiKey: string,
+  groq: Groq,
   // Seeds this loop's own budget counter with whatever the (failed)
   // planning attempt already spent — see the call site in runCodingAgent —
   // so the two phases share one session budget instead of planning's spend
@@ -523,7 +521,7 @@ async function runFlatCodingLoop(
   // entirely.
   initialTokensUsed = 0
 ): Promise<CodingAgentResult> {
-  const messages: NvidiaMessage[] = [
+  const messages: AgentMessage[] = [
     {
       role: "system",
       content:
@@ -548,7 +546,7 @@ async function runFlatCodingLoop(
         };
       }
 
-      const response = await callNvidiaChat(nvidiaApiKey, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL]);
+      const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL]);
       if (response.totalTokens) {
         tokensUsed += response.totalTokens;
         await incrementTokenUsage(buildRequestId, response.totalTokens);

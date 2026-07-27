@@ -598,7 +598,7 @@ src/
                             frontend (vanilla HTML/JS, no build step), and
                             most Express routes as per-subsystem routers
                             (interaction/routes/)
-  runtime/                  LLM client wrappers (local engine, Groq, NVIDIA)
+  runtime/                  LLM client wrappers (local engine, Groq)
   self/                    Identity, dialogue, attention, MindKernel settings
   world/                   Proactive briefing synthesis
 jarvis-builder/         Sibling service — the only process with Docker socket
