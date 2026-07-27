@@ -106,7 +106,18 @@ export async function reconcileWorkspaceReservations(): Promise<void> {
   try {
     const { stdout } = await execFileAsync(
       "docker",
-      ["ps", "-a", "--filter", "label=jarvis-sandbox=true", "--format", "{{.ID}}"],
+      [
+        "ps", "-a",
+        "--filter", "label=jarvis-sandbox=true",
+        // Chat sandboxes (below) share the jarvis-sandbox=true label but
+        // never have a jarvis-build-request-id one — without this second
+        // filter, a chat sandbox existing at startup makes this
+        // reconciliation fail outright (it has no build-request-id label
+        // to read), which blocks ALL build-request workspace creation
+        // until a restart. Live-verified this exact failure mode.
+        "--filter", "label=jarvis-build-request-id",
+        "--format", "{{.ID}}",
+      ],
       { timeout: 10_000 }
     );
     const ids = stdout.trim().split("\n").filter(Boolean);
@@ -506,7 +517,17 @@ export function startReaper(): void {
     try {
       const { stdout } = await execFileAsync(
         "docker",
-        ["ps", "-a", "--filter", "label=jarvis-sandbox=true", "--format", "{{.ID}}"],
+        [
+          "ps", "-a",
+          "--filter", "label=jarvis-sandbox=true",
+          // Same scoping fix as reconcileWorkspaceReservations above —
+          // without this, a chat sandbox (which shares jarvis-sandbox=true
+          // but never has a build-request-id label) would reach the
+          // buildRequestId parsing below with an empty label and get
+          // reaped on a bogus id.
+          "--filter", "label=jarvis-build-request-id",
+          "--format", "{{.ID}}",
+        ],
         { timeout: 10_000 }
       );
       const now = Date.now();
