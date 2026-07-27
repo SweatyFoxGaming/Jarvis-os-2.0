@@ -1,4 +1,5 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
+import { fetchWithRetry } from "../../kernel/http-retry.js";
 
 const observation = ObservationPlatform.getInstance();
 const BRAVE_API = "https://api.search.brave.com/res/v1/web/search";
@@ -29,12 +30,12 @@ function getKey(): string {
 export async function webSearch(query: string, limit = 8): Promise<WebSearchResult[]> {
   const key = getKey();
   const url = `${BRAVE_API}?q=${encodeURIComponent(query)}&count=${limit}`;
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     headers: {
       Accept: "application/json",
       "X-Subscription-Token": key,
     },
-  });
+  }, { label: "Brave Search" });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");

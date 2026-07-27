@@ -39,6 +39,7 @@ import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { computePendingMigrations, ALL_MIGRATIONS, Migration } from "../src/kernel/state/migrations/index.js";
 import { positiveIntegerEnv } from "../src/kernel/env.js";
+import { fetchWithRetry } from "../src/kernel/http-retry.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
 import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
@@ -1915,6 +1916,123 @@ registerTest("Env", "positiveIntegerEnv falls back on undefined (the unset-env-v
 registerTest("Env", "positiveIntegerEnv falls back on a non-integer value", () => {
   if (positiveIntegerEnv("1.5", 30) !== 30) {
     throw new Error("Env: expected a fractional value to fall back to the default");
+  }
+});
+
+// ---------- HTTP Retry Tests ----------
+// Every call mocks the global fetch() and uses a tiny baseDelayMs so these
+// stay fast — the actual delay VALUE isn't what's under test, only the
+// retry/no-retry DECISION for a given method + status/error combination.
+async function withMockedFetch<T>(impl: (...args: any[]) => Promise<Response>, fn: () => Promise<T>): Promise<T> {
+  const original = globalThis.fetch;
+  (globalThis as any).fetch = impl;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+registerTest("HttpRetry", "fetchWithRetry returns immediately on a first-attempt success, no retry overhead", async () => {
+  let calls = 0;
+  const res = await withMockedFetch(
+    async () => { calls++; return new Response("ok", { status: 200 }); },
+    () => fetchWithRetry("https://example.invalid", {}, { baseDelayMs: 1 })
+  );
+  if (calls !== 1) throw new Error(`HttpRetry: expected exactly 1 call, got ${calls}`);
+  if (res.status !== 200) throw new Error(`HttpRetry: expected the successful response to pass through, got status ${res.status}`);
+});
+
+registerTest("HttpRetry", "fetchWithRetry retries a 429 on a GET and eventually returns the successful response", async () => {
+  let calls = 0;
+  const res = await withMockedFetch(
+    async () => {
+      calls++;
+      if (calls < 3) return new Response("rate limited", { status: 429 });
+      return new Response("ok", { status: 200 });
+    },
+    () => fetchWithRetry("https://example.invalid", {}, { baseDelayMs: 1, maxRetries: 3 })
+  );
+  if (calls !== 3) throw new Error(`HttpRetry: expected exactly 3 calls (2 failures + 1 success), got ${calls}`);
+  if (res.status !== 200) throw new Error(`HttpRetry: expected the eventual success to be returned, got status ${res.status}`);
+});
+
+registerTest("HttpRetry", "fetchWithRetry retries a 5xx on a GET (idempotent — safe to retry)", async () => {
+  let calls = 0;
+  const res = await withMockedFetch(
+    async () => { calls++; return calls < 2 ? new Response("err", { status: 503 }) : new Response("ok", { status: 200 }); },
+    () => fetchWithRetry("https://example.invalid", { method: "GET" }, { baseDelayMs: 1, maxRetries: 3 })
+  );
+  if (calls !== 2) throw new Error(`HttpRetry: expected exactly 2 calls, got ${calls}`);
+  if (res.status !== 200) throw new Error(`HttpRetry: expected the retry to succeed, got status ${res.status}`);
+});
+
+registerTest("HttpRetry", "fetchWithRetry does NOT retry a 5xx on a POST — side effects may have already happened", async () => {
+  let calls = 0;
+  const res = await withMockedFetch(
+    async () => { calls++; return new Response("err", { status: 500 }); },
+    () => fetchWithRetry("https://example.invalid", { method: "POST" }, { baseDelayMs: 1, maxRetries: 3 })
+  );
+  if (calls !== 1) throw new Error(`HttpRetry: expected exactly 1 call for a non-idempotent 500 (no retry), got ${calls}`);
+  if (res.status !== 500) throw new Error(`HttpRetry: expected the single failed response to be returned as-is, got status ${res.status}`);
+});
+
+registerTest("HttpRetry", "fetchWithRetry DOES retry a 429 on a POST — a rejection means nothing was processed yet", async () => {
+  let calls = 0;
+  const res = await withMockedFetch(
+    async () => { calls++; return calls < 2 ? new Response("rate limited", { status: 429 }) : new Response("ok", { status: 200 }); },
+    () => fetchWithRetry("https://example.invalid", { method: "POST" }, { baseDelayMs: 1, maxRetries: 3 })
+  );
+  if (calls !== 2) throw new Error(`HttpRetry: expected a 429 to be retried even for POST, got ${calls} call(s)`);
+  if (res.status !== 200) throw new Error(`HttpRetry: expected the eventual success to be returned, got status ${res.status}`);
+});
+
+registerTest("HttpRetry", "fetchWithRetry retries a network-level failure on a GET, then succeeds", async () => {
+  let calls = 0;
+  const res = await withMockedFetch(
+    async () => {
+      calls++;
+      if (calls < 2) throw new Error("ECONNRESET");
+      return new Response("ok", { status: 200 });
+    },
+    () => fetchWithRetry("https://example.invalid", { method: "GET" }, { baseDelayMs: 1, maxRetries: 3 })
+  );
+  if (calls !== 2) throw new Error(`HttpRetry: expected exactly 2 calls, got ${calls}`);
+  if (res.status !== 200) throw new Error(`HttpRetry: expected the retry to succeed, got status ${res.status}`);
+});
+
+registerTest("HttpRetry", "fetchWithRetry does NOT retry a network-level failure on a POST, and rejects immediately", async () => {
+  let calls = 0;
+  let threw = false;
+  try {
+    await withMockedFetch(
+      async () => { calls++; throw new Error("ECONNRESET"); },
+      () => fetchWithRetry("https://example.invalid", { method: "POST" }, { baseDelayMs: 1, maxRetries: 3 })
+    );
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error("HttpRetry: expected a network error on a non-idempotent request to reject immediately");
+  if (calls !== 1) throw new Error(`HttpRetry: expected exactly 1 call (no retry) for a non-idempotent network failure, got ${calls}`);
+});
+
+registerTest("HttpRetry", "fetchWithRetry honors a numeric Retry-After header instead of guessing a backoff delay", async () => {
+  let calls = 0;
+  const start = Date.now();
+  await withMockedFetch(
+    async () => {
+      calls++;
+      if (calls < 2) return new Response("rate limited", { status: 429, headers: { "retry-after": "0" } });
+      return new Response("ok", { status: 200 });
+    },
+    () => fetchWithRetry("https://example.invalid", {}, { baseDelayMs: 5000, maxRetries: 3 })
+  );
+  const elapsedMs = Date.now() - start;
+  // A real Retry-After: 0 means "immediately" — if the exponential-backoff
+  // fallback (baseDelayMs: 5000) were used instead of honoring the header,
+  // this would take several seconds instead of effectively no time at all.
+  if (elapsedMs > 2000) {
+    throw new Error(`HttpRetry: took ${elapsedMs}ms — Retry-After: 0 doesn't appear to have been honored (fell back to the 5000ms base delay instead)`);
   }
 });
 

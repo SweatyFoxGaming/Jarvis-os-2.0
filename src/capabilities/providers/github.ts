@@ -1,4 +1,5 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
+import { fetchWithRetry } from "../../kernel/http-retry.js";
 
 const observation = ObservationPlatform.getInstance();
 const GITHUB_API = "https://api.github.com";
@@ -22,7 +23,7 @@ function getToken(): string {
 
 async function githubRequest(path: string, init: RequestInit = {}): Promise<any> {
   const token = getToken();
-  const res = await fetch(`${GITHUB_API}${path}`, {
+  const res = await fetchWithRetry(`${GITHUB_API}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -32,7 +33,7 @@ async function githubRequest(path: string, init: RequestInit = {}): Promise<any>
       ...(init.body ? { "Content-Type": "application/json" } : {}),
       ...init.headers,
     },
-  });
+  }, { label: `GitHub API ${init.method || "GET"} ${path}` });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
