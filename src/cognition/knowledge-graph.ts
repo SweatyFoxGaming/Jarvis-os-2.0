@@ -52,7 +52,7 @@ const EXTRACTION_SCHEMA = {
  * Fire-and-forget, same as reflectAndLearn: must never block or slow down
  * the reply the user is waiting on.
  */
-export async function extractAndStore(groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
+export async function extractAndStore(username: string, groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
   if (!groq) return;
   try {
     const response = await groq.chat.completions.create({
@@ -78,7 +78,7 @@ export async function extractAndStore(groq: Groq | null, userMessage: string, re
     const entityIdByName = new Map<string, number>();
     for (const e of entities) {
       if (!e.name?.trim() || !VALID_ENTITY_TYPES.includes(e.entityType) || !e.fact?.trim()) continue;
-      const id = await kgRepo.upsertEntity(e.name.trim(), e.entityType);
+      const id = await kgRepo.upsertEntity(username, e.name.trim(), e.entityType);
       entityIdByName.set(e.name.trim(), id);
       await kgRepo.addFact(id, e.fact.trim());
     }
@@ -109,19 +109,29 @@ export interface KnowledgeQueryResult {
 /**
  * The reliable "what do we know about X" read path — a real lookup by name,
  * not a similarity guess. Exposed as the query_knowledge_graph chat tool.
+ * Degrades to [] on a DB failure rather than rejecting, matching every
+ * other read-side function in this codebase (e.g. objectives-repo's
+ * listActiveObjectives, identity.ts's reflectOnSelf) — every current
+ * caller already wraps this in its own try/catch, but a read path with no
+ * sensible fallback value shouldn't rely on that alone.
  */
-export async function queryKnowledge(query: string): Promise<KnowledgeQueryResult[]> {
-  const entities = await kgRepo.searchEntities(query);
-  const results: KnowledgeQueryResult[] = [];
-  for (const entity of entities) {
-    const facts = await kgRepo.getFactsForEntity(entity.id);
-    const relationships = await kgRepo.getRelationshipsForEntity(entity.id);
-    results.push({
-      entityName: entity.name,
-      entityType: entity.entity_type,
-      facts: facts.map(f => f.fact),
-      relationships: relationships.map(r => `${r.direction === "from" ? entity.name : r.otherEntityName} ${r.relationship} ${r.direction === "from" ? r.otherEntityName : entity.name}`),
-    });
+export async function queryKnowledge(username: string, query: string): Promise<KnowledgeQueryResult[]> {
+  try {
+    const entities = await kgRepo.searchEntities(username, query);
+    const results: KnowledgeQueryResult[] = [];
+    for (const entity of entities) {
+      const facts = await kgRepo.getFactsForEntity(entity.id);
+      const relationships = await kgRepo.getRelationshipsForEntity(entity.id);
+      results.push({
+        entityName: entity.name,
+        entityType: entity.entity_type,
+        facts: facts.map(f => f.fact),
+        relationships: relationships.map(r => `${r.direction === "from" ? entity.name : r.otherEntityName} ${r.relationship} ${r.direction === "from" ? r.otherEntityName : entity.name}`),
+      });
+    }
+    return results;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "KnowledgeGraph", `queryKnowledge("${query}") failed: ${err.message}`);
+    return [];
   }
-  return results;
 }

@@ -15,7 +15,7 @@ import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } fr
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
 import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/self/identity.js";
-import { extractAndStore } from "../src/cognition/knowledge-graph.js";
+import { extractAndStore, queryKnowledge } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/adaptation/reflection.js";
 import { ConfidenceModel } from "../src/self/confidence.js";
 import type Groq from "groq-sdk";
@@ -669,6 +669,116 @@ registerTest("Files", "scoped read/write/list stay within the root, and traversa
   }
 });
 
+// ---------- Obsidian Vault Tests ----------
+// Mirrors the Files test above (same real-temp-directory, real-traversal-
+// attempt approach), plus a symlink-escape case Files.ts doesn't have an
+// equivalent for: obsidian.ts's assertRealPathWithinRoot is a second-stage
+// check specifically to catch a symlink placed inside the vault pointing
+// outside it, which resolveScopedPath's purely lexical check can't see.
+registerTest("Obsidian", "scoped create/read/list stay within the vault, and traversal + symlink escapes are rejected", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpRoot = fsSync.mkdtempSync(path.join(os.tmpdir(), "jarvis-obsidian-test-"));
+  const outsideDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "jarvis-obsidian-outside-"));
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpRoot;
+
+  // getRoot() reads process.env.OBSIDIAN_VAULT_DIR_MOUNT fresh on every
+  // call, so setting it above is enough — no need to re-import the module.
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+
+  try {
+    await obsidian.createNote("note", "hello from a real integration test");
+    const content = await obsidian.readNote("note");
+    if (content !== "hello from a real integration test") {
+      throw new Error(`Obsidian: read back "${content}", expected "hello from a real integration test"`);
+    }
+
+    const listed = await obsidian.listAllNotePaths();
+    if (!listed.includes("note.md")) {
+      throw new Error(`Obsidian: listAllNotePaths did not include the note just written, got: ${JSON.stringify(listed)}`);
+    }
+
+    let escaped = false;
+    try {
+      await obsidian.readNote("../../../etc/passwd");
+      escaped = true;
+    } catch (err: any) {
+      if (!/escapes/.test(err.message)) throw new Error(`Obsidian: wrong error for traversal attempt: ${err.message}`);
+    }
+    if (escaped) throw new Error("Obsidian: a '../../../etc/passwd' path was NOT rejected — traversal protection failed");
+
+    // A symlink INSIDE the vault (passes the lexical resolveScopedPath check)
+    // pointing to a real directory OUTSIDE it — only assertRealPathWithinRoot
+    // can catch this, since it actually resolves the real filesystem path.
+    fsSync.symlinkSync(outsideDir, path.join(tmpRoot, "escape-link"));
+    let symlinkEscaped = false;
+    try {
+      await obsidian.appendToNote("escape-link/pwned", "malicious content", { createIfMissing: true });
+      symlinkEscaped = true;
+    } catch (err: any) {
+      if (!/resolves outside the vault via a symlink/.test(err.message)) {
+        throw new Error(`Obsidian: wrong error for symlink escape attempt: ${err.message}`);
+      }
+    }
+    if (symlinkEscaped) throw new Error("Obsidian: a symlink pointing outside the vault was NOT rejected — assertRealPathWithinRoot failed");
+    if (fsSync.existsSync(path.join(outsideDir, "pwned.md"))) {
+      throw new Error("Obsidian: content was actually written outside the vault via the symlink");
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    fsSync.rmSync(tmpRoot, { recursive: true, force: true });
+    fsSync.rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- Voice Pipeline Tests (whisper-cpp / TTS integrations) ----------
+// Neither service is reachable in this test process (no live Docker
+// network) — these confirm the one thing that's actually testable without
+// one: a missing URL env var fails fast with the integration's own typed
+// error instead of an unhandled/confusing fetch failure.
+registerTest("Whisper", "transcribeAudio throws WhisperIntegrationError when WHISPER_URL is not set", async () => {
+  const original = process.env.WHISPER_URL;
+  delete process.env.WHISPER_URL;
+  try {
+    const whisper = await import("../src/interaction/whisper.js");
+    let threw = false;
+    try {
+      await whisper.transcribeAudio(Buffer.from("fake audio").toString("base64"), "audio/webm");
+    } catch (err) {
+      threw = err instanceof whisper.WhisperIntegrationError;
+      if (threw && (err as any).status !== 503) {
+        throw new Error(`Whisper: expected status 503 for a missing WHISPER_URL, got ${(err as any).status}`);
+      }
+    }
+    if (!threw) throw new Error("Whisper: transcribeAudio did not throw WhisperIntegrationError with WHISPER_URL unset");
+  } finally {
+    if (original === undefined) delete process.env.WHISPER_URL;
+    else process.env.WHISPER_URL = original;
+  }
+});
+
+registerTest("Tts", "synthesizeSpeech throws TtsIntegrationError when TTS_URL is not set", async () => {
+  const original = process.env.TTS_URL;
+  delete process.env.TTS_URL;
+  try {
+    const tts = await import("../src/interaction/tts.js");
+    let threw = false;
+    try {
+      await tts.synthesizeSpeech("hello");
+    } catch (err) {
+      threw = err instanceof tts.TtsIntegrationError;
+      if (threw && (err as any).status !== 503) {
+        throw new Error(`Tts: expected status 503 for a missing TTS_URL, got ${(err as any).status}`);
+      }
+    }
+    if (!threw) throw new Error("Tts: synthesizeSpeech did not throw TtsIntegrationError with TTS_URL unset");
+  } finally {
+    if (original === undefined) delete process.env.TTS_URL;
+    else process.env.TTS_URL = original;
+  }
+});
+
 // ---------- Objectives Tests (no live Postgres in this test process) ----------
 import { createObjective, listActiveObjectives, updateObjectiveStatus, collectDueObjectives, markCheckedIn } from "../src/kernel/state/objectives-repo.js";
 import { recordCommandOutcome, getRecentOutcomeSuccessRate } from "../src/kernel/state/command-proposals-repo.js";
@@ -822,7 +932,7 @@ registerTest("Identity", "buildIdentityContext degrades cleanly when Postgres is
   // This test process never calls initDatabase(), so there's no live
   // Postgres connection here — buildIdentityContext must return "" rather
   // than throw or block the chat system-instruction it's spliced into.
-  const context = await buildIdentityContext();
+  const context = await buildIdentityContext("test_user");
   if (context !== "") {
     throw new Error(`Identity: expected empty context with no DB, got: "${context}"`);
   }
@@ -834,7 +944,7 @@ registerTest("Identity", "generateProactiveThought never fabricates a thought wh
   // the function fails toward "no thought" rather than throwing and taking
   // down the scheduler job that calls it.
   const fakeAi = {} as any;
-  const result = await generateProactiveThought(fakeAi);
+  const result = await generateProactiveThought("test_user", fakeAi);
   if (result !== null) {
     throw new Error("Identity: expected null (no real history to draw from), got a fabricated result");
   }
@@ -848,7 +958,7 @@ registerTest("Identity", "extractSelfReflection no-ops with no Groq client", asy
   // assert no such warn entry was appended, not just that nothing threw.
   const obs = ObservationPlatform.getInstance();
   const before = obs.getTelemetry().length;
-  await extractSelfReflection(null, "hello", "some reply");
+  await extractSelfReflection("test_user", null, "hello", "some reply");
   const newEntries = obs.getTelemetry().slice(before);
   if (newEntries.some(e => e.level === "warn" && e.subsystem === "Identity")) {
     throw new Error("Identity: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
@@ -858,10 +968,17 @@ registerTest("Identity", "extractSelfReflection no-ops with no Groq client", asy
 registerTest("KnowledgeGraph", "extractAndStore no-ops with no Groq client", async () => {
   const obs = ObservationPlatform.getInstance();
   const before = obs.getTelemetry().length;
-  await extractAndStore(null, "hello", "some reply");
+  await extractAndStore("test_user", null, "hello", "some reply");
   const newEntries = obs.getTelemetry().slice(before);
   if (newEntries.some(e => e.level === "warn" && e.subsystem === "KnowledgeGraph")) {
     throw new Error("KnowledgeGraph: expected the null-groq guard to return silently, but a warn-level failure was logged instead — the guard may be missing");
+  }
+});
+
+registerTest("KnowledgeGraph", "queryKnowledge degrades cleanly (empty array, not a rejection) when Postgres isn't reachable", async () => {
+  const result = await queryKnowledge("test_user", "anything");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`KnowledgeGraph: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
   }
 });
 
@@ -1545,7 +1662,7 @@ registerTest("Departments", "decomposeObjective falls back to research when offl
 });
 
 registerTest("Departments", "runResearch degrades cleanly with no AI client", async () => {
-  const result = await departments.runResearch("test objective", null);
+  const result = await departments.runResearch("test objective", null, "test_user");
   if (!result.summary.includes("No capable model is available")) {
     throw new Error(`Departments: expected the no-AI degrade message, got: ${result.summary}`);
   }

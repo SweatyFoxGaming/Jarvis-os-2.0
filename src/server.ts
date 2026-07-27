@@ -443,7 +443,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // session — see src/self/identity.ts. Empty string when there's
     // no genuine self-reflection history yet (fresh install, or too early
     // in the relationship for this to have accumulated anything).
-    const identityContext = await identity.buildIdentityContext();
+    const identityContext = await identity.buildIdentityContext(req.username);
 
     // Pulls a currently-awaiting-consult build request's research findings
     // into context the same way memory/identity already are — without this,
@@ -735,6 +735,9 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 if (result.displayDirective) {
                   res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
                 }
+                if (result.audioDirective) {
+                  res.write(`data: audio: ${JSON.stringify(result.audioDirective)}\n\n`);
+                }
 
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
                 toolResponseMessages.push({
@@ -835,6 +838,9 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 if (result.displayDirective) {
                   res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
                 }
+                if (result.audioDirective) {
+                  res.write(`data: audio: ${JSON.stringify(result.audioDirective)}\n\n`);
+                }
 
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
                 responseParts.push({
@@ -917,9 +923,9 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
-        knowledgeGraph.extractAndStore(groq, message, fullReply).catch(() => {});
+        knowledgeGraph.extractAndStore(req.username, groq, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see self/identity.ts.
-        identity.extractSelfReflection(groq, message, fullReply).catch(() => {});
+        identity.extractSelfReflection(req.username, groq, message, fullReply).catch(() => {});
       }
     }
 

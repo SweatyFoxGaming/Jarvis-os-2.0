@@ -201,7 +201,7 @@ export class AutonomousExecutive {
 
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
       runContext.buildRequestId = buildRequest.id;
-      const research = await departments.runResearch(objective, this.groq);
+      const research = await departments.runResearch(objective, this.groq, username);
       const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
       if (recorded) {
         obsidian.writeResearchNote(buildRequest.id, objective, research.summary).catch((err: any) => {
@@ -277,7 +277,7 @@ export class AutonomousExecutive {
       }, this.observation);
       workspace.attention.focusOn(step);
 
-      const research = await departments.runResearch(step, this.groq);
+      const research = await departments.runResearch(step, this.groq, username);
       const resultText = `[Research] ${research.summary}`;
 
       workspace.capabilities.recordResult({ step, outcome: "success", summary: resultText });

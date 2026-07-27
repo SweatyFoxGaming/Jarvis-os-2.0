@@ -38,6 +38,15 @@ export interface ToolCallResult {
   // frame by /api/chat. See Task 1 in
   // docs/superpowers/plans/2026-07-20-display-content-panel.md.
   displayDirective?: { type: string; title: string; content: any };
+  // Set by speak_text — relayed to the client as an "audio: " SSE frame by
+  // /api/chat, the same way displayDirective is. Without this, the audio
+  // synthesizeSpeech() actually produced was computed and then discarded:
+  // the tool reported {synthesized: true} back to the model as if the user
+  // had heard something, but the bytes never left the server. Not used by
+  // the live-voice path (live-voice.ts) — Gemini's Live API already speaks
+  // directly there, so a speak_text call in that context has no client
+  // channel to deliver a second, separate audio clip through.
+  audioDirective?: { mimeType: string; base64: string };
 }
 
 const PERMISSION_BY_TOOL: Record<string, string> = {
@@ -472,6 +481,7 @@ export async function executeTool(
   try {
     let output: any;
     let displayDirective: ToolCallResult["displayDirective"];
+    let audioDirective: ToolCallResult["audioDirective"];
     switch (name) {
       case "github_get_repo_or_file":
         output = args.path
@@ -487,7 +497,8 @@ export async function executeTool(
         output = await emailIntegration.sendEmail(args.to, args.subject, args.text);
         break;
       case "speak_text": {
-        const { audio } = await tts.synthesizeSpeech(args.text);
+        const { audio, contentType } = await tts.synthesizeSpeech(args.text);
+        audioDirective = { mimeType: contentType, base64: audio.toString("base64") };
         output = { synthesized: true, bytes: audio.length };
         break;
       }
@@ -542,10 +553,10 @@ export async function executeTool(
         output = await obsidian.createNote(args.path, args.content);
         break;
       case "query_knowledge_graph":
-        output = { results: await knowledgeGraph.queryKnowledge(args.query) };
+        output = { results: await knowledgeGraph.queryKnowledge(username, args.query) };
         break;
       case "reflect_on_self":
-        output = { reflections: await identity.reflectOnSelf(args.query) };
+        output = { reflections: await identity.reflectOnSelf(username, args.query) };
         break;
       case "get_news": {
         const articles = args.query
@@ -645,7 +656,7 @@ export async function executeTool(
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
     observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
-    return { name, ok: true, output, displayDirective };
+    return { name, ok: true, output, displayDirective, audioDirective };
   } catch (err: any) {
     observation.logAuditEvent(username, "tool_call", "failed", `${name}(${JSON.stringify(args)}): ${err.message}`);
     return { name, ok: false, error: err.message || String(err) };
