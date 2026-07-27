@@ -22,6 +22,7 @@ import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./mcp-registry.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
 import * as obsidian from "./providers/obsidian.js";
+import * as builderClient from "../kernel/builder-client.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -78,6 +79,8 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   get_vault_note: "vault.read",
   get_vault_backlinks: "vault.read",
   write_vault_note: "vault.write",
+  run_sandbox_command: "system.sandbox_execute",
+  reset_sandbox: "system.sandbox_execute",
 };
 
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
@@ -421,6 +424,26 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["name", "url"],
     },
   },
+  {
+    name: "run_sandbox_command",
+    description:
+      "Run a shell command in your own isolated sandbox — a real, persistent Linux container scoped just to you, with a full clone of this codebase, network access for package installs, but no credentials, no access to production data or other services, and no path outside itself. Nothing here needs approval. Use it freely to explore, inspect files, test snippets, or run small scripts. Files you create and packages you install persist across calls in the same conversation, but the sandbox is recycled after a period of inactivity — don't rely on it for anything that needs to last.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        command: { type: Type.STRING, description: "The shell command to run." },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "reset_sandbox",
+    description: "Destroy your current sandbox and start fresh on the next command. Use this if the sandbox gets into a broken state you can't recover from.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 // Static declarations plus whatever MCP servers are currently approved and
@@ -645,6 +668,18 @@ export async function executeTool(
         const proposed = await mcpServersRepo.proposeMcpServer(args.name, args.url, username);
         observation.logAuditEvent(username, "mcp_server_proposed", "success", `"${args.name}" (${args.url}, id ${proposed.id})`);
         output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval. Nothing connects until you approve it." };
+        break;
+      }
+      case "run_sandbox_command": {
+        const result = await builderClient.execInChatSandbox(username, args.command);
+        observation.logAuditEvent(username, "sandbox_command", result.exitCode === 0 ? "success" : "failed", args.command);
+        output = result;
+        break;
+      }
+      case "reset_sandbox": {
+        await builderClient.destroyChatSandbox(username);
+        observation.logAuditEvent(username, "sandbox_reset", "success", "");
+        output = { reset: true };
         break;
       }
       case "display_content": {

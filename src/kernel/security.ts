@@ -46,6 +46,15 @@ export const ALL_CAPABILITIES = [
   "settings.write",
   "evolution.read",
   "evolution.manage",
+  // Deliberately separate from system.execute (propose_command, which
+  // proposes a HOST command a human must explicitly approve before a
+  // separate host-side script runs it) — run_sandbox_command executes
+  // immediately, with no approval step, inside an isolated per-user
+  // container with no credentials, no production data, and no network
+  // path to any other service (see jarvis-builder/workspace.ts's chat
+  // sandboxes). An operator should be able to grant one without the other:
+  // the risk profile isn't remotely the same.
+  "system.sandbox_execute",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

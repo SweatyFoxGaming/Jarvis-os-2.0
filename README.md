@@ -371,6 +371,32 @@ privileges (raw sockets, and whatever the approved command itself needs) —
 neither is granted automatically by this repo; see the scripts' own
 comments for what to set up and why.
 
+### Sandbox execution — a completely different trust model from the above
+
+`propose_command` (above) and `run_sandbox_command` look superficially
+similar — both let Jarvis run a shell command — but they exist for
+opposite reasons and gate on separate capabilities
+(`system.execute` vs. `system.sandbox_execute`):
+
+- `propose_command` runs on **your real host**, so it requires **your
+  fresh approval** every time, and the isolation is procedural (a
+  human reads it first).
+- `run_sandbox_command` runs immediately, **with no approval step**, but
+  only inside an isolated per-user container (`jarvis-builder`'s chat
+  sandboxes — see `jarvis-builder/workspace.ts`): no credentials, no
+  production data, no network path to Postgres or any other internal
+  service, dropped Linux capabilities, and resource caps. The isolation
+  here is the container boundary itself, not a human reading the command
+  first.
+
+A sandbox is created lazily on first use, persists across calls within one
+conversation (installed packages, created files, current directory all
+carry over), and is reaped automatically after
+`JARVIS_CHAT_SANDBOX_MAX_IDLE_MS` (default 30 minutes) of inactivity. Up
+to `JARVIS_CHAT_SANDBOX_MAX_CONCURRENT` (default 10) can exist at once
+across all users. `reset_sandbox` destroys the current one outright if it
+gets into a state worth abandoning.
+
 ## Local-only network integrations
 
 Anything that gives a container real presence on your home network (device
