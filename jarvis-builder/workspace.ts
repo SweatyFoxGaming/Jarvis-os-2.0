@@ -626,9 +626,17 @@ export async function ensureChatSandbox(key: string): Promise<void> {
   const dir = chatWorkspaceDir(key);
   const container = chatContainerName(key);
   try {
-    // Same "dubious ownership" workaround createWorkspace needs above —
-    // idempotent, harmless to repeat here.
+    // Same "dubious ownership" workaround createWorkspace needs above, but
+    // `git clone <path>` (below) resolves its ownership check against
+    // `<path>/.git` specifically, not `<path>` itself — a different
+    // internal code path than createWorkspace's own `git fetch`/`worktree
+    // add`, which run with `cwd: REPO_HOST_PATH` and so check that bare
+    // path instead. Live-verified: registering only REPO_HOST_PATH left
+    // `git clone` still failing with "detected dubious ownership in
+    // repository at '<path>/.git'". Registering both is harmless and
+    // idempotent either way.
     await execFileAsync("git", ["config", "--global", "--add", "safe.directory", REPO_HOST_PATH]);
+    await execFileAsync("git", ["config", "--global", "--add", "safe.directory", `${REPO_HOST_PATH}/.git`]);
     await execFileAsync("mkdir", ["-p", CHAT_WORKSPACES_DIR]);
     // Clears any stale leftover from a prior attempt that failed after
     // partially cloning but before the container itself was confirmed —
