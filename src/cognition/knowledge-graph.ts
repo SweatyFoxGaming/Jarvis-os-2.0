@@ -109,19 +109,29 @@ export interface KnowledgeQueryResult {
 /**
  * The reliable "what do we know about X" read path — a real lookup by name,
  * not a similarity guess. Exposed as the query_knowledge_graph chat tool.
+ * Degrades to [] on a DB failure rather than rejecting, matching every
+ * other read-side function in this codebase (e.g. objectives-repo's
+ * listActiveObjectives, identity.ts's reflectOnSelf) — every current
+ * caller already wraps this in its own try/catch, but a read path with no
+ * sensible fallback value shouldn't rely on that alone.
  */
 export async function queryKnowledge(username: string, query: string): Promise<KnowledgeQueryResult[]> {
-  const entities = await kgRepo.searchEntities(username, query);
-  const results: KnowledgeQueryResult[] = [];
-  for (const entity of entities) {
-    const facts = await kgRepo.getFactsForEntity(entity.id);
-    const relationships = await kgRepo.getRelationshipsForEntity(entity.id);
-    results.push({
-      entityName: entity.name,
-      entityType: entity.entity_type,
-      facts: facts.map(f => f.fact),
-      relationships: relationships.map(r => `${r.direction === "from" ? entity.name : r.otherEntityName} ${r.relationship} ${r.direction === "from" ? r.otherEntityName : entity.name}`),
-    });
+  try {
+    const entities = await kgRepo.searchEntities(username, query);
+    const results: KnowledgeQueryResult[] = [];
+    for (const entity of entities) {
+      const facts = await kgRepo.getFactsForEntity(entity.id);
+      const relationships = await kgRepo.getRelationshipsForEntity(entity.id);
+      results.push({
+        entityName: entity.name,
+        entityType: entity.entity_type,
+        facts: facts.map(f => f.fact),
+        relationships: relationships.map(r => `${r.direction === "from" ? entity.name : r.otherEntityName} ${r.relationship} ${r.direction === "from" ? r.otherEntityName : entity.name}`),
+      });
+    }
+    return results;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "KnowledgeGraph", `queryKnowledge("${query}") failed: ${err.message}`);
+    return [];
   }
-  return results;
 }
