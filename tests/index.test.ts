@@ -43,6 +43,7 @@ import { fetchWithRetry } from "../src/kernel/http-retry.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
 import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
+import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -1930,6 +1931,37 @@ registerTest("Env", "positiveIntegerEnv falls back on undefined (the unset-env-v
 registerTest("Env", "positiveIntegerEnv falls back on a non-integer value", () => {
   if (positiveIntegerEnv("1.5", 30) !== 30) {
     throw new Error("Env: expected a fractional value to fall back to the default");
+  }
+});
+
+// ---------- TaskCategory Tests ----------
+registerTest("TaskCategory", "classifyTaskCategory recognizes database/migration work", () => {
+  if (classifyTaskCategory("Add a migration to rename the users table") !== "database") {
+    throw new Error("TaskCategory: expected 'database' for a migration-related objective");
+  }
+});
+
+registerTest("TaskCategory", "classifyTaskCategory recognizes frontend/UI work", () => {
+  if (classifyTaskCategory("Build a new dashboard panel for the frontend") !== "frontend") {
+    throw new Error("TaskCategory: expected 'frontend' for a dashboard/UI-related objective");
+  }
+});
+
+registerTest("TaskCategory", "classifyTaskCategory recognizes security/auth work", () => {
+  if (classifyTaskCategory("Fix a permission check in the auth middleware") !== "security") {
+    throw new Error("TaskCategory: expected 'security' for an auth/permission-related objective");
+  }
+});
+
+registerTest("TaskCategory", "classifyTaskCategory falls back to general for anything else", () => {
+  if (classifyTaskCategory("Write a script that reverses a string") !== "general") {
+    throw new Error("TaskCategory: expected 'general' as the fallback for an unrelated objective");
+  }
+});
+
+registerTest("TaskCategory", "classifyTaskCategory is case-insensitive", () => {
+  if (classifyTaskCategory("ADD A DATABASE MIGRATION") !== "database") {
+    throw new Error("TaskCategory: expected case-insensitive matching");
   }
 });
 
