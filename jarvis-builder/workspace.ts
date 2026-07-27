@@ -164,18 +164,35 @@ export interface WorkspaceHandle {
   containerName: string;
 }
 
+// Best-effort cleanup of images left behind under a superseded content
+// hash — CodeRabbit review on this same change: a superseded tag is never
+// referenced again once the Dockerfile changes, so leaving it forever
+// would grow the image cache without bound over the service's lifetime.
+// Plain `docker rmi` (no -f) is the safety property this relies on: it
+// simply fails for a tag any container (running or stopped) still
+// references, so an old image backing a sandbox that hasn't been
+// recycled yet is left alone rather than forced out from under it — it's
+// picked up on a later call once nothing references it anymore.
+async function pruneSupersededSandboxImages(currentTag: string): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync("docker", [
+      "images", "jarvis-sandbox", "--format", "{{.Repository}}:{{.Tag}}",
+    ]);
+    const staleTags = stdout.trim().split("\n").filter((t) => t && t !== currentTag);
+    await Promise.allSettled(staleTags.map((t) => execFileAsync("docker", ["rmi", t])));
+  } catch {
+    // Best-effort — a failed listing/removal here never blocks sandbox creation.
+  }
+}
+
 // Builds the shared sandbox image once per distinct Dockerfile content —
 // subsequent calls with the same content are a fast no-op (`docker image
-// inspect` succeeding against that content's tag). A prior build left
-// behind under an old content hash is never referenced again once the
-// Dockerfile changes, and isn't cleaned up automatically — an accepted,
-// bounded amount of image-cache growth in exchange for genuinely never
-// running stale sandbox behavior, rather than adding image-pruning logic
-// this single-purpose service doesn't otherwise need.
+// inspect` succeeding against that content's tag).
 export async function ensureSandboxImage(): Promise<void> {
   const tag = computeSandboxImageTag();
   try {
     await execFileAsync("docker", ["image", "inspect", tag]);
+    pruneSupersededSandboxImages(tag);
     return;
   } catch {
     // Not found yet — fall through and build it.
@@ -183,6 +200,7 @@ export async function ensureSandboxImage(): Promise<void> {
   await execFileAsync("docker", ["build", "-f", "sandbox.Dockerfile", "-t", tag, "."], {
     cwd: "/app",
   });
+  pruneSupersededSandboxImages(tag);
 }
 
 // Rejects anything that could be parsed by git as a flag (e.g. a leading
