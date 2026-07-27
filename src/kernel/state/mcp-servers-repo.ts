@@ -13,6 +13,7 @@ export interface McpServerRow {
   approved_at: Date | null;
   last_connected_at: Date | null;
   last_error: string | null;
+  approved_tools_signature: string | null;
 }
 
 export class InvalidMcpServerNameError extends Error {}
@@ -100,14 +101,19 @@ export async function listMcpServers(status?: McpServerRow["status"]): Promise<M
 
 // Called only after a live connect()+listTools() round-trip has already
 // succeeded (see mcp-registry.ts, Task 2) — this function itself does no
-// network I/O, it only persists the outcome.
-export async function markMcpServerApproved(id: number): Promise<McpServerRow | null> {
+// network I/O, it only persists the outcome. toolsSignature is the
+// deterministic fingerprint of exactly what was vetted at this moment
+// (mcp-registry.ts's computeToolsSignature) — the baseline
+// refreshServerConnection compares future health-checks against, so a
+// server can't silently mutate its tool definitions post-approval (see
+// migration 005).
+export async function markMcpServerApproved(id: number, toolsSignature: string): Promise<McpServerRow | null> {
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `UPDATE mcp_servers SET status = 'approved', approved_at = now(), last_connected_at = now(), last_error = NULL
+      `UPDATE mcp_servers SET status = 'approved', approved_at = now(), last_connected_at = now(), last_error = NULL, approved_tools_signature = $2
        WHERE id = $1 AND status IN ('pending', 'error') RETURNING *`,
-      [id]
+      [id, toolsSignature]
     );
     return rows[0] || null;
   } catch (err: any) {
@@ -130,17 +136,21 @@ export async function markMcpServerError(id: number, error: string): Promise<voi
 }
 
 // Called by the Task 5 health-check job after a successful reconnect to an
-// already-'approved' server. Deliberately separate from
-// markMcpServerApproved: that function's WHERE clause only matches
-// status IN ('pending', 'error'), so it's a guaranteed no-op for a server
-// that's already 'approved' — which is exactly the case here.
-export async function refreshMcpServerConnection(id: number): Promise<McpServerRow | null> {
+// already-'approved' server, once mcp-registry.ts has confirmed the
+// server's current tool definitions still match what was actually vetted
+// at approval time (or there was no persisted baseline yet, e.g. a server
+// approved before migration 005 — this call also backfills one in that
+// case). Deliberately separate from markMcpServerApproved: that function's
+// WHERE clause only matches status IN ('pending', 'error'), so it's a
+// guaranteed no-op for a server that's already 'approved' — which is
+// exactly the case here.
+export async function refreshMcpServerConnection(id: number, toolsSignature: string): Promise<McpServerRow | null> {
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `UPDATE mcp_servers SET last_connected_at = now(), last_error = NULL
+      `UPDATE mcp_servers SET last_connected_at = now(), last_error = NULL, approved_tools_signature = $2
        WHERE id = $1 AND status = 'approved' RETURNING *`,
-      [id]
+      [id, toolsSignature]
     );
     return rows[0] || null;
   } catch (err: any) {
