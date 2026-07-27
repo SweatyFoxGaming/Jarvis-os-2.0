@@ -3287,7 +3287,9 @@
                 const body = await res.json().catch(() => ({}));
                 addNotification(body.error || `${type} analysis failed.`, "danger");
             }
-        } catch {}
+        } catch {
+            addNotification(`${type} analysis failed — request could not be sent.`, "danger");
+        }
     }
 
     const FEATURE_REQUEST_STATUS_STYLE = {
@@ -3345,7 +3347,9 @@
             });
             if (res.ok) { loadFeatureRequests(); }
             else { const body = await res.json().catch(() => ({})); addNotification(body.error || "Could not update feature request.", "danger"); }
-        } catch {}
+        } catch {
+            addNotification("Could not update feature request — request could not be sent.", "danger");
+        }
     }
 
     async function loadBriefingHistory() {
@@ -3389,6 +3393,7 @@
                 addNotification(body.error || "Briefing generation failed.", "danger");
             }
         } catch {
+            addNotification("Briefing generation failed — request could not be sent.", "danger");
         } finally {
             btn.disabled = false;
             btn.textContent = 'Generate now';
