@@ -1,4 +1,5 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
+import { fetchWithRetry } from "../../kernel/http-retry.js";
 
 const observation = ObservationPlatform.getInstance();
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
@@ -22,7 +23,7 @@ export interface WikipediaResult {
 // into a text summary.
 export async function wikipediaSearch(query: string, limit = 3): Promise<WikipediaResult[]> {
   const url = `${WIKIPEDIA_API}?action=query&list=search&srsearch=${encodeURIComponent(query)}&srlimit=${limit}&format=json&origin=*`;
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const res = await fetchWithRetry(url, { headers: { Accept: "application/json" } }, { label: "Wikipedia search" });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");

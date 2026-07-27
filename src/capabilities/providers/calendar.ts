@@ -1,5 +1,6 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as oauthRepo from "../../kernel/state/oauth-repo.js";
+import { fetchWithRetry } from "../../kernel/http-retry.js";
 
 const observation = ObservationPlatform.getInstance();
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -53,7 +54,7 @@ export function getAuthUrl(): string {
  */
 export async function exchangeCodeForTokens(code: string): Promise<void> {
   const { clientId, clientSecret, redirectUri } = requireOAuthConfig();
-  const res = await fetch(GOOGLE_TOKEN_URL, {
+  const res = await fetchWithRetry(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -63,7 +64,7 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
       redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
-  });
+  }, { label: "Google OAuth token exchange" });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new CalendarIntegrationError(`Google token exchange failed (${res.status}): ${body}`, res.status);
@@ -86,7 +87,7 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
 
 async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; expiry: Date }> {
   const { clientId, clientSecret } = requireOAuthConfig();
-  const res = await fetch(GOOGLE_TOKEN_URL, {
+  const res = await fetchWithRetry(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -95,7 +96,7 @@ async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: 
       client_secret: clientSecret,
       grant_type: "refresh_token",
     }),
-  });
+  }, { label: "Google OAuth token refresh" });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new CalendarIntegrationError(`Google token refresh failed (${res.status}): ${body}`, res.status);
@@ -124,14 +125,14 @@ async function getValidAccessToken(): Promise<string> {
 
 async function calendarRequest(path: string, init: RequestInit = {}): Promise<any> {
   const accessToken = await getValidAccessToken();
-  const res = await fetch(`${CALENDAR_API}${path}`, {
+  const res = await fetchWithRetry(`${CALENDAR_API}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       ...(init.body ? { "Content-Type": "application/json" } : {}),
       ...init.headers,
     },
-  });
+  }, { label: `Google Calendar API ${init.method || "GET"} ${path}` });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     observation.logTelemetry("warn", "Integrations", `Google Calendar API request failed: ${init.method || "GET"} ${path} -> ${res.status} ${body}`);

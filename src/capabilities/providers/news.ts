@@ -1,4 +1,5 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
+import { fetchWithRetry } from "../../kernel/http-retry.js";
 
 const observation = ObservationPlatform.getInstance();
 const NEWS_API = "https://newsapi.org/v2";
@@ -28,7 +29,7 @@ function getKey(): string {
 async function newsRequest(path: string, params: Record<string, string>): Promise<any> {
   const key = getKey();
   const query = new URLSearchParams({ ...params, apiKey: key }).toString();
-  const res = await fetch(`${NEWS_API}${path}?${query}`);
+  const res = await fetchWithRetry(`${NEWS_API}${path}?${query}`, {}, { label: `News API ${path}` });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
