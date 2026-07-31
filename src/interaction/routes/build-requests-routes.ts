@@ -5,6 +5,7 @@ import * as permissions from "../../kernel/security.js";
 import * as buildRequestsRepo from "../../kernel/state/build-requests-repo.js";
 import * as transcriptEventsRepo from "../../kernel/state/transcript-events-repo.js";
 import * as codingPlanTasksRepo from "../../kernel/state/coding-plan-tasks-repo.js";
+import * as rewardEventsRepo from "../../kernel/state/reward-events-repo.js";
 import * as builderClient from "../../kernel/builder-client.js";
 import * as github from "../../capabilities/providers/github.js";
 import * as departments from "../../executive/departments.js";
@@ -241,6 +242,8 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
         // for the row to actually reach that state.
         await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
 
+        await rewardEventsRepo.recordRewardEvent(updated.id, "terminal_outcome", updated.coding_model_used, updated.task_category || "general", 2);
+
         obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
           directionNotes: updated.direction_notes || undefined,
           codeSummary: updated.code_summary || undefined,
@@ -281,6 +284,7 @@ buildRequestsRouter.post("/api/system/build-requests/:id/reject-code", validateA
     }
     const updated = await buildRequestsRepo.rejectCode(id);
     if (!updated) return res.status(404).json({ error: "Build request not found or not awaiting code approval" });
+    await rewardEventsRepo.recordRewardEvent(updated.id, "terminal_outcome", updated.coding_model_used, updated.task_category || "general", -2);
     await builderClient.destroyWorkspace(updated.id).catch(() => {});
     observation.logAuditEvent(req.username, "build_request_code_rejected", "success", `#${updated.id}`);
     res.json(updated);
