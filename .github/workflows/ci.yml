@@ -13,7 +13,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
       - name: Type check
         run: npx tsc --noEmit
       - name: Run test suite
@@ -21,7 +23,10 @@ jobs:
       - name: Check README/docs accuracy
         run: bash scripts/check-docs-accuracy.sh
       - name: Install jarvis-builder dependencies
-        run: npm install
+        run: npm ci
+        working-directory: jarvis-builder
+      - name: Audit jarvis-builder dependencies
+        run: npm audit --audit-level=high
         working-directory: jarvis-builder
       - name: Type check jarvis-builder
         run: npx tsc --noEmit

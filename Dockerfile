@@ -11,7 +11,10 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install packages (including devDependencies like tsx for executing TypeScript directly)
-RUN npm install
+# npm ci (not npm install) installs exactly what package-lock.json pins —
+# npm install can silently pull a newer version for any unpinned/range
+# dependency on a routine rebuild, with no diff review.
+RUN npm ci
 
 # Copy requirements file first for caching
 COPY requirements.txt ./

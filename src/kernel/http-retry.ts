@@ -9,7 +9,20 @@ export interface FetchWithRetryOptions {
   // (e.g. "GitHub API POST /repos/x/y/issues") reads far better in logs
   // than a bare URL, especially once query strings/API keys are involved.
   label?: string;
+  // Per-attempt timeout in ms. A connection that's accepted but then stalls
+  // (no response ever arrives) previously hung this call — and everything
+  // that awaits it — indefinitely, since plain fetch() has no timeout of
+  // its own. Defaults to 20s; pass 0 to disable (rarely needed).
+  timeoutMs?: number;
 }
+
+// The upper bound this codebase will ever actually sleep for a server-sent
+// Retry-After, regardless of what the header says. A malicious or
+// misconfigured upstream sending an absurd value (a huge second count, or a
+// far-future HTTP-date) would otherwise make the caller sleep for that
+// entire duration — a trivial DoS vector against any request that reaches
+// this code path.
+const MAX_RETRY_AFTER_MS = 60_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,11 +33,15 @@ function sleep(ms: number): Promise<void> {
 // some others send a date).
 function parseRetryAfterMs(header: string | null): number | null {
   if (!header) return null;
+  let ms: number | null = null;
   const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  const dateMs = Date.parse(header);
-  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
-  return null;
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    ms = seconds * 1000;
+  } else {
+    const dateMs = Date.parse(header);
+    if (!Number.isNaN(dateMs)) ms = Math.max(0, dateMs - Date.now());
+  }
+  return ms === null ? null : Math.min(ms, MAX_RETRY_AFTER_MS);
 }
 
 /**
@@ -56,6 +73,7 @@ export async function fetchWithRetry(
 ): Promise<Response> {
   const maxRetries = opts.maxRetries ?? 3;
   const baseDelayMs = opts.baseDelayMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? 20_000;
   const method = (init.method || "GET").toUpperCase();
   const isIdempotent = method === "GET" || method === "HEAD";
   const label = opts.label || url;
@@ -64,7 +82,11 @@ export async function fetchWithRetry(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let res: Response;
     try {
-      res = await fetch(url, init);
+      // Only add our own timeout signal when the caller didn't already
+      // supply one — an explicit caller signal means they're managing
+      // their own cancellation policy (e.g. a request-scoped abort).
+      const signal = init.signal ?? (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined);
+      res = await fetch(url, { ...init, signal });
     } catch (err: any) {
       lastNetworkErr = err;
       if (!isIdempotent || attempt === maxRetries) throw err;

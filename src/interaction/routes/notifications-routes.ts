@@ -66,7 +66,7 @@ notificationsRouter.post("/api/push/unsubscribe", validateApiKey, async (req: an
   const { endpoint } = req.body || {};
   if (!endpoint) return res.status(400).json({ error: "endpoint is required" });
   try {
-    await pushRepo.removeSubscription(endpoint);
+    await pushRepo.removeSubscription(req.username, endpoint);
     res.json({ status: "unsubscribed" });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -39,23 +39,21 @@ export async function addFact(entityId: number, fact: string): Promise<void> {
   // Skip if an identical fact is already recorded for this entity — the
   // extraction call runs on every real turn, so repeated mentions of the
   // same stable fact ("uses PostgreSQL") shouldn't pile up duplicate rows.
-  const existing = await db.query(
-    `SELECT 1 FROM kg_facts WHERE entity_id = $1 AND fact = $2 LIMIT 1`,
+  // ON CONFLICT (not a separate SELECT-then-INSERT) so two concurrent
+  // extraction calls for the same entity/fact can't both pass a check and
+  // both insert — see migration 007 for the unique constraint this relies on.
+  await db.query(
+    `INSERT INTO kg_facts (entity_id, fact) VALUES ($1, $2)
+     ON CONFLICT (entity_id, fact) DO NOTHING`,
     [entityId, fact]
   );
-  if (existing.rows.length > 0) return;
-  await db.query(`INSERT INTO kg_facts (entity_id, fact) VALUES ($1, $2)`, [entityId, fact]);
 }
 
 export async function addRelationship(fromEntityId: number, toEntityId: number, relationship: string): Promise<void> {
   const db = getPool();
-  const existing = await db.query(
-    `SELECT 1 FROM kg_relationships WHERE from_entity_id = $1 AND to_entity_id = $2 AND relationship = $3 LIMIT 1`,
-    [fromEntityId, toEntityId, relationship]
-  );
-  if (existing.rows.length > 0) return;
   await db.query(
-    `INSERT INTO kg_relationships (from_entity_id, to_entity_id, relationship) VALUES ($1, $2, $3)`,
+    `INSERT INTO kg_relationships (from_entity_id, to_entity_id, relationship) VALUES ($1, $2, $3)
+     ON CONFLICT (from_entity_id, to_entity_id, relationship) DO NOTHING`,
     [fromEntityId, toEntityId, relationship]
   );
 }

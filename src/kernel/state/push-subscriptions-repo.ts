@@ -35,7 +35,13 @@ export async function getSubscriptionsForUser(username: string): Promise<PushSub
   return rows;
 }
 
-export async function removeSubscription(endpoint: string): Promise<void> {
+// Scoped by username (not just endpoint) — endpoint alone would let any
+// authenticated user who learns another user's push endpoint URL (shared
+// logs, a support ticket, a future admin-facing subscriptions panel)
+// silently unsubscribe them. Both real callers (the unsubscribe route and
+// sendPushToUser's dead-subscription cleanup) already have the owning
+// username in scope, so this costs nothing at either call site.
+export async function removeSubscription(username: string, endpoint: string): Promise<void> {
   const db = getPool();
-  await db.query(`DELETE FROM push_subscriptions WHERE endpoint = $1`, [endpoint]);
+  await db.query(`DELETE FROM push_subscriptions WHERE endpoint = $1 AND username = $2`, [endpoint, username]);
 }

@@ -9,6 +9,7 @@ import * as jarvisFiles from "../../capabilities/providers/files.js";
 import * as calendar from "../../capabilities/providers/calendar.js";
 import * as news from "../../capabilities/providers/news.js";
 import * as webSearch from "../../capabilities/providers/websearch.js";
+import { aiLimiter } from "../../kernel/rate-limiters.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -226,7 +227,9 @@ integrationsRouter.get("/api/integrations/news/headlines", validateApiKey, requi
   }
 });
 
-integrationsRouter.get("/api/integrations/news/search", validateApiKey, requireCapability("news.read"), async (req: any, res: any) => {
+// aiLimiter reused here: both routes below hit paid third-party APIs
+// (NewsAPI/Brave) with no cap otherwise.
+integrationsRouter.get("/api/integrations/news/search", validateApiKey, requireCapability("news.read"), aiLimiter, async (req: any, res: any) => {
   const q = req.query.q as string | undefined;
   if (!q) return res.status(400).json({ error: "q is required" });
   try {
@@ -238,7 +241,7 @@ integrationsRouter.get("/api/integrations/news/search", validateApiKey, requireC
 });
 
 // ---------- Web Search ----------
-integrationsRouter.get("/api/integrations/websearch", validateApiKey, requireCapability("web.search"), async (req: any, res: any) => {
+integrationsRouter.get("/api/integrations/websearch", validateApiKey, requireCapability("web.search"), aiLimiter, async (req: any, res: any) => {
   const q = req.query.q as string | undefined;
   if (!q) return res.status(400).json({ error: "q is required" });
   try {
