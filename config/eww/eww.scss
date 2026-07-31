@@ -1,0 +1,50 @@
+// config/eww/eww.scss
+* {
+  all: unset;
+  font-family: monospace;
+}
+
+.hud {
+  background-color: rgba(20, 20, 25, 0.78);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #e8e8e8;
+}
+
+.hud-header {
+  margin-bottom: 8px;
+}
+
+.hud-status {
+  font-weight: bold;
+  font-size: 13px;
+  margin-left: 8px;
+}
+
+.badge-dot {
+  min-width: 10px;
+  min-height: 10px;
+  border-radius: 5px;
+}
+
+.badge-idle { background-color: #3ddc84; }
+.badge-thinking { background-color: #f4c542; }
+.badge-executing { background-color: #4aa3ff; }
+.badge-error { background-color: #ff4d4d; }
+
+.hud-section {
+  margin-top: 6px;
+}
+
+// GTK-CSS (what eww's scss actually compiles to) has no text-transform
+// property — the labels themselves are written in uppercase in eww.yuck
+// instead of relying on CSS to transform them.
+.hud-label {
+  font-size: 10px;
+  color: #9a9a9a;
+}
+
+.hud-thought, .hud-note {
+  font-size: 11px;
+  color: #d8d8d8;
+}

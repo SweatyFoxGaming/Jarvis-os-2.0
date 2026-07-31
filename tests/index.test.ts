@@ -46,6 +46,7 @@ import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js
 import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
+import { deriveHudBadge } from "../src/interaction/hud-badge.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -1845,6 +1846,38 @@ registerTest("RewardEvents", "getOverallScore degrades cleanly (null, not 0) whe
   const result = await rewardEventsRepo.getOverallScore();
   if (result !== null) {
     throw new Error(`RewardEvents: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HudRoutes", "deriveHudBadge maps a recent failure to error regardless of executiveStatus", () => {
+  if (deriveHudBadge("Idle", true) !== "error") {
+    throw new Error("HudRoutes: expected 'error' when a recent audit failure exists, even with executiveStatus 'Idle'");
+  }
+});
+
+registerTest("HudRoutes", "deriveHudBadge maps Idle to idle when there's no recent failure", () => {
+  if (deriveHudBadge("Idle", false) !== "idle") {
+    throw new Error("HudRoutes: expected 'idle' for executiveStatus 'Idle' with no recent failure");
+  }
+});
+
+registerTest("HudRoutes", "deriveHudBadge maps Thinking/Planning/Reflecting to thinking", () => {
+  for (const status of ["Thinking", "Planning", "Reflecting"]) {
+    if (deriveHudBadge(status, false) !== "thinking") {
+      throw new Error(`HudRoutes: expected 'thinking' for executiveStatus '${status}'`);
+    }
+  }
+});
+
+registerTest("HudRoutes", "deriveHudBadge maps Executing to executing", () => {
+  if (deriveHudBadge("Executing", false) !== "executing") {
+    throw new Error("HudRoutes: expected 'executing' for executiveStatus 'Executing'");
+  }
+});
+
+registerTest("HudRoutes", "deriveHudBadge falls back to idle for an unrecognized executiveStatus", () => {
+  if (deriveHudBadge("SomeFutureStatus", false) !== "idle") {
+    throw new Error("HudRoutes: expected 'idle' as the safe fallback for an unrecognized executiveStatus");
   }
 });
 
