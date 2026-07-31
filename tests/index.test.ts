@@ -1133,6 +1133,24 @@ registerTest("Learning", "reflectAndLearn no-ops with no Groq client", async () 
   }
 });
 
+registerTest("Reflection", "reflectAndLearn degrades cleanly when Postgres isn't reachable (vault search failure never blocks the reflection call)", async () => {
+  const fakeGroq: any = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: JSON.stringify({
+            styleNamingConvention: "", styleTabSize: 0, styleFramework: "", styleArchitecture: "",
+            mistakeErrorSignature: "", mistakeFile: "", mistakeRootCause: "", mistakeFix: "",
+          }) } }],
+        }),
+      },
+    },
+  };
+  // No live Postgres in this test harness — vaultRepo.searchNotes will fail
+  // internally; reflectAndLearn must still complete without throwing.
+  await reflectAndLearn(fakeGroq, "test message", "test reply");
+});
+
 // ---------- HTTP Boundary ----------
 // Every other test in this file imports internal modules directly — none of
 // them would have caught today's real incident, where the Express app
