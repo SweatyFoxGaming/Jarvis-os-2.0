@@ -33,18 +33,22 @@ async function pollOnce(): Promise<void> {
       headers: API_KEY ? { "X-API-Key": API_KEY } : {},
     });
     if (!res.ok) {
-      ewwUpdate({ jarvis_badge: "error", jarvis_status: "Unreachable", jarvis_thought: "HUD endpoint returned an error.", jarvis_note: "" });
+      ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify("HUD endpoint returned an error."), jarvis_note: JSON.stringify("") });
       return;
     }
     const data = await res.json();
     ewwUpdate({
       jarvis_badge: data.badge || "idle",
       jarvis_status: JSON.stringify(data.statusLabel || ""),
-      jarvis_thought: JSON.stringify((data.thoughtLines || []).join("\\n")),
+      // A real newline, not the two-character "\n" escape sequence — the
+      // latter would survive JSON.stringify as a literal backslash-n
+      // instead of a line break, so yuck's :wrap label would render the
+      // text "\n" between thoughts rather than actually wrapping them.
+      jarvis_thought: JSON.stringify((data.thoughtLines || []).join("\n")),
       jarvis_note: JSON.stringify(data.lastNote ? data.lastNote.title : "None yet"),
     });
   } catch (err: any) {
-    ewwUpdate({ jarvis_badge: "error", jarvis_status: "Unreachable", jarvis_thought: JSON.stringify(`Cannot reach Jarvis: ${err.message}`), jarvis_note: "" });
+    ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify(`Cannot reach Jarvis: ${err.message}`), jarvis_note: JSON.stringify("") });
   }
 }
 
