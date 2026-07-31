@@ -842,6 +842,36 @@ registerTest("Obsidian", "appendReflectionEntry creates its daily note with MOC 
   }
 });
 
+registerTest("Obsidian", "ensureLinkedInMoc serializes concurrent writes to the same MOC without losing either link", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-race-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await Promise.all([
+      obsidian.writeOrUpdateCodingNote(555003, "Concurrent objective A", { status: "coding" }),
+      obsidian.writeOrUpdateCodingNote(555004, "Concurrent objective B", { status: "coding" }),
+    ]);
+    const notes = await obsidian.listAllNotePaths();
+    const noteA = notes.find(p => p.startsWith("Coding/") && p.includes("br555003"));
+    const noteB = notes.find(p => p.startsWith("Coding/") && p.includes("br555004"));
+    if (!noteA || !noteB) throw new Error(`Obsidian: expected both br555003 and br555004 notes, got: ${JSON.stringify(notes)}`);
+    const mocRaw = await obsidian.readNote("Coding MOC.md");
+    const basenameA = noteA.replace(/^Coding\//, "").replace(/\.md$/, "");
+    const basenameB = noteB.replace(/^Coding\//, "").replace(/\.md$/, "");
+    if (!mocRaw.includes(`[[Coding/${basenameA}]]`) || !mocRaw.includes(`[[Coding/${basenameB}]]`)) {
+      throw new Error(`Obsidian: expected Coding MOC.md to contain links to both concurrent notes, got:\n${mocRaw}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
 // ---------- Voice Pipeline Tests (whisper-cpp / TTS integrations) ----------
 // Neither service is reachable in this test process (no live Docker
 // network) — these confirm the one thing that's actually testable without
