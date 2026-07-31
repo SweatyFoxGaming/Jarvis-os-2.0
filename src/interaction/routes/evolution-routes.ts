@@ -2,6 +2,7 @@ import { Router } from "express";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
+import { aiLimiter } from "../../kernel/rate-limiters.js";
 import * as analyzer from "../../adaptation/analyzer.js";
 import * as evolutionRepo from "../../kernel/state/evolution-repo.js";
 
@@ -48,6 +49,10 @@ function registerAnalysisRoute(type: string) {
     // because triggering it is a side effect of this one endpoint.
     requireCapability("evolution.manage"),
     requireCapability("evolution.read"),
+    // aiLimiter: full-codebase regex/tsc scans are expensive to run
+    // repeatedly — reusing the same per-user budget as the LLM-cost routes
+    // rather than leaving this one unlimited.
+    aiLimiter,
     async (req: any, res: any) => {
       try {
         const result = ANALYZERS[type]();

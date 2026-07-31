@@ -8,7 +8,7 @@ RUN apk add --no-cache git docker-cli bash
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 

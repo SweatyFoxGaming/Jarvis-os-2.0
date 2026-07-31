@@ -45,7 +45,7 @@ export async function sendPushToUser(username: string, title: string, body: stri
       // dead (uninstalled, storage cleared, etc.) — remove it rather than
       // retry it forever on every future notification.
       if (err.statusCode === 404 || err.statusCode === 410) {
-        pushRepo.removeSubscription(sub.endpoint).catch(() => {});
+        pushRepo.removeSubscription(username, sub.endpoint).catch(() => {});
       } else {
         observation.logTelemetry("warn", "Push", `Push send failed for "${username}": ${err.message}`);
       }

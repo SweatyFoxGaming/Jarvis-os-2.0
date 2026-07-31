@@ -4,7 +4,6 @@ import cors from "cors";
 import path from "path";
 import crypto from "crypto";
 import dotenv from "dotenv";
-import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
 import Groq from "groq-sdk";
@@ -22,6 +21,7 @@ import { getAllToolDeclarations, executeTool, looksToolShaped, looksTrivial } fr
 import * as permissions from "./kernel/security.js";
 import { requireCapability } from "./kernel/security.js";
 import { validateApiKey } from "./kernel/auth-middleware.js";
+import { aiLimiter } from "./kernel/rate-limiters.js";
 import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "./kernel/egress.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
@@ -138,18 +138,10 @@ app.use(express.urlencoded({ limit: "15mb", extended: true }));
 // authLimiter/loginUsernameLimiter moved to interaction/routes/auth-routes.ts
 // with the routes they exclusively guard.
 
-// Chat/executive/board routes call out to a real (billed) Gemini API with no
-// cap otherwise — a leaked key, or a runaway client-side retry loop, could
-// otherwise generate unbounded cost. Keyed per authenticated user (not IP) so
-// this actually bounds a given key's usage rather than a shared NAT's.
-const aiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req: any) => req.username || req.ip,
-  message: { error: "Too many requests — please slow down." },
-});
+// aiLimiter (chat/executive/board routes call out to a real, billed LLM
+// provider with no cap otherwise) moved to kernel/rate-limiters.ts so
+// route-file-only endpoints hitting Groq/Gemini or paid search/news APIs
+// can reuse the exact same budget instead of going unlimited.
 
 // ---------- Platform Instances ----------
 // Per-user conversational state lives in SessionState (src/cognition/session.ts),
@@ -168,7 +160,12 @@ if (process.env.GEMINI_API_KEY) {
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
-      }
+      },
+      // Without this, a Gemini call that connects but stalls (a real outage
+      // mode, not hypothetical) can hang the request indefinitely — the
+      // Groq→Gemini→LocalLLM→Simulated fallback chain never gets a chance
+      // to try the next provider because this call never actually fails.
+      timeout: 30_000,
     }
   });
   observation.logTelemetry("info", "Cognition", "Gemini AI client successfully configured with API Key.");
@@ -179,7 +176,10 @@ if (process.env.GEMINI_API_KEY) {
 // ---------- Groq Client Initialization (primary cloud tier) ----------
 let groq: Groq | null = null;
 if (process.env.GROQ_API_KEY) {
-  groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  // Explicit rather than relying on the SDK's own default (60s) — this is
+  // the primary provider in every fallback chain, so a stall here should
+  // fail fast enough for Gemini/LocalLLM to still get a real chance.
+  groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 30_000 });
   observation.logTelemetry("info", "Cognition", "Groq client successfully configured with API Key.");
 } else {
   observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
@@ -1198,6 +1198,21 @@ app.post("/api/voice-ticket", validateApiKey, (req: any, res: any) => {
   res.json({ ticket: issueVoiceTicket(req.username) });
 });
 
+// Final error handler — must be the last app.use() so Express routes any
+// exception an individual handler didn't catch here, instead of falling
+// through to Express's own built-in HTML error page. That built-in page is
+// currently masked by NODE_ENV=production in Docker (see docker-compose.yml),
+// but a bare `node dist/server.js` outside that compose file, or a future
+// env-var typo, would revert to full stack traces (file paths, internal
+// error text) in an HTML response — this makes the safe behavior
+// unconditional rather than dependent on NODE_ENV. The real error is still
+// logged in full server-side; only the client-facing message is generic.
+app.use((err: any, req: any, res: any, next: any) => {
+  observation.logTelemetry("error", "System", `Unhandled request error on ${req.method} ${req.path}: ${err?.stack || err?.message || err}`);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "Internal server error." });
+});
+
 initDatabase().then(async (ready) => {
   if (ready) {
     try {
@@ -1233,7 +1248,12 @@ initDatabase().then(async (ready) => {
   // handshake instead carries a short-lived, single-use ticket obtained via
   // a normal authenticated POST (see /api/voice-ticket below); the permanent
   // key never touches a URL or a log line for this path either.
-  const voiceWss = new WebSocketServer({ server: httpServer, path: "/ws/voice" });
+  // maxPayload caps a single WebSocket message at 2MB — `ws`'s own default
+  // is 100MiB, and real audio chunks from this client are tiny fractions of
+  // that. Without a cap, a ticketed (or ticket-leaked) client sending
+  // oversized "audio" frames could spike memory/CPU on the single Node
+  // process every user's chat/voice session shares.
+  const voiceWss = new WebSocketServer({ server: httpServer, path: "/ws/voice", maxPayload: 2_000_000 });
   voiceWss.on("connection", async (ws, req) => {
     const url = new URL(req.url || "", `http://${req.headers.host}`);
     const ticket = url.searchParams.get("ticket");
