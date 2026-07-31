@@ -42,6 +42,7 @@ import { positiveIntegerEnv } from "../src/kernel/env.js";
 import { fetchWithRetry } from "../src/kernel/http-retry.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
 import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js";
+import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { spawn, ChildProcess } from "child_process";
@@ -1687,6 +1688,33 @@ registerTest("SystemSettings", "MindKernel.persistSettings() returns false when 
   const persisted = await MindKernel.getInstance().persistSettings("test_user", { offlineMode: true });
   if (persisted !== false) {
     throw new Error(`SystemSettings: expected persistSettings() to return false with no live Postgres, got: ${persisted}`);
+  }
+});
+
+registerTest("RewardEvents", "recordRewardEvent degrades cleanly when Postgres isn't reachable (never throws)", async () => {
+  await rewardEventsRepo.recordRewardEvent(999999, "task_review", "some-model", "general", 1);
+  // No assertion beyond "didn't throw" — this is a fire-and-forget write path.
+});
+
+registerTest("RewardEvents", "getModelPreferenceOrder degrades to the input order unchanged when Postgres isn't reachable", async () => {
+  const input = ["model-a", "model-b"];
+  const result = await rewardEventsRepo.getModelPreferenceOrder(input);
+  if (JSON.stringify(result) !== JSON.stringify(input)) {
+    throw new Error(`RewardEvents: expected the input order unchanged with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("RewardEvents", "getCategoryScore degrades cleanly (null, not 0) when Postgres isn't reachable", async () => {
+  const result = await rewardEventsRepo.getCategoryScore("database");
+  if (result !== null) {
+    throw new Error(`RewardEvents: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("RewardEvents", "getOverallScore degrades cleanly (null, not 0) when Postgres isn't reachable", async () => {
+  const result = await rewardEventsRepo.getOverallScore();
+  if (result !== null) {
+    throw new Error(`RewardEvents: expected null with no DB, got: ${JSON.stringify(result)}`);
   }
 });
 
