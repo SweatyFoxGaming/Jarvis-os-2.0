@@ -1,0 +1,18 @@
+[Unit]
+Description=Jarvis OS desktop HUD adapter (eww bridge)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node %h/jarvis-hud/eww-adapter.js
+Restart=always
+RestartSec=3
+Environment=JARVIS_HUD_URL=http://localhost:3000/api/hud/status
+# JARVIS_API_KEY belongs in this file, not committed to git — the leading
+# "-" makes it optional so the unit still starts (with an unauthenticated,
+# 401-degrading adapter) before the file is created.
+EnvironmentFile=-%h/.config/jarvis-hud.env
+
+[Install]
+WantedBy=graphical-session.target
