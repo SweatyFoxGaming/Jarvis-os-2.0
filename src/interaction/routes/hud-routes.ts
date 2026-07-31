@@ -11,7 +11,6 @@ export { deriveHudBadge };
 export const hudRouter = Router();
 
 const observation = ObservationPlatform.getInstance();
-const HUD_USERNAME = process.env.JARVIS_HUD_USERNAME || "admin";
 const RECENT_FAILURE_WINDOW_MS = 60_000;
 
 // Audit log lines look like: "[2026-07-31T10:00:00.000Z] Actor: X | Action:
@@ -30,15 +29,20 @@ function hasRecentFailure(): boolean {
   return false;
 }
 
-hudRouter.get("/api/hud/status", validateApiKey, requireCapability("hud.read"), async (req, res) => {
+hudRouter.get("/api/hud/status", validateApiKey, requireCapability("hud.read"), async (req: any, res: any) => {
   try {
-    const session = await getSession(HUD_USERNAME);
+    const hudUsername = process.env.JARVIS_HUD_USERNAME || "admin";
+    if (req.username !== hudUsername) {
+      return res.status(403).json({ error: `HUD status is scoped to the "${hudUsername}" account.` });
+    }
+
+    const session = await getSession(hudUsername);
     const state = session.getState();
     const recentFailure = hasRecentFailure();
     const badge = deriveHudBadge(state.executiveStatus, recentFailure);
 
     const traces = observation.getDecisionTraces();
-    const thoughtLines = traces.slice(-3).map(t => t.reasoning).filter(Boolean);
+    const thoughtLines = traces.map(t => t.reasoning).filter(Boolean).slice(-3);
 
     let lastNote: { path: string; title: string } | null = null;
     try {

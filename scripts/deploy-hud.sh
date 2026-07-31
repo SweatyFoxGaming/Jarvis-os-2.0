@@ -34,10 +34,16 @@ mkdir -p "${HOME}/.config/systemd/user"
 cp "$REPO_DIR/deploy/jarvis-hud.service" "${HOME}/.config/systemd/user/jarvis-hud.service"
 cp "$REPO_DIR/deploy/jarvis-hud-eww.service" "${HOME}/.config/systemd/user/jarvis-hud-eww.service"
 
-if [ ! -f "${HOME}/.config/jarvis-hud.env" ]; then
-  echo "JARVIS_API_KEY=" > "${HOME}/.config/jarvis-hud.env"
-  chmod 600 "${HOME}/.config/jarvis-hud.env"
-  echo "Created ${HOME}/.config/jarvis-hud.env — fill in JARVIS_API_KEY (an existing Jarvis API key with the hud.read grant) before starting the service."
+ENV_FILE="${HOME}/.config/jarvis-hud.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "JARVIS_API_KEY=" > "$ENV_FILE"
+  echo "Created $ENV_FILE — fill in JARVIS_API_KEY (an existing Jarvis API key with the hud.read grant) before starting the service."
+fi
+chmod 600 "$ENV_FILE"
+
+if ! grep -q '^JARVIS_API_KEY=.\+' "$ENV_FILE"; then
+  echo "ERROR: JARVIS_API_KEY is not set in $ENV_FILE — fill it in with a real API key (one granted hud.read), then re-run this script." >&2
+  exit 1
 fi
 
 systemctl --user daemon-reload

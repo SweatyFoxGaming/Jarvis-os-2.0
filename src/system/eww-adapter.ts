@@ -16,7 +16,7 @@ const API_KEY = process.env.JARVIS_API_KEY || "";
 
 function ewwUpdate(pairs: Record<string, string>): void {
   const args = ["update", ...Object.entries(pairs).map(([k, v]) => `${k}=${v}`)];
-  execFile("eww", args, (err) => {
+  execFile("eww", args, { timeout: 3000 }, (err) => {
     if (err) {
       // eww not running yet / window not open — this is expected before
       // `eww open jarvis-hud` has been run, and on every restart of the
@@ -28,9 +28,12 @@ function ewwUpdate(pairs: Record<string, string>): void {
 }
 
 async function pollOnce(): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
   try {
     const res = await fetch(STATUS_URL, {
       headers: API_KEY ? { "X-API-Key": API_KEY } : {},
+      signal: controller.signal,
     });
     if (!res.ok) {
       ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify("HUD endpoint returned an error."), jarvis_note: JSON.stringify("") });
@@ -49,6 +52,8 @@ async function pollOnce(): Promise<void> {
     });
   } catch (err: any) {
     ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify(`Cannot reach Jarvis: ${err.message}`), jarvis_note: JSON.stringify("") });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
