@@ -53,18 +53,9 @@ hudRouter.get("/api/hud/status", validateApiKey, requireCapability("hud.read"), 
       // Degrade cleanly — no live Postgres shouldn't break the rest of the HUD.
     }
 
-    // No user-scoped, multi-status query exists on build-requests-repo —
-    // two small calls plus a filter, rather than adding one for a single
-    // HUD field. Coding and researching are mutually exclusive statuses
-    // for a given build request, so concatenating is safe.
     let activeTask: string | null = null;
     try {
-      const [coding, researching] = await Promise.all([
-        buildRequestsRepo.listBuildRequests("coding"),
-        buildRequestsRepo.listBuildRequests("researching"),
-      ]);
-      const mine = [...coding, ...researching].find(r => r.requested_by === hudUsername);
-      if (mine) activeTask = mine.objective;
+      activeTask = await buildRequestsRepo.getActiveTaskForUser(hudUsername);
     } catch {
       // Degrade cleanly — no live Postgres shouldn't break the rest of the HUD.
     }

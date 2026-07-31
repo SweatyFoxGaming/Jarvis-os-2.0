@@ -363,6 +363,8 @@ export async function runCodingAgent(
         const verifyResult = await builderClient
           .execInWorkspace(buildRequestId, "npx tsc --noEmit && npm test")
           .catch((err: any) => ({ stdout: "", stderr: err.message || String(err), exitCode: -1 }));
+        seq++;
+        await recordTranscriptEvent(buildRequestId, seq, "npx tsc --noEmit && npm test", verifyResult.stdout, verifyResult.stderr, verifyResult.exitCode);
         const verdict = verifyResult.exitCode !== 0
           ? {
               approved: false,

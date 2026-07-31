@@ -49,14 +49,15 @@ export async function runDailyAdaptation(username = "admin"): Promise<{ ok: bool
       security: analyzer.analyzeSecurity(),
     };
 
+    const issuesSummary = Object.entries(analysis)
+      .map(([name, result]) => `${name}: score ${result.score}, ${result.issues.length} issue(s)${result.issues.length ? ` (${result.issues.slice(0, 3).map(i => i.message).join("; ")})` : ""}`)
+      .join("\n");
+
     let reflectionText = "No Groq client configured — unable to generate a written reflection today.";
     let capabilityGaps: string[] = [];
     let candidateObjective = "";
 
     if (configuredGroq) {
-      const issuesSummary = Object.entries(analysis)
-        .map(([name, result]) => `${name}: score ${result.score}, ${result.issues.length} issue(s)${result.issues.length ? ` (${result.issues.slice(0, 3).map(i => i.message).join("; ")})` : ""}`)
-        .join("\n");
       const objectivesSummary = objectives.length > 0
         ? objectives.map(o => `- ${o.description}`).join("\n")
         : "(no active objectives)";
@@ -92,7 +93,7 @@ export async function runDailyAdaptation(username = "admin"): Promise<{ ok: bool
       }
     }
 
-    await obsidian.writeAdaptationReport(dateStr, reflectionText, capabilityGaps, candidateObjective);
+    await obsidian.writeAdaptationReport(dateStr, reflectionText, capabilityGaps, candidateObjective, issuesSummary);
 
     let candidateObjectiveStarted = false;
     if (candidateObjective) {

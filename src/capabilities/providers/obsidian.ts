@@ -406,7 +406,8 @@ export async function writeAdaptationReport(
   dateStr: string,
   reflectionText: string,
   capabilityGaps: string[],
-  candidateObjective: string
+  candidateObjective: string,
+  analyzerSummary: string
 ): Promise<void> {
   if (!process.env.OBSIDIAN_VAULT_DIR) {
     observation.logTelemetry("info", "Interaction", "Skipped writing adaptation report — OBSIDIAN_VAULT_DIR not configured.");
@@ -416,6 +417,10 @@ export async function writeAdaptationReport(
     `# Daily Adaptation — ${dateStr}`,
     "",
     reflectionText,
+    "",
+    "## Analyzer Signals",
+    "",
+    analyzerSummary || "(no analyzer signals computed today)",
     "",
     "## Capability Gaps",
     "",

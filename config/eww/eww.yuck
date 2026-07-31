@@ -32,7 +32,7 @@
 
 (defwindow jarvis-hud
   :monitor 0
-  :geometry (geometry :x "16px" :y "16px" :width "280px" :height "160px" :anchor "top right")
+  :geometry (geometry :x "16px" :y "16px" :width "280px" :height "280px" :anchor "top right")
   :stacking "fg"
   :windowtype "dock"
   :wm-ignore false

@@ -1135,21 +1135,28 @@ registerTest("Learning", "reflectAndLearn no-ops with no Groq client", async () 
 });
 
 registerTest("Reflection", "reflectAndLearn degrades cleanly when Postgres isn't reachable (vault search failure never blocks the reflection call)", async () => {
+  let groqCallCount = 0;
   const fakeGroq: any = {
     chat: {
       completions: {
-        create: async () => ({
-          choices: [{ message: { content: JSON.stringify({
-            styleNamingConvention: "", styleTabSize: 0, styleFramework: "", styleArchitecture: "",
-            mistakeErrorSignature: "", mistakeFile: "", mistakeRootCause: "", mistakeFix: "",
-          }) } }],
-        }),
+        create: async () => {
+          groqCallCount++;
+          return {
+            choices: [{ message: { content: JSON.stringify({
+              styleNamingConvention: "", styleTabSize: 0, styleFramework: "", styleArchitecture: "",
+              mistakeErrorSignature: "", mistakeFile: "", mistakeRootCause: "", mistakeFix: "",
+            }) } }],
+          };
+        },
       },
     },
   };
   // No live Postgres in this test harness — vaultRepo.searchNotes will fail
   // internally; reflectAndLearn must still complete without throwing.
   await reflectAndLearn(fakeGroq, "test message", "test reply");
+  if (groqCallCount !== 1) {
+    throw new Error(`Reflection: expected exactly 1 Groq extraction call despite the vault search failure, got ${groqCallCount}`);
+  }
 });
 
 // ---------- HTTP Boundary ----------
@@ -2606,13 +2613,25 @@ registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a
   // and reports ok: true, matching every other repo-backed feature's own
   // degrade-cleanly tests. What's actually safety-critical to assert here
   // is that no candidate objective ever gets started under these conditions.
-  dailyAdaptation.configureGroq(null);
-  const result = await dailyAdaptation.runDailyAdaptation("test_user_no_db");
-  if (result.ok !== true) {
-    throw new Error(`DailyAdaptation: expected ok: true (a degraded report is still a completed run), got: ${JSON.stringify(result)}`);
-  }
-  if (result.candidateObjectiveStarted !== false) {
-    throw new Error("DailyAdaptation: candidateObjectiveStarted must be false when there's no Groq client to produce a candidate objective");
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "daily-adaptation-test-"));
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    dailyAdaptation.configureGroq(null);
+    const result = await dailyAdaptation.runDailyAdaptation("test_user_no_db");
+    if (result.ok !== true) {
+      throw new Error(`DailyAdaptation: expected ok: true (a degraded report is still a completed run), got: ${JSON.stringify(result)}`);
+    }
+    if (result.candidateObjectiveStarted !== false) {
+      throw new Error("DailyAdaptation: candidateObjectiveStarted must be false when there's no Groq client to produce a candidate objective");
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
   }
 });
 
