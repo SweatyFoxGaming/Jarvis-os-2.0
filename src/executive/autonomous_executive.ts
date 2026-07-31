@@ -12,6 +12,7 @@ import * as codingAgent from "./coding-agent.js";
 import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
+import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
@@ -353,6 +354,14 @@ export class AutonomousExecutive {
   // awaiting_consult build request for a user who already has one — the two
   // pieces are meant to be read together.
   public async confirmDirection(username: string, directionNotes: string): Promise<{ ok: boolean; message: string }> {
+    // A build request sitting in 'direction_confirmed' means a prior call
+    // to this same function already paused here for the reward gate below
+    // — this call is the user's explicit "go ahead anyway."
+    const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
+    if (pendingRewardGate) {
+      return this.startCoding(pendingRewardGate, pendingRewardGate.direction_notes || directionNotes, username);
+    }
+
     const buildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
     if (!buildRequest) {
       return { ok: false, message: "There's no build request of mine currently awaiting your direction to confirm." };
@@ -363,6 +372,20 @@ export class AutonomousExecutive {
       return { ok: false, message: "Couldn't confirm direction — that build request may have already moved on." };
     }
 
+    const rewardCheck = await rewardEventsRepo.getOverallScore("terminal_outcome");
+    if (rewardCheck && rewardCheck.count >= 3 && rewardCheck.score < -0.5) {
+      return {
+        ok: true,
+        message:
+          `Before I start coding, sir — my recent track record here has been rough (average score ${rewardCheck.score.toFixed(2)} ` +
+          `over the last ${rewardCheck.count} attempts). Want me to proceed anyway, or would you like to reconsider the plan first?`,
+      };
+    }
+
+    return this.startCoding(confirmed, directionNotes, username);
+  }
+
+  private async startCoding(confirmed: buildRequestsRepo.BuildRequestRow, directionNotes: string, username: string): Promise<{ ok: boolean; message: string }> {
     await buildRequestsRepo.markCoding(confirmed.id);
 
     let baseBranch = "main";
@@ -396,7 +419,7 @@ export class AutonomousExecutive {
       return { ok: false, message: `Direction confirmed, but drafting the code failed: ${draft.error}` };
     }
 
-    const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files);
+    const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files, draft.modelUsed, draft.category);
     if (!recorded) {
       // runCodingAgent deliberately leaves the sandbox workspace alive on
       // success so the approval checkpoint can re-verify against it — but
