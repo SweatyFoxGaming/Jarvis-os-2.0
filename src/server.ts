@@ -49,6 +49,7 @@ import { buildRequestsRouter } from "./interaction/routes/build-requests-routes.
 import { vaultRouter } from "./interaction/routes/vault-routes.js";
 import { briefingMemoryRouter } from "./interaction/routes/briefing-memory-routes.js";
 import { evolutionRouter } from "./interaction/routes/evolution-routes.js";
+import { rewardRouter } from "./interaction/routes/reward-routes.js";
 import { permissionsRouter } from "./interaction/routes/permissions-routes.js";
 import { integrationsRouter } from "./interaction/routes/integrations-routes.js";
 
@@ -1112,6 +1113,9 @@ app.use(briefingMemoryRouter);
 // Evolution self-analysis + ecosystem stub endpoints — see
 // src/interaction/routes/evolution-routes.ts, mounted below.
 app.use(evolutionRouter);
+
+// Reward-ledger summary endpoint — see src/interaction/routes/reward-routes.ts.
+app.use(rewardRouter);
 
 // Capability grant/revoke endpoints — see
 // src/interaction/routes/permissions-routes.ts, mounted below.

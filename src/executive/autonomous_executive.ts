@@ -12,6 +12,7 @@ import * as codingAgent from "./coding-agent.js";
 import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
+import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
@@ -199,6 +200,31 @@ export class AutonomousExecutive {
         };
       }
 
+      // The other half of the same at-most-one-open-row guarantee: a build
+      // request parked in 'direction_confirmed' by confirmDirection()'s
+      // reward gate is *also* a row that confirmDirection() will resolve
+      // against on the user's next "confirm direction" — and it takes
+      // priority over any awaiting_consult row. Without this check a second
+      // objective could sail past the guard above (its own row never being
+      // in awaiting_consult status), reach awaiting_consult itself, and then
+      // have the user's confirmation silently cross-wired onto the older,
+      // abandoned gated request instead.
+      const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
+      if (pendingRewardGate) {
+        session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
+        // Reusing the "awaiting_consult" ObjectiveRunStatus rather than widening
+        // that closed union for a cosmetically distinct case — semantically this
+        // is the same "parked, needs the user's attention" terminal state.
+        await objectiveRunsRepo.finishRun(runId, "awaiting_consult", pendingRewardGate.id);
+        return {
+          objective,
+          status: "awaiting_consult",
+          buildRequestId: pendingRewardGate.id,
+          researchSummary: pendingRewardGate.research_summary || "",
+          message: `Build request #${pendingRewardGate.id} ("${pendingRewardGate.objective}") is waiting on your call, sir — my recent track record had been rough there, so I paused before starting. Say "confirm direction" again to have me proceed anyway before I can look at anything new.`,
+        };
+      }
+
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
       runContext.buildRequestId = buildRequest.id;
       const research = await departments.runResearch(objective, this.groq, username);
@@ -353,6 +379,14 @@ export class AutonomousExecutive {
   // awaiting_consult build request for a user who already has one — the two
   // pieces are meant to be read together.
   public async confirmDirection(username: string, directionNotes: string): Promise<{ ok: boolean; message: string }> {
+    // A build request sitting in 'direction_confirmed' means a prior call
+    // to this same function already paused here for the reward gate below
+    // — this call is the user's explicit "go ahead anyway."
+    const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
+    if (pendingRewardGate) {
+      return this.startCoding(pendingRewardGate, pendingRewardGate.direction_notes || directionNotes, username);
+    }
+
     const buildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
     if (!buildRequest) {
       return { ok: false, message: "There's no build request of mine currently awaiting your direction to confirm." };
@@ -363,7 +397,25 @@ export class AutonomousExecutive {
       return { ok: false, message: "Couldn't confirm direction — that build request may have already moved on." };
     }
 
-    await buildRequestsRepo.markCoding(confirmed.id);
+    const rewardCheck = await rewardEventsRepo.getOverallScore("terminal_outcome");
+    // First-pass threshold, not empirically tuned yet — see the design spec's Open Questions section.
+    if (rewardCheck && rewardCheck.count >= 3 && rewardCheck.score < -0.5) {
+      return {
+        ok: true,
+        message:
+          `Before I start coding, sir — my recent track record here has been rough (average score ${rewardCheck.score.toFixed(2)} ` +
+          `over the last ${rewardCheck.count} attempts). Want me to proceed anyway, or would you like to reconsider the plan first?`,
+      };
+    }
+
+    return this.startCoding(confirmed, directionNotes, username);
+  }
+
+  private async startCoding(confirmed: buildRequestsRepo.BuildRequestRow, directionNotes: string, username: string): Promise<{ ok: boolean; message: string }> {
+    const claimed = await buildRequestsRepo.markCoding(confirmed.id);
+    if (!claimed) {
+      return { ok: false, message: "This build request has already moved past the direction-confirmed stage — nothing more to do here." };
+    }
 
     let baseBranch = "main";
     const owner = process.env.SELF_REPO_OWNER;
@@ -396,7 +448,7 @@ export class AutonomousExecutive {
       return { ok: false, message: `Direction confirmed, but drafting the code failed: ${draft.error}` };
     }
 
-    const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files);
+    const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files, draft.modelUsed, draft.category);
     if (!recorded) {
       // runCodingAgent deliberately leaves the sandbox workspace alive on
       // success so the approval checkpoint can re-verify against it — but

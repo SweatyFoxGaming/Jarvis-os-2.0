@@ -4,11 +4,13 @@ import { recordTranscriptEvent } from "../kernel/state/transcript-events-repo.js
 import * as codingPlanTasksRepo from "../kernel/state/coding-plan-tasks-repo.js";
 import type { PlannedTaskInput } from "../kernel/state/coding-plan-tasks-repo.js";
 import { incrementTokenUsage } from "../kernel/state/build-requests-repo.js";
-import { callGroqAgentChat, AgentMessage, AgentTool } from "../runtime/groq-agent-client.js";
+import { callGroqAgentChat, AgentMessage, AgentTool, DEFAULT_MODELS } from "../runtime/groq-agent-client.js";
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
 import Groq from "groq-sdk";
+import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
+import { classifyTaskCategory } from "./task-category.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -37,6 +39,17 @@ const MAX_PLAN_TASKS = 10;
 // not a carefully tuned number — the point is having *a* ceiling where
 // today there is none, the same spirit as MAX_TURNS/MAX_TASK_TURNS above.
 const MAX_TOKENS_PER_SESSION = positiveIntegerEnv(process.env.JARVIS_CODING_AGENT_TOKEN_BUDGET, 4_000_000);
+
+// Shared by both the per-task loop and the flat-loop fallback, which build
+// otherwise-different system prompts but want the identical caution.
+// Not empirically tuned yet — a first-pass threshold pending real usage
+// data; see the design spec's Open Questions section.
+async function buildCategoryCaution(category: string): Promise<string> {
+  const categoryScore = await rewardEventsRepo.getCategoryScore(category);
+  return categoryScore && categoryScore.count >= 3 && categoryScore.score < -0.3
+    ? ` Note: past sessions touching ${category} work have had a rough track record (${categoryScore.count} prior attempts) — be extra careful here.`
+    : "";
+}
 
 const RUN_SHELL_TOOL: AgentTool = {
   type: "function",
@@ -109,7 +122,9 @@ const PROPOSE_PLAN_TOOL: AgentTool = {
   },
 };
 
-export type CodingAgentResult = { ok: true; summary: string; files: DraftedFile[] } | { ok: false; error: string };
+export type CodingAgentResult =
+  | { ok: true; summary: string; files: DraftedFile[]; modelUsed: string | null; category: string }
+  | { ok: false; error: string };
 
 export async function runCodingAgent(
   buildRequestId: number,
@@ -122,6 +137,9 @@ export async function runCodingAgent(
   if (!groq) {
     return { ok: false, error: "No Groq client is configured — the agentic coding loop is unavailable." };
   }
+
+  const category = classifyTaskCategory(objective);
+  const modelOrder = await rewardEventsRepo.getModelPreferenceOrder(DEFAULT_MODELS);
 
   try {
     await builderClient.createWorkspace(buildRequestId, baseBranch);
@@ -148,7 +166,12 @@ export async function runCodingAgent(
   }
   const baseSha = baseShaResult.stdout.trim();
 
-  const planResult = await proposePlan(buildRequestId, groq, objective, researchSummary, directionNotes);
+  const planResult = await proposePlan(buildRequestId, groq, objective, researchSummary, directionNotes, modelOrder);
+  // Planning is the session's genuinely first LLM call, so its model is the
+  // session's first model. Seeding here (rather than starting at null below)
+  // keeps the "first non-null wins" capture in the loops from overwriting it
+  // with whatever the second call happened to land on.
+  let sessionModelUsed: string | null = planResult.modelUsed;
 
   if (planResult.tasks === null) {
     // Planning couldn't produce a usable task list after a retry — fall
@@ -158,7 +181,7 @@ export async function runCodingAgent(
     // planResult.tokensUsed seeds the flat loop's own counter so planning's
     // spend still counts against the one session budget, not a separate
     // allowance outside it.
-    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, groq, planResult.tokensUsed);
+    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, groq, category, modelOrder, planResult.modelUsed, planResult.tokensUsed);
   }
   const plan = planResult.tasks;
 
@@ -173,6 +196,8 @@ export async function runCodingAgent(
   // above — planning's own Groq calls count against this same budget.
   let tokensUsed = planResult.tokensUsed;
   const completedSummaries: string[] = [];
+
+  const categoryCaution = await buildCategoryCaution(category);
 
   try {
     for (const task of plan) {
@@ -200,7 +225,7 @@ export async function runCodingAgent(
             `You have exactly one tool for doing work — run_shell_command — plus finish_task to end this task once it's ` +
             `fully implemented. Read files with cat, edit with heredocs or sed, run tests with the project's test command, ` +
             `check types, and use git to inspect your changes. Don't worry about committing — that happens automatically ` +
-            `once your work passes review.`,
+            `once your work passes review.${categoryCaution}`,
         },
         // Some OpenAI-compatible tool-calling backends behave more
         // reliably with an explicit user turn before tools are offered
@@ -232,10 +257,13 @@ export async function runCodingAgent(
           }
           taskTurns++;
 
-          const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL]);
+          const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL], modelOrder);
           if (response.totalTokens) {
             tokensUsed += response.totalTokens;
             await incrementTokenUsage(buildRequestId, response.totalTokens);
+          }
+          if (response.modelUsed && !sessionModelUsed) {
+            sessionModelUsed = response.modelUsed;
           }
           // Checked again immediately after this call, not just before the
           // next one: the pre-call check above only ever catches a session
@@ -327,6 +355,7 @@ export async function runCodingAgent(
 
         const { files: taskFiles, skipped: taskSkipped } = await extractChangedFiles(buildRequestId, taskBaseSha);
         const verdict = await departments.reviewTaskDiff(task.title, task.description, taskFiles, groq);
+        await rewardEventsRepo.recordRewardEvent(buildRequestId, "task_review", sessionModelUsed, category, verdict.approved ? 1 : -1);
         lastFindings = verdict.findings;
 
         if (verdict.approved) {
@@ -394,7 +423,7 @@ export async function runCodingAgent(
     const summary =
       `${objective}\n\nCompleted tasks:\n${completedSummaries.join("\n")}` +
       (skipped.length > 0 ? `\n\n(Note: ${skipped.length} changed path(s) could not be read back: ${skipped.join(", ")})` : "");
-    return { ok: true, summary, files };
+    return { ok: true, summary, files, modelUsed: sessionModelUsed, category };
   } catch (err: any) {
     observation.logTelemetry("warn", "Executive", `Coding agent loop failed for build request #${buildRequestId}: ${err.message}`);
     await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
@@ -410,6 +439,11 @@ interface ProposePlanResult {
   // this outside the session's budget just because it happened before
   // tokensUsed existed in the caller.
   tokensUsed: number;
+  // The model that actually served planning — the session's genuinely first
+  // LLM call. Threaded back out so the caller can seed its own
+  // sessionModelUsed with it instead of recording whatever the next call
+  // happened to land on.
+  modelUsed: string | null;
 }
 
 // One forced tool call asking the model to decompose the objective before
@@ -422,7 +456,8 @@ async function proposePlan(
   groq: Groq,
   objective: string,
   researchSummary: string,
-  directionNotes: string
+  directionNotes: string,
+  modelOrder: string[]
 ): Promise<ProposePlanResult> {
   const messages: AgentMessage[] = [
     {
@@ -437,10 +472,14 @@ async function proposePlan(
   ];
 
   let tokensUsed = 0;
+  let modelUsed: string | null = null;
 
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await callGroqAgentChat(groq, messages, [PROPOSE_PLAN_TOOL]);
+      const response = await callGroqAgentChat(groq, messages, [PROPOSE_PLAN_TOOL], modelOrder);
+      if (response.modelUsed && !modelUsed) {
+        modelUsed = response.modelUsed;
+      }
       if (response.totalTokens) {
         tokensUsed += response.totalTokens;
         await incrementTokenUsage(buildRequestId, response.totalTokens);
@@ -459,7 +498,7 @@ async function proposePlan(
             .map((t: any, i: number) => ({ seq: i + 1, title: t.title, description: t.description }));
 
           if (tasks.length > 0 && tasks.length <= MAX_PLAN_TASKS) {
-            return { tasks, tokensUsed };
+            return { tasks, tokensUsed, modelUsed };
           }
         } catch {
           // Malformed arguments — fall through to the retry nudge below.
@@ -487,7 +526,7 @@ async function proposePlan(
       });
     }
 
-    return { tasks: null, tokensUsed };
+    return { tasks: null, tokensUsed, modelUsed };
   } catch (err: any) {
     // Any Groq call failure here (rate limit, cold-start error, network
     // issue) must degrade to the flat-loop fallback, not escape and wedge
@@ -497,7 +536,7 @@ async function proposePlan(
     // leak it and leave the build request permanently stuck in 'coding'
     // with no recovery path.
     observation.logTelemetry("warn", "Executive", `Plan phase failed: ${err.message}. Falling back to the flat coding loop.`);
-    return { tasks: null, tokensUsed };
+    return { tasks: null, tokensUsed, modelUsed };
   }
 }
 
@@ -513,6 +552,12 @@ async function runFlatCodingLoop(
   directionNotes: string,
   baseSha: string,
   groq: Groq,
+  category: string,
+  modelOrder: string[],
+  // Whatever model served the (failed) planning phase in runCodingAgent —
+  // planning always runs before this fallback, so its model, not this loop's
+  // first call, is the session's genuinely first model.
+  seedModelUsed: string | null,
   // Seeds this loop's own budget counter with whatever the (failed)
   // planning attempt already spent — see the call site in runCodingAgent —
   // so the two phases share one session budget instead of planning's spend
@@ -521,6 +566,8 @@ async function runFlatCodingLoop(
   // entirely.
   initialTokensUsed = 0
 ): Promise<CodingAgentResult> {
+  const categoryCaution = await buildCategoryCaution(category);
+
   const messages: AgentMessage[] = [
     {
       role: "system",
@@ -529,12 +576,13 @@ async function runFlatCodingLoop(
         `Objective: ${objective}\n\nResearch summary:\n${researchSummary || "(none)"}\n\nConfirmed direction:\n${directionNotes}\n\n` +
         `You have exactly one tool for doing work — run_shell_command — plus finish_coding to end the session. ` +
         `Read files with cat, edit with heredocs or sed, run tests with the project's test command, check types, use git to ` +
-        `inspect and commit your work. Call finish_coding once the objective is fully implemented and verified.`,
+        `inspect and commit your work. Call finish_coding once the objective is fully implemented and verified.${categoryCaution}`,
     },
   ];
 
   let seq = 0;
   let tokensUsed = initialTokensUsed;
+  let sessionModelUsed: string | null = seedModelUsed;
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -546,10 +594,13 @@ async function runFlatCodingLoop(
         };
       }
 
-      const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL]);
+      const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL], modelOrder);
       if (response.totalTokens) {
         tokensUsed += response.totalTokens;
         await incrementTokenUsage(buildRequestId, response.totalTokens);
+      }
+      if (response.modelUsed && !sessionModelUsed) {
+        sessionModelUsed = response.modelUsed;
       }
       // Same reasoning as the per-task loop's post-call check: without
       // this, the exact call that first crosses the cap still gets its
@@ -640,7 +691,7 @@ async function runFlatCodingLoop(
           skipped.length > 0
             ? `${finishedSummary}\n\n(Note: ${skipped.length} changed path(s) could not be read back and are not included in this proposal — likely deletions or unusual filenames: ${skipped.join(", ")})`
             : finishedSummary;
-        return { ok: true, summary, files };
+        return { ok: true, summary, files, modelUsed: sessionModelUsed, category };
       }
     }
 

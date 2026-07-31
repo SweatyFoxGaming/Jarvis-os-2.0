@@ -27,6 +27,7 @@ import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kerne
 import { proposeMcpServer, McpServerNameTakenError } from "../src/kernel/state/mcp-servers-repo.js";
 import { upsertEntity, searchEntities, listAllEntities } from "../src/kernel/state/knowledge-graph-repo.js";
 import { addSelfReflection, getRecentSelfReflections } from "../src/kernel/state/identity-repo.js";
+import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 
 // pruneOldMessages(0) below deletes every row in conversation_history with
 // created_at < now() — not scoped to this test's own user, because the real
@@ -102,6 +103,8 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM mcp_servers WHERE name = $1`, [`db_it_mcp_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM kg_entities WHERE username IN ($1, $2)`, [`db_it_kg_a_${RUN_ID}`, `db_it_kg_b_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM self_reflections WHERE username IN ($1, $2)`, [`db_it_refl_a_${RUN_ID}`, `db_it_refl_b_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM reward_events WHERE build_request_id = $1`, [999999901]).catch(() => {});
+  await db.query(`DELETE FROM build_requests WHERE id = $1`, [999999901]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -195,6 +198,42 @@ registerTest("mcp-servers-repo: proposeMcpServer rejects a real duplicate name w
   if (!threw) throw new Error("proposeMcpServer did not throw McpServerNameTakenError for a real duplicate name");
   if (message.toLowerCase().includes("constraint") || message.toLowerCase().includes("duplicate key")) {
     throw new Error(`McpServerNameTakenError's message still looks like a raw Postgres error: "${message}"`);
+  }
+});
+
+registerTest("reward-events-repo: real aggregation and model reordering work against real rows", async () => {
+  const buildRequestId = 999999901;
+  // A minimal real build_requests row to satisfy reward_events' FK.
+  const db = getPool();
+  await db.query(
+    `INSERT INTO build_requests (id, objective, requested_by, status) VALUES ($1, 'test objective', 'admin', 'qa_complete')
+     ON CONFLICT (id) DO NOTHING`,
+    [buildRequestId]
+  );
+
+  await rewardEventsRepo.recordRewardEvent(buildRequestId, "task_review", "model-a", "database", 1);
+  await rewardEventsRepo.recordRewardEvent(buildRequestId, "task_review", "model-a", "database", -1);
+  await rewardEventsRepo.recordRewardEvent(buildRequestId, "terminal_outcome", "model-b", "frontend", 2);
+  await rewardEventsRepo.recordRewardEvent(buildRequestId, "terminal_outcome", "model-b", "frontend", 2);
+
+  const modelOrder = await rewardEventsRepo.getModelPreferenceOrder(["model-a", "model-b"]);
+  if (modelOrder[0] !== "model-b") {
+    throw new Error(`reward-events-repo: expected model-b (avg +2) ordered before model-a (avg 0), got: ${JSON.stringify(modelOrder)}`);
+  }
+
+  const dbCategory = await rewardEventsRepo.getCategoryScore("database");
+  if (!dbCategory || dbCategory.count !== 2 || dbCategory.score !== 0) {
+    throw new Error(`reward-events-repo: expected database category {score: 0, count: 2}, got: ${JSON.stringify(dbCategory)}`);
+  }
+
+  const frontendCategory = await rewardEventsRepo.getCategoryScore("frontend");
+  if (!frontendCategory || frontendCategory.count !== 2 || frontendCategory.score !== 2) {
+    throw new Error(`reward-events-repo: expected frontend category {score: 2, count: 2}, got: ${JSON.stringify(frontendCategory)}`);
+  }
+
+  const overallTerminal = await rewardEventsRepo.getOverallScore("terminal_outcome");
+  if (!overallTerminal || overallTerminal.count < 2) {
+    throw new Error(`reward-events-repo: expected at least 2 terminal_outcome events, got: ${JSON.stringify(overallTerminal)}`);
   }
 });
 

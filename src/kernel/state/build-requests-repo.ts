@@ -32,6 +32,8 @@ export interface BuildRequestRow {
   pr_number: number | null;
   qa_summary: string | null;
   error_detail: string | null;
+  coding_model_used: string | null;
+  task_category: string | null;
   // Added by migrations/002_build_request_token_usage.ts — cumulative coding-
   // agent LLM token usage across the session (originally NVIDIA, now Groq;
   // the column was already provider-agnostic), incremented by incrementTokenUsage.
@@ -75,6 +77,25 @@ export async function getLatestAwaitingConsult(username: string): Promise<BuildR
     return rows[0] || null;
   } catch (err: any) {
     observation.logTelemetry("warn", "BuildRequests", `getLatestAwaitingConsult("${username}") failed: ${err.message}`);
+    return null;
+  }
+}
+
+// A build request sitting in 'direction_confirmed' for more than an
+// instant only happens via confirmDirection's reward gate pausing before
+// startCoding — see the design spec's confirmation-gate section for why
+// this reuses status timing instead of a new column, and the invariant
+// (at most one awaiting/in-flight build request per user) it depends on.
+export async function getLatestPendingRewardGate(username: string): Promise<BuildRequestRow | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT * FROM build_requests WHERE requested_by = $1 AND status = 'direction_confirmed' ORDER BY created_at DESC LIMIT 1`,
+      [username]
+    );
+    return rows[0] || null;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `getLatestPendingRewardGate("${username}") failed: ${err.message}`);
     return null;
   }
 }
@@ -145,23 +166,35 @@ export async function recordDirectionConfirmed(id: number, directionNotes: strin
 // Gemini call), so a hung/failed draft is visibly "stuck in coding" rather
 // than ambiguously stuck at 'direction_confirmed' — see the design spec's
 // data model section for the full reasoning.
-export async function markCoding(id: number): Promise<void> {
+export async function markCoding(id: number): Promise<boolean> {
   try {
     const db = getPool();
-    await db.query(`UPDATE build_requests SET status = 'coding', updated_at = now() WHERE id = $1 AND status = 'direction_confirmed'`, [id]);
+    const { rowCount } = await db.query(`UPDATE build_requests SET status = 'coding', updated_at = now() WHERE id = $1 AND status = 'direction_confirmed'`, [id]);
+    return !!rowCount;
   } catch (err: any) {
-    // Best-effort — a failed write here doesn't block drafting itself.
+    // A DB failure here means the claim couldn't be confirmed, so this
+    // returns false the same as "another caller already claimed it" — the
+    // caller (startCoding) treats both as "don't proceed," which is the
+    // safe default: it must not start a coding session it can't be sure it
+    // exclusively holds.
     observation.logTelemetry("warn", "BuildRequests", `markCoding(${id}) failed: ${err.message}`);
+    return false;
   }
 }
 
-export async function recordCodeDraft(id: number, codeSummary: string, files: DraftedFile[]): Promise<BuildRequestRow | null> {
+export async function recordCodeDraft(
+  id: number,
+  codeSummary: string,
+  files: DraftedFile[],
+  modelUsed: string | null = null,
+  category: string = "general"
+): Promise<BuildRequestRow | null> {
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `UPDATE build_requests SET code_summary = $1, proposed_files = $2, status = 'awaiting_code_approval', updated_at = now()
-       WHERE id = $3 AND status = 'coding' RETURNING *`,
-      [codeSummary, JSON.stringify(files), id]
+      `UPDATE build_requests SET code_summary = $1, proposed_files = $2, status = 'awaiting_code_approval', coding_model_used = $3, task_category = $4, updated_at = now()
+       WHERE id = $5 AND status = 'coding' RETURNING *`,
+      [codeSummary, JSON.stringify(files), modelUsed, category, id]
     );
     return rows[0] || null;
   } catch (err: any) {

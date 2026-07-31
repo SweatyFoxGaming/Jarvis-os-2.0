@@ -53,7 +53,7 @@ import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 // actual availability, rate limits, and real multi-turn tool-calling
 // behavior (not just a single test call) before trusting a model's name
 // alone.
-const DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+export const DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 
 export interface AgentToolCall {
   id: string;
@@ -80,6 +80,11 @@ export interface AgentChatResult {
   // response omitted it. This is what lets coding-agent.ts enforce a real
   // spend ceiling instead of only bounding a session by turn count.
   totalTokens: number | null;
+  // Which model in the fallback chain actually answered — read from the
+  // Groq response's own `model` field. Lets a caller record which model
+  // did the work without threading its own bookkeeping through every
+  // call site. null only if the response itself omitted the field.
+  modelUsed: string | null;
 }
 
 // Extracts the {content, toolCalls, totalTokens} shape this module's
@@ -106,17 +111,19 @@ export function parseGroqAgentResponse(data: any): AgentChatResult {
     content: message.content ?? null,
     toolCalls: Array.isArray(message.tool_calls) && message.tool_calls.length > 0 ? message.tool_calls : null,
     totalTokens: typeof rawTotalTokens === "number" && Number.isSafeInteger(rawTotalTokens) && rawTotalTokens >= 0 ? rawTotalTokens : null,
+    modelUsed: typeof data?.model === "string" ? data.model : null,
   };
 }
 
 export async function callGroqAgentChat(
   groq: Groq,
   messages: AgentMessage[],
-  tools: AgentTool[]
+  tools: AgentTool[],
+  modelOrder?: string[]
 ): Promise<AgentChatResult> {
   // An explicit override means the operator wants exactly that model, not
   // a fallback chain they didn't ask for.
-  const models = process.env.JARVIS_CODING_AGENT_MODEL ? [process.env.JARVIS_CODING_AGENT_MODEL] : DEFAULT_MODELS;
+  const models = process.env.JARVIS_CODING_AGENT_MODEL ? [process.env.JARVIS_CODING_AGENT_MODEL] : (modelOrder && modelOrder.length > 0 ? modelOrder : DEFAULT_MODELS);
   // Groq's strict tool-schema validation requires lowercase JSON-Schema
   // type names and an explicit additionalProperties on every object node
   // (see toGroqSchema's own comment) — this module's tool definitions
