@@ -750,6 +750,128 @@ registerTest("Obsidian", "scoped create/read/list stay within the vault, and tra
   }
 });
 
+registerTest("Obsidian", "writeResearchNote injects Category/Date frontmatter and links the note into Research MOC.md", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await obsidian.writeResearchNote(555001, "Test MOC objective", "A research summary.");
+    const notes = await obsidian.listAllNotePaths();
+    const notePath = notes.find(p => p.startsWith("Research/") && p.includes("br555001"));
+    if (!notePath) throw new Error(`Obsidian: expected a Research/*br555001* note, got: ${JSON.stringify(notes)}`);
+    const raw = await obsidian.readNote(notePath);
+    if (!/Category:\s*['"]?\[\[Research MOC\]\]/.test(raw)) {
+      throw new Error(`Obsidian: expected a Category: [[Research MOC]] frontmatter line, got:\n${raw}`);
+    }
+    if (!/Date:/.test(raw)) {
+      throw new Error(`Obsidian: expected a Date: frontmatter line, got:\n${raw}`);
+    }
+    const mocRaw = await obsidian.readNote("Research MOC.md");
+    const noteBasename = notePath.replace(/^Research\//, "").replace(/\.md$/, "");
+    if (!mocRaw.includes(`[[Research/${noteBasename}]]`)) {
+      throw new Error(`Obsidian: expected Research MOC.md to link [[Research/${noteBasename}]], got:\n${mocRaw}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+registerTest("Obsidian", "writeOrUpdateCodingNote does not duplicate its MOC link when called twice for the same build request", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await obsidian.writeOrUpdateCodingNote(555002, "Test dup-link objective", { status: "coding" });
+    await obsidian.writeOrUpdateCodingNote(555002, "Test dup-link objective", { status: "qa_complete", codeSummary: "Did the thing." });
+    const mocRaw = await obsidian.readNote("Coding MOC.md");
+    const notes = await obsidian.listAllNotePaths();
+    const notePath = notes.find(p => p.startsWith("Coding/") && p.includes("br555002"));
+    if (!notePath) throw new Error("Obsidian: expected a Coding/*br555002* note to exist");
+    const noteBasename = notePath.replace(/^Coding\//, "").replace(/\.md$/, "");
+    const link = `[[Coding/${noteBasename}]]`;
+    const occurrences = mocRaw.split(link).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(`Obsidian: expected exactly one ${link} in Coding MOC.md after 2 writes, found ${occurrences}. Content:\n${mocRaw}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+registerTest("Obsidian", "appendReflectionEntry creates its daily note with MOC frontmatter and links it into Reflections MOC.md exactly once per day", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await obsidian.appendReflectionEntry("test-category", "First entry.");
+    await obsidian.appendReflectionEntry("test-category", "Second entry, same day.");
+    const today = new Date().toISOString().slice(0, 10);
+    const raw = await obsidian.readNote(`Reflections/${today}`);
+    if (!/Category:\s*['"]?\[\[Reflections MOC\]\]/.test(raw)) {
+      throw new Error(`Obsidian: expected a Category: [[Reflections MOC]] frontmatter line on the daily note, got:\n${raw}`);
+    }
+    if (!raw.includes("First entry.") || !raw.includes("Second entry, same day.")) {
+      throw new Error(`Obsidian: expected both appended entries in the same daily note, got:\n${raw}`);
+    }
+    const mocRaw = await obsidian.readNote("Reflections MOC.md");
+    const link = `[[Reflections/${today}]]`;
+    const occurrences = mocRaw.split(link).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(`Obsidian: expected exactly one ${link} in Reflections MOC.md after 2 appends same day, found ${occurrences}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+registerTest("Obsidian", "ensureLinkedInMoc serializes concurrent writes to the same MOC without losing either link", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-race-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await Promise.all([
+      obsidian.writeOrUpdateCodingNote(555003, "Concurrent objective A", { status: "coding" }),
+      obsidian.writeOrUpdateCodingNote(555004, "Concurrent objective B", { status: "coding" }),
+    ]);
+    const notes = await obsidian.listAllNotePaths();
+    const noteA = notes.find(p => p.startsWith("Coding/") && p.includes("br555003"));
+    const noteB = notes.find(p => p.startsWith("Coding/") && p.includes("br555004"));
+    if (!noteA || !noteB) throw new Error(`Obsidian: expected both br555003 and br555004 notes, got: ${JSON.stringify(notes)}`);
+    const mocRaw = await obsidian.readNote("Coding MOC.md");
+    const basenameA = noteA.replace(/^Coding\//, "").replace(/\.md$/, "");
+    const basenameB = noteB.replace(/^Coding\//, "").replace(/\.md$/, "");
+    if (!mocRaw.includes(`[[Coding/${basenameA}]]`) || !mocRaw.includes(`[[Coding/${basenameB}]]`)) {
+      throw new Error(`Obsidian: expected Coding MOC.md to contain links to both concurrent notes, got:\n${mocRaw}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
 // ---------- Voice Pipeline Tests (whisper-cpp / TTS integrations) ----------
 // Neither service is reachable in this test process (no live Docker
 // network) — these confirm the one thing that's actually testable without
@@ -2200,6 +2322,21 @@ registerTest("ToolRouting", "looksTrivial rejects a long message even when it st
   const message = "hi there, I wanted to ask you something important about my schedule";
   if (looksTrivial(message)) {
     throw new Error("ToolRouting: a message over TRIVIAL_MAX_LENGTH must not be classified as trivial, even though it starts with the trivial phrase \"hi\"");
+  }
+});
+
+registerTest("BuildRequests", "getLatestPendingRewardGate still degrades cleanly when composed with looksTrivial/looksToolShaped-style routing logic", async () => {
+  // This isn't testing new server.ts logic directly (that lives inside an
+  // Express route handler, not a unit-testable export) — it's confirming
+  // the one new signal server.ts's routing fix depends on (a pending
+  // reward-gate row for this user) continues to degrade to null with no
+  // live Postgres, so the routing fix's `if (... || pendingRewardGate)`
+  // check never throws or hangs when the DB is unreachable, matching every
+  // other per-turn context lookup in that same handler
+  // (getLatestAwaitingConsult already covered elsewhere).
+  const result = await buildRequestsRepo.getLatestPendingRewardGate("brand_new_test_user_for_routing_check");
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
   }
 });
 

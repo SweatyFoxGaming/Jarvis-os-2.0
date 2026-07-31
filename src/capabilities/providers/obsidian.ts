@@ -19,6 +19,62 @@ export class ObsidianIntegrationError extends Error {
  * wider filesystem. Same proven security boundary as
  * providers/files.ts's own resolveScopedPath, applied to a new root.
  */
+const MOC_FOLDERS = ["Briefings", "Coding", "Reflections", "Research"] as const;
+type MocFolder = typeof MOC_FOLDERS[number];
+
+function mocNotePath(folder: MocFolder): string {
+  return `${folder} MOC.md`;
+}
+
+// Every note Jarvis creates gets a Category/Date frontmatter pointing at
+// its folder's MOC — without this, Obsidian's Graph View shows every note
+// as a disconnected floating node, since nothing links them to anything.
+// Merged with (and overridable by) each call site's own frontmatter object
+// so e.g. writeResearchNote's existing {type, build_request_id, created}
+// fields are preserved alongside these two new ones.
+function withMocFrontmatter(folder: MocFolder, frontmatter: Record<string, any> = {}, dateStr?: string): Record<string, any> {
+  const today = dateStr || new Date().toISOString().slice(0, 10);
+  return { Category: `[[${folder} MOC]]`, Date: `[[${today}]]`, ...frontmatter };
+}
+
+// Ensures `${folder} MOC.md` exists and contains a bulleted wikilink to
+// `linkTarget` (e.g. "Coding/my-objective-br42") — idempotent, since
+// writeOrUpdateCodingNote rewrites the same note multiple times across a
+// build request's life (direction confirmed, PR opened, QA complete) and
+// must not accumulate duplicate links on repeated calls, and
+// appendReflectionEntry/appendBriefingEntry call this once per entry
+// against the same daily note.
+const mocWriteQueues = new Map<MocFolder, Promise<unknown>>();
+
+// Serializes read-check-write cycles per MOC file — without this, two
+// concurrent calls for the same folder (e.g. two different users' build
+// requests both finishing around the same moment) could both read the MOC
+// before either writes, and the second write would silently clobber the
+// first caller's freshly-added link (a lost-update race). Calls for
+// DIFFERENT folders are unaffected and still run concurrently — this only
+// serializes access to the same MOC file.
+async function ensureLinkedInMoc(folder: MocFolder, linkTarget: string): Promise<void> {
+  const previous = mocWriteQueues.get(folder) || Promise.resolve();
+  const task = previous.then(async () => {
+    const link = `[[${linkTarget}]]`;
+    const moc = mocNotePath(folder);
+    let current: string;
+    try {
+      current = await readNote(moc);
+    } catch {
+      current = `# ${folder} MOC\n\n## Linked Notes\n`;
+    }
+    if (current.includes(link)) return;
+    const updated = current.endsWith("\n") ? `${current}* ${link}\n` : `${current}\n* ${link}\n`;
+    await createNote(moc, updated);
+  });
+  // Swallow so a single failed call doesn't permanently wedge the queue for
+  // every later call to the same folder — the failure still propagates to
+  // THIS call's own awaiter via `await task` below.
+  mocWriteQueues.set(folder, task.catch(() => {}));
+  await task;
+}
+
 function getRoot(): string {
   const root = process.env.OBSIDIAN_VAULT_DIR_MOUNT || "/obsidian-vault";
   return path.resolve(root);
@@ -199,11 +255,12 @@ export async function createNote(
   // path would let mkdir -p create real directories outside the vault
   // before the check ever had a pre-mkdir ancestor to catch it against.
   await assertRealPathWithinRoot(target);
-  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o775 });
   const full = frontmatter && Object.keys(frontmatter).length > 0
     ? `---\n${dumpYaml(frontmatter)}---\n\n${content}`
     : content;
-  await fs.writeFile(target, full, "utf-8");
+  await fs.writeFile(target, full, { encoding: "utf-8", mode: 0o664 });
+  await fs.chmod(target, 0o664);
   observation.logTelemetry("info", "Interaction", `Wrote vault note "${relativePath}"`);
   return { path: relativePath, bytesWritten: Buffer.byteLength(full) };
 }
@@ -211,7 +268,7 @@ export async function createNote(
 export async function appendToNote(
   relativePath: string,
   content: string,
-  options: { createIfMissing?: boolean } = {}
+  options: { createIfMissing?: boolean; frontmatterOnCreate?: Record<string, any> } = {}
 ): Promise<{ path: string; bytesWritten: number }> {
   await ensureRootExists();
   const target = resolveScopedPath(ensureMdExtension(relativePath));
@@ -228,8 +285,12 @@ export async function appendToNote(
     // Same ordering fix as createNote: check the pre-existing filesystem
     // state before mkdir -p can create anything through a symlink.
     await assertRealPathWithinRoot(target);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, content, "utf-8");
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o775 });
+    const initial = options.frontmatterOnCreate && Object.keys(options.frontmatterOnCreate).length > 0
+      ? `---\n${dumpYaml(options.frontmatterOnCreate)}---\n\n${content}`
+      : content;
+    await fs.writeFile(target, initial, { encoding: "utf-8", mode: 0o664 });
+    await fs.chmod(target, 0o664);
   } else {
     await assertRealPathWithinRoot(target);
     await fs.appendFile(target, content, "utf-8");
@@ -336,8 +397,9 @@ export async function writeResearchNote(
   await createNote(
     `Research/${basename}`,
     `# ${objective}\n\n${summary}\n`,
-    { type: "research", build_request_id: buildRequestId, created: new Date().toISOString() }
+    withMocFrontmatter("Research", { type: "research", build_request_id: buildRequestId, created: new Date().toISOString() })
   );
+  await ensureLinkedInMoc("Research", `Research/${basename}`);
 }
 
 export interface CodingNoteFields {
@@ -379,17 +441,18 @@ export async function writeOrUpdateCodingNote(
   await createNote(
     `Coding/${basename}`,
     lines.join("\n"),
-    {
+    withMocFrontmatter("Coding", {
       type: "coding",
       build_request_id: buildRequestId,
       status: fields.status || "unknown",
       created: new Date().toISOString(),
-    }
+    })
   );
+  await ensureLinkedInMoc("Coding", `Coding/${basename}`);
 }
 
-function todayNotePath(section: "Reflections" | "Briefings"): string {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+function todayNotePath(section: "Reflections" | "Briefings", dateStr?: string): string {
+  const today = dateStr || new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   return `${section}/${today}`;
 }
 
@@ -404,12 +467,15 @@ export async function appendReflectionEntry(category: string, content: string): 
     observation.logTelemetry("info", "Interaction", "Skipped appending reflection vault entry — OBSIDIAN_VAULT_DIR not configured.");
     return;
   }
+  const today = new Date().toISOString().slice(0, 10);
   const timestamp = new Date().toISOString();
+  const notePath = todayNotePath("Reflections", today);
   await appendToNote(
-    todayNotePath("Reflections"),
+    notePath,
     `\n## ${timestamp} — ${category}\n\n${content}\n`,
-    { createIfMissing: true }
+    { createIfMissing: true, frontmatterOnCreate: withMocFrontmatter("Reflections", {}, today) }
   );
+  await ensureLinkedInMoc("Reflections", notePath);
 }
 
 export async function appendBriefingEntry(text: string, itemCount: number): Promise<void> {
@@ -417,10 +483,13 @@ export async function appendBriefingEntry(text: string, itemCount: number): Prom
     observation.logTelemetry("info", "Interaction", "Skipped appending briefing vault entry — OBSIDIAN_VAULT_DIR not configured.");
     return;
   }
+  const today = new Date().toISOString().slice(0, 10);
   const timestamp = new Date().toISOString();
+  const notePath = todayNotePath("Briefings", today);
   await appendToNote(
-    todayNotePath("Briefings"),
+    notePath,
     `\n## ${timestamp} (${itemCount} item(s))\n\n${text}\n`,
-    { createIfMissing: true }
+    { createIfMissing: true, frontmatterOnCreate: withMocFrontmatter("Briefings", {}, today) }
   );
+  await ensureLinkedInMoc("Briefings", notePath);
 }

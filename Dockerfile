@@ -33,5 +33,16 @@ EXPOSE 8000 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD wget --spider -q http://127.0.0.1:8000/health || exit 1
 
+# Drop root privileges for the actual running process — without this,
+# every file the app writes into the bind-mounted Obsidian vault /
+# jarvis-files directories (see docker-compose.yml's volumes:) lands
+# root-owned on the host, later blocking the host's own ubuntu user from
+# modifying/deleting them. uid/gid 1000 is this image's built-in "node"
+# account AND matches the host's "ubuntu" user exactly (confirmed via
+# `id ubuntu` and `docker run --rm node:20-alpine id node`), so files
+# written through those mounts land with correct host ownership instead.
+# Must come after every RUN step above (apk/npm/pip installs all need root).
+USER node
+
 # Default command starts the FastAPI Gateway, which spawns the Node.js Express server on startup
 CMD ["python3", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
