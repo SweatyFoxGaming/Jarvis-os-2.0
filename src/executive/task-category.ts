@@ -14,7 +14,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
 export function classifyTaskCategory(objective: string): string {
   const lower = objective.toLowerCase();
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
-    if (keywords.some((kw) => lower.includes(kw))) {
+    if (keywords.some((kw) => new RegExp(`\\b${kw}\\b`, "i").test(lower))) {
       return category;
     }
   }

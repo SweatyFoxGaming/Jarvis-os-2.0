@@ -166,13 +166,15 @@ export async function recordDirectionConfirmed(id: number, directionNotes: strin
 // Gemini call), so a hung/failed draft is visibly "stuck in coding" rather
 // than ambiguously stuck at 'direction_confirmed' — see the design spec's
 // data model section for the full reasoning.
-export async function markCoding(id: number): Promise<void> {
+export async function markCoding(id: number): Promise<boolean> {
   try {
     const db = getPool();
-    await db.query(`UPDATE build_requests SET status = 'coding', updated_at = now() WHERE id = $1 AND status = 'direction_confirmed'`, [id]);
+    const { rowCount } = await db.query(`UPDATE build_requests SET status = 'coding', updated_at = now() WHERE id = $1 AND status = 'direction_confirmed'`, [id]);
+    return !!rowCount;
   } catch (err: any) {
     // Best-effort — a failed write here doesn't block drafting itself.
     observation.logTelemetry("warn", "BuildRequests", `markCoding(${id}) failed: ${err.message}`);
+    return false;
   }
 }
 

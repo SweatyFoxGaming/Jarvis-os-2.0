@@ -2018,6 +2018,18 @@ registerTest("TaskCategory", "classifyTaskCategory is case-insensitive", () => {
   }
 });
 
+registerTest("TaskCategory", "classifyTaskCategory does not match 'ui' as a substring inside unrelated words", () => {
+  if (classifyTaskCategory("Please build and require the new module") !== "general") {
+    throw new Error("TaskCategory: 'build'/'require' should not match the 'ui' keyword as a substring");
+  }
+});
+
+registerTest("TaskCategory", "classifyTaskCategory does not match 'table' as a substring inside unrelated words", () => {
+  if (classifyTaskCategory("Make this component more stable and portable") !== "general") {
+    throw new Error("TaskCategory: 'stable'/'portable' should not match the 'table' keyword as a substring");
+  }
+});
+
 // ---------- HTTP Retry Tests ----------
 // Every call mocks the global fetch() and uses a tiny baseDelayMs so these
 // stay fast — the actual delay VALUE isn't what's under test, only the

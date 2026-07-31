@@ -412,7 +412,10 @@ export class AutonomousExecutive {
   }
 
   private async startCoding(confirmed: buildRequestsRepo.BuildRequestRow, directionNotes: string, username: string): Promise<{ ok: boolean; message: string }> {
-    await buildRequestsRepo.markCoding(confirmed.id);
+    const claimed = await buildRequestsRepo.markCoding(confirmed.id);
+    if (!claimed) {
+      return { ok: false, message: "This build request has already moved past the direction-confirmed stage — nothing more to do here." };
+    }
 
     let baseBranch = "main";
     const owner = process.env.SELF_REPO_OWNER;

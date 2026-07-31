@@ -29,6 +29,6 @@ rewardRouter.get("/api/reward/summary", validateApiKey, requireCapability("rewar
     }
     res.json({ overall, byModel, byCategory });
   } catch (err: any) {
-    res.json({ overall: null, byModel: {}, byCategory: {}, error: err.message });
+    res.status(500).json({ overall: null, byModel: {}, byCategory: {}, error: "Failed to load the reward summary." });
   }
 });
