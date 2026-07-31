@@ -66,6 +66,21 @@ export async function getCategoryScore(category: string): Promise<{ score: numbe
   }
 }
 
+export async function getModelScore(model: string): Promise<{ score: number; count: number } | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM reward_events WHERE model_used = $1`,
+      [model]
+    );
+    if (!rows[0] || rows[0].count === 0) return null;
+    return { score: rows[0].score, count: rows[0].count };
+  } catch (err: any) {
+    observation.logTelemetry("warn", "RewardEvents", `getModelScore(${model}) failed: ${err.message}`);
+    return null;
+  }
+}
+
 export async function getOverallScore(source?: RewardSource): Promise<{ score: number; count: number } | null> {
   try {
     const db = getPool();

@@ -55,6 +55,8 @@ export const ALL_CAPABILITIES = [
   // sandboxes). An operator should be able to grant one without the other:
   // the risk profile isn't remotely the same.
   "system.sandbox_execute",
+  // Read-only: the reward ledger's own summary (dashboard), no write action.
+  "reward.read",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

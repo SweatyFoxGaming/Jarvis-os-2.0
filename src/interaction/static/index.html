@@ -538,6 +538,26 @@
                     </div>
                 </div>
 
+                <div class="holo-panel rounded-2xl p-5 w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <div>
+                            <h3 class="font-display font-semibold text-sm text-white">Reward &amp; learning</h3>
+                            <p class="text-[11px] text-secondary mt-1 max-w-lg">How the coding agent's own past outcomes are shaping which model it tries first and how carefully it proceeds — not a claim about the underlying LLM being retrained, just a record of real results.</p>
+                        </div>
+                        <span id="reward-overall-badge" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-secondary whitespace-nowrap">No data yet</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <span class="text-[11px] text-secondary uppercase tracking-wider block mb-2">By model</span>
+                            <div id="reward-by-model-list" class="space-y-1"><div class="text-secondary text-center w-full py-2 text-xs opacity-60">No data yet.</div></div>
+                        </div>
+                        <div>
+                            <span class="text-[11px] text-secondary uppercase tracking-wider block mb-2">By category</span>
+                            <div id="reward-by-category-list" class="space-y-1"><div class="text-secondary text-center w-full py-2 text-xs opacity-60">No data yet.</div></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Feature Requests: the bridge between "asked Jarvis for it in chat"
                      (queue_feature_request) and a human developer actually building it —
                      see feature-requests-repo.ts. Jarvis never writes or executes code. -->
@@ -3305,6 +3325,24 @@
         } catch {}
     }
 
+    async function loadRewardSummary() {
+        if (!CURRENT_API_KEY) return;
+        try {
+            const res = await authFetch('/api/reward/summary', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) return;
+            const data = await res.json();
+            document.getElementById('reward-overall-badge').textContent = data.overall
+                ? `Score ${data.overall.score.toFixed(2)} (${data.overall.count})`
+                : 'No data yet';
+            const renderRows = (obj) => Object.entries(obj)
+                .filter(([, v]) => v)
+                .map(([k, v]) => `<div class="flex justify-between text-[11px]"><span class="text-secondary">${escapeHtml(k)}</span><span class="text-white font-mono">${v.score.toFixed(2)} (${v.count})</span></div>`)
+                .join('') || `<div class="text-secondary text-center w-full py-2 text-xs opacity-60">No data yet.</div>`;
+            document.getElementById('reward-by-model-list').innerHTML = renderRows(data.byModel || {});
+            document.getElementById('reward-by-category-list').innerHTML = renderRows(data.byCategory || {});
+        } catch {}
+    }
+
     async function runEvolutionAnalysis(type) {
         try {
             const res = await authFetch(`/api/evolution/analyze/${type}`, {
@@ -4490,6 +4528,7 @@
         loadCommandExecution();
         loadProactiveNotifications();
         loadEvolutionStatus();
+        loadRewardSummary();
         loadFeatureRequests();
         loadBriefingHistory();
         loadMcpServers();
@@ -4502,6 +4541,7 @@
         setInterval(loadCommandExecution, 10000);
         setInterval(loadProactiveNotifications, 20000);
         setInterval(loadEvolutionStatus, 60000);
+        setInterval(loadRewardSummary, 60000);
         setInterval(loadFeatureRequests, 30000);
         setInterval(loadBriefingHistory, 60000);
         setInterval(loadMcpServers, 30000);
