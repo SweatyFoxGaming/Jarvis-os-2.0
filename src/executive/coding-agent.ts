@@ -354,7 +354,21 @@ export async function runCodingAgent(
         }
 
         const { files: taskFiles, skipped: taskSkipped } = await extractChangedFiles(buildRequestId, taskBaseSha);
-        const verdict = await departments.reviewTaskDiff(task.title, task.description, taskFiles, groq);
+        // A deterministic gate ahead of the LLM reviewer: code that doesn't
+        // even compile or pass its own tests shouldn't reach an LLM
+        // judgment call at all — this is real, not up to interpretation.
+        // Reuses the exact retry-with-feedback path below (rewardEventsRepo
+        // recording, lastFindings, the approve/retry branch) unchanged;
+        // only the source of `verdict` changes on a verification failure.
+        const verifyResult = await builderClient
+          .execInWorkspace(buildRequestId, "npx tsc --noEmit && npm test")
+          .catch((err: any) => ({ stdout: "", stderr: err.message || String(err), exitCode: -1 }));
+        const verdict = verifyResult.exitCode !== 0
+          ? {
+              approved: false,
+              findings: `Deterministic verification failed (exit ${verifyResult.exitCode}) before LLM review:\n${verifyResult.stdout.slice(-2000)}\n${verifyResult.stderr.slice(-2000)}`,
+            }
+          : await departments.reviewTaskDiff(task.title, task.description, taskFiles, groq);
         await rewardEventsRepo.recordRewardEvent(buildRequestId, "task_review", sessionModelUsed, category, verdict.approved ? 1 : -1);
         lastFindings = verdict.findings;
 
