@@ -14,8 +14,26 @@ if [ ! -d "$EWW_DIR" ]; then
 fi
 cd "$EWW_DIR"
 git fetch origin
+# Discard any local state (a prior interrupted build, manual edits) before
+# pinning — otherwise `checkout --detach` can fail or silently build
+# something other than EWW_REV on a rerun. -e target keeps cargo's own
+# build cache: it's untracked (gitignored) but expensive to lose — a
+# rerun should skip already-built dependencies, not recompile from
+# scratch every time.
+git reset --hard
+git clean -fdx -e target
 git checkout --detach "$EWW_REV"
-cargo build --release --no-default-features --features x11
+# --locked: EWW_REV's own committed Cargo.lock pins every transitive
+# dependency too, not just eww's own source — without this, cargo would
+# still be free to resolve newer transitive versions than what was
+# actually verified to build on this host.
+cargo build --release --locked --no-default-features --features x11
 mkdir -p "${HOME}/.local/bin"
-cp target/release/eww "${HOME}/.local/bin/eww"
+# Staged into a temp file in the destination directory (so the final `mv`
+# is an atomic rename, not a cross-filesystem copy) with executable
+# permissions set explicitly, then moved into place — a `cp` straight to
+# the final path risks a partially-written or non-executable binary if
+# interrupted mid-copy or raced by a concurrent systemd restart.
+install -m 0755 target/release/eww "${HOME}/.local/bin/eww.tmp"
+mv -f "${HOME}/.local/bin/eww.tmp" "${HOME}/.local/bin/eww"
 echo "Installed eww to ${HOME}/.local/bin/eww — ensure that directory is on your PATH."
