@@ -2295,6 +2295,21 @@ registerTest("ToolRouting", "looksTrivial rejects a long message even when it st
   }
 });
 
+registerTest("BuildRequests", "getLatestPendingRewardGate still degrades cleanly when composed with looksTrivial/looksToolShaped-style routing logic", async () => {
+  // This isn't testing new server.ts logic directly (that lives inside an
+  // Express route handler, not a unit-testable export) — it's confirming
+  // the one new signal server.ts's routing fix depends on (a pending
+  // reward-gate row for this user) continues to degrade to null with no
+  // live Postgres, so the routing fix's `if (... || pendingRewardGate)`
+  // check never throws or hangs when the DB is unreachable, matching every
+  // other per-turn context lookup in that same handler
+  // (getLatestAwaitingConsult already covered elsewhere).
+  const result = await buildRequestsRepo.getLatestPendingRewardGate("brand_new_test_user_for_routing_check");
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
 // ---------- Vault Repo Tests ----------
 
 registerTest("Vault", "upsertNote degrades cleanly when Postgres isn't reachable", async () => {

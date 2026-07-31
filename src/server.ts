@@ -454,6 +454,13 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // — no extra try/catch needed here, matching how memoryStore.recall is
     // called directly above for the same reason.
     const awaitingBuildRequest = await buildRequestsRepo.getLatestAwaitingConsult(req.username);
+    // A build request can also be genuinely awaiting this user's decision
+    // in a second way: paused at the reward-confirmation gate
+    // (direction_confirmed status) rather than awaiting_consult. Both cases
+    // mean the next tool-shaped thing this user says ("yes", "approved",
+    // "proceed") is a real confirm_build_direction call waiting to happen —
+    // see the routing fix below, which needs to know about either.
+    const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(req.username);
     const buildRequestContext = awaitingBuildRequest
       ? `\n\nYou have a build request (#${awaitingBuildRequest.id}) awaiting the user's direction: "${awaitingBuildRequest.objective}". ` +
         `Research findings: ${awaitingBuildRequest.research_summary}. Discuss this with the user and, once they've genuinely ` +
@@ -515,7 +522,14 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // honest decline. Guarded on `executionChain[0] !== "Groq"` rather than
     // `=== "LocalLLM"` specifically so this is a no-op (not a crash) if
     // Groq's already at the front for some other reason.
-    if (kernel.llmMode !== "strictly-local" && looksToolShaped(message)) {
+    // A pending confirmation (either flavor) means the user's very next
+    // reply is likely a bare "yes"/"approved"/"proceed" that keyword-based
+    // looksToolShaped would never recognize as tool-shaped on its own — but
+    // it needs the same treatment: promote a tool-capable backend to the
+    // front instead of letting LocalLLM (no tool support at all) answer it
+    // in prose before Groq/Gemini ever get a turn.
+    const hasPendingConfirmation = !!awaitingBuildRequest || !!pendingRewardGate;
+    if (kernel.llmMode !== "strictly-local" && (looksToolShaped(message) || hasPendingConfirmation)) {
       if (groq && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
         const idx = executionChain.indexOf("Groq");
         executionChain.splice(idx, 1);
@@ -676,7 +690,13 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
             // live during Groq verification) and prefer the faster model.
             // looksToolShaped always wins any ambiguous case: a message must
             // be BOTH tool-shaped-negative AND trivial to take this path.
-            const isFastPath = !looksToolShaped(message) && looksTrivial(message);
+            // Also gated on hasPendingConfirmation (computed above, same
+            // scope): a bare "yes"/"ok" is exactly the message a pending
+            // confirmation is waiting for, and is also exactly what
+            // looksTrivial matches — without this, the fast path would
+            // strip tools from the one Groq call that most needs
+            // confirm_build_direction attached.
+            const isFastPath = !looksToolShaped(message) && !hasPendingConfirmation && looksTrivial(message);
             const groqTools = isFastPath ? null : toGroqTools(getAllToolDeclarations());
             const messages: any[] = [
               { role: "system", content: systemInstruction },
