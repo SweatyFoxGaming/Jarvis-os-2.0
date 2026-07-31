@@ -29,6 +29,7 @@ import {
   recordDirectionConfirmed,
   rejectCode as rejectBuildCode,
 } from "../src/kernel/state/build-requests-repo.js";
+import * as buildRequestsRepo from "../src/kernel/state/build-requests-repo.js";
 import { isValidToolSchema, getCachedMcpTools, computeToolsSignature, wrapUntrustedMcpOutput } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
@@ -1615,6 +1616,13 @@ registerTest("BuildRequests", "recordDirectionConfirmed degrades cleanly when Po
 
 registerTest("BuildRequests", "rejectCode degrades cleanly when Postgres isn't reachable", async () => {
   const result = await rejectBuildCode(999999);
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("BuildRequests", "getLatestPendingRewardGate degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await buildRequestsRepo.getLatestPendingRewardGate("test_user");
   if (result !== null) {
     throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
   }
