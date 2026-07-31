@@ -1,6 +1,7 @@
 [Unit]
 Description=Jarvis OS desktop HUD adapter (eww bridge)
-After=graphical-session.target
+After=graphical-session.target jarvis-hud-eww.service
+Requires=jarvis-hud-eww.service
 PartOf=graphical-session.target
 
 [Service]
