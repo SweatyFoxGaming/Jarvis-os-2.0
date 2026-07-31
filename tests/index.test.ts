@@ -750,6 +750,98 @@ registerTest("Obsidian", "scoped create/read/list stay within the vault, and tra
   }
 });
 
+registerTest("Obsidian", "writeResearchNote injects Category/Date frontmatter and links the note into Research MOC.md", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await obsidian.writeResearchNote(555001, "Test MOC objective", "A research summary.");
+    const notes = await obsidian.listAllNotePaths();
+    const notePath = notes.find(p => p.startsWith("Research/") && p.includes("br555001"));
+    if (!notePath) throw new Error(`Obsidian: expected a Research/*br555001* note, got: ${JSON.stringify(notes)}`);
+    const raw = await obsidian.readNote(notePath);
+    if (!/Category:\s*['"]?\[\[Research MOC\]\]/.test(raw)) {
+      throw new Error(`Obsidian: expected a Category: [[Research MOC]] frontmatter line, got:\n${raw}`);
+    }
+    if (!/Date:/.test(raw)) {
+      throw new Error(`Obsidian: expected a Date: frontmatter line, got:\n${raw}`);
+    }
+    const mocRaw = await obsidian.readNote("Research MOC.md");
+    const noteBasename = notePath.replace(/^Research\//, "").replace(/\.md$/, "");
+    if (!mocRaw.includes(`[[Research/${noteBasename}]]`)) {
+      throw new Error(`Obsidian: expected Research MOC.md to link [[Research/${noteBasename}]], got:\n${mocRaw}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+registerTest("Obsidian", "writeOrUpdateCodingNote does not duplicate its MOC link when called twice for the same build request", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await obsidian.writeOrUpdateCodingNote(555002, "Test dup-link objective", { status: "coding" });
+    await obsidian.writeOrUpdateCodingNote(555002, "Test dup-link objective", { status: "qa_complete", codeSummary: "Did the thing." });
+    const mocRaw = await obsidian.readNote("Coding MOC.md");
+    const notes = await obsidian.listAllNotePaths();
+    const notePath = notes.find(p => p.startsWith("Coding/") && p.includes("br555002"));
+    if (!notePath) throw new Error("Obsidian: expected a Coding/*br555002* note to exist");
+    const noteBasename = notePath.replace(/^Coding\//, "").replace(/\.md$/, "");
+    const link = `[[Coding/${noteBasename}]]`;
+    const occurrences = mocRaw.split(link).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(`Obsidian: expected exactly one ${link} in Coding MOC.md after 2 writes, found ${occurrences}. Content:\n${mocRaw}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+registerTest("Obsidian", "appendReflectionEntry creates its daily note with MOC frontmatter and links it into Reflections MOC.md exactly once per day", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "obsidian-moc-test-"));
+  const obsidian = await import("../src/capabilities/providers/obsidian.js");
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    await obsidian.appendReflectionEntry("test-category", "First entry.");
+    await obsidian.appendReflectionEntry("test-category", "Second entry, same day.");
+    const today = new Date().toISOString().slice(0, 10);
+    const raw = await obsidian.readNote(`Reflections/${today}`);
+    if (!/Category:\s*['"]?\[\[Reflections MOC\]\]/.test(raw)) {
+      throw new Error(`Obsidian: expected a Category: [[Reflections MOC]] frontmatter line on the daily note, got:\n${raw}`);
+    }
+    if (!raw.includes("First entry.") || !raw.includes("Second entry, same day.")) {
+      throw new Error(`Obsidian: expected both appended entries in the same daily note, got:\n${raw}`);
+    }
+    const mocRaw = await obsidian.readNote("Reflections MOC.md");
+    const link = `[[Reflections/${today}]]`;
+    const occurrences = mocRaw.split(link).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(`Obsidian: expected exactly one ${link} in Reflections MOC.md after 2 appends same day, found ${occurrences}`);
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
 // ---------- Voice Pipeline Tests (whisper-cpp / TTS integrations) ----------
 // Neither service is reachable in this test process (no live Docker
 // network) — these confirm the one thing that's actually testable without
