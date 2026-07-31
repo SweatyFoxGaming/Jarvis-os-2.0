@@ -1897,6 +1897,23 @@ registerTest("GroqAgentClient", "parseGroqAgentResponse extracts totalTokens whe
   }
 });
 
+registerTest("GroqAgentClient", "parseGroqAgentResponse extracts modelUsed from the response's own model field", () => {
+  const result = parseGroqAgentResponse({
+    choices: [{ message: { content: "hello", tool_calls: [] } }],
+    model: "llama-3.3-70b-versatile",
+  });
+  if (result.modelUsed !== "llama-3.3-70b-versatile") {
+    throw new Error(`GroqAgentClient: expected modelUsed "llama-3.3-70b-versatile", got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("GroqAgentClient", "parseGroqAgentResponse's modelUsed is null when the response has no model field", () => {
+  const result = parseGroqAgentResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
+  if (result.modelUsed !== null) {
+    throw new Error(`GroqAgentClient: expected modelUsed null with no model field, got: ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("GroqAgentClient", "parseGroqAgentResponse's totalTokens is null when usage is absent — this is what coding-agent.ts's budget tracking must tolerate", () => {
   const result = parseGroqAgentResponse({ choices: [{ message: { content: "hello", tool_calls: [] } }] });
   if (result.totalTokens !== null) {
