@@ -16,7 +16,7 @@ import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 import * as analyzer from "./analyzer.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
-import { getSession } from "../cognition/session.js";
+import { SessionState } from "../cognition/session.js";
 import { pushNotification } from "../kernel/scheduler.js";
 import { AutonomousExecutive } from "../executive/autonomous_executive.js";
 
@@ -61,25 +61,35 @@ export async function runDailyAdaptation(username = "admin"): Promise<{ ok: bool
         ? objectives.map(o => `- ${o.description}`).join("\n")
         : "(no active objectives)";
 
-      const response = await configuredGroq.chat.completions.create({
-        model: "openai/gpt-oss-20b",
-        messages: [{
-          role: "user",
-          content:
-            "You are Jarvis's own daily self-adaptation reflection. Given the current active objectives and real, computed system-analysis signals below, " +
-            "write a short honest reflection, list any concrete capability gaps you notice, and propose exactly one candidate next objective if something " +
-            "concrete stands out — leave it empty if nothing does. Do not invent problems that aren't supported by the signals.\n\n" +
-            `Active objectives:\n${objectivesSummary}\n\nAnalysis signals:\n${issuesSummary}`,
-        }],
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: "daily_adaptation", schema: toGroqSchema(ADAPTATION_SCHEMA), strict: true },
-        },
-      });
-      const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
-      reflectionText = typeof parsed.reflectionText === "string" ? parsed.reflectionText : reflectionText;
-      capabilityGaps = Array.isArray(parsed.capabilityGaps) ? parsed.capabilityGaps : [];
-      candidateObjective = typeof parsed.candidateObjective === "string" ? parsed.candidateObjective : "";
+      // Guarded independently of the outer try/catch: a Groq outage here
+      // must degrade to the same placeholder text used when Groq isn't
+      // configured at all, not skip the report/notification entirely —
+      // the whole point of graceful degradation is that an LLM failure on
+      // any given day still leaves a report with real analyzer signals.
+      try {
+        const response = await configuredGroq.chat.completions.create({
+          model: "openai/gpt-oss-20b",
+          messages: [{
+            role: "user",
+            content:
+              "You are Jarvis's own daily self-adaptation reflection. Given the current active objectives and real, computed system-analysis signals below, " +
+              "write a short honest reflection, list any concrete capability gaps you notice, and propose exactly one candidate next objective if something " +
+              "concrete stands out — leave it empty if nothing does. Do not invent problems that aren't supported by the signals.\n\n" +
+              `Active objectives:\n${objectivesSummary}\n\nAnalysis signals:\n${issuesSummary}`,
+          }],
+          response_format: {
+            type: "json_schema",
+            json_schema: { name: "daily_adaptation", schema: toGroqSchema(ADAPTATION_SCHEMA), strict: true },
+          },
+        });
+        const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
+        reflectionText = typeof parsed.reflectionText === "string" ? parsed.reflectionText : reflectionText;
+        capabilityGaps = Array.isArray(parsed.capabilityGaps) ? parsed.capabilityGaps : [];
+        candidateObjective = typeof parsed.candidateObjective === "string" ? parsed.candidateObjective : "";
+      } catch (err: any) {
+        observation.logTelemetry("warn", "Adaptation", `Groq reflection call failed: ${err.message} — falling back to a signals-only report.`);
+        reflectionText = `Groq reflection call failed today (${err.message}) — this report reflects only the computed analyzer signals below.`;
+      }
     }
 
     await obsidian.writeAdaptationReport(dateStr, reflectionText, capabilityGaps, candidateObjective);
@@ -95,7 +105,13 @@ export async function runDailyAdaptation(username = "admin"): Promise<{ ok: bool
         buildRequestsRepo.getLatestPendingRewardGate(username),
       ]);
       if (!alreadyAwaiting && !alreadyGated) {
-        const session = await getSession(username);
+        // A fresh, throwaway SessionState — deliberately NOT the shared,
+        // cached session getSession(username) would return. That instance
+        // is the user's live conversational state (executeObjectiveLocked
+        // clears its dialogue and overwrites its currentMission/
+        // executiveStatus); an unattended 3am run must not clobber a real
+        // chat the user might be mid-way through.
+        const session = new SessionState();
         await AutonomousExecutive.getInstance().executeObjective(candidateObjective, session, username);
         candidateObjectiveStarted = true;
       }
