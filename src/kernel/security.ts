@@ -57,6 +57,8 @@ export const ALL_CAPABILITIES = [
   "system.sandbox_execute",
   // Read-only: the reward ledger's own summary (dashboard), no write action.
   "reward.read",
+  // Read-only: the desktop HUD's own status summary, no write action.
+  "hud.read",
 ] as const;
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

@@ -52,6 +52,7 @@ import { evolutionRouter } from "./interaction/routes/evolution-routes.js";
 import { rewardRouter } from "./interaction/routes/reward-routes.js";
 import { permissionsRouter } from "./interaction/routes/permissions-routes.js";
 import { integrationsRouter } from "./interaction/routes/integrations-routes.js";
+import { hudRouter } from "./interaction/routes/hud-routes.js";
 
 dotenv.config();
 
@@ -1144,6 +1145,9 @@ app.use(permissionsRouter);
 // GitHub/email/TTS/files/calendar/news/websearch integration endpoints —
 // see src/interaction/routes/integrations-routes.ts, mounted below.
 app.use(integrationsRouter);
+
+// Desktop HUD status endpoint — see src/interaction/routes/hud-routes.ts.
+app.use(hudRouter);
 
 // ---------- Static Files Serving ----------
 const staticDir = path.join(process.cwd(), "src", "interaction", "static");
