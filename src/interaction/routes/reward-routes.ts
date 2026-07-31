@@ -2,10 +2,14 @@ import { Router } from "express";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
 import * as rewardEventsRepo from "../../kernel/state/reward-events-repo.js";
+import { DEFAULT_MODELS } from "../../runtime/groq-agent-client.js";
 
 export const rewardRouter = Router();
 
-const KNOWN_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+// Aliased rather than referenced directly so it reads alongside
+// KNOWN_CATEGORIES below, while still being the one source of truth — the
+// candidate lineup lives with the client that actually calls these models.
+const KNOWN_MODELS = DEFAULT_MODELS;
 const KNOWN_CATEGORIES = ["database", "frontend", "security", "general"];
 
 // Read-only introspection into the coding agent's reward ledger — see

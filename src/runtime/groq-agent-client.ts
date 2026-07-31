@@ -53,7 +53,7 @@ import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 // actual availability, rate limits, and real multi-turn tool-calling
 // behavior (not just a single test call) before trusting a model's name
 // alone.
-const DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+export const DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 
 export interface AgentToolCall {
   id: string;

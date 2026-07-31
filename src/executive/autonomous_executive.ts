@@ -200,6 +200,31 @@ export class AutonomousExecutive {
         };
       }
 
+      // The other half of the same at-most-one-open-row guarantee: a build
+      // request parked in 'direction_confirmed' by confirmDirection()'s
+      // reward gate is *also* a row that confirmDirection() will resolve
+      // against on the user's next "confirm direction" — and it takes
+      // priority over any awaiting_consult row. Without this check a second
+      // objective could sail past the guard above (its own row never being
+      // in awaiting_consult status), reach awaiting_consult itself, and then
+      // have the user's confirmation silently cross-wired onto the older,
+      // abandoned gated request instead.
+      const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
+      if (pendingRewardGate) {
+        session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
+        // Reusing the "awaiting_consult" ObjectiveRunStatus rather than widening
+        // that closed union for a cosmetically distinct case — semantically this
+        // is the same "parked, needs the user's attention" terminal state.
+        await objectiveRunsRepo.finishRun(runId, "awaiting_consult", pendingRewardGate.id);
+        return {
+          objective,
+          status: "awaiting_consult",
+          buildRequestId: pendingRewardGate.id,
+          researchSummary: pendingRewardGate.research_summary || "",
+          message: `Build request #${pendingRewardGate.id} ("${pendingRewardGate.objective}") is waiting on your call, sir — my recent track record had been rough there, so I paused before starting. Say "confirm direction" again to have me proceed anyway before I can look at anything new.`,
+        };
+      }
+
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
       runContext.buildRequestId = buildRequest.id;
       const research = await departments.runResearch(objective, this.groq, username);
@@ -373,6 +398,7 @@ export class AutonomousExecutive {
     }
 
     const rewardCheck = await rewardEventsRepo.getOverallScore("terminal_outcome");
+    // First-pass threshold, not empirically tuned yet — see the design spec's Open Questions section.
     if (rewardCheck && rewardCheck.count >= 3 && rewardCheck.score < -0.5) {
       return {
         ok: true,

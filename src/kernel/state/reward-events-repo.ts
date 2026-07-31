@@ -55,7 +55,9 @@ export async function getCategoryScore(category: string): Promise<{ score: numbe
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM reward_events WHERE category = $1`,
+      `SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM (
+         SELECT reward_value FROM reward_events WHERE category = $1 ORDER BY created_at DESC LIMIT 50
+       ) recent`,
       [category]
     );
     if (!rows[0] || rows[0].count === 0) return null;
@@ -70,7 +72,9 @@ export async function getModelScore(model: string): Promise<{ score: number; cou
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM reward_events WHERE model_used = $1`,
+      `SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM (
+         SELECT reward_value FROM reward_events WHERE model_used = $1 ORDER BY created_at DESC LIMIT 50
+       ) recent`,
       [model]
     );
     if (!rows[0] || rows[0].count === 0) return null;
@@ -85,8 +89,17 @@ export async function getOverallScore(source?: RewardSource): Promise<{ score: n
   try {
     const db = getPool();
     const { rows } = source
-      ? await db.query(`SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM reward_events WHERE source = $1`, [source])
-      : await db.query(`SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM reward_events`);
+      ? await db.query(
+          `SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM (
+             SELECT reward_value FROM reward_events WHERE source = $1 ORDER BY created_at DESC LIMIT 50
+           ) recent`,
+          [source]
+        )
+      : await db.query(
+          `SELECT AVG(reward_value)::float AS score, COUNT(*)::int AS count FROM (
+             SELECT reward_value FROM reward_events ORDER BY created_at DESC LIMIT 50
+           ) recent`
+        );
     if (!rows[0] || rows[0].count === 0) return null;
     return { score: rows[0].score, count: rows[0].count };
   } catch (err: any) {
