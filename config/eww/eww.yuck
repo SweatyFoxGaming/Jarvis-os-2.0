@@ -20,10 +20,10 @@
       (badge-dot)
       (label :class "hud-status" :text jarvis_status))
     (box :class "hud-section" :orientation "v" :space-evenly false
-      (label :class "hud-label" :text "Thinking")
+      (label :class "hud-label" :text "THINKING")
       (label :class "hud-thought" :wrap true :limit-width 42 :text jarvis_thought))
     (box :class "hud-section" :orientation "v" :space-evenly false
-      (label :class "hud-label" :text "Last note")
+      (label :class "hud-label" :text "LAST NOTE")
       (label :class "hud-note" :wrap true :limit-width 42 :text jarvis_note))))
 
 (defwindow jarvis-hud

@@ -36,10 +36,12 @@
   margin-top: 6px;
 }
 
+// GTK-CSS (what eww's scss actually compiles to) has no text-transform
+// property — the labels themselves are written in uppercase in eww.yuck
+// instead of relying on CSS to transform them.
 .hud-label {
   font-size: 10px;
   color: #9a9a9a;
-  text-transform: uppercase;
 }
 
 .hud-thought, .hud-note {
