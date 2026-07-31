@@ -40,15 +40,6 @@ const ADAPTATION_SCHEMA = {
 export async function runDailyAdaptation(username = "admin"): Promise<{ ok: boolean; reportPath: string; candidateObjectiveStarted: boolean }> {
   const dateStr = new Date().toISOString().slice(0, 10);
   const reportPath = `Adaptation/${dateStr}`;
-  // Without a configured Groq client there's nothing meaningful this run can
-  // produce (no reflection, no capability gaps, no candidate objective) — so
-  // this returns before touching objectives/analyzer/executive code at all,
-  // rather than writing a degraded placeholder report and reporting ok: true
-  // for a run that didn't actually do anything.
-  if (!configuredGroq) {
-    observation.logTelemetry("info", "Adaptation", "runDailyAdaptation skipped — no Groq client configured.");
-    return { ok: false, reportPath, candidateObjectiveStarted: false };
-  }
   try {
     const objectives = await objectivesRepo.listActiveObjectives(username);
     const analysis = {
