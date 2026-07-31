@@ -1899,6 +1899,17 @@ registerTest("HudRoutes", "deriveHudBadge falls back to idle for an unrecognized
   }
 });
 
+registerTest("HudRoutes", "deriveHudBadge still exported and unaffected by the response-shape widening", () => {
+  // The widened response shape (recentNotes/activeTask) is exercised
+  // end-to-end only against a live DB (same reasoning as this route's
+  // existing lastNote/thoughtLines fields) — this test just locks in
+  // that deriveHudBadge's own contract (already covered by the 5 existing
+  // HudRoutes tests) is untouched by this task's route changes.
+  if (deriveHudBadge("Idle", false) !== "idle") {
+    throw new Error("HudRoutes: deriveHudBadge behavior changed unexpectedly");
+  }
+});
+
 // ---------- Departments Tests (no live AI/network in this test process) ----------
 
 registerTest("Departments", "decomposeObjective falls back to a single research step with no AI client", async () => {

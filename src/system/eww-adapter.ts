@@ -36,7 +36,7 @@ async function pollOnce(): Promise<void> {
       signal: controller.signal,
     });
     if (!res.ok) {
-      ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify("HUD endpoint returned an error."), jarvis_note: JSON.stringify("") });
+      ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify("HUD endpoint returned an error."), jarvis_task: JSON.stringify("Unknown"), jarvis_notes: JSON.stringify("") });
       return;
     }
     const data = await res.json();
@@ -48,10 +48,11 @@ async function pollOnce(): Promise<void> {
       // instead of a line break, so yuck's :wrap label would render the
       // text "\n" between thoughts rather than actually wrapping them.
       jarvis_thought: JSON.stringify((data.thoughtLines || []).join("\n")),
-      jarvis_note: JSON.stringify(data.lastNote ? data.lastNote.title : "None yet"),
+      jarvis_task: JSON.stringify(data.activeTask || "None"),
+      jarvis_notes: JSON.stringify((data.recentNotes || []).map((n: any) => n.title).join("\n") || "None yet"),
     });
   } catch (err: any) {
-    ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify(`Cannot reach Jarvis: ${err.message}`), jarvis_note: JSON.stringify("") });
+    ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify(`Cannot reach Jarvis: ${err.message}`), jarvis_task: JSON.stringify("Unknown"), jarvis_notes: JSON.stringify("") });
   } finally {
     clearTimeout(timeoutId);
   }
