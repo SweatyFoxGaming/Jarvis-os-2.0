@@ -53,6 +53,8 @@ import { rewardRouter } from "./interaction/routes/reward-routes.js";
 import { permissionsRouter } from "./interaction/routes/permissions-routes.js";
 import { integrationsRouter } from "./interaction/routes/integrations-routes.js";
 import { hudRouter } from "./interaction/routes/hud-routes.js";
+import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
+import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 
 dotenv.config();
 
@@ -183,6 +185,7 @@ if (process.env.GROQ_API_KEY) {
   observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
 }
 briefing.configureGroq(groq);
+dailyAdaptation.configureGroq(groq);
 // The agentic coding loop (src/executive/coding-agent.ts) runs entirely on
 // this same Groq client — no separate API key to configure or log here;
 // the GROQ_API_KEY check above already covers whether it's available.
@@ -1148,6 +1151,7 @@ app.use(integrationsRouter);
 
 // Desktop HUD status endpoint — see src/interaction/routes/hud-routes.ts.
 app.use(hudRouter);
+app.use(adaptationRouter);
 
 // ---------- Static Files Serving ----------
 const staticDir = path.join(process.cwd(), "src", "interaction", "static");

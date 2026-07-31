@@ -3,6 +3,7 @@ import Groq from "groq-sdk";
 import { toGroqSchema } from "../runtime/groq-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { LongTermLearningEngine, ICodingStylePreference } from "./long_term_learning.js";
+import * as vaultRepo from "../kernel/state/vault-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 const learningEngine = LongTermLearningEngine.getInstance();
@@ -48,6 +49,14 @@ export async function reflectAndLearn(
 ): Promise<void> {
   if (!groq) return;
   try {
+    // Best-effort, never blocks the reflection call — a related-notes
+    // hint just lets the extraction judge "is this genuinely new" more
+    // accurately; it's not load-bearing if the vault is unreachable.
+    const relatedNotes = await vaultRepo.searchNotes(userMessage.slice(0, 200), 3).catch(() => []);
+    const relatedContext = relatedNotes.length > 0
+      ? `\n\nRelated past vault notes (for context — don't repeat what's already captured there):\n${relatedNotes.map(n => `- ${n.title} (${n.path})`).join("\n")}`
+      : "";
+
     const response = await groq.chat.completions.create({
       model: "openai/gpt-oss-20b",
       messages: [{
@@ -57,7 +66,7 @@ export async function reflectAndLearn(
           "Only report a coding style preference if the user actually stated or clearly implied one. " +
           "Only report a mistake if a real error/bug and its fix were actually discussed — not a hypothetical. " +
           "Leave any field empty (\"\" or 0) if it doesn't apply; do not invent content to fill the schema.\n\n" +
-          `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
+          `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}${relatedContext}`,
       }],
       response_format: {
         type: "json_schema",

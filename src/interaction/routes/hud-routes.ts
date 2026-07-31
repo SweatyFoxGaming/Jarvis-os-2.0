@@ -4,6 +4,7 @@ import { requireCapability } from "../../kernel/security.js";
 import { getSession } from "../../cognition/session.js";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as vaultRepo from "../../kernel/state/vault-repo.js";
+import * as buildRequestsRepo from "../../kernel/state/build-requests-repo.js";
 import { deriveHudBadge } from "../hud-badge.js";
 
 export { deriveHudBadge };
@@ -44,10 +45,17 @@ hudRouter.get("/api/hud/status", validateApiKey, requireCapability("hud.read"), 
     const traces = observation.getDecisionTraces();
     const thoughtLines = traces.map(t => t.reasoning).filter(Boolean).slice(-3);
 
-    let lastNote: { path: string; title: string } | null = null;
+    let recentNotes: { path: string; title: string }[] = [];
     try {
-      const notes = await vaultRepo.listNotes(1);
-      if (notes[0]) lastNote = { path: notes[0].path, title: notes[0].title };
+      const notes = await vaultRepo.listNotes(3);
+      recentNotes = notes.map(n => ({ path: n.path, title: n.title }));
+    } catch {
+      // Degrade cleanly — no live Postgres shouldn't break the rest of the HUD.
+    }
+
+    let activeTask: string | null = null;
+    try {
+      activeTask = await buildRequestsRepo.getActiveTaskForUser(hudUsername);
     } catch {
       // Degrade cleanly — no live Postgres shouldn't break the rest of the HUD.
     }
@@ -56,9 +64,10 @@ hudRouter.get("/api/hud/status", validateApiKey, requireCapability("hud.read"), 
       badge,
       statusLabel: state.executiveStatus,
       thoughtLines,
-      lastNote,
+      recentNotes,
+      activeTask,
     });
   } catch (err: any) {
-    res.status(500).json({ badge: "error", statusLabel: "Unavailable", thoughtLines: [], lastNote: null, error: "Failed to load HUD status." });
+    res.status(500).json({ badge: "error", statusLabel: "Unavailable", thoughtLines: [], recentNotes: [], activeTask: null, error: "Failed to load HUD status." });
   }
 });

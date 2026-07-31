@@ -1,0 +1,8 @@
+[Unit]
+Description=Jarvis OS daily adaptation engine trigger
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/jarvis-daily-adapt.env
+ExecStart=/usr/bin/curl -fsS -X POST -H "X-API-Key: ${JARVIS_API_KEY}" http://localhost:3000/api/adaptation/run

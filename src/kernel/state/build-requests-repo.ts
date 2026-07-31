@@ -115,6 +115,20 @@ export async function listBuildRequests(status?: BuildRequestStatus): Promise<Bu
   }
 }
 
+export async function getActiveTaskForUser(username: string): Promise<string | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT objective FROM build_requests WHERE requested_by = $1 AND status IN ('coding', 'researching') ORDER BY created_at DESC LIMIT 1`,
+      [username]
+    );
+    return rows[0]?.objective ?? null;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `getActiveTaskForUser(${username}) failed: ${err.message}`);
+    return null;
+  }
+}
+
 export async function recordResearch(id: number, researchSummary: string): Promise<BuildRequestRow | null> {
   try {
     const db = getPool();

@@ -47,6 +47,7 @@ import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { deriveHudBadge } from "../src/interaction/hud-badge.js";
+import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -1133,6 +1134,31 @@ registerTest("Learning", "reflectAndLearn no-ops with no Groq client", async () 
   }
 });
 
+registerTest("Reflection", "reflectAndLearn degrades cleanly when Postgres isn't reachable (vault search failure never blocks the reflection call)", async () => {
+  let groqCallCount = 0;
+  const fakeGroq: any = {
+    chat: {
+      completions: {
+        create: async () => {
+          groqCallCount++;
+          return {
+            choices: [{ message: { content: JSON.stringify({
+              styleNamingConvention: "", styleTabSize: 0, styleFramework: "", styleArchitecture: "",
+              mistakeErrorSignature: "", mistakeFile: "", mistakeRootCause: "", mistakeFix: "",
+            }) } }],
+          };
+        },
+      },
+    },
+  };
+  // No live Postgres in this test harness — vaultRepo.searchNotes will fail
+  // internally; reflectAndLearn must still complete without throwing.
+  await reflectAndLearn(fakeGroq, "test message", "test reply");
+  if (groqCallCount !== 1) {
+    throw new Error(`Reflection: expected exactly 1 Groq extraction call despite the vault search failure, got ${groqCallCount}`);
+  }
+});
+
 // ---------- HTTP Boundary ----------
 // Every other test in this file imports internal modules directly — none of
 // them would have caught today's real incident, where the Express app
@@ -1881,6 +1907,17 @@ registerTest("HudRoutes", "deriveHudBadge falls back to idle for an unrecognized
   }
 });
 
+registerTest("HudRoutes", "deriveHudBadge still exported and unaffected by the response-shape widening", () => {
+  // The widened response shape (recentNotes/activeTask) is exercised
+  // end-to-end only against a live DB (same reasoning as this route's
+  // existing lastNote/thoughtLines fields) — this test just locks in
+  // that deriveHudBadge's own contract (already covered by the 5 existing
+  // HudRoutes tests) is untouched by this task's route changes.
+  if (deriveHudBadge("Idle", false) !== "idle") {
+    throw new Error("HudRoutes: deriveHudBadge behavior changed unexpectedly");
+  }
+});
+
 // ---------- Departments Tests (no live AI/network in this test process) ----------
 
 registerTest("Departments", "decomposeObjective falls back to a single research step with no AI client", async () => {
@@ -2564,6 +2601,37 @@ registerTest("ObsidianParser", "slugify never returns an empty string", () => {
   const result = slugify("!!!");
   if (!result || result.length === 0) {
     throw new Error(`ObsidianParser: expected a non-empty fallback slug, got: "${result}"`);
+  }
+});
+
+registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a candidate objective when Postgres isn't reachable, even with no Groq client", async () => {
+  // Every repo call this function makes already degrades cleanly to a safe
+  // default (never throws) — this is the established convention throughout
+  // this codebase's state layer, not something this task introduces — so
+  // "no live DB" alone can never make this function fail; it still writes
+  // a degraded report (real analyzer signals, placeholder reflection text)
+  // and reports ok: true, matching every other repo-backed feature's own
+  // degrade-cleanly tests. What's actually safety-critical to assert here
+  // is that no candidate objective ever gets started under these conditions.
+  const os = await import("os");
+  const path = await import("path");
+  const fsSync = await import("fs");
+  const tmpVault = fsSync.mkdtempSync(path.join(os.tmpdir(), "daily-adaptation-test-"));
+  process.env.OBSIDIAN_VAULT_DIR_MOUNT = tmpVault;
+  process.env.OBSIDIAN_VAULT_DIR = tmpVault;
+  try {
+    dailyAdaptation.configureGroq(null);
+    const result = await dailyAdaptation.runDailyAdaptation("test_user_no_db");
+    if (result.ok !== true) {
+      throw new Error(`DailyAdaptation: expected ok: true (a degraded report is still a completed run), got: ${JSON.stringify(result)}`);
+    }
+    if (result.candidateObjectiveStarted !== false) {
+      throw new Error("DailyAdaptation: candidateObjectiveStarted must be false when there's no Groq client to produce a candidate objective");
+    }
+  } finally {
+    delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
+    delete process.env.OBSIDIAN_VAULT_DIR;
+    fsSync.rmSync(tmpVault, { recursive: true, force: true });
   }
 });
 
