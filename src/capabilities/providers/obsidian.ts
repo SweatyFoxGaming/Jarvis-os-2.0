@@ -19,7 +19,7 @@ export class ObsidianIntegrationError extends Error {
  * wider filesystem. Same proven security boundary as
  * providers/files.ts's own resolveScopedPath, applied to a new root.
  */
-const MOC_FOLDERS = ["Briefings", "Coding", "Reflections", "Research"] as const;
+const MOC_FOLDERS = ["Adaptation", "Briefings", "Coding", "Reflections", "Research"] as const;
 type MocFolder = typeof MOC_FOLDERS[number];
 
 function mocNotePath(folder: MocFolder): string {
@@ -400,6 +400,38 @@ export async function writeResearchNote(
     withMocFrontmatter("Research", { type: "research", build_request_id: buildRequestId, created: new Date().toISOString() })
   );
   await ensureLinkedInMoc("Research", `Research/${basename}`);
+}
+
+export async function writeAdaptationReport(
+  dateStr: string,
+  reflectionText: string,
+  capabilityGaps: string[],
+  candidateObjective: string
+): Promise<void> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    observation.logTelemetry("info", "Interaction", "Skipped writing adaptation report — OBSIDIAN_VAULT_DIR not configured.");
+    return;
+  }
+  const lines: string[] = [
+    `# Daily Adaptation — ${dateStr}`,
+    "",
+    reflectionText,
+    "",
+    "## Capability Gaps",
+    "",
+    ...(capabilityGaps.length > 0 ? capabilityGaps.map(g => `- ${g}`) : ["- None identified today."]),
+    "",
+    "## Candidate Next Objective",
+    "",
+    candidateObjective || "(none identified today)",
+    "",
+  ];
+  await createNote(
+    `Adaptation/${dateStr}`,
+    lines.join("\n"),
+    withMocFrontmatter("Adaptation", { type: "adaptation-report", created: new Date().toISOString() })
+  );
+  await ensureLinkedInMoc("Adaptation", `Adaptation/${dateStr}`);
 }
 
 export interface CodingNoteFields {

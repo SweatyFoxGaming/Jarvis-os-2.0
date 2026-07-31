@@ -47,6 +47,7 @@ import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { deriveHudBadge } from "../src/interaction/hud-badge.js";
+import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -2593,6 +2594,17 @@ registerTest("ObsidianParser", "slugify never returns an empty string", () => {
   const result = slugify("!!!");
   if (!result || result.length === 0) {
     throw new Error(`ObsidianParser: expected a non-empty fallback slug, got: "${result}"`);
+  }
+});
+
+registerTest("DailyAdaptation", "runDailyAdaptation degrades cleanly (ok: false, no throw) when Postgres isn't reachable", async () => {
+  dailyAdaptation.configureGroq(null);
+  const result = await dailyAdaptation.runDailyAdaptation("test_user_no_db");
+  if (result.ok !== false) {
+    throw new Error(`DailyAdaptation: expected ok: false with no DB, got: ${JSON.stringify(result)}`);
+  }
+  if (result.candidateObjectiveStarted !== false) {
+    throw new Error("DailyAdaptation: candidateObjectiveStarted must be false when nothing could run");
   }
 });
 
