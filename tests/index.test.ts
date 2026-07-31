@@ -46,7 +46,7 @@ import * as systemSettingsRepo from "../src/kernel/state/system-settings-repo.js
 import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
-import { deriveHudBadge } from "../src/interaction/routes/hud-routes.js";
+import { deriveHudBadge } from "../src/interaction/hud-badge.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";

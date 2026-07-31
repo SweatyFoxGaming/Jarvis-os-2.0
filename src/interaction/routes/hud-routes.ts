@@ -4,25 +4,15 @@ import { requireCapability } from "../../kernel/security.js";
 import { getSession } from "../../cognition/session.js";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as vaultRepo from "../../kernel/state/vault-repo.js";
+import { deriveHudBadge } from "../hud-badge.js";
+
+export { deriveHudBadge };
 
 export const hudRouter = Router();
 
 const observation = ObservationPlatform.getInstance();
 const HUD_USERNAME = process.env.JARVIS_HUD_USERNAME || "admin";
 const RECENT_FAILURE_WINDOW_MS = 60_000;
-
-// Pure and exported so it's unit-testable without a live session/DB — the
-// one piece of this route with real branching logic. A recent failure
-// always wins over whatever executiveStatus says, since "Jarvis thinks
-// it's idle but something just failed" is exactly the case the Error badge
-// exists to surface.
-export function deriveHudBadge(executiveStatus: string, recentFailure: boolean): "idle" | "thinking" | "executing" | "error" {
-  if (recentFailure) return "error";
-  if (executiveStatus === "Executing") return "executing";
-  if (executiveStatus === "Thinking" || executiveStatus === "Planning" || executiveStatus === "Reflecting") return "thinking";
-  if (executiveStatus === "Idle") return "idle";
-  return "idle";
-}
 
 // Audit log lines look like: "[2026-07-31T10:00:00.000Z] Actor: X | Action:
 // Y | Outcome: failed | Details: Z" — cheap substring/timestamp check
