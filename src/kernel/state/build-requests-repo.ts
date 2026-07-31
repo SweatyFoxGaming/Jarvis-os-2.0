@@ -172,7 +172,11 @@ export async function markCoding(id: number): Promise<boolean> {
     const { rowCount } = await db.query(`UPDATE build_requests SET status = 'coding', updated_at = now() WHERE id = $1 AND status = 'direction_confirmed'`, [id]);
     return !!rowCount;
   } catch (err: any) {
-    // Best-effort — a failed write here doesn't block drafting itself.
+    // A DB failure here means the claim couldn't be confirmed, so this
+    // returns false the same as "another caller already claimed it" — the
+    // caller (startCoding) treats both as "don't proceed," which is the
+    // safe default: it must not start a coding session it can't be sure it
+    // exclusively holds.
     observation.logTelemetry("warn", "BuildRequests", `markCoding(${id}) failed: ${err.message}`);
     return false;
   }
