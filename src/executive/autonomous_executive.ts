@@ -9,6 +9,7 @@ import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 import * as departments from "./departments.js";
 import * as scheduler from "../kernel/scheduler.js";
 import * as codingAgent from "./coding-agent.js";
+import { runApprovalFlow, isEligibleForAutomaticApproval } from "./build-approval.js";
 import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
@@ -369,27 +370,25 @@ export class AutonomousExecutive {
     return finalReport;
   }
 
-  // Drives the second stage of the build_requests lifecycle: called once
-  // the user has actually confirmed a direction in conversation (never
-  // speculatively — see confirm_build_direction's tool description in
-  // tools.ts). Resolves against the caller's own most recent
-  // 'awaiting_consult' row rather than a model-recalled id — see this
-  // plan's Global Constraints for why. "Most recent" is unambiguous because
-  // executeObjective() (STAGE 4a, above) now refuses to open a second
-  // awaiting_consult build request for a user who already has one — the two
-  // pieces are meant to be read together.
-  public async confirmDirection(username: string, directionNotes: string): Promise<{ ok: boolean; message: string }> {
+  public async confirmDirectionForBuildRequest(
+    buildRequestId: number,
+    directionNotes: string,
+    username: string
+  ): Promise<{ ok: boolean; message: string }> {
     // A build request sitting in 'direction_confirmed' means a prior call
-    // to this same function already paused here for the reward gate below
-    // — this call is the user's explicit "go ahead anyway."
+    // already paused here for the reward gate below — this call is the
+    // user's explicit "go ahead anyway." Reward-gate build requests are
+    // resolved by username, not id, since the gate itself doesn't carry a
+    // confirm-ticket (it's a re-confirmation of an already-confirmed
+    // request, not a fresh awaiting_consult one).
     const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
-    if (pendingRewardGate) {
+    if (pendingRewardGate && pendingRewardGate.id === buildRequestId) {
       return this.startCoding(pendingRewardGate, pendingRewardGate.direction_notes || directionNotes, username);
     }
 
-    const buildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
-    if (!buildRequest) {
-      return { ok: false, message: "There's no build request of mine currently awaiting your direction to confirm." };
+    const buildRequest = await buildRequestsRepo.getBuildRequest(buildRequestId);
+    if (!buildRequest || buildRequest.status !== "awaiting_consult") {
+      return { ok: false, message: "That build request isn't currently awaiting direction to confirm." };
     }
 
     const confirmed = await buildRequestsRepo.recordDirectionConfirmed(buildRequest.id, directionNotes);
@@ -468,6 +467,90 @@ export class AutonomousExecutive {
     }).catch((err: any) => {
       this.observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
     });
+
+    // The gate that keeps Phase 0's promise: unless autonomy is actually on
+    // AND this specific diff qualifies AND we're under the daily cap, this
+    // method does not run the approval pipeline at all. The build request is
+    // left sitting at awaiting_code_approval for a human to click Approve —
+    // byte-for-byte the pre-autonomy behavior. Eligibility is not re-derived
+    // here: isEligibleForAutomaticApproval is the same function
+    // runApprovalFlow uses to gate the merge itself, so the two can't diverge.
+    if (await isEligibleForAutomaticApproval(draft.files.map((f) => f.path))) {
+      // Deliberately NOT awaited. runApprovalFlow legitimately takes minutes
+      // (a full sandbox `npm ci && npm test && tsc`, a real review call, then
+      // branch/commit/PR/merge round-trips), and this method is reached
+      // synchronously from the confirm-direction HTTP route — awaiting here
+      // would block that request for the whole pipeline, risking a
+      // client/proxy timeout that delivers no result at all. It would also
+      // let a pipeline failure surface as `ok: false`, which the route maps
+      // to HTTP 409, misreporting a genuinely successful direction
+      // confirmation as a conflict and skipping its audit event.
+      //
+      // Direction really is confirmed and the code really is drafted by this
+      // point, so the request can return now and the outcome reaches the user
+      // through scheduler.pushNotification — the mechanism this codebase
+      // already uses for exactly this kind of detached async result.
+      void runApprovalFlow(recorded, username)
+        .then((approvalResult) => {
+          if (approvalResult.ok) {
+            // Both success shapes already notified from inside the flow:
+            // "I autonomously merged…" when it merged, "Opened the pull
+            // request…" when it stopped at an open PR. Nothing to add here
+            // beyond a telemetry breadcrumb — notifying again would double up.
+            this.observation.logTelemetry(
+              "info",
+              "Executive",
+              `Automatic approval flow for build request ${recorded.id} finished (autonomousMerge=${approvalResult.autonomousMerge}).`
+            );
+            return;
+          }
+          // Hard failure. Only the review-failed branch notifies internally
+          // (userNotified), so every other branch — verification-could-not-run,
+          // verification-failed, repo-read/branch/commit/PR-open failures —
+          // would otherwise leave the build request parked in
+          // error/review_failed with the user never told. Fill exactly that
+          // gap; there is no HTTP response carrying this news anymore.
+          if (!approvalResult.userNotified) {
+            scheduler.pushNotification(
+              username,
+              `I drafted the code for build request #${recorded.id}, sir, but couldn't carry it through to a pull ` +
+                `request: ${approvalResult.message.slice(0, 300)}${approvalResult.message.length > 300 ? "..." : ""} ` +
+                `It's in the dashboard for you to look at.`,
+              "warning"
+            );
+          }
+          this.observation.logTelemetry(
+            "warn",
+            "Executive",
+            `Automatic approval flow for build request ${recorded.id} failed: ${approvalResult.message}`
+          );
+        })
+        .catch((err: any) => {
+          // runApprovalFlow returns failures rather than throwing, so this is
+          // the genuinely-unexpected case — but it must exist regardless, or a
+          // throw here becomes an unhandled rejection that could take the
+          // process down. Notify too: an unexpected throw is exactly the case
+          // where the user would otherwise hear nothing at all.
+          this.observation.logTelemetry(
+            "warn",
+            "Executive",
+            `Automatic approval flow for build request ${recorded.id} threw unexpectedly: ${err?.message ?? err}`
+          );
+          scheduler.pushNotification(
+            username,
+            `I drafted the code for build request #${recorded.id}, sir, but hit an unexpected problem while ` +
+              `carrying it through to a pull request. It's in the dashboard for you to look at.`,
+            "warning"
+          );
+        });
+
+      return {
+        ok: true,
+        message:
+          `Direction confirmed. I've drafted ${draft.files.length} file(s) — build request #${recorded.id} qualifies ` +
+          `for autonomous handling, so I'm carrying it through automatically and will notify you of the outcome.`,
+      };
+    }
 
     scheduler.pushNotification(
       username,

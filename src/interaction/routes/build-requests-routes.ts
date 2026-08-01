@@ -8,10 +8,12 @@ import * as codingPlanTasksRepo from "../../kernel/state/coding-plan-tasks-repo.
 import * as rewardEventsRepo from "../../kernel/state/reward-events-repo.js";
 import * as builderClient from "../../kernel/builder-client.js";
 import * as github from "../../capabilities/providers/github.js";
-import * as departments from "../../executive/departments.js";
-import * as obsidian from "../../capabilities/providers/obsidian.js";
-import * as scheduler from "../../kernel/scheduler.js";
-import { getGroq } from "../../runtime/clients.js";
+import { runApprovalFlow, isBuildRequestApprovalInFlight } from "../../executive/build-approval.js";
+import { issueConfirmTicket, consumeConfirmTicket } from "../../kernel/confirm-tickets.js";
+import { AutonomousExecutive } from "../../executive/autonomous_executive.js";
+import { isEligibleForConfirmToken } from "./build-request-eligibility.js";
+
+export { isEligibleForConfirmToken };
 
 const observation = ObservationPlatform.getInstance();
 
@@ -50,224 +52,100 @@ buildRequestsRouter.get("/api/system/build-requests/:id/plan", validateApiKey, a
   }
 });
 
-// Rejects a proposed file path before any GitHub call happens. Nothing
-// upstream validates these paths beyond "non-empty string" — the coding
-// agent loop reads them straight back out of the sandbox worktree, with no
-// traversal or absolute-path check anywhere — and this route is the first
-// (and only) place a model-drafted path reaches a real GitHub write:
-// untrusted input, real repo, no prior gate.
-function isUnsafeProposedPath(path: string): boolean {
-  if (!path || path.startsWith("/") || path.includes("\0")) return true;
-  return path.split("/").some((segment) => segment === "..");
-}
+// Issues a fresh single-use token for a build request currently awaiting
+// the user's direction — gated on the same "executive.plan" capability the
+// (now-removed) confirm_build_direction tool used to imply via prompt
+// instruction alone. The token itself is what a subsequent confirm-direction
+// call must present; issuing one does not confirm anything by itself.
+buildRequestsRouter.post("/api/system/build-requests/:id/confirm-token", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "executive.plan")) {
+    return res.status(403).json({ error: 'Missing capability grant "executive.plan"' });
+  }
+  try {
+    const id = Number(req.params.id);
+    const buildRequest = await buildRequestsRepo.getBuildRequest(id);
+    // Only fetch the reward-gate row when it's actually relevant (status is
+    // 'direction_confirmed') — no point spending a second query on the
+    // ordinary awaiting_consult path.
+    const pendingRewardGate =
+      buildRequest?.status === "direction_confirmed"
+        ? await buildRequestsRepo.getLatestPendingRewardGate(req.username)
+        : null;
+    if (!buildRequest || !isEligibleForConfirmToken(buildRequest, pendingRewardGate, id)) {
+      return res.status(404).json({ error: "Build request not found or not awaiting direction" });
+    }
+    // getBuildRequest is unscoped — it resolves any build request by id,
+    // regardless of who asked for it. Without this check, every holder of
+    // executive.plan could mint a valid token for (and therefore confirm the
+    // direction of) somebody else's build request. Deliberately the same 404
+    // as "not found": whether a given id exists at all isn't this caller's
+    // business either.
+    if (buildRequest.requested_by !== req.username) {
+      return res.status(404).json({ error: "Build request not found or not awaiting direction" });
+    }
+    const token = issueConfirmTicket(id, req.username);
+    res.json({ token });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-// In-process guard against approve-code and reject-code racing on the same
-// build request — the new final-verification pass (Task 5) can take minutes,
-// widening what used to be a sub-second window where a reject could land
-// mid-approval and destroy a workspace the approve flow is still using.
-// Scoped to this process only (no new persisted status, per this plan's
-// Global Constraints) — sufficient for this single-instance deployment.
-const inFlightBuildRequestApprovals = new Set<number>();
+// The only place a build request actually moves past awaiting_consult now
+// — requires a token minted by the route above, tied to this exact build
+// request. There is no LLM-callable path to this outcome anymore (see the
+// removal of the confirm_build_direction tool).
+buildRequestsRouter.post("/api/system/build-requests/:id/confirm-direction", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "executive.plan")) {
+    return res.status(403).json({ error: 'Missing capability grant "executive.plan"' });
+  }
+  try {
+    const id = Number(req.params.id);
+    const { token, directionNotes } = req.body || {};
+    if (!token || typeof directionNotes !== "string" || !directionNotes.trim()) {
+      return res.status(400).json({ error: "token and directionNotes are required" });
+    }
+    const ticket = consumeConfirmTicket(token);
+    if (!ticket || ticket.buildRequestId !== id) {
+      return res.status(403).json({ error: "Invalid, expired, or already-used confirmation token." });
+    }
+    // The ticket records who it was minted for; a token is only valid in the
+    // hands of that same user. Without this, a token leaked or observed by
+    // any other executive.plan holder would confirm a build request on its
+    // owner's behalf. The token is already consumed at this point, so a
+    // mismatch also burns it rather than leaving it replayable.
+    if (ticket.username !== req.username) {
+      return res.status(403).json({ error: "This confirmation token was not issued to you." });
+    }
+    const result = await AutonomousExecutive.getInstance().confirmDirectionForBuildRequest(id, directionNotes, req.username);
+    if (!result.ok) {
+      return res.status(409).json({ error: result.message });
+    }
+    observation.logAuditEvent(req.username, "build_request_direction_confirmed", "success", `#${id}`);
+    res.json({ ok: true, message: result.message });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-// The only place in this codebase that opens a real PR on Jarvis's own
-// behalf. Every GitHub call here (branch -> commit each file -> open PR) is
-// wrapped so a partial failure records exactly which step failed via
-// markPrError rather than silently claiming a status it didn't reach — see
-// this plan's Global Constraints.
+// The human-driven entry point into the approval pipeline. The pipeline
+// itself lives in executive/build-approval.ts so the automatic trigger in
+// startCoding goes through the identical gates in the identical order — this
+// handler's only remaining jobs are the capability check, loading the row,
+// and translating the result into an HTTP response.
 buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validateApiKey, async (req: any, res: any) => {
   if (!permissions.hasGrant(req.username, "github.pulls.create")) {
     return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
   }
-  const owner = process.env.SELF_REPO_OWNER;
-  const repoName = process.env.SELF_REPO_NAME;
-  if (!owner || !repoName) {
-    return res.status(503).json({ error: "SELF_REPO_OWNER/SELF_REPO_NAME are not configured." });
-  }
   try {
     const buildRequest = await buildRequestsRepo.getBuildRequest(Number(req.params.id));
-    if (!buildRequest || buildRequest.status !== "awaiting_code_approval") {
+    if (!buildRequest) {
       return res.status(404).json({ error: "Build request not found or not awaiting approval" });
     }
-    if (inFlightBuildRequestApprovals.has(buildRequest.id)) {
-      return res.status(409).json({ error: "This build request is already being approved or rejected." });
+    const result = await runApprovalFlow(buildRequest, req.username);
+    if (!result.ok) {
+      return res.status(result.httpStatus).json({ error: result.message });
     }
-    inFlightBuildRequestApprovals.add(buildRequest.id);
-
-    try {
-      const files = buildRequest.proposed_files || [];
-      if (files.length === 0) {
-        await buildRequestsRepo.markPrError(buildRequest.id, "No proposed files to commit.");
-        await builderClient.destroyWorkspace(buildRequest.id).catch(() => {});
-        return res.status(422).json({ error: "No proposed files to commit." });
-      }
-
-      // Closing the gap noted above: reject the whole approval loudly and
-      // cleanly if any proposed file targets a path outside the intended
-      // scope (traversal, absolute path, or a null byte) — never commit any
-      // of them.
-      const unsafePaths = files.map((f) => f.path).filter(isUnsafeProposedPath);
-      if (unsafePaths.length > 0) {
-        const message = `Refusing to commit unsafe file path(s): ${unsafePaths.join(", ")}`;
-        await buildRequestsRepo.markPrError(buildRequest.id, message);
-        await builderClient.destroyWorkspace(buildRequest.id).catch(() => {});
-        return res.status(422).json({ error: message });
-      }
-
-      // From here on, this build request's sandbox workspace (Plan 1) is
-      // still alive — it was deliberately kept alive since coding-agent.ts's
-      // finish_coding, specifically so this verification pass can run
-      // against the exact on-disk state the coding session actually left,
-      // not any residual/stateful assumption about it. Whatever happens next
-      // (success or any failure below), the workspace's job ends here — torn
-      // down exactly once, in `finally`, so no future edit to any branch
-      // below can forget to.
-      try {
-        // Final verification: a fresh install and the full test suite/typecheck
-        // — not trusting whatever state the free-reign coding session happened
-        // to leave the container in — so this reflects exactly what's about to
-        // be committed, per the design spec's testing-and-deployment checkpoint.
-        let verify: { stdout: string; stderr: string; exitCode: number };
-        try {
-          verify = await builderClient.execInWorkspace(
-            buildRequest.id,
-            "rm -rf node_modules && npm ci && npm test && npx tsc --noEmit"
-          );
-        } catch (err: any) {
-          const message = `Final verification could not run: ${err.message}`;
-          await buildRequestsRepo.markPrError(buildRequest.id, message);
-          return res.status(502).json({ error: message });
-        }
-
-        // A missing/reaped sandbox container (the approval sat long enough for
-        // the reaper to reclaim it, or the coding session itself ran close to
-        // the sandbox's lifetime) surfaces here as a normal nonzero exit, not a
-        // thrown error — indistinguishable from a real test failure unless
-        // explicitly checked for. Deliberately NOT calling markPrError here:
-        // misreporting an infrastructure timing issue as a code-quality
-        // failure would permanently burn the build request. Leaving status at
-        // awaiting_code_approval means the human can still explicitly reject
-        // it to close it out cleanly.
-        const sandboxGone = verify.exitCode === 125 || /No such container|is not running/i.test(verify.stderr);
-        if (sandboxGone) {
-          const message =
-            "The sandbox workspace for this build request is no longer available (it may have expired). The proposed files are still recorded — reject this request to close it out.";
-          return res.status(503).json({ error: message });
-        }
-
-        if (verify.exitCode !== 0) {
-          const message = `Final verification failed (exit ${verify.exitCode}):\n${verify.stdout.slice(-2000)}\n${verify.stderr.slice(-2000)}`;
-          await buildRequestsRepo.markPrError(buildRequest.id, message);
-          return res.status(422).json({ error: message });
-        }
-
-        // Runs before any GitHub write happens, not after: this diff is about
-        // to become a real, public PR opened on Jarvis's own behalf, and its
-        // one independent review used to only run once that PR already
-        // existed — meaning it was live and unreviewed by anyone, human or
-        // AI, for as long as the review call took. Computing it first means
-        // its findings can actually be baked into the PR body itself instead
-        // of arriving as a note attached after the fact.
-        const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getGroq());
-
-        const branchName = `jarvis/build-request-${buildRequest.id}`;
-
-        let repoInfo: any;
-        try {
-          repoInfo = await github.getRepo(owner, repoName);
-        } catch (err: any) {
-          await buildRequestsRepo.markPrError(buildRequest.id, `Failed to read repo default branch: ${err.message}`);
-          return res.status(502).json({ error: `Failed to read repo default branch: ${err.message}` });
-        }
-        const baseBranch = repoInfo.default_branch;
-
-        try {
-          await github.createBranch(owner, repoName, branchName, baseBranch);
-        } catch (err: any) {
-          await buildRequestsRepo.markPrError(buildRequest.id, `Failed to create branch: ${err.message}`);
-          return res.status(502).json({ error: `Failed to create branch: ${err.message}` });
-        }
-
-        for (const file of files) {
-          try {
-            await github.commitFile(
-              owner,
-              repoName,
-              file.path,
-              file.content,
-              `Build request #${buildRequest.id}: ${buildRequest.code_summary || buildRequest.objective}`,
-              branchName
-            );
-          } catch (err: any) {
-            await buildRequestsRepo.markPrError(
-              buildRequest.id,
-              `Failed to commit "${file.path}": ${err.message}. Branch "${branchName}" may exist with a partial commit — review it manually.`
-            );
-            return res.status(502).json({ error: `Failed to commit "${file.path}": ${err.message}` });
-          }
-        }
-
-        // The QA summary computed above goes into the PR body itself, so the
-        // review is visible from the moment the PR exists rather than
-        // arriving as a note attached some time after it's already public.
-        const prBody = [buildRequest.code_summary, "---", "**Automated QA review:**", qaSummary]
-          .filter(Boolean)
-          .join("\n\n");
-
-        let pr: any;
-        try {
-          pr = await github.createPullRequest(
-            owner,
-            repoName,
-            `Build request #${buildRequest.id}: ${buildRequest.objective}`,
-            branchName,
-            baseBranch,
-            prBody || undefined
-          );
-        } catch (err: any) {
-          await buildRequestsRepo.markPrError(buildRequest.id, `Branch and commits succeeded but opening the PR failed: ${err.message}`);
-          return res.status(502).json({ error: `Failed to open PR: ${err.message}` });
-        }
-
-        const updated = await buildRequestsRepo.recordPrOpened(buildRequest.id, pr.html_url, pr.number);
-        if (!updated) {
-          return res.status(500).json({ error: "PR was opened but couldn't be recorded — check GitHub directly." });
-        }
-
-        observation.logAuditEvent(req.username, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
-
-        // recordQaReview's own UPDATE only matches status = 'pr_opened' (the
-        // state recordPrOpened just set), so this must run after it, not
-        // before — the review itself was already computed above, ahead of
-        // the PR going live; only persisting the qa_complete status waits
-        // for the row to actually reach that state.
-        await buildRequestsRepo.recordQaReview(updated.id, qaSummary);
-
-        await rewardEventsRepo.recordRewardEvent(updated.id, "terminal_outcome", updated.coding_model_used, updated.task_category || "general", 2);
-
-        obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
-          directionNotes: updated.direction_notes || undefined,
-          codeSummary: updated.code_summary || undefined,
-          files: files.map((f: any) => f.path),
-          prUrl: updated.pr_url || undefined,
-          qaSummary,
-          status: "qa_complete",
-        }).catch((err: any) => {
-          observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
-        });
-
-        scheduler.pushNotification(
-          req.username,
-          `Opened the pull request for build request #${updated.id}, sir: ${pr.html_url}. QA review: ${qaSummary.slice(0, 300)}${qaSummary.length > 300 ? "..." : ""} Check GitHub for CI status.`,
-          "info"
-        );
-
-        res.json({ ...updated, qa_summary: qaSummary });
-      } finally {
-        await builderClient.destroyWorkspace(buildRequest.id).catch(() => {});
-      }
-    } finally {
-      inFlightBuildRequestApprovals.delete(buildRequest.id);
-    }
+    res.json({ ...result.buildRequest, qa_summary: result.qaSummary, autonomous_merge: result.autonomousMerge });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -279,7 +157,9 @@ buildRequestsRouter.post("/api/system/build-requests/:id/reject-code", validateA
   }
   try {
     const id = Number(req.params.id);
-    if (inFlightBuildRequestApprovals.has(id)) {
+    // Same in-process guard the approval pipeline itself takes — it now lives
+    // in build-approval.ts, since the automatic trigger contends for it too.
+    if (isBuildRequestApprovalInFlight(id)) {
       return res.status(409).json({ error: "This build request is currently being approved — try again shortly." });
     }
     const updated = await buildRequestsRepo.rejectCode(id);
@@ -288,6 +168,213 @@ buildRequestsRouter.post("/api/system/build-requests/:id/reject-code", validateA
     await builderClient.destroyWorkspace(updated.id).catch(() => {});
     observation.logAuditEvent(req.username, "build_request_code_rejected", "success", `#${updated.id}`);
     res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// A revert needs its OWN sandbox workspace, keyed separately from the build
+// request's original (long-since-destroyed) one, so the two can never collide
+// on a container name, a reservation slot, or a teardown.
+//
+// The obvious encoding — negating the id — does not work, and is why the
+// original version of this endpoint could not have created a workspace at
+// all: jarvis-builder/server.ts validates `buildRequestId <= 0` and answers
+// 400 "buildRequestId must be a positive integer" on all three of
+// POST /workspaces, /workspaces/:id/exec and DELETE /workspaces/:id. Worse,
+// even if that check were relaxed, workspace.ts's startup reconciliation
+// throws on any container whose `jarvis-build-request-id` label isn't a
+// positive safe integer — so one leftover negative-id container would break
+// the sandbox capacity reconciliation for the whole service on next boot.
+//
+// A large positive offset gives the same "distinct namespace" property while
+// staying inside every one of those constraints. Real build request ids are
+// Postgres serial values starting at 1; reaching a billion would take longer
+// than this codebase will exist, and Number.isSafeInteger still holds with
+// room to spare.
+const REVERT_WORKSPACE_ID_OFFSET = 1_000_000_000;
+
+// Runs one revert end-to-end for a single already-merged build request and
+// returns a human-readable outcome. Split out of the route body so the loop
+// below stays readable and every early exit is a plain `return` rather than a
+// `continue` that has to remember to push a result first.
+//
+// The shape deliberately mirrors build-approval.ts's runApprovalFlow: the
+// sandbox computes the content, and the GitHub *Contents API* (createBranch →
+// commitFile → createPullRequest) is what publishes it. There is no `git
+// push` anywhere, and there cannot be: jarvis-builder's createWorkspace wires
+// `origin` to a local host path that is deleted before the container even
+// starts, and the container is given no GitHub credentials by design (see
+// jarvis-builder/workspace.ts's own comments on both points). A push from
+// inside the sandbox has never had anywhere to go.
+async function revertOneAutonomousMerge(
+  target: buildRequestsRepo.BuildRequestRow,
+  prNumber: number,
+  owner: string,
+  repoName: string,
+  requestedBy: string
+): Promise<{ ok: boolean; message: string }> {
+  const revertBranch = `jarvis/revert-build-request-${target.id}`;
+  const workspaceId = REVERT_WORKSPACE_ID_OFFSET + target.id; // see the offset's comment: distinct from the original build request's own workspace id, and still a positive integer jarvis-builder will accept
+  if (!Number.isSafeInteger(workspaceId) || workspaceId <= REVERT_WORKSPACE_ID_OFFSET) {
+    return { ok: false, message: `Build request id ${target.id} can't be mapped to a revert workspace id.` };
+  }
+
+  // Read the repo's real default branch rather than assuming "main" — same
+  // call runApprovalFlow makes, and the same value is used for both the
+  // sandbox clone's base and the eventual PR's base, so the diff the sandbox
+  // computes is against exactly the branch the PR will target.
+  const repoInfo = await github.getRepo(owner, repoName);
+  const baseBranch = repoInfo.default_branch;
+
+  try {
+    await builderClient.createWorkspace(workspaceId, baseBranch);
+
+    const checkout = await builderClient.execInWorkspace(workspaceId, `git checkout -b ${revertBranch}`);
+    if (checkout.exitCode !== 0) {
+      return { ok: false, message: `git checkout -b failed: ${checkout.stderr.slice(-1000)}` };
+    }
+
+    // Task 12 merges via merge_method: "squash", so each autonomous PR is one
+    // normal commit on the default branch (not a merge commit) — no --merges
+    // filter and no -m parent-selection flag, both of which only apply when
+    // reverting an actual merge commit. GitHub's squash-commit *title* ends
+    // with "(#<pr_number>)", so the pattern is anchored to end-of-line:
+    // a bare "#N" would also match the number appearing anywhere in any
+    // unrelated commit body (a build-request id colliding with some other
+    // PR's number, an issue reference, a changelog line), and reverting the
+    // wrong commit is not a recoverable mistake. --grep is a POSIX basic
+    // regex here, so "(" and ")" are literals and only "$" is special.
+    const lookup = await builderClient.execInWorkspace(
+      workspaceId,
+      `git log --format=%H -n 1 --grep="(#${prNumber})$"`
+    );
+    if (lookup.exitCode !== 0) {
+      return { ok: false, message: `git log failed: ${lookup.stderr.slice(-1000)}` };
+    }
+    const sha = lookup.stdout.trim();
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) {
+      return { ok: false, message: `Could not find a squash commit whose subject ends with "(#${prNumber})" on ${baseBranch}.` };
+    }
+
+    // `git revert` creates a real commit, which needs a git identity — the
+    // sandbox image has none configured, so without these -c flags this fails
+    // outright with "Please tell me who you are." Exactly the pattern
+    // coding-agent.ts already uses for its own per-task commits.
+    const revertResult = await builderClient.execInWorkspace(
+      workspaceId,
+      `git -c user.email=jarvis@local -c user.name=Jarvis revert --no-edit ${sha}`
+    );
+    if (revertResult.exitCode !== 0) {
+      return { ok: false, message: `git revert failed: ${revertResult.stderr.slice(-1000)}` };
+    }
+
+    // Which files the revert touched — by definition the same set the
+    // original commit touched, so diff the original commit against its own
+    // parent rather than trying to diff the revert commit against a base the
+    // sandbox would have to re-resolve. Same extraction shape as
+    // coding-agent.ts's extractChangedFiles.
+    const diff = await builderClient.execInWorkspace(workspaceId, `git diff --name-only ${sha}^ ${sha}`);
+    if (diff.exitCode !== 0) {
+      return { ok: false, message: `git diff failed: ${diff.stderr.slice(-1000)}` };
+    }
+    const paths = diff.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (paths.length === 0) {
+      return { ok: false, message: `The commit for PR #${prNumber} changed no files — nothing to revert.` };
+    }
+
+    // Read each path's CURRENT (post-revert) content out of the worktree.
+    // A path that no longer exists means the original commit ADDED it, so
+    // reverting deletes it — and the Contents API helper this flow uses can
+    // only create/update, never delete. Those paths are collected and called
+    // out loudly in the PR body and the response instead of being silently
+    // dropped: the resulting PR is a genuine but incomplete revert, and the
+    // human reviewing it has to know that.
+    const files: { path: string; content: string }[] = [];
+    const undeletable: string[] = [];
+    for (const path of paths) {
+      const catResult = await builderClient.execInWorkspace(workspaceId, `cat "${path}"`);
+      if (catResult.exitCode === 0) {
+        files.push({ path, content: catResult.stdout });
+      } else {
+        undeletable.push(path);
+      }
+    }
+    if (files.length === 0) {
+      return {
+        ok: false,
+        message: `Reverting PR #${prNumber} only deletes files (${undeletable.join(", ")}), which this flow cannot express via the GitHub Contents API — revert it manually.`,
+      };
+    }
+
+    await github.createBranch(owner, repoName, revertBranch, baseBranch);
+
+    const commitMessage = `Revert build request #${target.id} (autonomous merge #${prNumber})`;
+    for (const file of files) {
+      await github.commitFile(owner, repoName, file.path, file.content, commitMessage, revertBranch);
+    }
+
+    const warning =
+      undeletable.length > 0
+        ? `\n\n**⚠️ Incomplete revert:** the original commit added ${undeletable.length} file(s) that this revert PR cannot delete — remove them by hand before merging: ${undeletable.join(", ")}`
+        : "";
+    const pr = await github.createPullRequest(
+      owner,
+      repoName,
+      `Revert build request #${target.id}`,
+      revertBranch,
+      baseBranch,
+      `Reverting autonomous merge #${prNumber} (commit ${sha}), requested by ${requestedBy}.${warning}`
+    );
+
+    return {
+      ok: true,
+      message: undeletable.length > 0 ? `${pr.html_url} (incomplete — see PR body)` : pr.html_url,
+    };
+  } finally {
+    await builderClient.destroyWorkspace(workspaceId).catch(() => {});
+  }
+}
+
+// Human-triggered only — "revert last N autonomous merges" per the design
+// spec's guardrails. Reverts still get a real human look via a normal PR;
+// they're just not blocked on one to *propose*.
+buildRequestsRouter.post("/api/system/build-requests/revert-autonomous", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "github.pulls.create")) {
+    return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
+  }
+  const owner = process.env.SELF_REPO_OWNER;
+  const repoName = process.env.SELF_REPO_NAME;
+  if (!owner || !repoName) {
+    return res.status(503).json({ error: "SELF_REPO_OWNER/SELF_REPO_NAME are not configured." });
+  }
+  const count = Number(req.body?.count);
+  if (!Number.isInteger(count) || count < 1 || count > 20) {
+    return res.status(400).json({ error: "count must be an integer between 1 and 20" });
+  }
+  try {
+    const targets = await buildRequestsRepo.listRecentAutonomousMerges(count);
+    if (targets.length === 0) {
+      return res.status(404).json({ error: "No autonomous merges found to revert." });
+    }
+    const results: { buildRequestId: number; ok: boolean; message: string }[] = [];
+    for (const target of targets) {
+      if (!target.pr_number) {
+        results.push({ buildRequestId: target.id, ok: false, message: "No recorded PR number to revert." });
+        continue;
+      }
+      try {
+        const outcome = await revertOneAutonomousMerge(target, target.pr_number, owner, repoName, req.username);
+        results.push({ buildRequestId: target.id, ...outcome });
+      } catch (err: any) {
+        results.push({ buildRequestId: target.id, ok: false, message: err.message });
+      }
+    }
+    observation.logAuditEvent(req.username, "build_requests_reverted", "success", JSON.stringify(results));
+    res.json({ results });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

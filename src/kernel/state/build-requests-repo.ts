@@ -9,6 +9,7 @@ export type BuildRequestStatus =
   | "direction_confirmed"
   | "coding"
   | "awaiting_code_approval"
+  | "review_failed"
   | "pr_opened"
   | "qa_complete"
   | "rejected_at_code"
@@ -38,6 +39,10 @@ export interface BuildRequestRow {
   // agent LLM token usage across the session (originally NVIDIA, now Groq;
   // the column was already provider-agnostic), incremented by incrementTokenUsage.
   tokens_used: number;
+  // Added by migrations/007_autonomous_merge.ts — set true by markAutonomousMerge
+  // once a PR is merged without human sign-off; countAutonomousMergesToday reads
+  // this column to enforce the daily autonomous-merge cap.
+  autonomous_merge: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -259,6 +264,45 @@ export async function recordPrOpened(id: number, prUrl: string, prNumber: number
   }
 }
 
+export async function markAutonomousMerge(id: number): Promise<BuildRequestRow | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      // Accepts 'qa_complete' as well as 'pr_opened': the approval flow calls
+      // recordQaReview (which moves the row pr_opened -> qa_complete) before
+      // it reaches the autonomous-merge decision, so a 'pr_opened'-only guard
+      // would match zero rows every single time — silently leaving
+      // autonomous_merge false, which would in turn make
+      // countAutonomousMergesToday always return 0 and the daily cap never
+      // bind. Both statuses mean "the PR is open and recorded", which is the
+      // real precondition for marking it autonomously merged.
+      `UPDATE build_requests SET autonomous_merge = true, updated_at = now() WHERE id = $1 AND status IN ('pr_opened', 'qa_complete') RETURNING *`,
+      [id]
+    );
+    return rows[0] || null;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `markAutonomousMerge failed for build request ${id}: ${err.message}`);
+    return null;
+  }
+}
+
+export async function countAutonomousMergesToday(): Promise<number> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT COUNT(*)::int AS count FROM build_requests WHERE autonomous_merge = true AND updated_at >= date_trunc('day', now())`
+    );
+    return rows[0]?.count ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `countAutonomousMergesToday failed: ${err.message}`);
+    // Fails closed per this plan's Global Constraints: a DB error here must
+    // never look like "0 merges today, plenty of room" — returning a value
+    // at or above any realistic cap keeps the caller's "under cap?" check
+    // false without the caller needing its own separate DB-health branch.
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
 export async function markPrError(id: number, errorDetail: string): Promise<void> {
   try {
     const db = getPool();
@@ -269,6 +313,21 @@ export async function markPrError(id: number, errorDetail: string): Promise<void
   } catch (err: any) {
     // Best-effort.
     observation.logTelemetry("warn", "BuildRequests", `markPrError(${id}) failed: ${err.message}`);
+  }
+}
+
+export async function markReviewFailed(id: number, findings: string): Promise<BuildRequestRow | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `UPDATE build_requests SET status = 'review_failed', qa_summary = $1, updated_at = now()
+       WHERE id = $2 AND status = 'awaiting_code_approval' RETURNING *`,
+      [findings, id]
+    );
+    return rows[0] || null;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `markReviewFailed failed for build request ${id}: ${err.message}`);
+    return null;
   }
 }
 
@@ -308,5 +367,22 @@ export async function incrementTokenUsage(id: number, tokens: number): Promise<v
     await db.query(`UPDATE build_requests SET tokens_used = tokens_used + $1, updated_at = now() WHERE id = $2`, [tokens, id]);
   } catch (err: any) {
     observation.logTelemetry("warn", "BuildRequests", `incrementTokenUsage(${id}) failed: ${err.message}`);
+  }
+}
+
+// The human-triggered revert route's only lookup: the most recently
+// autonomously-merged build requests, most recent first, so "revert the
+// last N autonomous merges" has something concrete to iterate over.
+export async function listRecentAutonomousMerges(limit: number): Promise<BuildRequestRow[]> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT * FROM build_requests WHERE autonomous_merge = true ORDER BY updated_at DESC LIMIT $1`,
+      [limit]
+    );
+    return rows;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `listRecentAutonomousMerges failed: ${err.message}`);
+    return [];
   }
 }

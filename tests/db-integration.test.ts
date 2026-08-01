@@ -28,6 +28,7 @@ import { proposeMcpServer, McpServerNameTakenError } from "../src/kernel/state/m
 import { upsertEntity, searchEntities, listAllEntities } from "../src/kernel/state/knowledge-graph-repo.js";
 import { addSelfReflection, getRecentSelfReflections } from "../src/kernel/state/identity-repo.js";
 import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
+import * as buildRequestsRepo from "../src/kernel/state/build-requests-repo.js";
 
 // pruneOldMessages(0) below deletes every row in conversation_history with
 // created_at < now() — not scoped to this test's own user, because the real
@@ -105,6 +106,7 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM self_reflections WHERE username IN ($1, $2)`, [`db_it_refl_a_${RUN_ID}`, `db_it_refl_b_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM reward_events WHERE build_request_id = $1`, [999999901]).catch(() => {});
   await db.query(`DELETE FROM build_requests WHERE id = $1`, [999999901]).catch(() => {});
+  await db.query(`DELETE FROM build_requests WHERE objective = $1`, ["test objective for autonomous merge counting"]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -234,6 +236,45 @@ registerTest("reward-events-repo: real aggregation and model reordering work aga
   const overallTerminal = await rewardEventsRepo.getOverallScore("terminal_outcome");
   if (!overallTerminal || overallTerminal.count < 2) {
     throw new Error(`reward-events-repo: expected at least 2 terminal_outcome events, got: ${JSON.stringify(overallTerminal)}`);
+  }
+});
+
+registerTest("countAutonomousMergesToday counts only today's autonomous merges, against real Postgres", async () => {
+  const buildRequest = await buildRequestsRepo.createBuildRequest("test objective for autonomous merge counting", "admin");
+  const before = await buildRequestsRepo.countAutonomousMergesToday();
+
+  // Drive it through to pr_opened the same way the real flow does (createBuildRequest
+  // starts a row in 'researching', so recordResearch -> 'awaiting_consult' must run
+  // first or the later status-gated writes below would silently no-op), then mark it.
+  const researched = await buildRequestsRepo.recordResearch(buildRequest.id, "research summary");
+  if (!researched) throw new Error("recordResearch did not match the freshly created build request");
+  const directionConfirmed = await buildRequestsRepo.recordDirectionConfirmed(buildRequest.id, "notes");
+  if (!directionConfirmed) throw new Error("recordDirectionConfirmed did not match — status transition chain is broken");
+  const coding = await buildRequestsRepo.markCoding(buildRequest.id);
+  if (!coding) throw new Error("markCoding did not match — status transition chain is broken");
+  const drafted = await buildRequestsRepo.recordCodeDraft(buildRequest.id, "summary", [{ path: "a.ts", content: "x" }]);
+  if (!drafted) throw new Error("recordCodeDraft did not match — status transition chain is broken");
+  const prOpened = await buildRequestsRepo.recordPrOpened(buildRequest.id, "https://github.com/x/y/pull/1", 1);
+  if (!prOpened) throw new Error("recordPrOpened did not match — status transition chain is broken");
+  // recordQaReview moves the row pr_opened -> qa_complete, and runApprovalFlow
+  // ALWAYS calls it before it reaches the autonomous-merge decision. Skipping
+  // it here is what previously let markAutonomousMerge's status guard match a
+  // status the real flow never actually presents it with — a real bug that
+  // shipped and had to be found by hand in Task 14's second review round,
+  // because this test drove a transition sequence production never performs.
+  await buildRequestsRepo.recordQaReview(buildRequest.id, "some qa summary");
+  const afterQa = await buildRequestsRepo.getBuildRequest(buildRequest.id);
+  if (afterQa?.status !== "qa_complete") {
+    throw new Error(`recordQaReview did not move the row to qa_complete, got: ${afterQa?.status}`);
+  }
+  const merged = await buildRequestsRepo.markAutonomousMerge(buildRequest.id);
+  if (!merged || merged.autonomous_merge !== true) {
+    throw new Error(`markAutonomousMerge did not set autonomous_merge = true, got: ${JSON.stringify(merged)}`);
+  }
+
+  const after = await buildRequestsRepo.countAutonomousMergesToday();
+  if (after !== before + 1) {
+    throw new Error(`countAutonomousMergesToday: expected count to increase by exactly 1, went from ${before} to ${after}`);
   }
 });
 
