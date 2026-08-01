@@ -16,6 +16,27 @@ const observation = ObservationPlatform.getInstance();
  * lookup instead of a DB round-trip per tool call.
  */
 
+/**
+ * ALL_CAPABILITIES is TWO things at once, and both matter:
+ *
+ *   1. Part of what POST /api/permissions/grant validates against (see
+ *      isGrantableCapability below).
+ *   2. The list loadGrantsFromDb()'s bootstrap backfill SEEDS to the admin
+ *      identity on every startup.
+ *
+ * Because of (2), adding a name here means "admin gets this automatically,
+ * forever, on every restart, with no explicit action." That is correct for
+ * ordinary capabilities and CATASTROPHICALLY WRONG for anything whose entire
+ * safety story is "off unless a human deliberately turned it on."
+ *
+ * ==> NEVER add `executive.autonomous_merge` (or any other off-by-default
+ *     capability) to this list. Put it in EXTRA_GRANTABLE_CAPABILITIES
+ *     instead — that list is grantable through the real API but is never
+ *     auto-seeded. Merging the two lists would silently switch unattended
+ *     merging on for every deployment, which is precisely the failure mode
+ *     docs/superpowers/specs/2026-08-01-full-autonomy-production-readiness-design.md
+ *     exists to prevent.
+ */
 export const ALL_CAPABILITIES = [
   "github.read",
   "github.issues.create",
@@ -63,14 +84,53 @@ export const ALL_CAPABILITIES = [
   "adaptation.run",
 ] as const;
 
+/**
+ * Capabilities that CAN be granted through the real POST /api/permissions/grant
+ * route, but that the bootstrap backfill in loadGrantsFromDb() must NEVER seed.
+ *
+ * This list is the deliberate seam between "grantable" and "granted by
+ * default". Everything in ALL_CAPABILITIES is both; everything here is only
+ * the former. An operator turning autonomy on is therefore the same single
+ * admin action as any other grant (as the design spec promises) — while a
+ * fresh database, a restart, or a redeploy still comes up with autonomy OFF,
+ * because nothing in this list is ever inserted automatically.
+ *
+ * ==> Adding an entry here is safe. MOVING an entry from here into
+ *     ALL_CAPABILITIES is not: it would convert "an operator explicitly chose
+ *     this" into "every deployment has this, permanently, by default." Don't.
+ *
+ * `executive.autonomous_merge` is the capability that lets the coding-agent
+ * pipeline merge its own PR with no human click (see
+ * src/executive/build-approval.ts's isEligibleForAutomaticApproval). It is the
+ * pause switch for the entire Phase 1 rollout: revoke it and every build
+ * request goes straight back to waiting for a human.
+ */
+export const EXTRA_GRANTABLE_CAPABILITIES = ["executive.autonomous_merge"] as const;
+
 export type Capability = (typeof ALL_CAPABILITIES)[number];
+
+/**
+ * The single predicate the grant route validates against. Deliberately a
+ * function rather than a concatenated constant, so there is exactly one place
+ * that decides "is this a real capability name" and no temptation to build a
+ * merged array that someone later feeds to the bootstrap backfill by mistake.
+ */
+export function isGrantableCapability(capability: string): boolean {
+  return (
+    (ALL_CAPABILITIES as readonly string[]).includes(capability) ||
+    (EXTRA_GRANTABLE_CAPABILITIES as readonly string[]).includes(capability)
+  );
+}
 
 const grants = new Map<string, Set<string>>();
 
 // Available immediately at process start, before the DB round-trip in
 // loadGrantsFromDb() completes — self-registered users start with nothing
 // until explicitly granted either way, so this only affects the admin
-// bootstrap window.
+// bootstrap window. ALL_CAPABILITIES only, for the same reason the DB
+// backfill below is: nothing in EXTRA_GRANTABLE_CAPABILITIES may ever be
+// present without an explicit, audited grant — not even for the few hundred
+// milliseconds before loadGrantsFromDb() replaces this map.
 grants.set("admin", new Set(ALL_CAPABILITIES));
 
 /**
@@ -98,6 +158,10 @@ export async function loadGrantsFromDb(): Promise<void> {
   const adminGrants = grants.get("admin") ?? new Set<string>();
   const dynamicMcpCapabilities = getCachedMcpTools().map(t => `mcp.${t.serverName}.${t.toolName}`);
 
+  // ALL_CAPABILITIES only — never EXTRA_GRANTABLE_CAPABILITIES. Those are
+  // grantable on request but must stay off until an operator explicitly
+  // grants them; seeding them here would make e.g. autonomous merging
+  // permanently on-by-default on every restart. See both list definitions.
   const missing = [...ALL_CAPABILITIES, ...dynamicMcpCapabilities].filter(c => !adminGrants.has(c));
   if (missing.length > 0) {
     for (const capability of missing) {

@@ -17,6 +17,9 @@ const observation = ObservationPlatform.getInstance();
 // list is what the admin bootstrap seeds by default, so keeping this name out
 // of it is what makes autonomous merging off-by-default and impossible to
 // acquire by accident — it only ever exists as an explicit, audited grant.
+// It lives in that file's EXTRA_GRANTABLE_CAPABILITIES instead, which is what
+// keeps POST /api/permissions/grant able to grant it on request without the
+// bootstrap backfill ever seeding it.
 const AUTONOMOUS_MERGE_CAPABILITY = "executive.autonomous_merge";
 // A blast-radius ceiling, not a throughput target: even with the grant
 // present and every diff eligible, at most this many merges can land without
@@ -42,6 +45,28 @@ function fail(httpStatus: number, message: string, userNotified = false): Approv
 }
 
 /**
+ * A test seam, exactly the shape (and for exactly the reason) CodingAgentDeps
+ * already uses: the two non-pure inputs to the decision below are an in-memory
+ * grant lookup and a Postgres round-trip, neither of which a unit test can
+ * steer. Both default to the real implementations and NO production call site
+ * passes this argument — see runApprovalFlow below and the startCoding
+ * trigger, which both call with the paths alone. It exists so the
+ * safety-critical AND can be exercised across its whole truth table, including
+ * the one combination that actually authorizes a merge; without it, a unit
+ * test can only ever observe "false", which a `return false` stub would pass
+ * just as happily as the real thing.
+ */
+export interface AutomaticApprovalDeps {
+  hasGrant: (username: string, capability: string) => boolean;
+  countAutonomousMergesToday: () => Promise<number>;
+}
+
+const defaultAutomaticApprovalDeps: AutomaticApprovalDeps = {
+  hasGrant: (username, capability) => permissions.hasGrant(username, capability),
+  countAutonomousMergesToday: () => buildRequestsRepo.countAutonomousMergesToday(),
+};
+
+/**
  * The single source of truth for "should this attempt proceed with zero human
  * involvement" — used both to gate whether startCoding invokes the pipeline
  * automatically at all, and (inside runApprovalFlow) to gate the merge call
@@ -52,13 +77,21 @@ function fail(httpStatus: number, message: string, userNotified = false): Approv
  * in-memory lookup and is false by default, so the DB round-trip for the
  * daily count is never issued on the ordinary path.
  */
-export async function isEligibleForAutomaticApproval(changedFilePaths: string[]): Promise<boolean> {
+export async function isEligibleForAutomaticApproval(
+  changedFilePaths: string[],
+  deps: AutomaticApprovalDeps = defaultAutomaticApprovalDeps
+): Promise<boolean> {
   return (
-    permissions.hasGrant("admin", AUTONOMOUS_MERGE_CAPABILITY) &&
+    deps.hasGrant("admin", AUTONOMOUS_MERGE_CAPABILITY) &&
     isAutoMergeEligible(changedFilePaths) &&
-    (await buildRequestsRepo.countAutonomousMergesToday()) < AUTONOMOUS_MERGE_DAILY_CAP
+    (await deps.countAutonomousMergesToday()) < AUTONOMOUS_MERGE_DAILY_CAP
   );
 }
+
+// Exported for the test suite only, so the cap's boundary cases (cap-1 passes,
+// cap fails) are asserted against the real number rather than a copy that
+// could silently drift from it.
+export const AUTONOMOUS_MERGE_DAILY_CAP_FOR_TESTS = AUTONOMOUS_MERGE_DAILY_CAP;
 
 // Rejects a proposed file path before any GitHub call happens. Nothing
 // upstream validates these paths beyond "non-empty string" — the coding

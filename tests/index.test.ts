@@ -9,7 +9,15 @@ import { SessionState, getSession } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/kernel/observation.js";
 import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
-import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
+import {
+  grantCapability,
+  revokeCapability,
+  hasGrant,
+  listGrants,
+  isGrantableCapability,
+  ALL_CAPABILITIES,
+  EXTRA_GRANTABLE_CAPABILITIES,
+} from "../src/kernel/security.js";
 import { issueConfirmTicket, consumeConfirmTicket } from "../src/kernel/confirm-tickets.js";
 import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
@@ -55,6 +63,7 @@ import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
 import { isAutoMergeEligible } from "../src/kernel/autonomy-scope.js";
+import { isEligibleForAutomaticApproval, AUTONOMOUS_MERGE_DAILY_CAP_FOR_TESTS } from "../src/executive/build-approval.js";
 
 interface TestResult {
   name: string;
@@ -402,6 +411,50 @@ registerTest("Permissions", "Default-deny grants with admin pre-seeded", async (
   await revokeCapability("brand_new_test_user", "email.send", "test-harness");
   if (hasGrant("brand_new_test_user", "email.send")) {
     throw new Error("Permissions: revokeCapability did not take effect");
+  }
+});
+
+// The two-list invariant that makes "off by default, but still grantable" a
+// real thing rather than a comment. ALL_CAPABILITIES is what loadGrantsFromDb's
+// bootstrap backfill seeds to admin on every startup; EXTRA_GRANTABLE_CAPABILITIES
+// is only what the grant route will accept. Collapsing them would turn
+// unattended merging on permanently, everywhere, with nobody having asked —
+// so the separation is asserted, not just documented.
+registerTest("Permissions", "executive.autonomous_merge is grantable but never auto-seeded", () => {
+  if ((ALL_CAPABILITIES as readonly string[]).includes("executive.autonomous_merge")) {
+    throw new Error(
+      "Permissions: executive.autonomous_merge must NEVER be in ALL_CAPABILITIES — that list is what the admin bootstrap backfill seeds, so adding it there switches autonomous merging on by default for every deployment"
+    );
+  }
+  if (!(EXTRA_GRANTABLE_CAPABILITIES as readonly string[]).includes("executive.autonomous_merge")) {
+    throw new Error(
+      "Permissions: executive.autonomous_merge must be in EXTRA_GRANTABLE_CAPABILITIES, or POST /api/permissions/grant rejects it and there is no supported way to enable autonomy at all"
+    );
+  }
+  if (!isGrantableCapability("executive.autonomous_merge")) {
+    throw new Error("Permissions: the grant route's validator must accept executive.autonomous_merge");
+  }
+  if (hasGrant("admin", "executive.autonomous_merge")) {
+    throw new Error("Permissions: admin must not hold executive.autonomous_merge without an explicit grant");
+  }
+});
+
+registerTest("Permissions", "the two capability lists stay disjoint, and unknown names are still rejected", () => {
+  const overlap = (EXTRA_GRANTABLE_CAPABILITIES as readonly string[]).filter(c =>
+    (ALL_CAPABILITIES as readonly string[]).includes(c)
+  );
+  if (overlap.length > 0) {
+    throw new Error(
+      `Permissions: these capabilities are in BOTH lists, so the bootstrap backfill seeds them despite being meant to stay off by default: ${overlap.join(", ")}`
+    );
+  }
+  for (const known of ["github.read", ...EXTRA_GRANTABLE_CAPABILITIES]) {
+    if (!isGrantableCapability(known)) {
+      throw new Error(`Permissions: isGrantableCapability rejected the real capability "${known}"`);
+    }
+  }
+  if (isGrantableCapability("executive.definitely_not_a_capability")) {
+    throw new Error("Permissions: isGrantableCapability must still reject names in neither list");
   }
 });
 
@@ -1859,6 +1912,11 @@ function fakeBuildRequestRow(id: number, status: buildRequestsRepo.BuildRequestS
     coding_model_used: null,
     task_category: null,
     tokens_used: 0,
+    // Task 10's migration added this column and BuildRequestRow gained the
+    // field, but this fixture was never updated — invisible to `npm test`
+    // (tsx doesn't typecheck) and to `npx tsc --noEmit` (tsconfig excludes
+    // tests/), so the file only typechecks cleanly with it present.
+    autonomous_merge: false,
     created_at: new Date(),
     updated_at: new Date(),
   };
@@ -3000,8 +3058,38 @@ registerTest("CodingAgent", "a full plan -> execute -> fail cycle: proposes a pl
 
 // ---------- AutonomyScope Tests ----------
 registerTest("AutonomyScope", "isAutoMergeEligible allows a plain routes file", () => {
-  if (!isAutoMergeEligible(["src/interaction/routes/news-routes.ts", "tests/index.test.ts"])) {
+  if (!isAutoMergeEligible(["src/interaction/routes/news-routes.ts", "src/capabilities/providers/news.ts"])) {
     throw new Error("AutonomyScope: expected a non-denylisted path set to be eligible");
+  }
+});
+
+// The autonomy boundary is only as strong as the files that define it. Each
+// of these guards a specific self-widening move: rewriting the denylist,
+// removing the daily cap, flipping the grant that gates the whole feature, or
+// weakening the test suite that every future autonomous merge is verified
+// against. They are asserted individually so deleting any one entry from
+// AUTONOMY_DENYLIST fails a test that names exactly what was lost.
+registerTest("AutonomyScope", "isAutoMergeEligible blocks the denylist file itself", () => {
+  if (isAutoMergeEligible(["src/kernel/autonomy-scope.ts"])) {
+    throw new Error("AutonomyScope: an autonomous merge must never be able to edit its own denylist");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible blocks build-requests-repo (daily cap + audit column)", () => {
+  if (isAutoMergeEligible(["src/kernel/state/build-requests-repo.ts"])) {
+    throw new Error("AutonomyScope: build-requests-repo.ts owns countAutonomousMergesToday and markAutonomousMerge — it must be denylisted");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible blocks the permissions routes (the grant/revoke gate)", () => {
+  if (isAutoMergeEligible(["src/interaction/routes/permissions-routes.ts"])) {
+    throw new Error("AutonomyScope: permissions-routes.ts is the grant gate — the pause switch must not be self-editable");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible blocks changes to the test suite", () => {
+  if (isAutoMergeEligible(["tests/index.test.ts"])) {
+    throw new Error("AutonomyScope: tests/ gates every future autonomous merge — weakening it must require a human");
   }
 });
 
@@ -3033,6 +3121,112 @@ registerTest("AutonomyScope", "isAutoMergeEligible blocks migrations", () => {
 registerTest("AutonomyScope", "isAutoMergeEligible returns true for an empty file list (nothing to block on)", () => {
   if (!isAutoMergeEligible([])) {
     throw new Error("AutonomyScope: an empty changed-file list has nothing denylisted in it — should be eligible");
+  }
+});
+
+// ---------- AutonomousMergeDecision Tests ----------
+// isEligibleForAutomaticApproval is the single gate between "Jarvis opened a
+// PR" and "Jarvis merged its own code with no human involved" — the AND of
+// the capability grant, the path denylist, and the daily cap. These walk its
+// full truth table via its deps seam, so no real grant is touched and no DB
+// is contacted. Every case except the all-true one must come back false.
+const CAP = AUTONOMOUS_MERGE_DAILY_CAP_FOR_TESTS;
+const ELIGIBLE_PATHS = ["src/interaction/routes/news-routes.ts"];
+const DENYLISTED_PATHS = ["src/kernel/security.ts"];
+
+function approvalDeps(granted: boolean, mergesToday: number) {
+  return {
+    hasGrant: (username: string, capability: string) => {
+      if (username !== "admin" || capability !== "executive.autonomous_merge") {
+        throw new Error(
+          `AutonomousMergeDecision: expected the grant check to ask for admin/executive.autonomous_merge, got ${username}/${capability}`
+        );
+      }
+      return granted;
+    },
+    countAutonomousMergesToday: async () => mergesToday,
+  };
+}
+
+registerTest("AutonomousMergeDecision", "approves only when grant + eligible path + under cap all hold", async () => {
+  if (!(await isEligibleForAutomaticApproval(ELIGIBLE_PATHS, approvalDeps(true, CAP - 1)))) {
+    throw new Error("AutonomousMergeDecision: grant present, path eligible, under cap — expected true");
+  }
+});
+
+registerTest("AutonomousMergeDecision", "refuses without the capability grant, even with an eligible path under cap", async () => {
+  if (await isEligibleForAutomaticApproval(ELIGIBLE_PATHS, approvalDeps(false, 0))) {
+    throw new Error("AutonomousMergeDecision: no executive.autonomous_merge grant must always mean no autonomous merge");
+  }
+});
+
+registerTest("AutonomousMergeDecision", "refuses a denylisted path even with the grant present and zero merges today", async () => {
+  if (await isEligibleForAutomaticApproval(DENYLISTED_PATHS, approvalDeps(true, 0))) {
+    throw new Error("AutonomousMergeDecision: a denylisted path must block the merge regardless of the grant");
+  }
+});
+
+registerTest("AutonomousMergeDecision", "refuses at the daily cap, and at anything above it", async () => {
+  if (await isEligibleForAutomaticApproval(ELIGIBLE_PATHS, approvalDeps(true, CAP))) {
+    throw new Error(`AutonomousMergeDecision: ${CAP} merges today is AT the cap of ${CAP} — expected false`);
+  }
+  if (await isEligibleForAutomaticApproval(ELIGIBLE_PATHS, approvalDeps(true, CAP + 5))) {
+    throw new Error("AutonomousMergeDecision: over the daily cap must be false");
+  }
+});
+
+registerTest("AutonomousMergeDecision", "refuses when the grant is absent AND the path is denylisted AND the cap is blown", async () => {
+  if (await isEligibleForAutomaticApproval(DENYLISTED_PATHS, approvalDeps(false, CAP + 1))) {
+    throw new Error("AutonomousMergeDecision: all three conditions failing must obviously be false");
+  }
+});
+
+registerTest("AutonomousMergeDecision", "refuses a denylisted path while over the cap (grant present)", async () => {
+  if (await isEligibleForAutomaticApproval(DENYLISTED_PATHS, approvalDeps(true, CAP + 1))) {
+    throw new Error("AutonomousMergeDecision: expected false when both the path and the cap legs fail");
+  }
+});
+
+registerTest("AutonomousMergeDecision", "refuses an eligible path over the cap without a grant", async () => {
+  if (await isEligibleForAutomaticApproval(ELIGIBLE_PATHS, approvalDeps(false, CAP + 1))) {
+    throw new Error("AutonomousMergeDecision: expected false when both the grant and the cap legs fail");
+  }
+});
+
+registerTest("AutonomousMergeDecision", "refuses a denylisted path under cap without a grant", async () => {
+  if (await isEligibleForAutomaticApproval(DENYLISTED_PATHS, approvalDeps(false, 0))) {
+    throw new Error("AutonomousMergeDecision: expected false when both the grant and the path legs fail");
+  }
+});
+
+// The cheap, always-false-by-default check must come first: the grant is a
+// synchronous in-memory lookup, the daily count is a Postgres round-trip. If
+// the ordering ever inverts, every ordinary build request starts paying for a
+// DB query it can never need.
+registerTest("AutonomousMergeDecision", "never issues the daily-count query when the grant is absent", async () => {
+  let counted = false;
+  const result = await isEligibleForAutomaticApproval(ELIGIBLE_PATHS, {
+    hasGrant: () => false,
+    countAutonomousMergesToday: async () => {
+      counted = true;
+      return 0;
+    },
+  });
+  if (result) throw new Error("AutonomousMergeDecision: expected false with no grant");
+  if (counted) {
+    throw new Error("AutonomousMergeDecision: the daily-count DB query must short-circuit away when the grant is absent");
+  }
+});
+
+// The real default path, with no deps passed at all: proves production wiring
+// reaches the actual repo function, and that its documented fail-closed
+// behaviour (MAX_SAFE_INTEGER when Postgres is unreachable, as in this
+// harness) genuinely reads as "over cap" rather than "plenty of room".
+registerTest("AutonomousMergeDecision", "with real deps and no live Postgres, fails closed", async () => {
+  if (await isEligibleForAutomaticApproval(ELIGIBLE_PATHS)) {
+    throw new Error(
+      "AutonomousMergeDecision: with no grant and no reachable DB, the real (undeclared-deps) path must refuse to merge"
+    );
   }
 });
 

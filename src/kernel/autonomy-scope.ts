@@ -19,6 +19,27 @@ export const AUTONOMY_DENYLIST: readonly string[] = Object.freeze([
   "Dockerfile",
   ".github/",
   "src/executive/",
+  // Everything below is on the list for the same one reason src/executive/**
+  // is: it is machinery that defines or enforces the autonomy boundary
+  // itself, so an autonomous merge touching it could widen what the *next*
+  // autonomous merge is allowed to do. Self-modification of the guardrails
+  // always goes back to a human.
+  //
+  // This file — the denylist itself. Without it, the very first thing an
+  // autonomous change could do is delete every other entry here.
+  "src/kernel/autonomy-scope.ts",
+  // countAutonomousMergesToday (the daily blast-radius cap) and
+  // markAutonomousMerge (the audit column both the cap and the revert tooling
+  // read off) both live here.
+  "src/kernel/state/build-requests-repo.ts",
+  // The grant/revoke gate — the route that turns executive.autonomous_merge
+  // on and off, i.e. the pause switch for this whole capability.
+  "src/interaction/routes/permissions-routes.ts",
+  // The test suite is a real gate, not just documentation: final verification
+  // runs `npm test` before any PR opens, and every future autonomous merge is
+  // gated on it passing. A merge that weakens the tests weakens every merge
+  // after it.
+  "tests/",
 ]);
 
 export function isAutoMergeEligible(changedFiles: string[]): boolean {

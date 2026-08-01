@@ -2817,7 +2817,18 @@
                     </div>
                 ` : '';
                 const prLink = r.pr_url ? `<a href="${escapeHtml(r.pr_url)}" target="_blank" rel="noopener noreferrer" class="text-[10px] text-primary underline block mt-1.5">View pull request &rarr;</a>` : '';
-                const confirmDirectionButton = r.status === 'awaiting_consult' ? `
+                // Rendered for 'direction_confirmed' too, not just the normal
+                // 'awaiting_consult' path: when a build request is the
+                // caller's pending reward gate, the backend deliberately
+                // issues a confirm-token for it again (see
+                // isEligibleForConfirmToken) and the assistant's own prompt
+                // tells the user to "click Confirm Direction on that build
+                // request in the dashboard again" to release it. Without this
+                // status, that instruction pointed at a button that was never
+                // drawn. No extra frontend check is needed — the confirm-token
+                // route already refuses any direction_confirmed request that
+                // isn't actually this caller's pending reward gate.
+                const confirmDirectionButton = (r.status === 'awaiting_consult' || r.status === 'direction_confirmed') ? `
                     <div class="mt-2">
                         <button onclick="confirmBuildRequestDirection(${r.id})" class="w-full px-2 py-1 rounded border border-primary/25 text-primary bg-primary/5 text-[10px] font-mono font-bold uppercase tracking-widest hover:bg-primary/10">Confirm Direction</button>
                     </div>

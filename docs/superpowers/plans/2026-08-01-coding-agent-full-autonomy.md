@@ -1681,6 +1681,8 @@ import { runApprovalFlow } from "./build-approval.js";
 
 `runApprovalFlow`'s GitHub calls can't be exercised against a real repo in an automated test per this plan's Global Constraints. Verify manually: with `executive.autonomous_merge` deliberately left ungranted (the default), drive a real build request through confirm-direction → coding → approval in a test/sandbox repo and confirm behavior is unchanged from before this task (PR opens, waits for a human). Then grant `executive.autonomous_merge` to `"admin"` via the existing grant mechanism, repeat with a build request whose files are all outside `AUTONOMY_DENYLIST`, and confirm the PR is opened *and* merged automatically, with a push notification arriving. Revoke the grant afterward if this was only a test.
 
+> **Correction (final review):** "the existing grant mechanism" is `POST /api/permissions/grant` with `{"username": "admin", "capability": "executive.autonomous_merge"}`, as admin. That route validates against `ALL_CAPABILITIES` **or** `EXTRA_GRANTABLE_CAPABILITIES` in `src/kernel/security.ts`; `executive.autonomous_merge` lives in the latter. As originally written this task left the name in neither list, so the route rejected it with `400 Unknown capability` and there was in fact no supported way to grant it. Note that the correct fix was *not* to add it to `ALL_CAPABILITIES` — that list is what `loadGrantsFromDb`'s bootstrap backfill seeds to admin on every restart, which would have made autonomy permanently on by default.
+
 - [ ] **Step 5: Typecheck, run the full test suite, and commit**
 
 Run: `npx tsc --noEmit && npm test`
@@ -1819,5 +1821,5 @@ git commit -m "feat: add a human-triggered endpoint to revert the last N autonom
 
 - [ ] Run `npx tsc --noEmit && npm test && npm run test:db` one more time end to end (the last with a throwaway Postgres per Task 10/13's pattern) and confirm everything passes together, not just per-task.
 - [ ] Confirm `grep -rn "confirm_build_direction" src/` returns nothing.
-- [ ] Confirm `executive.autonomous_merge` is not granted to anyone by default — `grep -rn "executive.autonomous_merge" src/` should show it only in `build-approval.ts`'s `hasGrant` check and this plan's own comments, never in a `grantCapability` call anywhere in `src/`.
+- [ ] Confirm `executive.autonomous_merge` is not granted to anyone by default — `grep -rn "executive.autonomous_merge" src/` should show it only in `build-approval.ts`'s `hasGrant` check and in `security.ts`'s `EXTRA_GRANTABLE_CAPABILITIES` (the grantable-but-never-seeded list), never inside `ALL_CAPABILITIES` and never in a `grantCapability` call anywhere in `src/`.
 - [ ] Update `README.md`'s capability list (if one exists documenting all capability names) to include `executive.autonomous_merge` and the (now removed) `confirm_build_direction` tool's absence — check `scripts/check-docs-accuracy.sh` doesn't fail on this before considering the plan done.

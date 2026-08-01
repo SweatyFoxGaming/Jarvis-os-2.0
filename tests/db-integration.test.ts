@@ -256,6 +256,17 @@ registerTest("countAutonomousMergesToday counts only today's autonomous merges, 
   if (!drafted) throw new Error("recordCodeDraft did not match — status transition chain is broken");
   const prOpened = await buildRequestsRepo.recordPrOpened(buildRequest.id, "https://github.com/x/y/pull/1", 1);
   if (!prOpened) throw new Error("recordPrOpened did not match — status transition chain is broken");
+  // recordQaReview moves the row pr_opened -> qa_complete, and runApprovalFlow
+  // ALWAYS calls it before it reaches the autonomous-merge decision. Skipping
+  // it here is what previously let markAutonomousMerge's status guard match a
+  // status the real flow never actually presents it with — a real bug that
+  // shipped and had to be found by hand in Task 14's second review round,
+  // because this test drove a transition sequence production never performs.
+  await buildRequestsRepo.recordQaReview(buildRequest.id, "some qa summary");
+  const afterQa = await buildRequestsRepo.getBuildRequest(buildRequest.id);
+  if (afterQa?.status !== "qa_complete") {
+    throw new Error(`recordQaReview did not move the row to qa_complete, got: ${afterQa?.status}`);
+  }
   const merged = await buildRequestsRepo.markAutonomousMerge(buildRequest.id);
   if (!merged || merged.autonomous_merge !== true) {
     throw new Error(`markAutonomousMerge did not set autonomous_merge = true, got: ${JSON.stringify(merged)}`);
