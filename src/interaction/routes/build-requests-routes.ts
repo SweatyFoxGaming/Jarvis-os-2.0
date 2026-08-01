@@ -230,7 +230,7 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
         // AI, for as long as the review call took. Computing it first means
         // its findings can actually be baked into the PR body itself instead
         // of arriving as a note attached after the fact.
-        const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getGroq());
+        const qaSummary = (await departments.reviewCodeDiff(buildRequest.objective, files, getGroq())).findings;
 
         const branchName = `jarvis/build-request-${buildRequest.id}`;
 

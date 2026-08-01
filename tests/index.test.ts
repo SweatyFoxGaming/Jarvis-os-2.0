@@ -2060,10 +2060,34 @@ registerTest("Departments", "runResearch degrades cleanly with no AI client", as
   }
 });
 
-registerTest("Departments", "reviewCodeDiff degrades cleanly with no AI client", async () => {
+registerTest("Departments", "reviewCodeDiff fails closed with no AI client", async () => {
   const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], null);
-  if (!result.includes("No capable model was available")) {
-    throw new Error(`Departments: expected the no-AI degrade message, got: ${result}`);
+  if (result.approved !== false || !result.findings.includes("No capable model was available")) {
+    throw new Error(`Departments: expected a fail-closed (not approved) verdict, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Departments", "reviewCodeDiff fails closed when the Groq call throws", async () => {
+  const throwingGroq = { chat: { completions: { create: async () => { throw new Error("simulated outage"); } } } } as any;
+  const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], throwingGroq);
+  if (result.approved !== false || !result.findings.includes("simulated outage")) {
+    throw new Error(`Departments: expected a fail-closed verdict citing the error, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Departments", "reviewCodeDiff returns the model's real approved/findings verdict", async () => {
+  const fakeGroq = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: JSON.stringify({ approved: true, findings: "Looks correct." }) } }],
+        }),
+      },
+    },
+  } as any;
+  const result = await departments.reviewCodeDiff("test objective", [{ path: "a.ts", content: "x" }], fakeGroq);
+  if (result.approved !== true || result.findings !== "Looks correct.") {
+    throw new Error(`Departments: expected {approved: true, findings: "Looks correct."}, got: ${JSON.stringify(result)}`);
   }
 });
 
