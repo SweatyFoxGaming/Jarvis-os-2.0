@@ -31,6 +31,7 @@ import {
   rejectCode as rejectBuildCode,
 } from "../src/kernel/state/build-requests-repo.js";
 import * as buildRequestsRepo from "../src/kernel/state/build-requests-repo.js";
+import { isEligibleForConfirmToken } from "../src/interaction/routes/build-request-eligibility.js";
 import { isValidToolSchema, getCachedMcpTools, computeToolsSignature, wrapUntrustedMcpOutput } from "../src/capabilities/mcp-registry.js";
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
@@ -1827,6 +1828,82 @@ registerTest("BuildRequests", "getLatestPendingRewardGate degrades cleanly when 
   const result = await buildRequestsRepo.getLatestPendingRewardGate("test_user");
   if (result !== null) {
     throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- BuildRequestsRoutes: isEligibleForConfirmToken (pure, no DB) ----------
+// The confirm-token route itself can't be exercised end-to-end for the
+// success case in this harness (no live Postgres means getBuildRequest
+// always resolves null — same limitation documented on the "Permissions"
+// tests above and the HTTP Boundary tests further down). isEligibleForConfirmToken
+// is pulled out as a pure function specifically so this eligibility logic —
+// including the reward-gate "confirm anyway" recovery path this closes a
+// gap for — is still genuinely testable without one, the same pattern
+// deriveHudBadge (hud-badge.ts) already uses in this file.
+function fakeBuildRequestRow(id: number, status: buildRequestsRepo.BuildRequestStatus): buildRequestsRepo.BuildRequestRow {
+  return {
+    id,
+    objective: "test objective",
+    status,
+    requested_by: "test_user",
+    research_summary: null,
+    direction_notes: null,
+    code_summary: null,
+    proposed_files: null,
+    pr_url: null,
+    pr_number: null,
+    qa_summary: null,
+    error_detail: null,
+    coding_model_used: null,
+    task_category: null,
+    tokens_used: 0,
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+}
+
+registerTest("BuildRequestsRoutes", "isEligibleForConfirmToken allows the normal awaiting_consult case", () => {
+  const buildRequest = fakeBuildRequestRow(1, "awaiting_consult");
+  if (!isEligibleForConfirmToken(buildRequest, null, 1)) {
+    throw new Error("BuildRequestsRoutes: expected an awaiting_consult build request to be eligible for a confirm-token");
+  }
+});
+
+registerTest("BuildRequestsRoutes", "isEligibleForConfirmToken allows a direction_confirmed build request that IS the caller's pending reward gate", () => {
+  const buildRequest = fakeBuildRequestRow(7, "direction_confirmed");
+  const pendingRewardGate = fakeBuildRequestRow(7, "direction_confirmed");
+  if (!isEligibleForConfirmToken(buildRequest, pendingRewardGate, 7)) {
+    throw new Error(
+      "BuildRequestsRoutes: expected a direction_confirmed build request that IS the caller's pending reward gate to be eligible for a confirm-token — this is the reward-gate 'confirm anyway' recovery path"
+    );
+  }
+});
+
+registerTest("BuildRequestsRoutes", "isEligibleForConfirmToken refuses a direction_confirmed build request that is NOT the caller's pending reward gate", () => {
+  const buildRequest = fakeBuildRequestRow(7, "direction_confirmed");
+  const pendingRewardGate = fakeBuildRequestRow(9, "direction_confirmed"); // a different, unrelated build request
+  if (isEligibleForConfirmToken(buildRequest, pendingRewardGate, 7)) {
+    throw new Error(
+      "BuildRequestsRoutes: a direction_confirmed build request that isn't the caller's own pending reward gate must not be eligible for a confirm-token"
+    );
+  }
+});
+
+registerTest("BuildRequestsRoutes", "isEligibleForConfirmToken refuses every other build request status", () => {
+  const otherStatuses: buildRequestsRepo.BuildRequestStatus[] = [
+    "researching",
+    "coding",
+    "awaiting_code_approval",
+    "pr_opened",
+    "qa_complete",
+    "rejected_at_code",
+    "error",
+  ];
+  for (const status of otherStatuses) {
+    const buildRequest = fakeBuildRequestRow(1, status);
+    if (isEligibleForConfirmToken(buildRequest, null, 1)) {
+      throw new Error(`BuildRequestsRoutes: a build request in status "${status}" must not be eligible for a confirm-token`);
+    }
   }
 });
 

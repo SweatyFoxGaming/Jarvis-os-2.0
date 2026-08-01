@@ -539,8 +539,15 @@ export async function executeTool(
         // plan's design spec. Until that removal lands, this call site
         // still has to resolve a buildRequestId itself, the same way the
         // now-removed confirmDirection() used to, since this tool's schema
-        // carries no id of its own.
-        const pendingBuildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
+        // carries no id of its own. Reward-gate row (status
+        // 'direction_confirmed') takes priority over a fresh awaiting_consult
+        // row, same order the old confirmDirection() checked them in — a
+        // user can never have both simultaneously (see executeObjective's
+        // own guards), but checking the reward gate first is what lets a
+        // repeated "confirm direction" actually proceed past a bad-track-
+        // record pause instead of always hitting the wrong error.
+        const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
+        const pendingBuildRequest = pendingRewardGate || await buildRequestsRepo.getLatestAwaitingConsult(username);
         if (!pendingBuildRequest) {
           return { name, ok: false, error: "There's no build request of mine currently awaiting your direction to confirm." };
         }

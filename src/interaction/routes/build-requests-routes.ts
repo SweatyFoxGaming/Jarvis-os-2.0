@@ -14,6 +14,9 @@ import * as scheduler from "../../kernel/scheduler.js";
 import { getGroq } from "../../runtime/clients.js";
 import { issueConfirmTicket, consumeConfirmTicket } from "../../kernel/confirm-tickets.js";
 import { AutonomousExecutive } from "../../executive/autonomous_executive.js";
+import { isEligibleForConfirmToken } from "./build-request-eligibility.js";
+
+export { isEligibleForConfirmToken };
 
 const observation = ObservationPlatform.getInstance();
 
@@ -83,7 +86,14 @@ buildRequestsRouter.post("/api/system/build-requests/:id/confirm-token", validat
   try {
     const id = Number(req.params.id);
     const buildRequest = await buildRequestsRepo.getBuildRequest(id);
-    if (!buildRequest || buildRequest.status !== "awaiting_consult") {
+    // Only fetch the reward-gate row when it's actually relevant (status is
+    // 'direction_confirmed') — no point spending a second query on the
+    // ordinary awaiting_consult path.
+    const pendingRewardGate =
+      buildRequest?.status === "direction_confirmed"
+        ? await buildRequestsRepo.getLatestPendingRewardGate(req.username)
+        : null;
+    if (!buildRequest || !isEligibleForConfirmToken(buildRequest, pendingRewardGate, id)) {
       return res.status(404).json({ error: "Build request not found or not awaiting direction" });
     }
     const token = issueConfirmTicket(id, req.username);
