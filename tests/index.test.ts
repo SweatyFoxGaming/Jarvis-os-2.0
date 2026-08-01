@@ -1489,6 +1489,69 @@ registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacke
   }
 });
 
+// invites-routes.ts's admin check (`req.username !== "admin"`) only runs
+// once validateApiKey has already resolved req.username — and for any key
+// other than the literal INTERNAL_API_KEY, that resolution is a real
+// Postgres lookup (usersRepo.getUsernameByApiKey). This test process has no
+// live Postgres, the same constraint every other DB-backed check in this
+// file already works around (see the "newly capability-gated routes"
+// test's own comment above, and the "no live Postgres in this test
+// process" Objectives/SystemSettings/etc. sections) — so a genuinely
+// resolved non-admin identity can only be exercised end-to-end wherever
+// Postgres actually is reachable (docker-compose/CI). This test attempts
+// exactly that (register a real non-admin user via createUser(), same
+// helper the Permissions category already imports, and use its real
+// returned API key), and falls back to the one assertion that IS
+// deterministic without a DB — an unrecognized key never reaches "success"
+// — when no live Postgres is available, so this stays green in both
+// environments while giving full coverage wherever it can.
+registerTest("HTTP Boundary", "POST /api/invites is refused for a non-admin user, even with a valid key", async () => {
+  const port = 3015; // confirmed free: existing HTTP Boundary tests use 3010, 3012, 3013, 3014
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/invites`, { method: "POST" });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/invites, got ${noKey.status}`);
+    }
+
+    let nonAdminKey: string | null = null;
+    try {
+      nonAdminKey = await createUser(`invite_test_non_admin_${Date.now()}`, "irrelevant-password-1234");
+    } catch {
+      // No live Postgres in this test process — expected here, see comment
+      // above. nonAdminKey stays null and the fallback branch below runs.
+      nonAdminKey = null;
+    }
+
+    if (nonAdminKey) {
+      const res = await fetch(`http://127.0.0.1:${port}/api/invites`, {
+        method: "POST",
+        headers: { "X-API-Key": nonAdminKey },
+      });
+      if (res.status !== 403) {
+        throw new Error(`HTTP Boundary: expected 403 for a real non-admin caller, got ${res.status}`);
+      }
+    } else {
+      // DB-independent fallback: an API key that cannot be resolved to any
+      // identity (admin or otherwise) must never be treated as authorized —
+      // it has to come back as either 401 (key not recognized) or 503 (the
+      // lookup itself couldn't run, which is what actually happens in this
+      // no-Postgres test process), but never a 2xx and never reach the
+      // route's own admin-only 403 body (that would mean the DB error was
+      // swallowed and treated as "not admin" rather than "unauthenticated").
+      const bogusKeyRes = await fetch(`http://127.0.0.1:${port}/api/invites`, {
+        method: "POST",
+        headers: { "X-API-Key": "definitely-not-a-real-api-key" },
+      });
+      if (bogusKeyRes.status !== 401 && bogusKeyRes.status !== 503) {
+        throw new Error(`HTTP Boundary: expected 401 or 503 for an unresolvable API key on POST /api/invites, got ${bogusKeyRes.status}`);
+      }
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // ---------- ConfidenceModel Tests (pure, no DB) ----------
 
 registerTest("Confidence", "calculateOverallConfidence matches today's 5-input average when outcomeConfidence is omitted", () => {

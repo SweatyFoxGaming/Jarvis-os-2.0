@@ -51,6 +51,7 @@ import { briefingMemoryRouter } from "./interaction/routes/briefing-memory-route
 import { evolutionRouter } from "./interaction/routes/evolution-routes.js";
 import { rewardRouter } from "./interaction/routes/reward-routes.js";
 import { permissionsRouter } from "./interaction/routes/permissions-routes.js";
+import { invitesRouter } from "./interaction/routes/invites-routes.js";
 import { integrationsRouter } from "./interaction/routes/integrations-routes.js";
 import { hudRouter } from "./interaction/routes/hud-routes.js";
 import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
@@ -1144,6 +1145,10 @@ app.use(rewardRouter);
 // Capability grant/revoke endpoints — see
 // src/interaction/routes/permissions-routes.ts, mounted below.
 app.use(permissionsRouter);
+
+// Admin-only invite generation/revocation endpoints — see
+// src/interaction/routes/invites-routes.ts, mounted below.
+app.use(invitesRouter);
 
 // GitHub/email/TTS/files/calendar/news/websearch integration endpoints —
 // see src/interaction/routes/integrations-routes.ts, mounted below.
