@@ -10,6 +10,7 @@ import { ObservationPlatform } from "../src/kernel/observation.js";
 import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
 import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
+import { issueConfirmTicket, consumeConfirmTicket } from "../src/kernel/confirm-tickets.js";
 import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
@@ -1955,6 +1956,44 @@ registerTest("Departments", "reviewTaskDiff fails closed with no AI client", asy
   const result = await departments.reviewTaskDiff("test task", "test description", [{ path: "a.ts", content: "x" }], null);
   if (result.approved !== false || !result.findings.includes("No capable model was available")) {
     throw new Error(`Departments: expected a fail-closed (not approved) verdict, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- ConfirmTickets Tests (pure functions, single-use token store) ----------
+
+registerTest("ConfirmTickets", "issueConfirmTicket then consumeConfirmTicket round-trips the build request id and username", () => {
+  const token = issueConfirmTicket(42, "admin");
+  const result = consumeConfirmTicket(token);
+  if (!result || result.buildRequestId !== 42 || result.username !== "admin") {
+    throw new Error(`ConfirmTickets: expected {buildRequestId: 42, username: "admin"}, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("ConfirmTickets", "consumeConfirmTicket is single-use — a second consume of the same token fails", () => {
+  const token = issueConfirmTicket(7, "admin");
+  consumeConfirmTicket(token);
+  const second = consumeConfirmTicket(token);
+  if (second !== null) {
+    throw new Error(`ConfirmTickets: expected null on reuse, got: ${JSON.stringify(second)}`);
+  }
+});
+
+registerTest("ConfirmTickets", "consumeConfirmTicket rejects an unknown token", () => {
+  const result = consumeConfirmTicket("not-a-real-token");
+  if (result !== null) {
+    throw new Error(`ConfirmTickets: expected null for an unknown token, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("ConfirmTickets", "issuing a new ticket for the same build request invalidates the previous one", () => {
+  const first = issueConfirmTicket(99, "admin");
+  const second = issueConfirmTicket(99, "admin");
+  if (consumeConfirmTicket(first) !== null) {
+    throw new Error("ConfirmTickets: expected the superseded first token to be invalid");
+  }
+  const result = consumeConfirmTicket(second);
+  if (!result || result.buildRequestId !== 99) {
+    throw new Error(`ConfirmTickets: expected the second token to still work, got: ${JSON.stringify(result)}`);
   }
 });
 
