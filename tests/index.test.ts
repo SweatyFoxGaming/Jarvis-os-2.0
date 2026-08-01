@@ -54,6 +54,7 @@ import { runCodingAgent, CodingAgentDeps } from "../src/executive/coding-agent.j
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
+import { isAutoMergeEligible } from "../src/kernel/autonomy-scope.js";
 
 interface TestResult {
   name: string;
@@ -2987,6 +2988,44 @@ registerTest("CodingAgent", "a full plan -> execute -> fail cycle: proposes a pl
   }
   if (!planProposed) {
     throw new Error("CodingAgent: expected propose_plan to actually be called, proving this went through the plan path, not the flat-loop fallback");
+  }
+});
+
+// ---------- AutonomyScope Tests ----------
+registerTest("AutonomyScope", "isAutoMergeEligible allows a plain routes file", () => {
+  if (!isAutoMergeEligible(["src/interaction/routes/news-routes.ts", "tests/index.test.ts"])) {
+    throw new Error("AutonomyScope: expected a non-denylisted path set to be eligible");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible blocks a diff touching src/kernel/security.ts", () => {
+  if (isAutoMergeEligible(["src/kernel/security.ts"])) {
+    throw new Error("AutonomyScope: expected security.ts to block eligibility");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible blocks the whole diff if even one of many files is denylisted", () => {
+  const manyAllowedOneNot = ["src/capabilities/providers/news.ts", "src/adaptation/reflection.ts", "docker-compose.yml"];
+  if (isAutoMergeEligible(manyAllowedOneNot)) {
+    throw new Error("AutonomyScope: one denylisted file among many allowed ones must still block eligibility");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible blocks anything under src/executive/", () => {
+  if (isAutoMergeEligible(["src/executive/departments.ts"])) {
+    throw new Error("AutonomyScope: src/executive/** must always be denylisted — it's the pipeline granting itself autonomy");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible blocks migrations", () => {
+  if (isAutoMergeEligible(["src/kernel/state/migrations/009_something.ts"])) {
+    throw new Error("AutonomyScope: migrations must always be denylisted");
+  }
+});
+
+registerTest("AutonomyScope", "isAutoMergeEligible returns true for an empty file list (nothing to block on)", () => {
+  if (!isAutoMergeEligible([])) {
+    throw new Error("AutonomyScope: an empty changed-file list has nothing denylisted in it — should be eligible");
   }
 });
 
