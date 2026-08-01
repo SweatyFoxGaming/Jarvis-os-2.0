@@ -369,27 +369,25 @@ export class AutonomousExecutive {
     return finalReport;
   }
 
-  // Drives the second stage of the build_requests lifecycle: called once
-  // the user has actually confirmed a direction in conversation (never
-  // speculatively — see confirm_build_direction's tool description in
-  // tools.ts). Resolves against the caller's own most recent
-  // 'awaiting_consult' row rather than a model-recalled id — see this
-  // plan's Global Constraints for why. "Most recent" is unambiguous because
-  // executeObjective() (STAGE 4a, above) now refuses to open a second
-  // awaiting_consult build request for a user who already has one — the two
-  // pieces are meant to be read together.
-  public async confirmDirection(username: string, directionNotes: string): Promise<{ ok: boolean; message: string }> {
+  public async confirmDirectionForBuildRequest(
+    buildRequestId: number,
+    directionNotes: string,
+    username: string
+  ): Promise<{ ok: boolean; message: string }> {
     // A build request sitting in 'direction_confirmed' means a prior call
-    // to this same function already paused here for the reward gate below
-    // — this call is the user's explicit "go ahead anyway."
+    // already paused here for the reward gate below — this call is the
+    // user's explicit "go ahead anyway." Reward-gate build requests are
+    // resolved by username, not id, since the gate itself doesn't carry a
+    // confirm-ticket (it's a re-confirmation of an already-confirmed
+    // request, not a fresh awaiting_consult one).
     const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
-    if (pendingRewardGate) {
+    if (pendingRewardGate && pendingRewardGate.id === buildRequestId) {
       return this.startCoding(pendingRewardGate, pendingRewardGate.direction_notes || directionNotes, username);
     }
 
-    const buildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
-    if (!buildRequest) {
-      return { ok: false, message: "There's no build request of mine currently awaiting your direction to confirm." };
+    const buildRequest = await buildRequestsRepo.getBuildRequest(buildRequestId);
+    if (!buildRequest || buildRequest.status !== "awaiting_consult") {
+      return { ok: false, message: "That build request isn't currently awaiting direction to confirm." };
     }
 
     const confirmed = await buildRequestsRepo.recordDirectionConfirmed(buildRequest.id, directionNotes);

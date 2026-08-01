@@ -12,6 +12,8 @@ import * as departments from "../../executive/departments.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
 import * as scheduler from "../../kernel/scheduler.js";
 import { getGroq } from "../../runtime/clients.js";
+import { issueConfirmTicket, consumeConfirmTicket } from "../../kernel/confirm-tickets.js";
+import { AutonomousExecutive } from "../../executive/autonomous_executive.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -68,6 +70,57 @@ function isUnsafeProposedPath(path: string): boolean {
 // Scoped to this process only (no new persisted status, per this plan's
 // Global Constraints) — sufficient for this single-instance deployment.
 const inFlightBuildRequestApprovals = new Set<number>();
+
+// Issues a fresh single-use token for a build request currently awaiting
+// the user's direction — gated on the same "executive.plan" capability the
+// (now-removed) confirm_build_direction tool used to imply via prompt
+// instruction alone. The token itself is what a subsequent confirm-direction
+// call must present; issuing one does not confirm anything by itself.
+buildRequestsRouter.post("/api/system/build-requests/:id/confirm-token", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "executive.plan")) {
+    return res.status(403).json({ error: 'Missing capability grant "executive.plan"' });
+  }
+  try {
+    const id = Number(req.params.id);
+    const buildRequest = await buildRequestsRepo.getBuildRequest(id);
+    if (!buildRequest || buildRequest.status !== "awaiting_consult") {
+      return res.status(404).json({ error: "Build request not found or not awaiting direction" });
+    }
+    const token = issueConfirmTicket(id, req.username);
+    res.json({ token });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The only place a build request actually moves past awaiting_consult now
+// — requires a token minted by the route above, tied to this exact build
+// request. There is no LLM-callable path to this outcome anymore (see the
+// removal of the confirm_build_direction tool).
+buildRequestsRouter.post("/api/system/build-requests/:id/confirm-direction", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "executive.plan")) {
+    return res.status(403).json({ error: 'Missing capability grant "executive.plan"' });
+  }
+  try {
+    const id = Number(req.params.id);
+    const { token, directionNotes } = req.body || {};
+    if (!token || typeof directionNotes !== "string" || !directionNotes.trim()) {
+      return res.status(400).json({ error: "token and directionNotes are required" });
+    }
+    const ticket = consumeConfirmTicket(token);
+    if (!ticket || ticket.buildRequestId !== id) {
+      return res.status(403).json({ error: "Invalid, expired, or already-used confirmation token." });
+    }
+    const result = await AutonomousExecutive.getInstance().confirmDirectionForBuildRequest(id, directionNotes, req.username);
+    if (!result.ok) {
+      return res.status(409).json({ error: result.message });
+    }
+    observation.logAuditEvent(req.username, "build_request_direction_confirmed", "success", `#${id}`);
+    res.json({ ok: true, message: result.message });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // The only place in this codebase that opens a real PR on Jarvis's own
 // behalf. Every GitHub call here (branch -> commit each file -> open PR) is

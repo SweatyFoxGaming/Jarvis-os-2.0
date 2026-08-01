@@ -23,6 +23,7 @@ import * as mcpRegistry from "./mcp-registry.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
 import * as obsidian from "./providers/obsidian.js";
 import * as builderClient from "../kernel/builder-client.js";
+import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -531,7 +532,23 @@ export async function executeTool(
         break;
       }
       case "confirm_build_direction": {
-        const result = await AutonomousExecutive.getInstance().confirmDirection(username, args.directionNotes);
+        // TODO(Task 3): this tool is being removed entirely, replaced by
+        // the id-scoped confirm-token HTTP flow (AutonomousExecutive's new
+        // confirmDirectionForBuildRequest plus the
+        // /api/system/build-requests/:id/confirm-token routes) — see this
+        // plan's design spec. Until that removal lands, this call site
+        // still has to resolve a buildRequestId itself, the same way the
+        // now-removed confirmDirection() used to, since this tool's schema
+        // carries no id of its own.
+        const pendingBuildRequest = await buildRequestsRepo.getLatestAwaitingConsult(username);
+        if (!pendingBuildRequest) {
+          return { name, ok: false, error: "There's no build request of mine currently awaiting your direction to confirm." };
+        }
+        const result = await AutonomousExecutive.getInstance().confirmDirectionForBuildRequest(
+          pendingBuildRequest.id,
+          args.directionNotes,
+          username
+        );
         if (!result.ok) {
           return { name, ok: false, error: result.message };
         }

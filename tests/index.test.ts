@@ -1481,6 +1481,58 @@ registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacke
   }
 });
 
+registerTest("HTTP Boundary", "confirm-direction rejects a missing/invalid token, even for a granted user", async () => {
+  const port = 3015;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/system/build-requests/999999/confirm-direction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+      body: JSON.stringify({ token: "not-a-real-token", directionNotes: "build it" }),
+    });
+    if (res.status !== 403) {
+      throw new Error(`HTTP Boundary: expected 403 for an invalid token, got ${res.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// /api/register needs a live Postgres write (usersRepo.createUser) to hand
+// back a real, DB-resolvable API key for a fresh non-admin identity — this
+// test harness deliberately has none (see the "Permissions" tests above,
+// and auth-middleware.ts's validateApiKey, which can only resolve a non-admin
+// caller via a DB lookup). So instead of registering a zero-grant user, this
+// revokes "executive.plan" from admin itself via the existing
+// /api/permissions/revoke route: grantCapability/revokeCapability update the
+// in-memory grants map synchronously and only log a warning if the DB write
+// itself fails (see security.ts) — so this genuinely exercises the new
+// route's permission gate without needing a live database anywhere in the
+// chain.
+registerTest("HTTP Boundary", "confirm-token is refused without the executive.plan grant", async () => {
+  const port = 3016;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const revokeRes = await fetch(`http://127.0.0.1:${port}/api/permissions/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+      body: JSON.stringify({ username: "admin", capability: "executive.plan" }),
+    });
+    if (revokeRes.status !== 200) {
+      throw new Error(`HTTP Boundary: failed to revoke "executive.plan" from admin to set up this test, got ${revokeRes.status}`);
+    }
+    const res = await fetch(`http://127.0.0.1:${port}/api/system/build-requests/1/confirm-token`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (res.status !== 403) {
+      throw new Error(`HTTP Boundary: expected 403 for a caller missing the executive.plan grant, got ${res.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // ---------- ConfidenceModel Tests (pure, no DB) ----------
 
 registerTest("Confidence", "calculateOverallConfidence matches today's 5-input average when outcomeConfidence is omitted", () => {
