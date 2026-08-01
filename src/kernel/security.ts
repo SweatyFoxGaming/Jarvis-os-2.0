@@ -63,6 +63,24 @@ export const ALL_CAPABILITIES = [
   "adaptation.run",
 ] as const;
 
+// Granted automatically the moment an invite is redeemed (Task 4) — every
+// name here must already be a member of ALL_CAPABILITIES above; this is a
+// subset used for auto-provisioning, not a separate grantable-capability
+// concept. calendar.read/write and email.read/send are deliberately
+// excluded here until the personal-OAuth work (Tasks 8-13) actually ships —
+// granting them earlier would point a new user at the shared admin Google
+// account, not their own. Add them here once that work is live, not before.
+export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
+  "web.search",
+  "news.read",
+  "tts.speak",
+  "knowledge.read",
+  "identity.read",
+  "hud.read",
+  "feature.propose",
+  "system.sandbox_execute",
+];
+
 export type Capability = (typeof ALL_CAPABILITIES)[number];
 
 const grants = new Map<string, Set<string>>();

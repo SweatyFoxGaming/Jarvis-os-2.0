@@ -9,7 +9,7 @@ import { SessionState, getSession } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/kernel/observation.js";
 import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
-import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
+import { grantCapability, revokeCapability, hasGrant, listGrants, ALL_CAPABILITIES, DEFAULT_PERSONAL_CAPABILITIES } from "../src/kernel/security.js";
 import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
@@ -418,6 +418,15 @@ registerTest("Permissions", "createUser refuses to register the reserved \"admin
       if (!(err instanceof ReservedUsernameError)) {
         throw new Error(`Permissions: createUser("${attempt}") should throw ReservedUsernameError, got: ${err.message}`);
       }
+    }
+  }
+});
+
+registerTest("Permissions", "every DEFAULT_PERSONAL_CAPABILITIES entry is a real, valid capability", () => {
+  const all = new Set(ALL_CAPABILITIES as readonly string[]);
+  for (const cap of DEFAULT_PERSONAL_CAPABILITIES) {
+    if (!all.has(cap)) {
+      throw new Error(`Permissions: DEFAULT_PERSONAL_CAPABILITIES contains "${cap}", which is not in ALL_CAPABILITIES`);
     }
   }
 });
