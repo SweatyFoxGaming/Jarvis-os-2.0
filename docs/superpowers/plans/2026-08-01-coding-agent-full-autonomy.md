@@ -18,7 +18,7 @@
 - `executive.autonomous_merge` is checked via `hasGrant("admin", "executive.autonomous_merge")` — "admin" is this codebase's existing convention for the system identity (see `runDailyAdaptation(username = "admin")`), not a new identity.
 - The daily autonomous-merge cap is a plain constant (`AUTONOMOUS_MERGE_DAILY_CAP = 3`), read via a live `COUNT(*)` query — never a separately-maintained counter.
 - `npx tsc --noEmit` and `npm test` must both pass after every task below, before that task's commit.
-- Never reorder/renumber a migration once committed on this branch's history — this plan's migration is `008_autonomous_merge`; if a conflicting `008` lands on `main` first, renumber to the next free id, don't overwrite.
+- Never reorder/renumber a migration once committed on this branch's history — this plan's migration is `007_autonomous_merge` (this branch's migrations currently only go up to `006`; PR #132's `007_dedupe_knowledge_graph` hasn't merged to `main` yet). If PR #132 merges into `main` before this branch does, a rebase will surface a real `007` collision — resolve it then by bumping this plan's migration to `008` (or the next free id), don't overwrite PR #132's.
 - A function that needs a live sandbox container or a live GitHub round-trip to exercise meaningfully is not unit-tested against the real thing in this plan (no CI-available sandbox/GitHub fixture exists) — those seams get dependency injection so their *logic* is testable, and the live round-trip is verified manually per-task via the sandbox check described in that task, matching this codebase's existing precedent (`docs/superpowers/plans/2026-07-20-mcp-capability-architecture.md`'s treatment of `approveMcpServer`).
 
 ---
@@ -35,8 +35,8 @@
 | `src/executive/departments.ts` | Modify — `reviewCodeDiff` structured contract; untrusted-content delimiters on both review calls |
 | `src/kernel/state/build-requests-repo.ts` | Modify — `review_failed` status, `markReviewFailed`, `markAutonomousMerge`, `countAutonomousMergesToday` |
 | `src/executive/coding-agent.ts` | Modify — `CodingAgentDeps` injection seam |
-| `src/kernel/state/migrations/008_autonomous_merge.ts` | Create — `build_requests.autonomous_merge` column |
-| `src/kernel/state/migrations/index.ts` | Modify — register `m008` |
+| `src/kernel/state/migrations/007_autonomous_merge.ts` | Create — `build_requests.autonomous_merge` column |
+| `src/kernel/state/migrations/index.ts` | Modify — register `m007` |
 | `src/kernel/autonomy-scope.ts` | Create — `isAutoMergeEligible` pure function + denylist |
 | `src/capabilities/providers/github.ts` | Modify — `mergePullRequest` |
 | `src/executive/build-approval.ts` | Create — extracted approval flow + auto-merge decision |
@@ -1089,10 +1089,10 @@ git commit -m "test: add coding-agent.ts coverage for budget exhaustion and a fu
 
 ---
 
-## Task 10: Migration `008_autonomous_merge`
+## Task 10: Migration `007_autonomous_merge`
 
 **Files:**
-- Create: `src/kernel/state/migrations/008_autonomous_merge.ts`
+- Create: `src/kernel/state/migrations/007_autonomous_merge.ts`
 - Modify: `src/kernel/state/migrations/index.ts`
 
 **Interfaces:**
@@ -1100,7 +1100,7 @@ git commit -m "test: add coding-agent.ts coverage for budget exhaustion and a fu
 
 - [ ] **Step 1: Write the migration**
 
-Create `src/kernel/state/migrations/008_autonomous_merge.ts`, following the exact shape of `006_reward_events.ts`:
+Create `src/kernel/state/migrations/007_autonomous_merge.ts`, following the exact shape of `006_reward_events.ts`:
 
 ```typescript
 import type { Migration } from "./runner.js";
@@ -1112,7 +1112,7 @@ import type { Migration } from "./runner.js";
 // no separate tracking table, this is the single source of truth for "was
 // this merge autonomous."
 const migration: Migration = {
-  id: "008_autonomous_merge",
+  id: "007_autonomous_merge",
   description: "Add build_requests.autonomous_merge, set at merge time, so the daily autonomous-merge cap and revert tooling can read off one column.",
   up: async (client) => {
     await client.query(`ALTER TABLE build_requests ADD COLUMN autonomous_merge BOOLEAN NOT NULL DEFAULT false;`);
@@ -1127,11 +1127,11 @@ export default migration;
 In `src/kernel/state/migrations/index.ts`, add the import and append to `ALL_MIGRATIONS`:
 
 ```typescript
-import m008 from "./008_autonomous_merge.js";
+import m007 from "./007_autonomous_merge.js";
 ```
 
 ```typescript
-export const ALL_MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008];
+export const ALL_MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007];
 ```
 
 - [ ] **Step 3: Verify against a throwaway Postgres instance**
@@ -1147,7 +1147,7 @@ POSTGRES_USER=testuser POSTGRES_PASSWORD=testpass POSTGRES_DB=testdb POSTGRES_HO
 docker stop jarvis-test-pg-008
 ```
 
-Expected: `Applied migration "008_autonomous_merge"` in the output, and all db-integration tests still pass.
+Expected: `Applied migration "007_autonomous_merge"` in the output, and all db-integration tests still pass.
 
 - [ ] **Step 4: Typecheck and commit**
 
@@ -1155,7 +1155,7 @@ Run: `npx tsc --noEmit`
 Expected: no errors
 
 ```bash
-git add src/kernel/state/migrations/008_autonomous_merge.ts src/kernel/state/migrations/index.ts
+git add src/kernel/state/migrations/007_autonomous_merge.ts src/kernel/state/migrations/index.ts
 git commit -m "feat: add build_requests.autonomous_merge column"
 ```
 
