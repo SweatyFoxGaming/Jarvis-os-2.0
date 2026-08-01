@@ -369,3 +369,20 @@ export async function incrementTokenUsage(id: number, tokens: number): Promise<v
     observation.logTelemetry("warn", "BuildRequests", `incrementTokenUsage(${id}) failed: ${err.message}`);
   }
 }
+
+// The human-triggered revert route's only lookup: the most recently
+// autonomously-merged build requests, most recent first, so "revert the
+// last N autonomous merges" has something concrete to iterate over.
+export async function listRecentAutonomousMerges(limit: number): Promise<BuildRequestRow[]> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT * FROM build_requests WHERE autonomous_merge = true ORDER BY updated_at DESC LIMIT $1`,
+      [limit]
+    );
+    return rows;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Database", `listRecentAutonomousMerges failed: ${err.message}`);
+    return [];
+  }
+}

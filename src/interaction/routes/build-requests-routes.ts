@@ -7,6 +7,7 @@ import * as transcriptEventsRepo from "../../kernel/state/transcript-events-repo
 import * as codingPlanTasksRepo from "../../kernel/state/coding-plan-tasks-repo.js";
 import * as rewardEventsRepo from "../../kernel/state/reward-events-repo.js";
 import * as builderClient from "../../kernel/builder-client.js";
+import * as github from "../../capabilities/providers/github.js";
 import { runApprovalFlow, isBuildRequestApprovalInFlight } from "../../executive/build-approval.js";
 import { issueConfirmTicket, consumeConfirmTicket } from "../../kernel/confirm-tickets.js";
 import { AutonomousExecutive } from "../../executive/autonomous_executive.js";
@@ -150,6 +151,64 @@ buildRequestsRouter.post("/api/system/build-requests/:id/reject-code", validateA
     await builderClient.destroyWorkspace(updated.id).catch(() => {});
     observation.logAuditEvent(req.username, "build_request_code_rejected", "success", `#${updated.id}`);
     res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Human-triggered only — "revert last N autonomous merges" per the design
+// spec's guardrails. Reverts still get a real human look via a normal PR;
+// they're just not blocked on one to *propose*.
+buildRequestsRouter.post("/api/system/build-requests/revert-autonomous", validateApiKey, async (req: any, res: any) => {
+  if (!permissions.hasGrant(req.username, "github.pulls.create")) {
+    return res.status(403).json({ error: 'Missing capability grant "github.pulls.create"' });
+  }
+  const owner = process.env.SELF_REPO_OWNER;
+  const repoName = process.env.SELF_REPO_NAME;
+  if (!owner || !repoName) {
+    return res.status(503).json({ error: "SELF_REPO_OWNER/SELF_REPO_NAME are not configured." });
+  }
+  const count = Number(req.body?.count);
+  if (!Number.isInteger(count) || count < 1 || count > 20) {
+    return res.status(400).json({ error: "count must be an integer between 1 and 20" });
+  }
+  try {
+    const targets = await buildRequestsRepo.listRecentAutonomousMerges(count);
+    if (targets.length === 0) {
+      return res.status(404).json({ error: "No autonomous merges found to revert." });
+    }
+    const results: { buildRequestId: number; ok: boolean; message: string }[] = [];
+    for (const target of targets) {
+      if (!target.pr_number) {
+        results.push({ buildRequestId: target.id, ok: false, message: "No recorded PR number to revert." });
+        continue;
+      }
+      const revertBranch = `jarvis/revert-build-request-${target.id}`;
+      const workspaceId = -target.id; // negative id keys a dedicated revert workspace, distinct from the original build request's own (already-destroyed) workspace id
+      try {
+        await builderClient.createWorkspace(workspaceId, "main");
+        await builderClient.execInWorkspace(workspaceId, `git checkout -b ${revertBranch}`);
+        // Task 12 merges via merge_method: "squash", so each autonomous PR is
+        // one normal commit on main (not a merge commit) — no --merges filter
+        // and no -m parent-selection flag, both of which only apply when
+        // reverting an actual merge commit. GitHub's default squash-commit
+        // title includes "(#<pr_number>)", which --grep finds directly.
+        const revertResult = await builderClient.execInWorkspace(workspaceId, `git revert --no-edit $(git log --format=%H -n 1 --grep="#${target.pr_number}")`);
+        if (revertResult.exitCode !== 0) {
+          results.push({ buildRequestId: target.id, ok: false, message: `git revert failed: ${revertResult.stderr.slice(-1000)}` });
+          continue;
+        }
+        await builderClient.execInWorkspace(workspaceId, `git push origin ${revertBranch}`);
+        const pr = await github.createPullRequest(owner, repoName, `Revert build request #${target.id}`, revertBranch, "main", `Reverting autonomous merge #${target.pr_number}, requested by ${req.username}.`);
+        results.push({ buildRequestId: target.id, ok: true, message: pr.html_url });
+      } catch (err: any) {
+        results.push({ buildRequestId: target.id, ok: false, message: err.message });
+      } finally {
+        await builderClient.destroyWorkspace(workspaceId).catch(() => {});
+      }
+    }
+    observation.logAuditEvent(req.username, "build_requests_reverted", "success", JSON.stringify(results));
+    res.json({ results });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
