@@ -50,6 +50,7 @@ import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { deriveHudBadge } from "../src/interaction/hud-badge.js";
 import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
+import { runCodingAgent, CodingAgentDeps } from "../src/executive/coding-agent.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -2839,6 +2840,153 @@ registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a
     delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
     delete process.env.OBSIDIAN_VAULT_DIR;
     fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+// ---------- Coding Agent Tests (DI seam from Task 8 — no live Docker sandbox, no live Groq account) ----------
+
+// A minimal fake sandbox: every exec call succeeds with exit 0 and empty
+// output, `git rev-parse HEAD` returns a fixed fake sha. Good enough for
+// tests that only care about the turn/token-budget and retry logic, not
+// what a real shell command would actually produce.
+function makeFakeCodingAgentDeps(overrides: Partial<CodingAgentDeps> = {}): CodingAgentDeps {
+  return {
+    createWorkspace: async () => ({ branch: "fake-branch", containerName: "fake-container" } as any),
+    execInWorkspace: async (_id: number, command: string) => {
+      if (command === "git rev-parse HEAD") return { stdout: "fakesha0000\n", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    },
+    destroyWorkspace: async () => {},
+    callGroqAgentChat: async () => ({ content: null, toolCalls: null, totalTokens: 1000, modelUsed: "fake-model" }),
+    ...overrides,
+  };
+}
+
+registerTest("CodingAgent", "runCodingAgent fails immediately with no Groq client, no sandbox created", async () => {
+  let workspaceCreated = false;
+  const deps = makeFakeCodingAgentDeps({ createWorkspace: async () => { workspaceCreated = true; return {} as any; } });
+  const result = await runCodingAgent(1, "test objective", "", "build it", "main", null, deps);
+  if (result.ok !== false || !result.error.includes("No Groq client")) {
+    throw new Error(`CodingAgent: expected a no-client failure, got: ${JSON.stringify(result)}`);
+  }
+  if (workspaceCreated) {
+    throw new Error("CodingAgent: should never create a sandbox workspace with no Groq client");
+  }
+});
+
+// MAX_TOKENS_PER_SESSION is captured once at module load time —
+// `const MAX_TOKENS_PER_SESSION = positiveIntegerEnv(process.env.JARVIS_CODING_AGENT_TOKEN_BUDGET, 4_000_000);`
+// runs the instant coding-agent.ts is imported, and `positiveIntegerEnv`
+// (kernel/env.ts) is a plain synchronous function with no re-read hook of
+// its own. Because this whole suite is one `tsx tests/index.test.ts`
+// process with coding-agent.ts imported once via a static import at the
+// top of this file, that constant is locked in long before any
+// registerTest body runs — mutating process.env.JARVIS_CODING_AGENT_TOKEN_BUDGET
+// from inside a test, as an earlier draft of this test did, has no effect
+// on it whatsoever (verified empirically: that version of this test never
+// observed a budget failure no matter how small the env var was set).
+// So this drives budget-style exhaustion the way the brief's fallback
+// describes: via the turn cap instead, by never returning a finishing
+// tool call.
+registerTest("CodingAgent", "runCodingAgent hits the turn cap and fails cleanly instead of looping forever when the model never finishes", async () => {
+  const deps = makeFakeCodingAgentDeps({
+    // Every call — planning and the task/flat loop alike — returns a
+    // run_shell_command call and nothing else. It never matches
+    // propose_plan, so planning exhausts its own 2 retries and falls back
+    // to the flat loop; the flat loop then never sees finish_coding either,
+    // so it runs out its full MAX_TURNS and fails on the turn cap, not the
+    // token budget (10 tokens/call keeps tokensUsed far under the
+    // 4,000,000-token default budget across all ~42 calls this makes).
+    callGroqAgentChat: async () => ({
+      content: null,
+      toolCalls: [{ id: "1", type: "function", function: { name: "run_shell_command", arguments: JSON.stringify({ command: "echo hi" }) } }],
+      totalTokens: 10,
+      modelUsed: "fake-model",
+    }),
+  });
+  // A fake groq object shaped enough to pass the `!groq` check — its actual
+  // methods are never called since deps.callGroqAgentChat intercepts first.
+  const fakeGroq = { chat: { completions: { create: async () => { throw new Error("should not be called directly"); } } } } as any;
+  const result = await runCodingAgent(2, "test objective", "", "build it", "main", fakeGroq, deps);
+  if (result.ok !== false || !result.error.toLowerCase().includes("turn limit")) {
+    throw new Error(`CodingAgent: expected a turn-cap failure, got: ${JSON.stringify(result)}`);
+  }
+  // Prove this is actually the turn cap and not some other failure that
+  // happens to look similar (e.g. the token budget, or an unrelated early
+  // return) — a session that ran for 40 turns at 10 tokens/call is nowhere
+  // near the 4,000,000-token default budget, so the message must not claim
+  // otherwise.
+  if (result.error.toLowerCase().includes("token") || result.error.toLowerCase().includes("budget")) {
+    throw new Error(`CodingAgent: turn-cap failure should not also cite the token budget, got: ${result.error}`);
+  }
+});
+
+registerTest("CodingAgent", "runCodingAgent destroys the sandbox workspace on every failure path", async () => {
+  let destroyed = false;
+  const deps = makeFakeCodingAgentDeps({
+    execInWorkspace: async (_id: number, command: string) => {
+      if (command === "git rev-parse HEAD") return { stdout: "", stderr: "fatal: not a git repository", exitCode: 128 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    },
+    destroyWorkspace: async () => { destroyed = true; },
+  });
+  const fakeGroq = {} as any;
+  const result = await runCodingAgent(3, "test objective", "", "build it", "main", fakeGroq, deps);
+  if (result.ok !== false) {
+    throw new Error(`CodingAgent: expected failure when the workspace's base commit can't be resolved, got: ${JSON.stringify(result)}`);
+  }
+  if (!destroyed) {
+    throw new Error("CodingAgent: expected the sandbox workspace to be torn down after this failure");
+  }
+});
+
+// This test relies on reviewTaskDiff failing closed with the `fakeGroq = {}`
+// object passed to runCodingAgent — reviewTaskDiff receives whatever groq
+// client runCodingAgent was given (coding-agent.ts passes the same `groq`
+// parameter straight through to departments.reviewTaskDiff, not anything
+// derived from `deps`), and `{}` as a Groq client throws when
+// `.chat.completions.create` is called on it (not a function), which
+// reviewTaskDiff's own try/catch turns into a fail-closed
+// `{approved: false, ...}` — reuse of the exact fail-closed path
+// reviewTaskDiff already has, no new mock needed for it specifically.
+registerTest("CodingAgent", "a full plan -> execute -> fail cycle: proposes a plan, one task never passes review, fails cleanly after the retry budget", async () => {
+  let planProposed = false;
+  const deps = makeFakeCodingAgentDeps({
+    callGroqAgentChat: async (_groq: any, _messages: any, tools: any) => {
+      const hasProposePlan = tools.some((t: any) => t.function.name === "propose_plan");
+      if (hasProposePlan && !planProposed) {
+        planProposed = true;
+        return {
+          content: null,
+          toolCalls: [{
+            id: "1", type: "function",
+            function: { name: "propose_plan", arguments: JSON.stringify({ tasks: [{ title: "Only task", description: "Do the one thing" }] }) },
+          }],
+          totalTokens: 500,
+          modelUsed: "fake-model",
+        };
+      }
+      // Every task-loop call: the model claims to finish, but this build's
+      // fake reviewTaskDiff (see below) never approves it — so this should
+      // exhaust MAX_TASK_FIX_ATTEMPTS and fail the whole build request.
+      return {
+        content: null,
+        toolCalls: [{ id: "2", type: "function", function: { name: "finish_task", arguments: JSON.stringify({ summary: "done" }) } }],
+        totalTokens: 500,
+        modelUsed: "fake-model",
+      };
+    },
+  });
+  const fakeGroq = {} as any;
+  const result = await runCodingAgent(4, "test objective", "", "build it", "main", fakeGroq, deps);
+  if (result.ok !== false) {
+    throw new Error(`CodingAgent: expected the build to fail once the one task never passes review, got: ${JSON.stringify(result)}`);
+  }
+  if (!result.error.toLowerCase().includes("did not pass review")) {
+    throw new Error(`CodingAgent: expected a "did not pass review" failure message, got: ${result.error}`);
+  }
+  if (!planProposed) {
+    throw new Error("CodingAgent: expected propose_plan to actually be called, proving this went through the plan path, not the flat-loop fallback");
   }
 });
 
