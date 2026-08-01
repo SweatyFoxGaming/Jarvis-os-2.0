@@ -476,50 +476,79 @@ export class AutonomousExecutive {
     // here: isEligibleForAutomaticApproval is the same function
     // runApprovalFlow uses to gate the merge itself, so the two can't diverge.
     if (await isEligibleForAutomaticApproval(draft.files.map((f) => f.path))) {
-      const approvalResult = await runApprovalFlow(recorded, username);
-      if (approvalResult.ok && approvalResult.autonomousMerge) {
-        return {
-          ok: true,
-          message: `Direction confirmed, and I've autonomously merged build request #${recorded.id} — ${approvalResult.buildRequest.pr_url}`,
-        };
-      }
+      // Deliberately NOT awaited. runApprovalFlow legitimately takes minutes
+      // (a full sandbox `npm ci && npm test && tsc`, a real review call, then
+      // branch/commit/PR/merge round-trips), and this method is reached
+      // synchronously from the confirm-direction HTTP route — awaiting here
+      // would block that request for the whole pipeline, risking a
+      // client/proxy timeout that delivers no result at all. It would also
+      // let a pipeline failure surface as `ok: false`, which the route maps
+      // to HTTP 409, misreporting a genuinely successful direction
+      // confirmation as a conflict and skipping its audit event.
+      //
+      // Direction really is confirmed and the code really is drafted by this
+      // point, so the request can return now and the outcome reaches the user
+      // through scheduler.pushNotification — the mechanism this codebase
+      // already uses for exactly this kind of detached async result.
+      void runApprovalFlow(recorded, username)
+        .then((approvalResult) => {
+          if (approvalResult.ok) {
+            // Both success shapes already notified from inside the flow:
+            // "I autonomously merged…" when it merged, "Opened the pull
+            // request…" when it stopped at an open PR. Nothing to add here
+            // beyond a telemetry breadcrumb — notifying again would double up.
+            this.observation.logTelemetry(
+              "info",
+              "Executive",
+              `Automatic approval flow for build request ${recorded.id} finished (autonomousMerge=${approvalResult.autonomousMerge}).`
+            );
+            return;
+          }
+          // Hard failure. Only the review-failed branch notifies internally
+          // (userNotified), so every other branch — verification-could-not-run,
+          // verification-failed, repo-read/branch/commit/PR-open failures —
+          // would otherwise leave the build request parked in
+          // error/review_failed with the user never told. Fill exactly that
+          // gap; there is no HTTP response carrying this news anymore.
+          if (!approvalResult.userNotified) {
+            scheduler.pushNotification(
+              username,
+              `I drafted the code for build request #${recorded.id}, sir, but couldn't carry it through to a pull ` +
+                `request: ${approvalResult.message.slice(0, 300)}${approvalResult.message.length > 300 ? "..." : ""} ` +
+                `It's in the dashboard for you to look at.`,
+              "warning"
+            );
+          }
+          this.observation.logTelemetry(
+            "warn",
+            "Executive",
+            `Automatic approval flow for build request ${recorded.id} failed: ${approvalResult.message}`
+          );
+        })
+        .catch((err: any) => {
+          // runApprovalFlow returns failures rather than throwing, so this is
+          // the genuinely-unexpected case — but it must exist regardless, or a
+          // throw here becomes an unhandled rejection that could take the
+          // process down. Notify too: an unexpected throw is exactly the case
+          // where the user would otherwise hear nothing at all.
+          this.observation.logTelemetry(
+            "warn",
+            "Executive",
+            `Automatic approval flow for build request ${recorded.id} threw unexpectedly: ${err?.message ?? err}`
+          );
+          scheduler.pushNotification(
+            username,
+            `I drafted the code for build request #${recorded.id}, sir, but hit an unexpected problem while ` +
+              `carrying it through to a pull request. It's in the dashboard for you to look at.`,
+            "warning"
+          );
+        });
 
-      // Eligible, but this attempt didn't end in a merge. Not because
-      // eligibility was false — we just confirmed it was true — but because
-      // the attempt hit something: review failed, verification failed, a
-      // GitHub call failed, or the merge itself failed after the PR opened.
-      // Nobody is watching an HTTP response on this path, so every sub-case
-      // has to end with the user actually told what happened.
-      if (approvalResult.ok) {
-        // PR opened, merge didn't land (merge call failed, or the row update
-        // didn't stick). runApprovalFlow already pushed "Opened the pull
-        // request…", so don't notify twice.
-        return {
-          ok: true,
-          message:
-            `Direction confirmed. I've drafted ${draft.files.length} file(s) and opened a pull request for ` +
-            `build request #${recorded.id} — ${approvalResult.buildRequest.pr_url}. I wasn't able to merge it ` +
-            `automatically, so it's waiting for your review and merge.`,
-        };
-      }
-
-      // Hard failure. Only the review-failed branch notifies internally
-      // (userNotified), so every other branch — verification-could-not-run,
-      // verification-failed, repo-read/branch/commit/PR-open failures — would
-      // otherwise leave the build request parked in error/review_failed with
-      // the user never told. Fill exactly that gap.
-      if (!approvalResult.userNotified) {
-        scheduler.pushNotification(
-          username,
-          `I drafted the code for build request #${recorded.id}, sir, but couldn't carry it through to a pull ` +
-            `request: ${approvalResult.message.slice(0, 300)}${approvalResult.message.length > 300 ? "..." : ""} ` +
-            `It's in the dashboard for you to look at.`,
-          "warning"
-        );
-      }
       return {
-        ok: false,
-        message: `Direction confirmed and code drafted, but I couldn't complete the pull request for build request #${recorded.id}: ${approvalResult.message}`,
+        ok: true,
+        message:
+          `Direction confirmed. I've drafted ${draft.files.length} file(s) — build request #${recorded.id} qualifies ` +
+          `for autonomous handling, so I'm carrying it through automatically and will notify you of the outcome.`,
       };
     }
 

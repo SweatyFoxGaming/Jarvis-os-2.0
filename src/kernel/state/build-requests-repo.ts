@@ -268,7 +268,15 @@ export async function markAutonomousMerge(id: number): Promise<BuildRequestRow |
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `UPDATE build_requests SET autonomous_merge = true, updated_at = now() WHERE id = $1 AND status = 'pr_opened' RETURNING *`,
+      // Accepts 'qa_complete' as well as 'pr_opened': the approval flow calls
+      // recordQaReview (which moves the row pr_opened -> qa_complete) before
+      // it reaches the autonomous-merge decision, so a 'pr_opened'-only guard
+      // would match zero rows every single time — silently leaving
+      // autonomous_merge false, which would in turn make
+      // countAutonomousMergesToday always return 0 and the daily cap never
+      // bind. Both statuses mean "the PR is open and recorded", which is the
+      // real precondition for marking it autonomously merged.
+      `UPDATE build_requests SET autonomous_merge = true, updated_at = now() WHERE id = $1 AND status IN ('pr_opened', 'qa_complete') RETURNING *`,
       [id]
     );
     return rows[0] || null;
