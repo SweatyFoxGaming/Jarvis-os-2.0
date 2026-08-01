@@ -23,7 +23,6 @@ import * as mcpRegistry from "./mcp-registry.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
 import * as obsidian from "./providers/obsidian.js";
 import * as builderClient from "../kernel/builder-client.js";
-import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -75,7 +74,6 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   update_objective_status: "objectives.write",
   record_command_outcome: "system.execute",
   propose_mcp_server: "system.mcp_manage",
-  confirm_build_direction: "executive.plan",
   search_vault: "vault.read",
   get_vault_note: "vault.read",
   get_vault_backlinks: "vault.read",
@@ -146,18 +144,6 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
         objective: { type: Type.STRING, description: "The high-level objective to decompose into steps" },
       },
       required: ["objective"],
-    },
-  },
-  {
-    name: "confirm_build_direction",
-    description:
-      "Call this ONLY when the user has explicitly confirmed the direction for something you researched and discussed with them (not just a casual 'sounds interesting') — this locks in the direction and starts drafting real code. Never call this speculatively or before a genuine research-and-discussion exchange about a build request.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        directionNotes: { type: Type.STRING, description: "A clear summary of the direction the user confirmed — what to build, key choices discussed (stack, scope, style)" },
-      },
-      required: ["directionNotes"],
     },
   },
   {
@@ -531,37 +517,6 @@ export async function executeTool(
         output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session, username);
         break;
       }
-      case "confirm_build_direction": {
-        // TODO(Task 3): this tool is being removed entirely, replaced by
-        // the id-scoped confirm-token HTTP flow (AutonomousExecutive's new
-        // confirmDirectionForBuildRequest plus the
-        // /api/system/build-requests/:id/confirm-token routes) — see this
-        // plan's design spec. Until that removal lands, this call site
-        // still has to resolve a buildRequestId itself, the same way the
-        // now-removed confirmDirection() used to, since this tool's schema
-        // carries no id of its own. Reward-gate row (status
-        // 'direction_confirmed') takes priority over a fresh awaiting_consult
-        // row, same order the old confirmDirection() checked them in — a
-        // user can never have both simultaneously (see executeObjective's
-        // own guards), but checking the reward gate first is what lets a
-        // repeated "confirm direction" actually proceed past a bad-track-
-        // record pause instead of always hitting the wrong error.
-        const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
-        const pendingBuildRequest = pendingRewardGate || await buildRequestsRepo.getLatestAwaitingConsult(username);
-        if (!pendingBuildRequest) {
-          return { name, ok: false, error: "There's no build request of mine currently awaiting your direction to confirm." };
-        }
-        const result = await AutonomousExecutive.getInstance().confirmDirectionForBuildRequest(
-          pendingBuildRequest.id,
-          args.directionNotes,
-          username
-        );
-        if (!result.ok) {
-          return { name, ok: false, error: result.message };
-        }
-        output = { message: result.message };
-        break;
-      }
       case "calendar_list_events":
         output = await calendar.listEvents(args.timeMinISO, args.timeMaxISO);
         break;
@@ -725,11 +680,11 @@ export async function executeTool(
 // Keyword triggers per tool, not a single flat list — makes it obvious which
 // tool a match implies. This is a hand-maintained list, deliberately not
 // derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
-// display_content, update_objective_status, record_command_outcome,
-// confirm_build_direction) are intentionally absent because they should only
-// ever be invoked as a model-driven follow-up, never routed to directly by
-// keyword match. If you add a tool that SHOULD be keyword-routable, add its
-// entry here too — nothing enforces the two staying in sync.
+// display_content, update_objective_status, record_command_outcome) are
+// intentionally absent because they should only ever be invoked as a
+// model-driven follow-up, never routed to directly by keyword match. If you
+// add a tool that SHOULD be keyword-routable, add its entry here too —
+// nothing enforces the two staying in sync.
 const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
   github_create_issue: ["github", "issue", "repo", "repository"],
