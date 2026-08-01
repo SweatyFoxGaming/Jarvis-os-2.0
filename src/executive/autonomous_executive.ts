@@ -9,6 +9,7 @@ import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 import * as departments from "./departments.js";
 import * as scheduler from "../kernel/scheduler.js";
 import * as codingAgent from "./coding-agent.js";
+import { runApprovalFlow } from "./build-approval.js";
 import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
@@ -466,6 +467,35 @@ export class AutonomousExecutive {
     }).catch((err: any) => {
       this.observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
     });
+
+    // Auto-merge is attempted here, right when the build request first
+    // reaches awaiting_code_approval — runApprovalFlow itself re-checks
+    // eligibility/grant/cap and falls back to leaving the build request
+    // waiting for a human click if any of them don't hold, so this call is
+    // always safe to attempt regardless of whether autonomy is actually on.
+    // Deliberately no eligibility logic duplicated here: one decision point,
+    // in one place, is the whole point of extracting build-approval.ts.
+    const approvalResult = await runApprovalFlow(recorded, username);
+    if (approvalResult.ok) {
+      if (approvalResult.autonomousMerge) {
+        return {
+          ok: true,
+          message: `Direction confirmed, and I've autonomously merged build request #${recorded.id} — ${approvalResult.buildRequest.pr_url}`,
+        };
+      }
+      // The flow succeeded but stopped short of merging (not eligible, grant
+      // absent, cap reached, or the merge call itself failed): the PR is
+      // already open and runApprovalFlow has already pushed its own "Opened
+      // the pull request" notification. Falling through to the notification
+      // below would claim the code is still waiting for approval *before* a
+      // PR exists, which is now false on every ordinary build request.
+      return {
+        ok: true,
+        message:
+          `Direction confirmed. I've drafted ${draft.files.length} file(s) and opened a pull request for ` +
+          `build request #${recorded.id} — ${approvalResult.buildRequest.pr_url}. It's waiting for your review and merge.`,
+      };
+    }
 
     scheduler.pushNotification(
       username,
