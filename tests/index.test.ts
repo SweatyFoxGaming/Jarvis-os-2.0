@@ -1817,6 +1817,13 @@ registerTest("BuildRequests", "getLatestPendingRewardGate degrades cleanly when 
   }
 });
 
+registerTest("BuildRequests", "markReviewFailed degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await buildRequestsRepo.markReviewFailed(1, "simulated findings");
+  if (result !== null) {
+    throw new Error(`BuildRequests: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
 // ---------- BuildRequestsRoutes: isEligibleForConfirmToken (pure, no DB) ----------
 // The confirm-token route itself can't be exercised end-to-end for the
 // success case in this harness (no live Postgres means getBuildRequest

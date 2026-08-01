@@ -2767,12 +2767,13 @@
         direction_confirmed: { label: 'DIRECTION CONFIRMED', classes: 'border-primary/25 text-primary bg-primary/5' },
         coding: { label: 'CODING', classes: 'border-primary/25 text-primary bg-primary/5' },
         awaiting_code_approval: { label: 'AWAITING APPROVAL', classes: 'border-warning/25 text-warning bg-warning/5' },
+        review_failed: { label: 'REVIEW FAILED', classes: 'border-danger/25 text-danger bg-danger/5' },
         pr_opened: { label: 'PR OPENED', classes: 'border-success/25 text-success bg-success/5' },
         qa_complete: { label: 'QA COMPLETE', classes: 'border-success/25 text-success bg-success/5' },
         rejected_at_code: { label: 'REJECTED', classes: 'border-secondary/25 text-secondary bg-secondary/5' },
         error: { label: 'ERROR', classes: 'border-danger/25 text-danger bg-danger/5' },
     };
-    const BUILD_REQUEST_TERMINAL_STATUSES = ['pr_opened', 'qa_complete', 'rejected_at_code', 'error'];
+    const BUILD_REQUEST_TERMINAL_STATUSES = ['review_failed', 'pr_opened', 'qa_complete', 'rejected_at_code', 'error'];
 
     let BUILD_REQUESTS_CACHE = [];
 

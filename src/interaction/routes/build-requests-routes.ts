@@ -230,7 +230,18 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
         // AI, for as long as the review call took. Computing it first means
         // its findings can actually be baked into the PR body itself instead
         // of arriving as a note attached after the fact.
-        const qaSummary = (await departments.reviewCodeDiff(buildRequest.objective, files, getGroq())).findings;
+        const review = await departments.reviewCodeDiff(buildRequest.objective, files, getGroq());
+        if (!review.approved) {
+          await buildRequestsRepo.markReviewFailed(buildRequest.id, review.findings);
+          observation.logAuditEvent(req.username, "build_request_review_failed", "success", `#${buildRequest.id}: ${review.findings.slice(0, 200)}`);
+          scheduler.pushNotification(
+            req.username,
+            `I held build request #${buildRequest.id} back from opening a pull request, sir — my own review found a problem: ${review.findings.slice(0, 300)}`,
+            "warning"
+          );
+          return res.status(422).json({ error: `Automated review did not approve this change: ${review.findings}` });
+        }
+        const qaSummary = review.findings;
 
         const branchName = `jarvis/build-request-${buildRequest.id}`;
 

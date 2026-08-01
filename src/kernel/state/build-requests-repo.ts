@@ -9,6 +9,7 @@ export type BuildRequestStatus =
   | "direction_confirmed"
   | "coding"
   | "awaiting_code_approval"
+  | "review_failed"
   | "pr_opened"
   | "qa_complete"
   | "rejected_at_code"
@@ -269,6 +270,21 @@ export async function markPrError(id: number, errorDetail: string): Promise<void
   } catch (err: any) {
     // Best-effort.
     observation.logTelemetry("warn", "BuildRequests", `markPrError(${id}) failed: ${err.message}`);
+  }
+}
+
+export async function markReviewFailed(id: number, findings: string): Promise<BuildRequestRow | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `UPDATE build_requests SET status = 'review_failed', qa_summary = $1, updated_at = now()
+       WHERE id = $2 AND status = 'awaiting_code_approval' RETURNING *`,
+      [findings, id]
+    );
+    return rows[0] || null;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "BuildRequests", `markReviewFailed failed for build request ${id}: ${err.message}`);
+    return null;
   }
 }
 
