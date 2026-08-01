@@ -1514,6 +1514,27 @@ registerTest("HTTP Boundary", "POST /api/invites is refused for a non-admin user
       throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/invites, got ${noKey.status}`);
     }
 
+    // DB-independent positive-path check on invites-routes.ts's OWN admin
+    // gate, not just validateApiKey's: TEST_ADMIN_API_KEY matches
+    // INTERNAL_API_KEY directly (see auth-middleware.ts's safeCompare
+    // branch), so this resolves req.username to "admin" with no Postgres
+    // lookup at all. Mirrors the precedent set by "newly capability-gated
+    // routes reject unauthenticated requests and admit a granted admin"
+    // above — asserting the admin caller is never rejected by the route's
+    // `req.username !== "admin"` check catches an accidental "always 403"
+    // or inverted-condition regression in invites-routes.ts specifically,
+    // deterministically, with no live Postgres required. (The handler's
+    // own countNonAdminUsers() call further inside may still fail without
+    // Postgres, which is fine — that failure path is its own try/catch
+    // 500, never 401/403, so it doesn't muddy this assertion.)
+    const adminRes = await fetch(`http://127.0.0.1:${port}/api/invites`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (adminRes.status === 401 || adminRes.status === 403) {
+      throw new Error(`HTTP Boundary: admin should never be rejected by the admin-only check on POST /api/invites, got ${adminRes.status}`);
+    }
+
     let nonAdminKey: string | null = null;
     try {
       nonAdminKey = await createUser(`invite_test_non_admin_${Date.now()}`, "irrelevant-password-1234");
