@@ -100,6 +100,15 @@ export async function createPullRequest(
   return created;
 }
 
+export async function mergePullRequest(owner: string, repo: string, pullNumber: number) {
+  const merged = await githubRequest(`/repos/${owner}/${repo}/pulls/${pullNumber}/merge`, {
+    method: "PUT",
+    body: JSON.stringify({ merge_method: "squash" }),
+  });
+  observation.logTelemetry("info", "Integrations", `GitHub PR merged: ${owner}/${repo}#${pullNumber}`);
+  return merged;
+}
+
 export async function listPullRequests(owner: string, repo: string, state: "open" | "closed" | "all" = "open") {
   return githubRequest(`/repos/${owner}/${repo}/pulls?state=${state}`);
 }
