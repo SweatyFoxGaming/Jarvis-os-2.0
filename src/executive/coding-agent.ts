@@ -12,6 +12,26 @@ import Groq from "groq-sdk";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 import { classifyTaskCategory } from "./task-category.js";
 
+// Everything runCodingAgent touches outside its own pure logic — the
+// sandbox lifecycle and the Groq call — routed through this so tests can
+// substitute fakes instead of needing a live Docker sandbox or a live Groq
+// account to exercise the turn/token-budget and retry logic meaningfully.
+// Defaults point at the real implementations; no caller outside tests
+// needs to pass this parameter at all.
+export interface CodingAgentDeps {
+  createWorkspace: typeof builderClient.createWorkspace;
+  execInWorkspace: typeof builderClient.execInWorkspace;
+  destroyWorkspace: typeof builderClient.destroyWorkspace;
+  callGroqAgentChat: typeof callGroqAgentChat;
+}
+
+export const DEFAULT_CODING_AGENT_DEPS: CodingAgentDeps = {
+  createWorkspace: builderClient.createWorkspace,
+  execInWorkspace: builderClient.execInWorkspace,
+  destroyWorkspace: builderClient.destroyWorkspace,
+  callGroqAgentChat,
+};
+
 const observation = ObservationPlatform.getInstance();
 
 // Defense-in-depth alongside jarvis-builder's own 1-hour reaper (Plan 1) —
@@ -132,7 +152,8 @@ export async function runCodingAgent(
   researchSummary: string,
   directionNotes: string,
   baseBranch: string,
-  groq: Groq | null
+  groq: Groq | null,
+  deps: CodingAgentDeps = DEFAULT_CODING_AGENT_DEPS
 ): Promise<CodingAgentResult> {
   if (!groq) {
     return { ok: false, error: "No Groq client is configured — the agentic coding loop is unavailable." };
@@ -142,7 +163,7 @@ export async function runCodingAgent(
   const modelOrder = await rewardEventsRepo.getModelPreferenceOrder(DEFAULT_MODELS);
 
   try {
-    await builderClient.createWorkspace(buildRequestId, baseBranch);
+    await deps.createWorkspace(buildRequestId, baseBranch);
   } catch (err: any) {
     return { ok: false, error: `Failed to create the sandboxed workspace: ${err.message}` };
   }
@@ -155,18 +176,18 @@ export async function runCodingAgent(
   // request wedged in 'coding' with no recovery path.
   let baseShaResult: { stdout: string; stderr: string; exitCode: number };
   try {
-    baseShaResult = await builderClient.execInWorkspace(buildRequestId, "git rev-parse HEAD");
+    baseShaResult = await deps.execInWorkspace(buildRequestId, "git rev-parse HEAD");
   } catch (err: any) {
-    await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+    await deps.destroyWorkspace(buildRequestId).catch(() => {});
     return { ok: false, error: `Failed to resolve the workspace's starting commit: ${err.message}` };
   }
   if (baseShaResult.exitCode !== 0) {
-    await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+    await deps.destroyWorkspace(buildRequestId).catch(() => {});
     return { ok: false, error: `Failed to resolve the workspace's starting commit: ${baseShaResult.stderr}` };
   }
   const baseSha = baseShaResult.stdout.trim();
 
-  const planResult = await proposePlan(buildRequestId, groq, objective, researchSummary, directionNotes, modelOrder);
+  const planResult = await proposePlan(buildRequestId, groq, objective, researchSummary, directionNotes, modelOrder, deps);
   // Planning is the session's genuinely first LLM call, so its model is the
   // session's first model. Seeding here (rather than starting at null below)
   // keeps the "first non-null wins" capture in the loops from overwriting it
@@ -181,7 +202,7 @@ export async function runCodingAgent(
     // planResult.tokensUsed seeds the flat loop's own counter so planning's
     // spend still counts against the one session budget, not a separate
     // allowance outside it.
-    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, groq, category, modelOrder, planResult.modelUsed, planResult.tokensUsed);
+    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, groq, category, modelOrder, planResult.modelUsed, planResult.tokensUsed, deps);
   }
   const plan = planResult.tasks;
 
@@ -203,10 +224,10 @@ export async function runCodingAgent(
     for (const task of plan) {
       await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "in_progress");
 
-      const taskBaseShaResult = await builderClient.execInWorkspace(buildRequestId, "git rev-parse HEAD");
+      const taskBaseShaResult = await deps.execInWorkspace(buildRequestId, "git rev-parse HEAD");
       if (taskBaseShaResult.exitCode !== 0) {
         await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "failed");
-        await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+        await deps.destroyWorkspace(buildRequestId).catch(() => {});
         return { ok: false, error: `Failed to resolve the starting commit for task "${task.title}": ${taskBaseShaResult.stderr}` };
       }
       const taskBaseSha = taskBaseShaResult.stdout.trim();
@@ -257,7 +278,7 @@ export async function runCodingAgent(
           }
           taskTurns++;
 
-          const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL], modelOrder);
+          const response = await deps.callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL], modelOrder);
           if (response.totalTokens) {
             tokensUsed += response.totalTokens;
             await incrementTokenUsage(buildRequestId, response.totalTokens);
@@ -320,7 +341,7 @@ export async function runCodingAgent(
                 continue;
               }
 
-              const result = await builderClient
+              const result = await deps
                 .execInWorkspace(buildRequestId, command)
                 .catch((err: any) => ({ stdout: "", stderr: err.message || String(err), exitCode: -1 }));
 
@@ -353,14 +374,14 @@ export async function runCodingAgent(
           break;
         }
 
-        const { files: taskFiles, skipped: taskSkipped } = await extractChangedFiles(buildRequestId, taskBaseSha);
+        const { files: taskFiles, skipped: taskSkipped } = await extractChangedFiles(buildRequestId, taskBaseSha, deps);
         // A deterministic gate ahead of the LLM reviewer: code that doesn't
         // even compile or pass its own tests shouldn't reach an LLM
         // judgment call at all — this is real, not up to interpretation.
         // Reuses the exact retry-with-feedback path below (rewardEventsRepo
         // recording, lastFindings, the approve/retry branch) unchanged;
         // only the source of `verdict` changes on a verification failure.
-        const verifyResult = await builderClient
+        const verifyResult = await deps
           .execInWorkspace(buildRequestId, "npx tsc --noEmit && npm test")
           .catch((err: any) => ({ stdout: "", stderr: err.message || String(err), exitCode: -1 }));
         seq++;
@@ -392,7 +413,7 @@ export async function runCodingAgent(
           // if it fails for any reason, the next task's taskBaseSha just
           // falls back to reviewing more than its own diff, same as today,
           // not worse.
-          await builderClient
+          await deps
             .execInWorkspace(
               buildRequestId,
               `git -c user.email=jarvis@local -c user.name=Jarvis commit -q --allow-empty -m "Task ${task.seq} committed by Jarvis"`
@@ -424,16 +445,16 @@ export async function runCodingAgent(
             : `hit its ${MAX_TASK_TURNS}-turn limit without calling finish_task`
           : `did not pass review after ${MAX_TASK_FIX_ATTEMPTS + 1} attempt(s)${lastFindings ? `: ${lastFindings}` : ""}`;
         await codingPlanTasksRepo.updateTaskStatus(buildRequestId, task.seq, "failed", failureReason);
-        await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+        await deps.destroyWorkspace(buildRequestId).catch(() => {});
         return { ok: false, error: `Task "${task.title}" ${failureReason}.` };
       }
 
       completedSummaries.push(`- ${task.title}: ${taskSummary}`);
     }
 
-    const { files, skipped } = await extractChangedFiles(buildRequestId, baseSha);
+    const { files, skipped } = await extractChangedFiles(buildRequestId, baseSha, deps);
     if (files.length === 0) {
-      await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+      await deps.destroyWorkspace(buildRequestId).catch(() => {});
       return { ok: false, error: "The coding session finished but left no changed files to propose." };
     }
     const summary =
@@ -442,7 +463,7 @@ export async function runCodingAgent(
     return { ok: true, summary, files, modelUsed: sessionModelUsed, category };
   } catch (err: any) {
     observation.logTelemetry("warn", "Executive", `Coding agent loop failed for build request #${buildRequestId}: ${err.message}`);
-    await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+    await deps.destroyWorkspace(buildRequestId).catch(() => {});
     return { ok: false, error: `The coding session failed: ${err.message}` };
   }
 }
@@ -473,7 +494,8 @@ async function proposePlan(
   objective: string,
   researchSummary: string,
   directionNotes: string,
-  modelOrder: string[]
+  modelOrder: string[],
+  deps: CodingAgentDeps
 ): Promise<ProposePlanResult> {
   const messages: AgentMessage[] = [
     {
@@ -492,7 +514,7 @@ async function proposePlan(
 
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await callGroqAgentChat(groq, messages, [PROPOSE_PLAN_TOOL], modelOrder);
+      const response = await deps.callGroqAgentChat(groq, messages, [PROPOSE_PLAN_TOOL], modelOrder);
       if (response.modelUsed && !modelUsed) {
         modelUsed = response.modelUsed;
       }
@@ -580,7 +602,8 @@ async function runFlatCodingLoop(
   // living outside it. Defaults to 0 for the (currently nonexistent, but
   // cheap to keep honest) case of a direct caller that skipped planning
   // entirely.
-  initialTokensUsed = 0
+  initialTokensUsed = 0,
+  deps: CodingAgentDeps = DEFAULT_CODING_AGENT_DEPS
 ): Promise<CodingAgentResult> {
   const categoryCaution = await buildCategoryCaution(category);
 
@@ -603,14 +626,14 @@ async function runFlatCodingLoop(
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
-        await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+        await deps.destroyWorkspace(buildRequestId).catch(() => {});
         return {
           ok: false,
           error: `The coding session hit its ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget without calling finish_coding.`,
         };
       }
 
-      const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL], modelOrder);
+      const response = await deps.callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL], modelOrder);
       if (response.totalTokens) {
         tokensUsed += response.totalTokens;
         await incrementTokenUsage(buildRequestId, response.totalTokens);
@@ -623,7 +646,7 @@ async function runFlatCodingLoop(
       // tool calls processed, including a finish_coding that would let the
       // whole session complete as if it never went over budget.
       if (tokensUsed >= MAX_TOKENS_PER_SESSION) {
-        await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+        await deps.destroyWorkspace(buildRequestId).catch(() => {});
         return {
           ok: false,
           error: `The coding session hit its ${MAX_TOKENS_PER_SESSION.toLocaleString()}-token session budget without calling finish_coding.`,
@@ -675,7 +698,7 @@ async function runFlatCodingLoop(
             continue;
           }
 
-          const result = await builderClient
+          const result = await deps
             .execInWorkspace(buildRequestId, command)
             .catch((err: any) => ({ stdout: "", stderr: err.message || String(err), exitCode: -1 }));
 
@@ -698,9 +721,9 @@ async function runFlatCodingLoop(
       }
 
       if (finishedSummary !== null) {
-        const { files, skipped } = await extractChangedFiles(buildRequestId, baseSha);
+        const { files, skipped } = await extractChangedFiles(buildRequestId, baseSha, deps);
         if (files.length === 0) {
-          await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+          await deps.destroyWorkspace(buildRequestId).catch(() => {});
           return { ok: false, error: "The coding session finished but left no changed files to propose." };
         }
         const summary =
@@ -711,11 +734,11 @@ async function runFlatCodingLoop(
       }
     }
 
-    await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+    await deps.destroyWorkspace(buildRequestId).catch(() => {});
     return { ok: false, error: `The coding session hit its ${MAX_TURNS}-turn limit without calling finish_coding.` };
   } catch (err: any) {
     observation.logTelemetry("warn", "Executive", `Coding agent loop failed for build request #${buildRequestId}: ${err.message}`);
-    await builderClient.destroyWorkspace(buildRequestId).catch(() => {});
+    await deps.destroyWorkspace(buildRequestId).catch(() => {});
     return { ok: false, error: `The coding session failed: ${err.message}` };
   }
 }
@@ -738,14 +761,15 @@ async function runFlatCodingLoop(
 // files.
 async function extractChangedFiles(
   buildRequestId: number,
-  baseSha: string
+  baseSha: string,
+  deps: CodingAgentDeps
 ): Promise<{ files: DraftedFile[]; skipped: string[] }> {
-  const addResult = await builderClient.execInWorkspace(buildRequestId, "git add -A");
+  const addResult = await deps.execInWorkspace(buildRequestId, "git add -A");
   if (addResult.exitCode !== 0) {
     throw new Error(`git add -A failed: ${addResult.stderr}`);
   }
 
-  const diffResult = await builderClient.execInWorkspace(buildRequestId, `git diff --name-only ${baseSha}`);
+  const diffResult = await deps.execInWorkspace(buildRequestId, `git diff --name-only ${baseSha}`);
   if (diffResult.exitCode !== 0) {
     throw new Error(`git diff failed: ${diffResult.stderr}`);
   }
@@ -757,7 +781,7 @@ async function extractChangedFiles(
   const files: DraftedFile[] = [];
   const skipped: string[] = [];
   for (const path of paths) {
-    const catResult = await builderClient.execInWorkspace(buildRequestId, `cat "${path}"`);
+    const catResult = await deps.execInWorkspace(buildRequestId, `cat "${path}"`);
     if (catResult.exitCode === 0) {
       files.push({ path, content: catResult.stdout });
     } else {
