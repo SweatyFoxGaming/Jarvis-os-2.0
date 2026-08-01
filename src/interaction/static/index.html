@@ -2816,6 +2816,11 @@
                     </div>
                 ` : '';
                 const prLink = r.pr_url ? `<a href="${escapeHtml(r.pr_url)}" target="_blank" rel="noopener noreferrer" class="text-[10px] text-primary underline block mt-1.5">View pull request &rarr;</a>` : '';
+                const confirmDirectionButton = r.status === 'awaiting_consult' ? `
+                    <div class="mt-2">
+                        <button onclick="confirmBuildRequestDirection(${r.id})" class="w-full px-2 py-1 rounded border border-primary/25 text-primary bg-primary/5 text-[10px] font-mono font-bold uppercase tracking-widest hover:bg-primary/10">Confirm Direction</button>
+                    </div>
+                ` : '';
                 return `
                     <div class="holo-chip border ${style.classes.split(' ')[0]} rounded-xl p-3.5">
                         <div class="flex items-center justify-between mb-1.5">
@@ -2824,6 +2829,7 @@
                         </div>
                         ${summary ? `<p class="text-[11px] text-text/80 leading-snug mb-1.5">${escapeHtml(summary.slice(0, 300))}</p>` : ''}
                         ${prLink}
+                        ${confirmDirectionButton}
                         <button onclick="viewBuildRequestActivity(${r.id})" class="text-[10px] text-primary underline block mt-1.5">View activity &rarr;</button>
                         <button onclick="viewBuildRequestPlan(${r.id})" class="text-[10px] text-primary underline block mt-0.5">View plan &rarr;</button>
                         ${fileList}
@@ -2923,6 +2929,36 @@
 
     function closeBuildRequestPlan() {
         document.getElementById('build-request-plan-panel').classList.add('hidden');
+    }
+
+    async function confirmBuildRequestDirection(id) {
+        if (!CURRENT_API_KEY) return;
+        const directionNotes = prompt('Confirm the direction for this build request — summarize what to build and any key choices discussed:');
+        if (!directionNotes || !directionNotes.trim()) return;
+        try {
+            const headers = { 'X-API-Key': CURRENT_API_KEY };
+            const tokenRes = await authFetch(`/api/system/build-requests/${id}/confirm-token`, { method: 'POST', headers });
+            if (!tokenRes.ok) {
+                const err = await tokenRes.json().catch(() => ({}));
+                addNotification(err.error || 'Could not get a confirmation token.', 'error');
+                return;
+            }
+            const { token } = await tokenRes.json();
+            const confirmRes = await authFetch(`/api/system/build-requests/${id}/confirm-direction`, {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, directionNotes: directionNotes.trim() }),
+            });
+            if (confirmRes.ok) {
+                addNotification('Direction confirmed — Jarvis is starting to code.', 'success');
+                loadBuildRequests();
+            } else {
+                const err = await confirmRes.json().catch(() => ({}));
+                addNotification(err.error || 'Failed to confirm direction.', 'error');
+            }
+        } catch {
+            addNotification('Failed to confirm direction.', 'error');
+        }
     }
 
     async function approveBuildRequest(id) {
