@@ -26,7 +26,39 @@ const AUTONOMOUS_MERGE_DAILY_CAP = 3;
 
 export type ApprovalFlowResult =
   | { ok: true; buildRequest: BuildRequestRow; qaSummary: string; autonomousMerge: boolean }
-  | { ok: false; httpStatus: number; message: string };
+  // `userNotified` tells an *automatic* caller (startCoding) whether this
+  // branch already pushed a notification of its own. The HTTP route ignores
+  // it — a human clicking Approve reads the failure straight off the
+  // response — but the automatic path has nobody watching a response, so it
+  // has to guarantee the user hears about every outcome without
+  // double-notifying on the one branch that speaks for itself.
+  | { ok: false; httpStatus: number; message: string; userNotified: boolean };
+
+// Every failure return goes through this, so `userNotified` is always an
+// explicit decision rather than something a newly-added branch can silently
+// forget to set.
+function fail(httpStatus: number, message: string, userNotified = false): ApprovalFlowResult {
+  return { ok: false, httpStatus, message, userNotified };
+}
+
+/**
+ * The single source of truth for "should this attempt proceed with zero human
+ * involvement" — used both to gate whether startCoding invokes the pipeline
+ * automatically at all, and (inside runApprovalFlow) to gate the merge call
+ * specifically. One function, one place, so the two call sites can never
+ * silently diverge on what "eligible" means.
+ *
+ * Ordered cheapest-and-most-restrictive first: the grant is a synchronous
+ * in-memory lookup and is false by default, so the DB round-trip for the
+ * daily count is never issued on the ordinary path.
+ */
+export async function isEligibleForAutomaticApproval(changedFilePaths: string[]): Promise<boolean> {
+  return (
+    permissions.hasGrant("admin", AUTONOMOUS_MERGE_CAPABILITY) &&
+    isAutoMergeEligible(changedFilePaths) &&
+    (await buildRequestsRepo.countAutonomousMergesToday()) < AUTONOMOUS_MERGE_DAILY_CAP
+  );
+}
 
 // Rejects a proposed file path before any GitHub call happens. Nothing
 // upstream validates these paths beyond "non-empty string" — the coding
@@ -67,13 +99,13 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
   const owner = process.env.SELF_REPO_OWNER;
   const repoName = process.env.SELF_REPO_NAME;
   if (!owner || !repoName) {
-    return { ok: false, httpStatus: 503, message: "SELF_REPO_OWNER/SELF_REPO_NAME are not configured." };
+    return fail(503, "SELF_REPO_OWNER/SELF_REPO_NAME are not configured.");
   }
   if (buildRequest.status !== "awaiting_code_approval") {
-    return { ok: false, httpStatus: 404, message: "Build request not found or not awaiting approval" };
+    return fail(404, "Build request not found or not awaiting approval");
   }
   if (inFlightBuildRequestApprovals.has(buildRequest.id)) {
-    return { ok: false, httpStatus: 409, message: "This build request is already being approved or rejected." };
+    return fail(409, "This build request is already being approved or rejected.");
   }
   inFlightBuildRequestApprovals.add(buildRequest.id);
 
@@ -82,7 +114,7 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
     if (files.length === 0) {
       await buildRequestsRepo.markPrError(buildRequest.id, "No proposed files to commit.");
       await builderClient.destroyWorkspace(buildRequest.id).catch(() => {});
-      return { ok: false, httpStatus: 422, message: "No proposed files to commit." };
+      return fail(422, "No proposed files to commit.");
     }
 
     // Closing the gap noted above: reject the whole approval loudly and
@@ -93,7 +125,7 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
       const message = `Refusing to commit unsafe file path(s): ${unsafePaths.join(", ")}`;
       await buildRequestsRepo.markPrError(buildRequest.id, message);
       await builderClient.destroyWorkspace(buildRequest.id).catch(() => {});
-      return { ok: false, httpStatus: 422, message };
+      return fail(422, message);
     }
 
     // From here on, this build request's sandbox workspace is still alive —
@@ -117,7 +149,7 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
       } catch (err: any) {
         const message = `Final verification could not run: ${err.message}`;
         await buildRequestsRepo.markPrError(buildRequest.id, message);
-        return { ok: false, httpStatus: 502, message };
+        return fail(502, message);
       }
 
       // A missing/reaped sandbox container (the approval sat long enough for
@@ -131,18 +163,16 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
       // to close it out cleanly.
       const sandboxGone = verify.exitCode === 125 || /No such container|is not running/i.test(verify.stderr);
       if (sandboxGone) {
-        return {
-          ok: false,
-          httpStatus: 503,
-          message:
-            "The sandbox workspace for this build request is no longer available (it may have expired). The proposed files are still recorded — reject this request to close it out.",
-        };
+        return fail(
+          503,
+          "The sandbox workspace for this build request is no longer available (it may have expired). The proposed files are still recorded — reject this request to close it out."
+        );
       }
 
       if (verify.exitCode !== 0) {
         const message = `Final verification failed (exit ${verify.exitCode}):\n${verify.stdout.slice(-2000)}\n${verify.stderr.slice(-2000)}`;
         await buildRequestsRepo.markPrError(buildRequest.id, message);
-        return { ok: false, httpStatus: 422, message };
+        return fail(422, message);
       }
 
       // Runs before any GitHub write happens, not after: this diff is about
@@ -168,7 +198,8 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
           `I held build request #${buildRequest.id} back from opening a pull request, sir — my own review found a problem: ${review.findings.slice(0, 300)}`,
           "warning"
         );
-        return { ok: false, httpStatus: 422, message: `Automated review did not approve this change: ${review.findings}` };
+        // userNotified: this branch pushed its own specific warning above.
+        return fail(422, `Automated review did not approve this change: ${review.findings}`, true);
       }
       const qaSummary = review.findings;
 
@@ -180,7 +211,7 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
       } catch (err: any) {
         const message = `Failed to read repo default branch: ${err.message}`;
         await buildRequestsRepo.markPrError(buildRequest.id, message);
-        return { ok: false, httpStatus: 502, message };
+        return fail(502, message);
       }
       const baseBranch = repoInfo.default_branch;
 
@@ -189,7 +220,7 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
       } catch (err: any) {
         const message = `Failed to create branch: ${err.message}`;
         await buildRequestsRepo.markPrError(buildRequest.id, message);
-        return { ok: false, httpStatus: 502, message };
+        return fail(502, message);
       }
 
       for (const file of files) {
@@ -205,7 +236,7 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
         } catch (err: any) {
           const message = `Failed to commit "${file.path}": ${err.message}. Branch "${branchName}" may exist with a partial commit — review it manually.`;
           await buildRequestsRepo.markPrError(buildRequest.id, message);
-          return { ok: false, httpStatus: 502, message };
+          return fail(502, message);
         }
       }
 
@@ -227,12 +258,12 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
       } catch (err: any) {
         const message = `Branch and commits succeeded but opening the PR failed: ${err.message}`;
         await buildRequestsRepo.markPrError(buildRequest.id, message);
-        return { ok: false, httpStatus: 502, message };
+        return fail(502, message);
       }
 
       const updated = await buildRequestsRepo.recordPrOpened(buildRequest.id, pr.html_url, pr.number);
       if (!updated) {
-        return { ok: false, httpStatus: 500, message: "PR was opened but couldn't be recorded — check GitHub directly." };
+        return fail(500, "PR was opened but couldn't be recorded — check GitHub directly.");
       }
 
       observation.logAuditEvent(triggeredBy, "build_request_pr_opened", "success", `#${updated.id} -> ${pr.html_url}`);
@@ -273,11 +304,7 @@ export async function runApprovalFlow(buildRequest: BuildRequestRow, triggeredBy
       // and is the condition that is false by default, so the DB round-trip
       // for the daily count is never even issued on the ordinary path.
       let autonomousMerge = false;
-      if (
-        permissions.hasGrant("admin", AUTONOMOUS_MERGE_CAPABILITY) &&
-        isAutoMergeEligible(files.map((f) => f.path)) &&
-        (await buildRequestsRepo.countAutonomousMergesToday()) < AUTONOMOUS_MERGE_DAILY_CAP
-      ) {
+      if (await isEligibleForAutomaticApproval(files.map((f) => f.path))) {
         try {
           await github.mergePullRequest(owner, repoName, pr.number);
           const merged = await buildRequestsRepo.markAutonomousMerge(updated.id);

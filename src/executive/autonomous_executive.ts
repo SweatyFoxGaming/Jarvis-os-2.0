@@ -9,7 +9,7 @@ import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
 import * as departments from "./departments.js";
 import * as scheduler from "../kernel/scheduler.js";
 import * as codingAgent from "./coding-agent.js";
-import { runApprovalFlow } from "./build-approval.js";
+import { runApprovalFlow, isEligibleForAutomaticApproval } from "./build-approval.js";
 import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
@@ -468,32 +468,58 @@ export class AutonomousExecutive {
       this.observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
     });
 
-    // Auto-merge is attempted here, right when the build request first
-    // reaches awaiting_code_approval — runApprovalFlow itself re-checks
-    // eligibility/grant/cap and falls back to leaving the build request
-    // waiting for a human click if any of them don't hold, so this call is
-    // always safe to attempt regardless of whether autonomy is actually on.
-    // Deliberately no eligibility logic duplicated here: one decision point,
-    // in one place, is the whole point of extracting build-approval.ts.
-    const approvalResult = await runApprovalFlow(recorded, username);
-    if (approvalResult.ok) {
-      if (approvalResult.autonomousMerge) {
+    // The gate that keeps Phase 0's promise: unless autonomy is actually on
+    // AND this specific diff qualifies AND we're under the daily cap, this
+    // method does not run the approval pipeline at all. The build request is
+    // left sitting at awaiting_code_approval for a human to click Approve —
+    // byte-for-byte the pre-autonomy behavior. Eligibility is not re-derived
+    // here: isEligibleForAutomaticApproval is the same function
+    // runApprovalFlow uses to gate the merge itself, so the two can't diverge.
+    if (await isEligibleForAutomaticApproval(draft.files.map((f) => f.path))) {
+      const approvalResult = await runApprovalFlow(recorded, username);
+      if (approvalResult.ok && approvalResult.autonomousMerge) {
         return {
           ok: true,
           message: `Direction confirmed, and I've autonomously merged build request #${recorded.id} — ${approvalResult.buildRequest.pr_url}`,
         };
       }
-      // The flow succeeded but stopped short of merging (not eligible, grant
-      // absent, cap reached, or the merge call itself failed): the PR is
-      // already open and runApprovalFlow has already pushed its own "Opened
-      // the pull request" notification. Falling through to the notification
-      // below would claim the code is still waiting for approval *before* a
-      // PR exists, which is now false on every ordinary build request.
+
+      // Eligible, but this attempt didn't end in a merge. Not because
+      // eligibility was false — we just confirmed it was true — but because
+      // the attempt hit something: review failed, verification failed, a
+      // GitHub call failed, or the merge itself failed after the PR opened.
+      // Nobody is watching an HTTP response on this path, so every sub-case
+      // has to end with the user actually told what happened.
+      if (approvalResult.ok) {
+        // PR opened, merge didn't land (merge call failed, or the row update
+        // didn't stick). runApprovalFlow already pushed "Opened the pull
+        // request…", so don't notify twice.
+        return {
+          ok: true,
+          message:
+            `Direction confirmed. I've drafted ${draft.files.length} file(s) and opened a pull request for ` +
+            `build request #${recorded.id} — ${approvalResult.buildRequest.pr_url}. I wasn't able to merge it ` +
+            `automatically, so it's waiting for your review and merge.`,
+        };
+      }
+
+      // Hard failure. Only the review-failed branch notifies internally
+      // (userNotified), so every other branch — verification-could-not-run,
+      // verification-failed, repo-read/branch/commit/PR-open failures — would
+      // otherwise leave the build request parked in error/review_failed with
+      // the user never told. Fill exactly that gap.
+      if (!approvalResult.userNotified) {
+        scheduler.pushNotification(
+          username,
+          `I drafted the code for build request #${recorded.id}, sir, but couldn't carry it through to a pull ` +
+            `request: ${approvalResult.message.slice(0, 300)}${approvalResult.message.length > 300 ? "..." : ""} ` +
+            `It's in the dashboard for you to look at.`,
+          "warning"
+        );
+      }
       return {
-        ok: true,
-        message:
-          `Direction confirmed. I've drafted ${draft.files.length} file(s) and opened a pull request for ` +
-          `build request #${recorded.id} — ${approvalResult.buildRequest.pr_url}. It's waiting for your review and merge.`,
+        ok: false,
+        message: `Direction confirmed and code drafted, but I couldn't complete the pull request for build request #${recorded.id}: ${approvalResult.message}`,
       };
     }
 
