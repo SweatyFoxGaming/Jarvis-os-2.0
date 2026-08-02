@@ -22,11 +22,11 @@
  */
 import { pingDatabase, initDatabase, getPool } from "../src/kernel/state/db.js";
 import { runMigrations, ALL_MIGRATIONS } from "../src/kernel/state/migrations/index.js";
-import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
+import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError, removeUser } from "../src/kernel/state/users-repo.js";
 import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kernel/state/session-repo.js";
 import { proposeMcpServer, McpServerNameTakenError } from "../src/kernel/state/mcp-servers-repo.js";
-import { upsertEntity, searchEntities, listAllEntities } from "../src/kernel/state/knowledge-graph-repo.js";
-import { addSelfReflection, getRecentSelfReflections } from "../src/kernel/state/identity-repo.js";
+import { upsertEntity, addFact, addRelationship, searchEntities, listAllEntities } from "../src/kernel/state/knowledge-graph-repo.js";
+import { addSelfReflection, getRecentSelfReflections, saveProactiveThought } from "../src/kernel/state/identity-repo.js";
 import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import * as invitesRepo from "../src/kernel/state/invites-repo.js";
 import * as permissions from "../src/kernel/security.js";
@@ -121,6 +121,17 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM capability_grants WHERE username = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM oauth_tokens WHERE provider = 'test_provider' AND username = 'test_oauth_user'`).catch(() => {});
+  // removeUser()'s own test is expected to leave nothing behind for
+  // `db_it_removeuser_${RUN_ID}` (that's exactly what it asserts) — these
+  // are only a safety net for a run that fails partway through, before
+  // `users` cascades to api_keys.
+  await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [`db_it_removeuser_${RUN_ID}`, `db_it_removeuser_other_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM oauth_tokens WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM capability_grants WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM conversation_history WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM self_reflections WHERE username IN ($1, $2)`, [`db_it_removeuser_${RUN_ID}`, `db_it_removeuser_other_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM proactive_thoughts WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM kg_entities WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -355,6 +366,93 @@ registerTest("oauth-repo: saveTokens/getTokens round-trip real encrypted values 
   if (rows[0].access_token.includes("real-access-token-value")) {
     throw new Error("oauth-repo: expected the stored column to be encrypted, found the plaintext value directly in it");
   }
+});
+
+registerTest("users-repo.removeUser: admin remove-user cascades personal-data deletion across every username-scoped table, against real Postgres", async () => {
+  const username = `db_it_removeuser_${RUN_ID}`;
+  const otherUsername = `db_it_removeuser_other_${RUN_ID}`;
+  const db = getPool();
+
+  await createUser(username, "a-real-password-123");
+  await createUser(otherUsername, "another-real-password-123");
+
+  // Seed exactly one row in every username-scoped table users-repo.ts's
+  // removeUser() doc comment says needs an explicit DELETE (no FK back to
+  // users), plus kg_facts/kg_relationships (which DO cascade, but via a
+  // real FK on kg_entities, not on users) — confirming that cascade
+  // actually fires against a real Postgres, not just that the SQL parses.
+  await oauthRepo.saveTokens("google_calendar", username, "access-token-value", "refresh-token-value", new Date(Date.now() + 3600_000));
+  await permissions.grantCapability(username, "web.search", "test-harness");
+  await appendMessage(username, "user", "a message that must not survive account removal");
+  await addSelfReflection(username, "opinion", "a reflection that must not survive account removal");
+  await saveProactiveThought(username, "a thought that must not survive account removal", 1);
+  const entityId = await upsertEntity(username, "RemoveUserTestEntity", "concept");
+  const otherEntityId = await upsertEntity(username, "RemoveUserTestEntity2", "concept");
+  await addFact(entityId, "a fact that must not survive account removal");
+  await addRelationship(entityId, otherEntityId, "relates_to");
+
+  // A second, untouched user's own data — proves removeUser scopes its
+  // deletes by username rather than wiping these tables wholesale.
+  await addSelfReflection(otherUsername, "opinion", "a reflection belonging to a user who is NOT being removed");
+
+  const { rows: apiKeyRowsBefore } = await db.query(`SELECT key FROM api_keys WHERE username = $1`, [username]);
+  if (apiKeyRowsBefore.length !== 1) {
+    throw new Error(`expected exactly one api_keys row for "${username}" before removal, found ${apiKeyRowsBefore.length}`);
+  }
+
+  const existed = await removeUser(username);
+  if (!existed) throw new Error("removeUser reported the just-created user as not found");
+
+  // security.ts's clearGrantsCache is the piece admin-routes.ts calls after
+  // removeUser resolves (see its own doc comment) — calling it here too
+  // exercises the actual repo-level calls the route makes end to end, per
+  // this test's brief ("exercise the actual route handler's deletion logic,
+  // or the equivalent repo-level calls it makes"), not just removeUser in
+  // isolation.
+  permissions.clearGrantsCache(username);
+  if (permissions.hasGrant(username, "web.search")) {
+    throw new Error("removeUser + clearGrantsCache: in-memory cache still reports the removed user as granted 'web.search'");
+  }
+
+  const tableChecks: { label: string; sql: string; params: unknown[] }[] = [
+    { label: "users", sql: `SELECT 1 FROM users WHERE username = $1`, params: [username] },
+    { label: "api_keys (cascade via users FK)", sql: `SELECT 1 FROM api_keys WHERE username = $1`, params: [username] },
+    { label: "oauth_tokens", sql: `SELECT 1 FROM oauth_tokens WHERE username = $1`, params: [username] },
+    { label: "capability_grants", sql: `SELECT 1 FROM capability_grants WHERE username = $1`, params: [username] },
+    { label: "conversation_history", sql: `SELECT 1 FROM conversation_history WHERE username = $1`, params: [username] },
+    { label: "self_reflections", sql: `SELECT 1 FROM self_reflections WHERE username = $1`, params: [username] },
+    { label: "proactive_thoughts", sql: `SELECT 1 FROM proactive_thoughts WHERE username = $1`, params: [username] },
+    { label: "kg_entities", sql: `SELECT 1 FROM kg_entities WHERE username = $1`, params: [username] },
+    { label: "kg_facts (cascade via kg_entities FK)", sql: `SELECT 1 FROM kg_facts WHERE entity_id = $1`, params: [entityId] },
+    {
+      label: "kg_relationships (cascade via kg_entities FK)",
+      sql: `SELECT 1 FROM kg_relationships WHERE from_entity_id = $1 OR to_entity_id = $1`,
+      params: [entityId],
+    },
+  ];
+  for (const check of tableChecks) {
+    const { rows } = await db.query(check.sql, check.params);
+    if (rows.length !== 0) {
+      throw new Error(`removeUser: expected zero rows left in ${check.label} for the removed user, found ${rows.length}`);
+    }
+  }
+
+  // The untouched second user's own self_reflections row must have
+  // survived — proves the deletes above were scoped by username, not a
+  // blanket wipe that happened to also match the removed user.
+  const otherReflections = await getRecentSelfReflections(otherUsername);
+  if (otherReflections.length !== 1 || otherReflections[0].content !== "a reflection belonging to a user who is NOT being removed") {
+    throw new Error(`removeUser disturbed a different user's self_reflections row: ${JSON.stringify(otherReflections)}`);
+  }
+
+  // A second removal of the same (now-gone) user must report "not found,"
+  // not throw and not silently report success — this is what lets
+  // admin-routes.ts return a real 404 instead of a 500 on a repeat call.
+  const second = await removeUser(username);
+  if (second) throw new Error("removeUser reported success on a second call for an already-removed user");
+
+  const neverExisted = await removeUser(`db_it_removeuser_never_existed_${RUN_ID}`);
+  if (neverExisted) throw new Error("removeUser reported success for a username that was never created");
 });
 
 async function main(): Promise<void> {

@@ -55,6 +55,7 @@ import { invitesRouter } from "./interaction/routes/invites-routes.js";
 import { integrationsRouter } from "./interaction/routes/integrations-routes.js";
 import { hudRouter } from "./interaction/routes/hud-routes.js";
 import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
+import { adminRouter } from "./interaction/routes/admin-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 
 dotenv.config();
@@ -1181,6 +1182,10 @@ app.use(integrationsRouter);
 // Desktop HUD status endpoint — see src/interaction/routes/hud-routes.ts.
 app.use(hudRouter);
 app.use(adaptationRouter);
+
+// Admin-only account removal (full personal-data cascade delete) — see
+// src/interaction/routes/admin-routes.ts, mounted below.
+app.use(adminRouter);
 
 // ---------- Static Files Serving ----------
 const staticDir = path.join(process.cwd(), "src", "interaction", "static");

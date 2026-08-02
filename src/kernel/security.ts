@@ -170,6 +170,20 @@ export function listGrants(username: string): string[] {
   return Array.from(grants.get(username) ?? []);
 }
 
+// Called only by admin-routes.ts's remove-user route, after that route's own
+// transaction has already deleted the capability_grants row(s) from
+// Postgres — this only drops the in-memory cache entry (module-level
+// `grants` Map above), it does not touch the DB itself. Kept separate from
+// revokeCapability() (which deletes one capability at a time and persists
+// to Postgres on every call) since remove-user already deletes every row
+// for this username in one DELETE FROM capability_grants WHERE username =
+// $1 inside its own transaction; looping revokeCapability() per-capability
+// here would just be a second, redundant set of DB round-trips for the
+// same rows.
+export function clearGrantsCache(username: string): void {
+  grants.delete(username);
+}
+
 // A handful of REST endpoints (e.g. under /api/integrations/*) perform the
 // exact same actions (send email, open a GitHub issue/PR, read/write files)
 // that executeTool() already gates behind hasGrant() for the chat
