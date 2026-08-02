@@ -772,6 +772,13 @@
                 </div>
 
                 <div class="holo-panel rounded-2xl p-5 w-full">
+                    <h3 class="font-display font-semibold text-sm text-white mb-1">Google Account</h3>
+                    <p class="text-sm text-secondary mb-4 max-w-xl">Connect your Google account so Jarvis can read and manage your Calendar and Gmail on your behalf — backed by a real OAuth connection, per user.</p>
+                    <button onclick="connectGoogleAccount()" id="btn-connect-google" class="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Connect Google Account</button>
+                    <span id="google-connection-status-text" class="text-[11px] text-secondary ml-3"></span>
+                </div>
+
+                <div class="holo-panel rounded-2xl p-5 w-full">
                     <h3 class="font-display font-semibold text-sm text-white mb-1">Notifications</h3>
                     <p class="text-sm text-secondary mb-4 max-w-xl">Install Jarvis as an app on this device and enable push notifications so proactive updates (briefings, security findings, reflections) reach you here even when this tab isn't open — including on your phone, once installed there too.</p>
                     <button onclick="enablePushNotifications()" id="btn-enable-push" class="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Enable notifications on this device</button>
@@ -2495,7 +2502,7 @@
         if (tabId === 'workspace') refreshWorkspaceSnapshot();
         if (tabId === 'memory') loadPendingMemories();
         if (tabId === 'learning') loadLearningDashboard();
-        if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); }
+        if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); updateGoogleConnectionStatusUI(); }
         if (tabId === 'calendar') loadCalendarEvents();
         if (tabId === 'vault') loadVaultNotes();
         if (tabId === 'home') loadOrbVaultGraph();
@@ -4088,6 +4095,49 @@
         } catch (e) {
             console.warn("Push subscription failed:", e);
             addNotification("Couldn't enable notifications.", "danger");
+        }
+    }
+
+    // ---------- Google Account connect (real OAuth, per-user) ----------
+    // Status is backed by GET /api/integrations/google/status, a dedicated
+    // read of whether an oauth_tokens row exists for this user — not a
+    // capability-grant check, since holding the calendar/gmail capability
+    // and having an actual live connection are different things.
+    async function updateGoogleConnectionStatusUI() {
+        const status = document.getElementById('google-connection-status-text');
+        const btn = document.getElementById('btn-connect-google');
+        if (!status || !btn) return;
+        if (!CURRENT_API_KEY) { status.textContent = ""; return; }
+        try {
+            const res = await authFetch('/api/integrations/google/status', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { status.textContent = ""; return; }
+            const data = await res.json();
+            if (data.connected) {
+                status.textContent = "Connected.";
+                btn.textContent = "Reconnect Google Account";
+            } else {
+                status.textContent = "Not connected.";
+                btn.textContent = "Connect Google Account";
+            }
+        } catch (e) {
+            console.warn("Failed to load Google connection status:", e);
+            status.textContent = "";
+        }
+    }
+
+    async function connectGoogleAccount() {
+        if (!CURRENT_API_KEY) { addNotification("Log in first.", "warning"); return; }
+        try {
+            const res = await authFetch('/api/integrations/google/auth-url', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) {
+                addNotification("Couldn't start the Google connection — try again.", "danger");
+                return;
+            }
+            const data = await res.json();
+            window.open(data.url, '_blank');
+        } catch (e) {
+            console.warn("Failed to fetch Google auth URL:", e);
+            addNotification("Couldn't start the Google connection.", "danger");
         }
     }
 

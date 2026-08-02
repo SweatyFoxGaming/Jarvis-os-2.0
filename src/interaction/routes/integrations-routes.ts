@@ -10,6 +10,7 @@ import * as calendar from "../../capabilities/providers/calendar.js";
 import * as news from "../../capabilities/providers/news.js";
 import * as webSearch from "../../capabilities/providers/websearch.js";
 import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../../kernel/oauth-state-tickets.js";
+import * as oauthRepo from "../../kernel/state/oauth-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -196,6 +197,20 @@ integrationsRouter.get("/api/integrations/google/callback", async (req: any, res
   } catch (err: any) {
     observation.logTelemetry("error", "Integrations", `Google OAuth callback failed for "${username}": ${err.message}`);
     res.status(err.status || 500).send("<html><body>Failed to connect your Google account. Try again from the dashboard.</body></html>");
+  }
+});
+
+// No requireCapability — holding the calendar/gmail capability grant and
+// having an actual live Google OAuth connection are conceptually different
+// things (a user can be granted the capability without ever having
+// connected), so this can't be answered by hasGrant() and needs its own
+// read of whether a token row actually exists for this user.
+integrationsRouter.get("/api/integrations/google/status", validateApiKey, async (req: any, res: any) => {
+  try {
+    const tokens = await oauthRepo.getTokens("google_calendar", req.username);
+    res.json({ connected: !!tokens });
+  } catch (err) {
+    handleIntegrationError(res, err);
   }
 });
 

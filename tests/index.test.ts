@@ -1505,6 +1505,46 @@ registerTest("HTTP Boundary", "Google OAuth callback never reflects an attacker-
   }
 });
 
+// The status route (Task 11) deliberately has no requireCapability, unlike
+// most integration routes — it's a dedicated read of whether a live
+// oauth_tokens row exists for this user, not a capability-grant check
+// (hasGrant("calendar.read") would be a false proxy: a user can hold that
+// grant without ever having connected). This locks in (1) it's still gated
+// behind validateApiKey (no key -> 401, never a bare 200/500 from a handler
+// that ran anyway), (2) an admin caller — who resolves without any
+// Postgres lookup via the INTERNAL_API_KEY fast path — is never rejected by
+// a capability check that doesn't exist, and (3) whatever it returns is
+// shaped correctly: a boolean "connected" on success, or the route's own
+// try/catch 500 in this no-Postgres test process (never a 401/403, which
+// would mean the DB failure got misclassified as an auth failure).
+registerTest("HTTP Boundary", "Google connection status route is auth-gated but not capability-gated, and returns a boolean", async () => {
+  const port = 3017; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3016
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/integrations/google/status`);
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on GET /api/integrations/google/status, got ${noKey.status}`);
+    }
+
+    const admin = await fetch(`http://127.0.0.1:${port}/api/integrations/google/status`, {
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (admin.status === 401 || admin.status === 403) {
+      throw new Error(`HTTP Boundary: admin should never be rejected on GET /api/integrations/google/status (no capability gate), got ${admin.status}`);
+    }
+    if (admin.status === 200) {
+      const body = await admin.json();
+      if (typeof body.connected !== "boolean") {
+        throw new Error(`HTTP Boundary: expected boolean "connected" from GET /api/integrations/google/status, got ${JSON.stringify(body)}`);
+      }
+    } else if (admin.status !== 500) {
+      throw new Error(`HTTP Boundary: expected 200 (connected boolean) or 500 (no Postgres in this test process) from GET /api/integrations/google/status, got ${admin.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // invites-routes.ts's admin check (`req.username !== "admin"`) only runs
 // once validateApiKey has already resolved req.username — and for any key
 // other than the literal INTERNAL_API_KEY, that resolution is a real
