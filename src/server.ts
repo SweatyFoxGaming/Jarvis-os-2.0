@@ -81,6 +81,30 @@ const PORT = positiveIntegerEnv(process.env.PORT, 3000);
 // kernel/auth-middleware.ts, run at that module's first import (below) —
 // still before app.listen(), same as when this check was inline here.
 
+// Same fail-fast posture as INTERNAL_API_KEY above, but this one has to live
+// here rather than in kernel/token-crypto.ts: token-crypto's getKey() reads
+// OAUTH_TOKEN_ENCRYPTION_KEY lazily (only when encrypt/decrypt is actually
+// called), so a module-load-time check there wouldn't run until the first
+// OAuth token round-trip — long after app.listen(). Placed here, after
+// dotenv.config() above, so it reads the real value rather than racing it
+// (unlike auth-middleware.ts, which reads INTERNAL_API_KEY at its own
+// module top-level and — because ES module imports are hoisted before any
+// of this file's top-level statements, including dotenv.config() — has a
+// pre-existing, separately-tracked bug where it can run before dotenv.config()
+// executes; this check, being one of server.ts's own top-level statements,
+// does not have that problem).
+{
+  const oauthKeyRaw = process.env.OAUTH_TOKEN_ENCRYPTION_KEY;
+  const oauthKeyBytes = oauthKeyRaw ? Buffer.from(oauthKeyRaw, "base64").length : 0;
+  if (!oauthKeyRaw || oauthKeyBytes !== 32) {
+    console.error(
+      "[server] FATAL: OAUTH_TOKEN_ENCRYPTION_KEY is not set (or does not decode to exactly 32 bytes). " +
+      "Refusing to start without a valid token-encryption key — set OAUTH_TOKEN_ENCRYPTION_KEY to a base64-encoded 32-byte value in .env (generate one with `openssl rand -base64 32`)."
+    );
+    process.exit(1);
+  }
+}
+
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000,http://localhost:3000")
   .split(",")
   .map((o) => o.trim())

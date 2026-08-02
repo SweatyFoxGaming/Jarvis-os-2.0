@@ -48,9 +48,24 @@ import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { deriveHudBadge } from "../src/interaction/hud-badge.js";
 import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
+import { encryptToken, decryptToken } from "../src/kernel/token-crypto.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
+
+// token-crypto.ts's getKey() reads this lazily on every encrypt/decrypt
+// call rather than at module load, but it still needs a real, validly-shaped
+// (32-byte, base64) value before any TokenCrypto test below runs — this test
+// file never calls dotenv.config() itself (only the spawned server.ts
+// children do, via spawnTestServer's inherited env), so nothing loads .env
+// into this process otherwise. Set here, before anything else runs, so it's
+// in place both for this process's own direct encryptToken/decryptToken
+// calls and — inherited via spawnTestServer's `{ ...process.env, ... }` —
+// for the spawned server.ts children, which now also refuse to boot without
+// a valid OAUTH_TOKEN_ENCRYPTION_KEY (see server.ts's own startup check).
+if (!process.env.OAUTH_TOKEN_ENCRYPTION_KEY) {
+  process.env.OAUTH_TOKEN_ENCRYPTION_KEY = "PcmRyWaWKz8+8ceU/LOwDEXjb5baBxTcA1pxgcIedbg=";
+}
 
 interface TestResult {
   name: string;
@@ -2770,6 +2785,43 @@ registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a
     delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
     delete process.env.OBSIDIAN_VAULT_DIR;
     fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+// ---------- TokenCrypto ----------
+registerTest("TokenCrypto", "encryptToken then decryptToken round-trips the original plaintext", () => {
+  const original = "a-real-looking-refresh-token-value-1234567890";
+  const encrypted = encryptToken(original);
+  if (encrypted === original) {
+    throw new Error("TokenCrypto: encrypted output must not equal the plaintext");
+  }
+  const decrypted = decryptToken(encrypted);
+  if (decrypted !== original) {
+    throw new Error(`TokenCrypto: expected round-trip to recover "${original}", got "${decrypted}"`);
+  }
+});
+
+registerTest("TokenCrypto", "decryptToken fails closed (returns null, does not throw) on tampered ciphertext", () => {
+  const encrypted = encryptToken("some-token");
+  const tampered = encrypted.slice(0, -4) + "abcd"; // corrupt the tail
+  const result = decryptToken(tampered);
+  if (result !== null) {
+    throw new Error(`TokenCrypto: expected null for tampered ciphertext, got "${result}"`);
+  }
+});
+
+registerTest("TokenCrypto", "decryptToken fails closed on garbage input, does not throw", () => {
+  const result = decryptToken("not-even-valid-base64-or-the-right-shape!!!");
+  if (result !== null) {
+    throw new Error(`TokenCrypto: expected null for garbage input, got "${result}"`);
+  }
+});
+
+registerTest("TokenCrypto", "two encryptions of the same plaintext produce different ciphertext (real IV usage)", () => {
+  const a = encryptToken("same-value");
+  const b = encryptToken("same-value");
+  if (a === b) {
+    throw new Error("TokenCrypto: expected different ciphertext across calls (IV should be random per call), got identical output");
   }
 });
 
