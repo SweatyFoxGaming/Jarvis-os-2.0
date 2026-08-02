@@ -178,8 +178,14 @@ relying on anything not listed in "What's implemented."
   the real `/api/chat` pipeline: a genuine opinion turn was auto-extracted and stored, and
   a follow-up turn had Gemini's own function-calling select `reflect_on_self` and weave the
   real stored opinions back into a coherent answer.
-- **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
-  with bcrypt-hashed passwords, both backed by Postgres.
+- **Auth**: a single admin key (`INTERNAL_API_KEY`) plus multi-user registration/login
+  with bcrypt-hashed passwords, both backed by Postgres. Registration is invite-only —
+  `POST /api/register` requires a valid, unused, unexpired single-use token the admin
+  issues via `POST /api/invites`, not open self-service signup. Each registered user
+  gets their own capability grants (`capability_grants`, default-deny per capability)
+  and, once they connect their own Google account, their own OAuth tokens — a personal
+  brain per user, not one shared admin identity. The admin can bulk-grant a capability
+  to every existing user in one call via `POST /api/permissions/grant-all`.
 - **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.
 - **Observation**: real CPU/disk/memory metrics, telemetry log, audit ledger, decision
   traces — all bounded in-memory buffers, viewable in `/admin`.
@@ -575,19 +581,38 @@ behalf):
    account as a test user.
 3. Create an **OAuth client ID** (APIs & Services → Credentials → Create Credentials
    → OAuth client ID), type **Web application**. Add an **Authorized redirect URI**
-   of `http://localhost:3000/api/integrations/calendar/callback` (must match
+   of `http://localhost:3000/api/integrations/google/callback` (must match
    `GOOGLE_REDIRECT_URI` in `.env` exactly).
 4. Copy the generated **Client ID** and **Client Secret** into `.env` as
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, restart the stack.
-5. With the server running, open
-   `http://localhost:3000/api/integrations/calendar/auth-url` while sending your
-   `x-api-key` header (e.g. via a browser extension, or just `curl` and paste the
-   returned URL into a browser), approve access, and you'll land back on the
-   callback route with a "connected" confirmation. This is a one-time step — the
-   refresh token it stores in Postgres keeps working across restarts.
+5. With the server running, log in to the dashboard and click **Connect Google
+   Account** in Settings — this calls `/api/integrations/google/auth-url` from
+   your own browser session, opens the returned consent URL in a new tab, and
+   approving access lands you back on the callback route with a "connected"
+   confirmation. This is a one-time step — the refresh token it stores in
+   Postgres keeps working across restarts.
+
+   Note: the connect flow sets a short-lived, browser-bound cookie to prevent
+   an OAuth account-linking attack, so fetching `/auth-url` via `curl` (or any
+   client outside the browser that will complete the consent screen) and
+   pasting the URL elsewhere will fail with a 403 on the callback — the
+   dashboard button is the supported way to connect an account.
 
 Until step 5 is done, every calendar route/tool returns a clear "not configured" or
 "not authorized yet" error rather than failing silently or fabricating data.
+
+**Upgrading an existing deployment to this multi-user version:** the OAuth
+callback route moved from `/api/integrations/calendar/callback` to
+`/api/integrations/google/callback` (it now also covers personal Gmail, not
+just Calendar). You must update the **Authorized redirect URI** in Google
+Cloud Console to the new `/google/callback` path and update
+`GOOGLE_REDIRECT_URI` in `.env` to match — otherwise Google will redirect
+back to a route that no longer exists, the server's SPA catch-all will
+silently serve `index.html`, and the Connect Google Account flow will fail
+with no visible error. Separately, the multi-user migration deletes any
+pre-existing `oauth_tokens` row (it predates per-user token encryption and
+was plaintext), so admin will need to reconnect their Google account once
+after upgrading, even after the redirect URI is fixed.
 
 ## Testing
 

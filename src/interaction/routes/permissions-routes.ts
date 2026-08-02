@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
+import * as usersRepo from "../../kernel/state/users-repo.js";
 
 export const permissionsRouter = Router();
 
@@ -38,4 +39,42 @@ permissionsRouter.post("/api/permissions/revoke", validateApiKey, async (req: an
   }
   await permissions.revokeCapability(username, capability, req.username);
   res.json({ status: "success", username, grants: permissions.listGrants(username) });
+});
+
+// Bulk rollout: grants a capability to every existing user who doesn't
+// already have it — for the case where a new capability ships and the
+// admin wants every current user on it in one click, instead of one
+// /grant call per username.
+permissionsRouter.post("/api/permissions/grant-all", validateApiKey, async (req: any, res: any) => {
+  if (req.username !== "admin") {
+    return res.status(403).json({ error: "Only admin can bulk-grant capabilities" });
+  }
+  const { capability } = req.body;
+  if (!capability) {
+    return res.status(400).json({ error: "capability is required" });
+  }
+  if (!(permissions.ALL_CAPABILITIES as readonly string[]).includes(capability)) {
+    return res.status(400).json({ error: `Unknown capability "${capability}"` });
+  }
+  // usersRepo.listUsernames() is a real, un-guarded Postgres query (unlike
+  // grantCapability/revokeCapability above, which already swallow their own
+  // DB errors internally) — without this try/catch, a DB failure here would
+  // reject this async handler with nothing to catch it (Express 4 doesn't
+  // auto-catch async rejections), leaving the client's connection hanging
+  // forever instead of getting a real error back. Matches the try/catch
+  // shape invites-routes.ts already uses for the same reason.
+  try {
+    const usernames = await usersRepo.listUsernames();
+    const granted: string[] = [];
+    for (const username of usernames) {
+      if (username === "admin") continue; // admin already has every ALL_CAPABILITIES entry via bootstrap
+      if (!permissions.hasGrant(username, capability)) {
+        await permissions.grantCapability(username, capability, req.username);
+        granted.push(username);
+      }
+    }
+    res.json({ status: "success", capability, grantedTo: granted });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });

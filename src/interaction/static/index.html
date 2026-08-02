@@ -772,6 +772,14 @@
                 </div>
 
                 <div class="holo-panel rounded-2xl p-5 w-full">
+                    <h3 class="font-display font-semibold text-sm text-white mb-1">Google Account</h3>
+                    <p class="text-sm text-secondary mb-4 max-w-xl">Connect your Google account so Jarvis can read and manage your Calendar and Gmail on your behalf — backed by a real OAuth connection, per user.</p>
+                    <button onclick="connectGoogleAccount()" id="btn-connect-google" class="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Connect Google Account</button>
+                    <button onclick="disconnectGoogleAccount()" id="btn-disconnect-google" class="hidden px-4 py-2.5 bg-danger/10 hover:bg-danger/20 border border-danger/25 text-danger text-sm rounded-lg transition-all ml-2">Disconnect</button>
+                    <span id="google-connection-status-text" class="text-[11px] text-secondary ml-3"></span>
+                </div>
+
+                <div class="holo-panel rounded-2xl p-5 w-full">
                     <h3 class="font-display font-semibold text-sm text-white mb-1">Notifications</h3>
                     <p class="text-sm text-secondary mb-4 max-w-xl">Install Jarvis as an app on this device and enable push notifications so proactive updates (briefings, security findings, reflections) reach you here even when this tab isn't open — including on your phone, once installed there too.</p>
                     <button onclick="enablePushNotifications()" id="btn-enable-push" class="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Enable notifications on this device</button>
@@ -794,6 +802,44 @@
     <p class="text-secondary text-[11px] font-mono">Interfaces dormant. Toggle "CORES_SLEEP" in header to resume.</p>
 </div>
 
+<!-- Invite Signup Gate: shown instead of the dashboard when the URL is
+     /invite/:token (see getInviteTokenFromPath below). Sits above
+     everything at z-[100], higher than the sleep overlay, since a fresh
+     invitee has no session yet and shouldn't see the dashboard underneath. -->
+<div id="invite-signup-overlay" class="fixed inset-0 bg-[#020308]/95 z-[100] hidden flex flex-col items-center justify-center gap-4 p-6">
+    <div class="w-full max-w-sm bg-surface/50 border border-white/5 p-6 rounded-3xl space-y-5 relative">
+        <div class="absolute top-0 right-0 w-8 h-8 border-t border-r border-primary/20 rounded-tr-3xl"></div>
+        <div class="absolute bottom-0 left-0 w-8 h-8 border-b border-l border-primary/20 rounded-bl-3xl"></div>
+
+        <div class="flex justify-between items-center border-b border-white/5 pb-3">
+            <div>
+                <h3 class="font-display font-bold text-xs tracking-widest uppercase">ACCESS PROVISIONING</h3>
+                <p class="text-[9px] text-secondary/50 font-mono">INVITE_TOKEN_REDEMPTION</p>
+            </div>
+            <span class="text-[10px] font-mono text-primary bg-primary/5 px-2 py-0.5 border border-primary/10 rounded">SIGNUP</span>
+        </div>
+
+        <div class="space-y-2">
+            <label class="text-[10px] font-mono text-secondary tracking-wider block">INVITE TOKEN</label>
+            <input type="text" id="invite-token-display" readonly class="w-full bg-bg border border-white/5 rounded-xl px-4 py-2.5 text-xs font-mono text-secondary/70 cursor-not-allowed">
+        </div>
+
+        <div class="space-y-2">
+            <label class="text-[10px] font-mono text-secondary tracking-wider block">USERNAME</label>
+            <input type="text" id="invite-username-input" autocomplete="username" placeholder="Choose a username..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+        </div>
+
+        <div class="space-y-2">
+            <label class="text-[10px] font-mono text-secondary tracking-wider block">PASSWORD</label>
+            <input type="password" id="invite-password-input" autocomplete="new-password" placeholder="Choose a password (min 8 characters)..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+        </div>
+
+        <p id="invite-signup-error" class="text-[10px] font-mono text-danger hidden"></p>
+
+        <button id="invite-signup-submit" class="w-full py-3 bg-primary/5 hover:bg-primary/10 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">REDEEM &amp; CREATE ACCOUNT</button>
+    </div>
+</div>
+
 <!-- Toasts -->
 <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
@@ -810,6 +856,17 @@
     let CURRENT_API_KEY = localStorage.getItem('admin_api_key') || "";
     let CURRENT_TAB = "home";
     let cy;
+
+    // This app has no client-side router — it's a single static page whose
+    // tabs are just show/hide toggles (see switchTab). The one exception is
+    // this one-time check of the initial URL for the /invite/:token shape a
+    // freshly-generated invite link uses, so a brand new user landing here
+    // sees a signup gate instead of the normal dashboard underneath.
+    function getInviteTokenFromPath() {
+        const match = window.location.pathname.match(/^\/invite\/([^/]+)\/?$/);
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+    const INVITE_TOKEN_FROM_PATH = getInviteTokenFromPath();
 
     // ---------- Neural Orb (ambient background + focal Home orb) ----------
     // Ported from the Orbis theme reference the user shared
@@ -2446,7 +2503,7 @@
         if (tabId === 'workspace') refreshWorkspaceSnapshot();
         if (tabId === 'memory') loadPendingMemories();
         if (tabId === 'learning') loadLearningDashboard();
-        if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); }
+        if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); updateGoogleConnectionStatusUI(); }
         if (tabId === 'calendar') loadCalendarEvents();
         if (tabId === 'vault') loadVaultNotes();
         if (tabId === 'home') loadOrbVaultGraph();
@@ -4042,6 +4099,70 @@
         }
     }
 
+    // ---------- Google Account connect (real OAuth, per-user) ----------
+    // Status is backed by GET /api/integrations/google/status, a dedicated
+    // read of whether an oauth_tokens row exists for this user — not a
+    // capability-grant check, since holding the calendar/gmail capability
+    // and having an actual live connection are different things.
+    async function updateGoogleConnectionStatusUI() {
+        const status = document.getElementById('google-connection-status-text');
+        const btn = document.getElementById('btn-connect-google');
+        const disconnectBtn = document.getElementById('btn-disconnect-google');
+        if (!status || !btn) return;
+        if (!CURRENT_API_KEY) { status.textContent = ""; return; }
+        try {
+            const res = await authFetch('/api/integrations/google/status', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { status.textContent = ""; return; }
+            const data = await res.json();
+            if (data.connected) {
+                status.textContent = "Connected.";
+                btn.textContent = "Reconnect Google Account";
+                if (disconnectBtn) disconnectBtn.classList.remove('hidden');
+            } else {
+                status.textContent = "Not connected.";
+                btn.textContent = "Connect Google Account";
+                if (disconnectBtn) disconnectBtn.classList.add('hidden');
+            }
+        } catch (e) {
+            console.warn("Failed to load Google connection status:", e);
+            status.textContent = "";
+        }
+    }
+
+    async function connectGoogleAccount() {
+        if (!CURRENT_API_KEY) { addNotification("Log in first.", "warning"); return; }
+        try {
+            const res = await authFetch('/api/integrations/google/auth-url', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) {
+                addNotification("Couldn't start the Google connection — try again.", "danger");
+                return;
+            }
+            const data = await res.json();
+            window.open(data.url, '_blank');
+        } catch (e) {
+            console.warn("Failed to fetch Google auth URL:", e);
+            addNotification("Couldn't start the Google connection.", "danger");
+        }
+    }
+
+    async function disconnectGoogleAccount() {
+        if (!CURRENT_API_KEY) { addNotification("Log in first.", "warning"); return; }
+        if (!confirm('Disconnect your Google account? Jarvis will lose access to your Calendar and Gmail until you reconnect.')) return;
+        try {
+            const res = await authFetch('/api/integrations/google', { method: 'DELETE', headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                addNotification(body.error || "Couldn't disconnect your Google account.", "danger");
+                return;
+            }
+            addNotification("Google account disconnected.", "success");
+            updateGoogleConnectionStatusUI();
+        } catch (e) {
+            console.warn("Failed to disconnect Google account:", e);
+            addNotification("Couldn't disconnect your Google account.", "danger");
+        }
+    }
+
     async function loadSystemSettings() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to load
         const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -4395,6 +4516,68 @@
         document.getElementById('telemetry-log-pane').innerHTML = `<div class="text-muted text-center py-6 text-[10px] tracking-widest uppercase opacity-45">Streams buffer cleared.</div>`;
     }
 
+    // 12. INVITE SIGNUP FLOW
+    // Registration provisions accounts out of band today (an admin calls
+    // POST /api/register and hands someone their key by hand) — this is the
+    // first self-service path: /invite/:token gates the page behind this
+    // form instead of the dashboard until the invite is redeemed.
+    function showInviteSignupGate(token) {
+        const overlay = document.getElementById('invite-signup-overlay');
+        if (!overlay) return;
+        document.getElementById('invite-token-display').value = token;
+        overlay.classList.remove('hidden');
+        document.getElementById('invite-signup-submit').addEventListener('click', () => submitInviteSignup(token));
+        document.getElementById('invite-password-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitInviteSignup(token);
+        });
+    }
+
+    async function submitInviteSignup(token) {
+        const errorEl = document.getElementById('invite-signup-error');
+        const submitBtn = document.getElementById('invite-signup-submit');
+        const username = document.getElementById('invite-username-input').value.trim();
+        const password = document.getElementById('invite-password-input').value;
+        errorEl.classList.add('hidden');
+
+        if (!username || !password) {
+            errorEl.textContent = "Username and password are required.";
+            errorEl.classList.remove('hidden');
+            return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = "PROVISIONING...";
+
+        try {
+            const res = await fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, inviteToken: token })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                errorEl.textContent = data.error || "Registration failed. The invite may be invalid, expired, or already used.";
+                errorEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = "REDEEM & CREATE ACCOUNT";
+                return;
+            }
+            // Reuse the exact same "you're logged in" transition the manual
+            // API-key-entry flow below produces: stash the key under the
+            // same localStorage key that flow reads/writes, then land on
+            // '/' so the normal DOMContentLoaded init sequence runs fresh
+            // with CURRENT_API_KEY already populated from storage — no
+            // parallel dashboard-entry path to keep in sync with that one.
+            localStorage.setItem('admin_api_key', data.api_key);
+            window.location.href = '/';
+        } catch (err) {
+            errorEl.textContent = "Couldn't reach the server. Please try again.";
+            errorEl.classList.remove('hidden');
+            submitBtn.disabled = false;
+            submitBtn.textContent = "REDEEM & CREATE ACCOUNT";
+        }
+    }
+
     document.getElementById('api-key-input').addEventListener('change', (e) => {
         CURRENT_API_KEY = e.target.value.trim();
         localStorage.setItem('admin_api_key', CURRENT_API_KEY);
@@ -4484,6 +4667,9 @@
 
     // Initializers
     window.addEventListener('DOMContentLoaded', () => {
+        if (INVITE_TOKEN_FROM_PATH) {
+            showInviteSignupGate(INVITE_TOKEN_FROM_PATH);
+        }
         NeuralOrb.register(document.getElementById('neural-bg-canvas'), { neuronCount: 300, dim: 0.35, R: 0.42, cy: 0.5 });
         initCytoscape();
         syncDashboardViewConfig();

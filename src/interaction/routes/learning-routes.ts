@@ -10,8 +10,32 @@ const learningEngine = LongTermLearningEngine.getInstance();
 export const learningRouter = Router();
 
 // ---------- Pass XV: Long-Term Learning Endpoints ----------
+//
+// Admin-only, on all three routes below: LongTermLearningEngine.getInstance()
+// is a process-wide singleton with NO per-user scoping, and its state (style
+// preferences, mistake log) is interpolated directly into the system prompt
+// of EVERY chat session — including admin's own (see server.ts's /api/chat
+// handler building `styleContext` from getStylePreferences()). Without this
+// gate, any authenticated personal user — even one with only the default
+// capability bundle — could write arbitrary strings via POST
+// /api/learning/style or /api/learning/mistake that get injected straight
+// into the admin's own AI system prompt: a cross-tenant prompt-injection
+// primitive, not just a data leak. The GET dashboard route is gated the same
+// way rather than left open for personal users to read, because there are no
+// per-user preferences here to read — it's the same global state, so even a
+// read would leak admin's real coding-session mistake log to every other
+// user. Mirrors the req.username !== "admin" pattern used in
+// permissions-routes.ts/admin-routes.ts/invites-routes.ts rather than
+// inventing a new capability, since this data was only ever meant to be
+// touched by the single admin identity.
+const requireAdmin = (req: any, res: any, next: any) => {
+  if (req.username !== "admin") {
+    return res.status(403).json({ error: "Only admin can access long-term learning data" });
+  }
+  next();
+};
 
-learningRouter.get("/api/learning/dashboard", validateApiKey, (req, res) => {
+learningRouter.get("/api/learning/dashboard", validateApiKey, requireAdmin, (req, res) => {
   res.json({
     stylePreferences: learningEngine.getStylePreferences(),
     optimizedWorkflows: learningEngine.listOptimizedWorkflows(),
@@ -19,7 +43,7 @@ learningRouter.get("/api/learning/dashboard", validateApiKey, (req, res) => {
   });
 });
 
-learningRouter.post("/api/learning/style", validateApiKey, (req, res) => {
+learningRouter.post("/api/learning/style", validateApiKey, requireAdmin, (req, res) => {
   const { namingConvention, tabSize, frameworkPreference, architecturePattern } = req.body;
   learningEngine.updateStylePreference({
     namingConvention,
@@ -30,7 +54,7 @@ learningRouter.post("/api/learning/style", validateApiKey, (req, res) => {
   res.json({ status: "success", preferences: learningEngine.getStylePreferences() });
 });
 
-learningRouter.post("/api/learning/mistake", validateApiKey, (req, res) => {
+learningRouter.post("/api/learning/mistake", validateApiKey, requireAdmin, (req, res) => {
   const { errorSignature, affectedFile, rootCause, successfulFix } = req.body;
   if (!errorSignature || !affectedFile) {
     return res.status(400).json({ error: "Missing errorSignature or affectedFile" });
