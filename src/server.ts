@@ -1,6 +1,7 @@
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import path from "path";
 import crypto from "crypto";
 import dotenv from "dotenv";
@@ -160,6 +161,11 @@ app.use(helmet({
 app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ limit: "15mb", extended: true }));
+// Unsigned parsing only — the one cookie this app sets
+// (integrations-routes.ts's OAuth CSRF-binding cookie) is itself an HMAC
+// value, so cookie-parser doesn't need its own signing secret on top of
+// that.
+app.use(cookieParser());
 
 // authLimiter/loginUsernameLimiter moved to interaction/routes/auth-routes.ts
 // with the routes they exclusively guard.
@@ -329,7 +335,17 @@ app.use(settingsRouter);
 app.use(observationRouter);
 
 // Autonomous Executive Execution Hook
-app.post("/api/executive/run", validateApiKey, aiLimiter, async (req: any, res: any) => {
+//
+// requireCapability("executive.plan") matches the exact gate the chat
+// tool-calling path already enforces for the same underlying action (see
+// capabilities/tools.ts's PERMISSION_BY_TOOL map) — without it, this route
+// let a personal user reach executive.executeObjective() directly, bypassing
+// the gate entirely, since "executive.plan" is deliberately NOT included in
+// DEFAULT_PERSONAL_CAPABILITIES (kernel/security.ts) and can trigger real
+// autonomous coding pipeline activity (research, build_requests creation,
+// real GitHub branch/commit/PR activity, writes into the shared admin
+// Obsidian vault).
+app.post("/api/executive/run", validateApiKey, requireCapability("executive.plan"), aiLimiter, async (req: any, res: any) => {
   const { objective } = req.body;
   if (!objective) {
     return res.status(400).json({ error: "Missing objective" });

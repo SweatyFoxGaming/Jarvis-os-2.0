@@ -4,6 +4,7 @@ import { ObservationPlatform } from "../../kernel/observation.js";
 import * as usersRepo from "../../kernel/state/users-repo.js";
 import * as invitesRepo from "../../kernel/state/invites-repo.js";
 import * as permissions from "../../kernel/security.js";
+import { MAX_NON_ADMIN_USERS } from "./invites-routes.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -48,27 +49,65 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
     return res.status(400).json({ error: "Password must be at least 8 characters" });
   }
   try {
-    // Check-first, not create-then-redeem: createUser has no sensible
-    // "undo" and redeemInvite has no sensible "check without claiming", so
-    // validate the invite is real and unused BEFORE ever calling
-    // createUser. redeemInvite is still called after createUser to close
-    // the TOCTOU race atomically, but by then it's failing an already-rare
-    // case (someone else claimed the same token in between) rather than
-    // the common one (bad/expired/reused token).
+    // Check-first: validate the invite is real, unused, and unexpired
+    // BEFORE touching it at all, so a bad/expired/reused token is still
+    // rejected with the same 400 it always was, without ever attempting a
+    // claim.
+    //
+    // But the CLAIM itself (redeemInvite) is now the first WRITE this
+    // handler performs — before createUser, not after. Previously
+    // createUser ran first: under N concurrent requests using the SAME
+    // valid invite token, this read-only pre-check passed for all N
+    // (nothing had been claimed yet), so all N calls to createUser
+    // succeeded and created N real, working accounts — only one of the N
+    // subsequent redeemInvite() calls actually won the atomic claim,
+    // leaving N-1 real, usable accounts (with zero capability grants, but
+    // API keys that work for login and reach every validateApiKey-only
+    // route) behind a 400 response the caller had no reason to trust.
+    // Claiming first means a losing race participant is now rejected by
+    // redeemInvite's atomic `UPDATE ... WHERE used_by IS NULL` before
+    // createUser ever runs, so no account is created for them at all.
+    // redeemInvite's SQL requires no pre-existing user row (it just
+    // records who claimed it), so this ordering is safe.
+    //
+    // The tradeoff this reordering accepts: if createUser then fails for
+    // some other reason (e.g. UsernameTakenError) after a successful
+    // redeemInvite, the invite is burned with no account created — a much
+    // smaller, self-contained cost (one wasted invite an admin can just
+    // reissue) than the old bug (a live account a losing race participant
+    // could log into with zero grants but full API access).
     const invite = await invitesRepo.getInvite(inviteToken);
     if (!invite || invite.used_by || invite.expires_at.getTime() <= Date.now()) {
       return res.status(400).json({ error: "Invalid or expired invite token." });
     }
-    const apiKey = await usersRepo.createUser(username, password);
+
+    // Re-check the MAX_NON_ADMIN_USERS cap here, alongside the invite
+    // validation above and before the invite is claimed — invites-routes.ts's
+    // POST /api/invites only checks this cap at invite-CREATION time, which
+    // does nothing to stop invites already issued (e.g. a burst minted
+    // before any of them were redeemed) from being redeemed past the cap.
+    // Checked before redeemInvite so a request doomed by the cap doesn't
+    // needlessly burn the token. This does leave one narrow, much smaller
+    // race of its own — two concurrent registrations against two DIFFERENT
+    // valid tokens could both read the count as 9 and both proceed — but
+    // that's a self-limiting, one-time-at-most overshoot by a handful of
+    // accounts, not the unbounded blow-past-the-cap-with-no-error-anywhere
+    // bug this closes.
+    const nonAdminCount = await invitesRepo.countNonAdminUsers();
+    if (nonAdminCount >= MAX_NON_ADMIN_USERS) {
+      return res.status(403).json({ error: `Already at the ${MAX_NON_ADMIN_USERS}-person limit — this invite can no longer be redeemed.` });
+    }
+
     const redeemed = await invitesRepo.redeemInvite(inviteToken, username);
     if (!redeemed) {
-      // The account was already created above — this is the rare TOCTOU
-      // race (someone else redeemed the same token between the pre-check
-      // and this call) rather than the common bad-token case, which was
-      // already rejected above before createUser ran.
+      // Rare TOCTOU: someone else redeemed this exact token between the
+      // pre-check above and this call. No account has been created at this
+      // point, so nothing needs to be undone.
       observation.logTelemetry("warn", "Database", `Invite ${inviteToken} was redeemed concurrently during registration of ${username}`);
       return res.status(400).json({ error: "Invalid or expired invite token." });
     }
+
+    const apiKey = await usersRepo.createUser(username, password);
     for (const capability of permissions.DEFAULT_PERSONAL_CAPABILITIES) {
       await permissions.grantCapability(username, capability, "system:invite-redemption");
     }

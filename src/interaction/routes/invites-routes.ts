@@ -7,7 +7,13 @@ const observation = ObservationPlatform.getInstance();
 
 export const invitesRouter = Router();
 
-const MAX_NON_ADMIN_USERS = 10;
+// Exported so auth-routes.ts can re-check the same cap at
+// registration/redemption time, not just here at invite-creation time —
+// see the comment on that re-check for why checking only here isn't
+// enough (a burst of invites created before any of them are redeemed can
+// blow past this limit with no error anywhere, since this route's check
+// only ever sees the state of the world at the moment an invite is minted).
+export const MAX_NON_ADMIN_USERS = 10;
 
 invitesRouter.post("/api/invites", validateApiKey, async (req: any, res: any) => {
   if (req.username !== "admin") {

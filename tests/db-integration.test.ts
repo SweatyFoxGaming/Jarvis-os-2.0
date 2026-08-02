@@ -35,6 +35,7 @@ import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
 import { createObjective } from "../src/kernel/state/objectives-repo.js";
 import { startRun } from "../src/kernel/state/objective-runs-repo.js";
 import { addSubscription } from "../src/kernel/state/push-subscriptions-repo.js";
+import { spawn, ChildProcess } from "child_process";
 
 // oauth-repo.ts's saveTokens/getTokens call token-crypto.ts's
 // encryptToken/decryptToken on every call, which throw without a real,
@@ -142,6 +143,17 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM memory_embeddings WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [`bulk_grant_user_1_${RUN_ID}`, `bulk_grant_user_2_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM capability_grants WHERE username IN ($1, $2)`, [`bulk_grant_user_1_${RUN_ID}`, `bulk_grant_user_2_${RUN_ID}`]).catch(() => {});
+  // The HTTP-level /api/register race + cap tests below already clean up
+  // after themselves in their own finally blocks — this is only a safety
+  // net for a run that fails partway through (e.g. the spawned server never
+  // becomes reachable, or an assertion throws before that test's own
+  // cleanup runs).
+  await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [`db_it_race_winner_${RUN_ID}`, `db_it_race_loser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM capability_grants WHERE username IN ($1, $2)`, [`db_it_race_winner_${RUN_ID}`, `db_it_race_loser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by IN ($1, $2)`, [`db_it_race_winner_${RUN_ID}`, `db_it_race_loser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM users WHERE username LIKE $1`, [`db_it_cap_filler_%_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM capability_grants WHERE username LIKE $1`, [`db_it_cap_filler_%_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_cap_overflow_${RUN_ID}`]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -215,9 +227,12 @@ registerTest("register grants DEFAULT_PERSONAL_CAPABILITIES on successful invite
 
   // A second redemption attempt of the same, now-used token must fail —
   // this is the atomic race-guard redeemInvite's WHERE clause exists for
-  // (see invites-repo.ts's own comment on that query), and it's the reason
-  // auth-routes.ts can safely call createUser before this second, real
-  // atomic check without risking two accounts claiming one invite.
+  // (see invites-repo.ts's own comment on that query). auth-routes.ts's
+  // /api/register handler now calls redeemInvite BEFORE createUser (the
+  // registration-race fix — see the dedicated HTTP-level test below for the
+  // actual race scenario against the real route), so it's this atomic claim
+  // that stops two concurrent requests for the same token from both ever
+  // reaching createUser, not the other way around.
   const secondRedeem = await invitesRepo.redeemInvite(invite.token, "someone_else");
   if (secondRedeem) throw new Error("expected a second redemption of the same invite to fail");
 
@@ -510,6 +525,187 @@ registerTest("grant-all grants a capability to every existing non-admin user, ag
   }
   if (!permissions.hasGrant(user1, "news.read") || !permissions.hasGrant(user2, "news.read")) {
     throw new Error("expected both users to have the bulk-granted capability");
+  }
+});
+
+// ---------- HTTP-level: POST /api/register against the real running server ----------
+//
+// Everything above exercises invites-repo/users-repo/security functions
+// directly — this section instead spawns the real src/server.ts (pointed at
+// this same real, disposable Postgres via the inherited POSTGRES_* env vars)
+// and hits the actual /api/register route over HTTP, because the bug this
+// locks in lives in auth-routes.ts's handler ordering itself, not in any one
+// repo function in isolation.
+const TEST_INTERNAL_API_KEY = "db-integration-test-key-not-a-real-secret";
+
+async function spawnRegisterTestServer(port: number): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ["node_modules/.bin/tsx", "src/server.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), INTERNAL_API_KEY: TEST_INTERNAL_API_KEY },
+    stdio: "ignore",
+  });
+  let spawnError: Error | null = null;
+  child.on("error", (err) => { spawnError = err; });
+
+  const deadline = Date.now() + 25_000;
+  let ready = false;
+  let lastErr: any = null;
+  while (Date.now() < deadline) {
+    if (spawnError) throw new Error(`db-integration HTTP: server on port ${port} failed to spawn: ${(spawnError as Error).message}`);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`);
+      if (res.ok) { ready = true; break; }
+      lastErr = new Error(`/health returned HTTP ${res.status}`);
+    } catch (err: any) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!ready) {
+    child.kill("SIGKILL");
+    throw new Error(`db-integration HTTP: server never became reachable on :${port}/health: ${lastErr?.message || lastErr}`);
+  }
+  return child;
+}
+
+async function stopRegisterTestServer(child: ChildProcess): Promise<void> {
+  child.kill();
+  const exited = await new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 5000);
+    child.once("exit", () => { clearTimeout(timeout); resolve(true); });
+  });
+  if (!exited) child.kill("SIGKILL");
+}
+
+registerTest("HTTP: POST /api/register claims the invite before creating the user, closing the registration race, against real Postgres", async () => {
+  const port = 3301;
+  const child = await spawnRegisterTestServer(port);
+  const winnerUsername = `db_it_race_winner_${RUN_ID}`;
+  const loserUsername = `db_it_race_loser_${RUN_ID}`;
+  try {
+    const raceInvite = await invitesRepo.createInvite("admin");
+
+    // Two concurrent registrations against the SAME invite token. Before
+    // the fix (createUser ran before redeemInvite), the read-only pre-check
+    // passed for both requests, so BOTH calls to createUser succeeded — a
+    // real, working, zero-grant account got created for the request that
+    // then lost the atomic redeemInvite race, even though it received a
+    // 400. After the fix (redeemInvite is the first write), the losing
+    // request is rejected by the atomic claim before createUser ever runs,
+    // so no account exists for it at all.
+    const [resA, resB] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/api/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: winnerUsername, password: "a-real-password-123", inviteToken: raceInvite.token }),
+      }),
+      fetch(`http://127.0.0.1:${port}/api/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: loserUsername, password: "a-real-password-123", inviteToken: raceInvite.token }),
+      }),
+    ]);
+
+    const statuses = [resA.status, resB.status].sort((a, b) => a - b);
+    if (statuses[0] !== 200 || statuses[1] !== 400) {
+      throw new Error(`db-integration HTTP: expected exactly one 200 and one 400 for a concurrent same-token registration race, got ${resA.status} and ${resB.status}`);
+    }
+    const winnerWasA = resA.status === 200;
+    const actualWinner = winnerWasA ? winnerUsername : loserUsername;
+    const actualLoser = winnerWasA ? loserUsername : winnerUsername;
+
+    const db = getPool();
+    const { rows: winnerRows } = await db.query(`SELECT 1 FROM users WHERE username = $1`, [actualWinner]);
+    if (winnerRows.length !== 1) {
+      throw new Error(`db-integration HTTP: expected the winning registration ("${actualWinner}") to have created exactly one user row, found ${winnerRows.length}`);
+    }
+    const { rows: loserRows } = await db.query(`SELECT 1 FROM users WHERE username = $1`, [actualLoser]);
+    if (loserRows.length !== 0) {
+      throw new Error(
+        `db-integration HTTP: registration race regression — the losing request ("${actualLoser}") still created a real user account; ` +
+          `the redeem-before-create reordering did not close the race`
+      );
+    }
+
+    // The invite must show the actual winner as its claimant, not be left
+    // ambiguous or double-claimed.
+    const afterRace = await invitesRepo.getInvite(raceInvite.token);
+    if (!afterRace || afterRace.used_by !== actualWinner) {
+      throw new Error(`db-integration HTTP: expected invite used_by="${actualWinner}" after the race, got: ${JSON.stringify(afterRace)}`);
+    }
+  } finally {
+    await stopRegisterTestServer(child);
+    const db = getPool();
+    await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [winnerUsername, loserUsername]).catch(() => {});
+    await db.query(`DELETE FROM capability_grants WHERE username IN ($1, $2)`, [winnerUsername, loserUsername]).catch(() => {});
+    await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by IN ($1, $2)`, [winnerUsername, loserUsername]).catch(() => {});
+  }
+});
+
+registerTest("HTTP: POST /api/register blocks redemption once the 10-person cap is hit, against real Postgres", async () => {
+  const port = 3302;
+  const child = await spawnRegisterTestServer(port);
+  const fillerUsernames: string[] = [];
+  let capInviteToken: string | null = null;
+  const overflowUsername = `db_it_cap_overflow_${RUN_ID}`;
+  try {
+    // Fill up to (not necessarily from zero — other tests in this run may
+    // have left transient rows behind, cleaned up independently) exactly
+    // MAX_NON_ADMIN_USERS non-admin users, redeeming each filler invite
+    // directly against the repo (not through HTTP) since only the final,
+    // over-the-cap attempt is what this test needs to go through the real
+    // route.
+    const startingCount = await invitesRepo.countNonAdminUsers();
+    const need = Math.max(0, 10 - startingCount);
+    for (let i = 0; i < need; i++) {
+      const fillerUsername = `db_it_cap_filler_${i}_${RUN_ID}`;
+      const fillerInvite = await invitesRepo.createInvite("admin");
+      await usersRepo.createUser(fillerUsername, "a-real-password-123");
+      await invitesRepo.redeemInvite(fillerInvite.token, fillerUsername);
+      fillerUsernames.push(fillerUsername);
+    }
+    const cappedCount = await invitesRepo.countNonAdminUsers();
+    if (cappedCount < 10) {
+      throw new Error(`db-integration HTTP: expected countNonAdminUsers() >= 10 after filling to the cap, got ${cappedCount}`);
+    }
+
+    const capInvite = await invitesRepo.createInvite("admin");
+    capInviteToken = capInvite.token;
+    const overflowRes = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: overflowUsername, password: "a-real-password-123", inviteToken: capInvite.token }),
+    });
+    if (overflowRes.status !== 403) {
+      throw new Error(`db-integration HTTP: expected 403 once the 10-person cap is reached, got ${overflowRes.status}`);
+    }
+
+    // A registration rejected by the cap must not have created a user or
+    // burned the invite — an admin should be able to just reissue/retry it
+    // once someone else is removed.
+    const db = getPool();
+    const { rows: overflowUserRows } = await db.query(`SELECT 1 FROM users WHERE username = $1`, [overflowUsername]);
+    if (overflowUserRows.length !== 0) {
+      throw new Error(`db-integration HTTP: a registration blocked by the 10-person cap still created a user account for "${overflowUsername}"`);
+    }
+    const afterCapAttempt = await invitesRepo.getInvite(capInvite.token);
+    if (afterCapAttempt?.used_by) {
+      throw new Error(`db-integration HTTP: expected the invite to remain unused after a registration blocked by the cap, got used_by="${afterCapAttempt.used_by}"`);
+    }
+  } finally {
+    await stopRegisterTestServer(child);
+    const db = getPool();
+    const allFillers = [...fillerUsernames, overflowUsername];
+    for (const u of allFillers) {
+      await db.query(`DELETE FROM users WHERE username = $1`, [u]).catch(() => {});
+      await db.query(`DELETE FROM capability_grants WHERE username = $1`, [u]).catch(() => {});
+    }
+    if (fillerUsernames.length > 0) {
+      await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by = ANY($1)`, [fillerUsernames]).catch(() => {});
+    }
+    if (capInviteToken) {
+      await db.query(`DELETE FROM invite_tokens WHERE token = $1`, [capInviteToken]).catch(() => {});
+    }
   }
 });
 

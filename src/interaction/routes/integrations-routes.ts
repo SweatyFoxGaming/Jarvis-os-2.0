@@ -1,4 +1,5 @@
 import { Router } from "express";
+import crypto from "crypto";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -15,6 +16,75 @@ import * as oauthRepo from "../../kernel/state/oauth-repo.js";
 const observation = ObservationPlatform.getInstance();
 
 export const integrationsRouter = Router();
+
+// ---------- OAuth account-linking CSRF binding ----------
+//
+// Google's callback is the user's own browser navigating back after
+// consent, so identity crosses that boundary via the `state` query param
+// (see oauth-state-tickets.ts) rather than an X-API-Key header. But `state`
+// alone only proves "someone who called /auth-url initiated a flow bound to
+// THIS username" — it says nothing about which browser is completing it.
+// Attack this closes: an attacker (any authenticated Jarvis user) calls
+// GET /auth-url with their OWN api key, gets back a real Google consent URL
+// whose state is bound to their OWN username, sends that URL to a victim
+// (who need not even be a Jarvis user), the victim completes Google's real
+// consent screen with their own real Google account, and Google redirects
+// back with that same state — without this binding, the callback would
+// attach the VICTIM's real Calendar+Gmail tokens to the ATTACKER's account.
+//
+// Fix: /auth-url also sets an HttpOnly, SameSite=Lax cookie scoped to this
+// same browser, carrying an HMAC of the state value (keyed on
+// OAUTH_TOKEN_ENCRYPTION_KEY, which every OAuth-token-shaped secret in this
+// codebase is already required to have — see kernel/token-crypto.ts). A
+// cookie is what makes this browser-bound: it's issued only in the
+// /auth-url response and never appears in the URL the attacker forwards, so
+// the victim's browser — which never called /auth-url itself — never holds
+// it. The callback recomputes the same HMAC from the state it received and
+// requires the cookie to match before it will even attempt to consume the
+// state ticket. The cookie value is deliberately not just a copy of
+// `state` itself: `state` is visible in the forwarded URL an attacker
+// controls, so it can never double as its own proof of browser origin —
+// only a value the attacker can't derive (the HMAC, which requires the
+// server-side key) can.
+const OAUTH_CSRF_COOKIE = "oauth_csrf_binding";
+// Matches oauth-state-tickets.ts's own OAUTH_STATE_TICKET_TTL_MS — no
+// reason for this binding to outlive the state ticket it's protecting.
+const OAUTH_CSRF_COOKIE_MAX_AGE_MS = 10 * 60 * 1000;
+// Scoped to exactly the two routes that issue/consume it, not the whole
+// app — an OAuth CSRF-binding cookie has no reason to be sent on every
+// other request to this origin.
+const OAUTH_CSRF_COOKIE_PATH = "/api/integrations/google";
+
+function oauthCsrfBindingValue(state: string): string {
+  const key = process.env.OAUTH_TOKEN_ENCRYPTION_KEY;
+  if (!key) {
+    // Fails closed: with no real key there is no way to bind this cookie
+    // securely (an unkeyed or hardcoded-key "HMAC" would just be a copy of
+    // `state` under another name, which is exactly the guessable/replayable
+    // value this fix exists to avoid) — refuse to issue the OAuth flow at
+    // all rather than silently degrading to a forgeable binding.
+    throw new Error("OAUTH_TOKEN_ENCRYPTION_KEY is not set — cannot start a Google OAuth flow without it.");
+  }
+  return crypto.createHmac("sha256", key).update(state).digest("hex");
+}
+
+function oauthCsrfBindingMatches(cookieValue: unknown, state: string): boolean {
+  if (typeof cookieValue !== "string" || !cookieValue) return false;
+  let expected: string;
+  try {
+    expected = oauthCsrfBindingValue(state);
+  } catch {
+    return false;
+  }
+  const actual = Buffer.from(cookieValue);
+  const wanted = Buffer.from(expected);
+  // crypto.timingSafeEqual throws on a length mismatch rather than
+  // returning false — an attacker-supplied cookie is exactly the kind of
+  // untrusted-length input that would trigger that, so length must be
+  // checked first, not caught after the fact.
+  if (actual.length !== wanted.length) return false;
+  return crypto.timingSafeEqual(actual, wanted);
+}
 
 // ---------- Integrations: GitHub / Email / TTS ----------
 
@@ -165,6 +235,16 @@ integrationsRouter.delete("/api/integrations/files", validateApiKey, requireCapa
 integrationsRouter.get("/api/integrations/google/auth-url", validateApiKey, (req: any, res: any) => {
   try {
     const state = issueOAuthStateTicket(req.username);
+    // See the CSRF-binding block above: this cookie is what proves the
+    // browser completing /callback is the same one that received this
+    // response, not just whoever holds the URL.
+    res.cookie(OAUTH_CSRF_COOKIE, oauthCsrfBindingValue(state), {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: true,
+      maxAge: OAUTH_CSRF_COOKIE_MAX_AGE_MS,
+      path: OAUTH_CSRF_COOKIE_PATH,
+    });
     res.json({ url: calendar.getAuthUrl(state) });
   } catch (err) {
     handleIntegrationError(res, err);
@@ -174,20 +254,39 @@ integrationsRouter.get("/api/integrations/google/auth-url", validateApiKey, (req
 // No validateApiKey — same reasoning as the calendar-only callback this
 // replaces: Google's redirect is the user's own browser, which can't carry
 // an X-API-Key header. Identity crosses this boundary via the state
-// parameter instead, validated below.
+// parameter instead, validated below — and, as of the CSRF-binding fix
+// above, the request must also carry the matching oauth_csrf_binding cookie
+// set on /auth-url before that state is trusted at all.
 integrationsRouter.get("/api/integrations/google/callback", async (req: any, res: any) => {
   const { code, error, state } = req.query;
+  const clearCsrfCookie = () => res.clearCookie(OAUTH_CSRF_COOKIE, { path: OAUTH_CSRF_COOKIE_PATH });
   if (error) {
     // error/err.message below come from the query string or an upstream API and
     // must never be interpolated into this HTML response (reflected-XSS risk) —
     // log them server-side and show the browser a fixed, static message instead.
     observation.logTelemetry("warn", "Integrations", `Google OAuth authorization denied: ${error}`);
+    clearCsrfCookie();
     return res.status(400).send("<html><body>Google account authorization was denied.</body></html>");
   }
   if (!code || !state) {
+    clearCsrfCookie();
     return res.status(400).send("<html><body>Missing authorization code or state.</body></html>");
   }
+  // Verify the CSRF-binding cookie BEFORE ever consuming the state ticket —
+  // consumeOAuthStateTicket() is single-use, so calling it on a request that
+  // fails this check would burn the real, valid ticket via a path that
+  // still risks attaching tokens to the wrong account on a retry, or at
+  // minimum locks the legitimate user out of their own in-flight flow. A
+  // request whose cookie doesn't match (or is missing entirely, as it
+  // always will be for a victim who never called /auth-url themselves) is
+  // rejected outright, before identity is even resolved from the state.
+  if (!oauthCsrfBindingMatches(req.cookies?.[OAUTH_CSRF_COOKIE], state as string)) {
+    observation.logAuditEvent("unknown", "google_oauth_csrf_rejected", "failed", "Google OAuth callback rejected: missing or mismatched CSRF-binding cookie");
+    clearCsrfCookie();
+    return res.status(403).send("<html><body>This connection attempt could not be verified from your browser — please restart from the dashboard.</body></html>");
+  }
   const username = consumeOAuthStateTicket(state as string);
+  clearCsrfCookie();
   if (!username) {
     return res.status(403).send("<html><body>Invalid or expired connection attempt — please try again.</body></html>");
   }

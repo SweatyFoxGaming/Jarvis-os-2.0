@@ -54,6 +54,7 @@ import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
+import crypto from "crypto";
 
 // token-crypto.ts's getKey() reads this lazily on every encrypt/decrypt
 // call rather than at module load, but it still needs a real, validly-shaped
@@ -1500,6 +1501,77 @@ registerTest("HTTP Boundary", "Google OAuth callback never reflects an attacker-
     }
     if (!body.includes("Google account authorization was denied")) {
       throw new Error(`HTTP Boundary: expected the fixed denial message, got: ${body}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// Locks in the OAuth account-linking CSRF fix: without a cookie binding the
+// flow to the specific browser that started it, an attacker could call
+// /auth-url with their OWN api key, get a real Google consent URL whose
+// state is bound to their OWN username, send that URL to a victim, and have
+// the victim's real Calendar+Gmail tokens attach to the ATTACKER's account
+// once the victim's browser (which never called /auth-url and so never
+// received the binding cookie) completes the redirect. This computes the
+// expected cookie value the exact same way integrations-routes.ts's
+// oauthCsrfBindingValue() does (HMAC-SHA256 of `state`, keyed on
+// OAUTH_TOKEN_ENCRYPTION_KEY) rather than going through a real /auth-url +
+// Google consent round-trip, so it needs no GOOGLE_CLIENT_ID/SECRET
+// configured and makes no outbound network call — it exercises the CSRF
+// gate itself, which runs (and must reject) before the state ticket is ever
+// looked up, independent of whether that ticket is real. The two rejection
+// cases are distinguished from "ticket not found" (also a 403, but for an
+// unrelated reason and the wrong thing for this test to pass on) by
+// asserting the CSRF-specific denial message, not just the status code.
+registerTest("HTTP Boundary", "Google OAuth callback rejects when the CSRF-binding cookie is missing or mismatched", async () => {
+  const port = 3019; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3018
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  const csrfDeniedMessage = "could not be verified from your browser";
+  try {
+    const state = crypto.randomUUID();
+    const correctCookie = crypto
+      .createHmac("sha256", process.env.OAUTH_TOKEN_ENCRYPTION_KEY!)
+      .update(state)
+      .digest("hex");
+
+    const noCookie = await fetch(
+      `http://127.0.0.1:${port}/api/integrations/google/callback?code=fake-code&state=${encodeURIComponent(state)}`
+    );
+    const noCookieBody = await noCookie.text();
+    if (noCookie.status !== 403) {
+      throw new Error(`HTTP Boundary: expected 403 for a callback with no CSRF-binding cookie, got ${noCookie.status}`);
+    }
+    if (!noCookieBody.includes(csrfDeniedMessage)) {
+      throw new Error(`HTTP Boundary: expected the CSRF-specific denial message with no cookie, got: ${noCookieBody}`);
+    }
+
+    const wrongCookie = await fetch(
+      `http://127.0.0.1:${port}/api/integrations/google/callback?code=fake-code&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: "oauth_csrf_binding=not-the-real-binding-value" } }
+    );
+    const wrongCookieBody = await wrongCookie.text();
+    if (wrongCookie.status !== 403) {
+      throw new Error(`HTTP Boundary: expected 403 for a callback with a mismatched CSRF-binding cookie, got ${wrongCookie.status}`);
+    }
+    if (!wrongCookieBody.includes(csrfDeniedMessage)) {
+      throw new Error(`HTTP Boundary: expected the CSRF-specific denial message with a mismatched cookie, got: ${wrongCookieBody}`);
+    }
+
+    // The matching cookie must clear the CSRF gate — it then fails for a
+    // DIFFERENT, expected reason (this `state` was never actually issued
+    // via issueOAuthStateTicket, so consumeOAuthStateTicket resolves null),
+    // proving the gate above didn't just reject everything unconditionally.
+    const rightCookie = await fetch(
+      `http://127.0.0.1:${port}/api/integrations/google/callback?code=fake-code&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: `oauth_csrf_binding=${correctCookie}` } }
+    );
+    const rightCookieBody = await rightCookie.text();
+    if (rightCookieBody.includes(csrfDeniedMessage)) {
+      throw new Error(`HTTP Boundary: expected the CSRF check to pass with the matching cookie, got the CSRF-denial message anyway: ${rightCookieBody}`);
+    }
+    if (rightCookie.status !== 403 || !rightCookieBody.includes("Invalid or expired connection attempt")) {
+      throw new Error(`HTTP Boundary: expected the matching-cookie request to fail on ticket lookup instead (unknown state), got ${rightCookie.status}: ${rightCookieBody}`);
     }
   } finally {
     await stopTestServer(child);
