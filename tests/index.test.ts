@@ -49,6 +49,7 @@ import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { deriveHudBadge } from "../src/interaction/hud-badge.js";
 import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
 import { encryptToken, decryptToken } from "../src/kernel/token-crypto.js";
+import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../src/kernel/oauth-state-tickets.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -2822,6 +2823,31 @@ registerTest("TokenCrypto", "two encryptions of the same plaintext produce diffe
   const b = encryptToken("same-value");
   if (a === b) {
     throw new Error("TokenCrypto: expected different ciphertext across calls (IV should be random per call), got identical output");
+  }
+});
+
+// ---------- OAuthStateTickets ----------
+registerTest("OAuthStateTickets", "issue then consume round-trips the username", () => {
+  const state = issueOAuthStateTicket("test_user");
+  const username = consumeOAuthStateTicket(state);
+  if (username !== "test_user") {
+    throw new Error(`OAuthStateTickets: expected "test_user", got: ${username}`);
+  }
+});
+
+registerTest("OAuthStateTickets", "single-use — a second consume of the same state fails", () => {
+  const state = issueOAuthStateTicket("test_user");
+  consumeOAuthStateTicket(state);
+  const second = consumeOAuthStateTicket(state);
+  if (second !== null) {
+    throw new Error(`OAuthStateTickets: expected null on reuse, got: ${second}`);
+  }
+});
+
+registerTest("OAuthStateTickets", "rejects an unknown state value", () => {
+  const result = consumeOAuthStateTicket("not-a-real-state-value");
+  if (result !== null) {
+    throw new Error(`OAuthStateTickets: expected null for an unknown state, got: ${result}`);
   }
 });
 
