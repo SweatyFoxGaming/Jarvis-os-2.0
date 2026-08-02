@@ -9,6 +9,7 @@ import { ObservationPlatform } from "../kernel/observation.js";
 import { AutonomousExecutive } from "../executive/autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
 import * as calendar from "./providers/calendar.js";
+import * as personalGmail from "./providers/personal-gmail.js";
 import * as briefing from "../world/briefing.js";
 import * as files from "./providers/files.js";
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
@@ -54,6 +55,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   github_get_repo_or_file: "github.read",
   github_create_issue: "github.issues.create",
   send_email: "email.send",
+  send_personal_email: "email.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
   calendar_list_events: "calendar.read",
@@ -114,6 +116,19 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "send_email",
     description: "Send an email via the configured SMTP account.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        to: { type: Type.STRING },
+        subject: { type: Type.STRING },
+        text: { type: Type.STRING },
+      },
+      required: ["to", "subject", "text"],
+    },
+  },
+  {
+    name: "send_personal_email",
+    description: "Send an email from the user's own connected Google account (via Gmail), not the shared admin SMTP account. Requires the user to have connected their Google account first.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -519,6 +534,9 @@ export async function executeTool(
       case "send_email":
         output = await emailIntegration.sendEmail(args.to, args.subject, args.text);
         break;
+      case "send_personal_email":
+        output = await personalGmail.sendPersonalEmail(username, args.to, args.subject, args.text);
+        break;
       case "speak_text": {
         const { audio, contentType } = await tts.synthesizeSpeech(args.text);
         audioDirective = { mimeType: contentType, base64: audio.toString("base64") };
@@ -710,6 +728,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
   github_create_issue: ["github", "issue", "repo", "repository"],
   send_email: ["email", "e-mail", "send mail", "inbox"],
+  send_personal_email: ["email", "e-mail", "send mail", "from my gmail", "from my google account"],
   speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
   decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
   calendar_list_events: ["calendar", "schedule", "my agenda", "upcoming events", "what's on my"],
