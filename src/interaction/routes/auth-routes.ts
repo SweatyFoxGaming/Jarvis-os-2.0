@@ -45,22 +45,32 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
   if (typeof username !== "string" || !username.trim() || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
-  // Same format check createUser enforces (users-repo.ts's exported
-  // USERNAME_FORMAT), run here BEFORE redeemInvite is ever called. Without
-  // this, a malformed username (an email address, a space, under 3 chars —
-  // all common real input, not edge cases) would sail past every check in
-  // this handler, burn the caller's single-use invite via redeemInvite, and
-  // only THEN get rejected by createUser's own check — leaving the user
-  // with no account and an admin-recoverable-only wasted invite. Checking
-  // the exact same regex here, before any write, means a malformed username
-  // gets a clean 400 with the invite left completely untouched.
-  if (!usersRepo.USERNAME_FORMAT.test(username)) {
-    return res.status(400).json({ error: new usersRepo.InvalidUsernameError().message });
-  }
   if (typeof password !== "string" || password.length < 8) {
     return res.status(400).json({ error: "Password must be at least 8 characters" });
   }
   try {
+    // Same format + reserved-username checks createUser enforces
+    // (users-repo.ts's exported validateNewUsername — the single shared
+    // function both this pre-check and createUser's own first step call,
+    // so they can never validate a username differently), run here BEFORE
+    // redeemInvite is ever called. Without this, a malformed username (an
+    // email address, a space, under 3 chars) or a reserved one ("admin",
+    // any case variant — the identity auth-middleware.ts grants every
+    // capability to) would sail past every other check in this handler,
+    // burn the caller's single-use invite via redeemInvite, and only THEN
+    // get rejected by createUser's own check — leaving the user with no
+    // account and an admin-recoverable-only wasted invite. Running it here,
+    // before any write, means either kind of bad username gets a clean 400
+    // with the invite left completely untouched. Deliberately NOT
+    // pre-checking UsernameTakenError here — that one needs a DB lookup and
+    // is inherently race-dependent (TOCTOU) no matter where it runs, so it
+    // stays exactly where it was: inside createUser's atomic
+    // INSERT ... ON CONFLICT DO NOTHING, below. This one call is inside the
+    // try block (not before it) specifically so it shares the same catch
+    // block below that already maps InvalidUsernameError/
+    // ReservedUsernameError/UsernameTakenError to a clean 400.
+    usersRepo.validateNewUsername(username);
+
     // Check-first: validate the invite is real, unused, and unexpired
     // BEFORE touching it at all, so a bad/expired/reused token is still
     // rejected with the same 400 it always was, without ever attempting a

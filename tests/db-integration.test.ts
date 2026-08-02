@@ -133,6 +133,7 @@ async function cleanupTestData(): Promise<void> {
   const db = getPool();
   await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_user_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_legacyapikey_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_legacyapikey2_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM conversation_history WHERE username = $1`, [`db_it_session_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM mcp_servers WHERE name = $1`, [`db_it_mcp_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM kg_entities WHERE username IN ($1, $2)`, [`db_it_kg_a_${RUN_ID}`, `db_it_kg_b_${RUN_ID}`]).catch(() => {});
@@ -288,7 +289,7 @@ registerTest("createUser + verifyCredentials round-trip for real, and rejects a 
   if (!invalidThrew) throw new Error('createUser did not throw InvalidUsernameError for a username containing "|" and under 3 characters of real content');
 });
 
-registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it becomes both hashed-at-rest and authenticate-compatible", async () => {
+registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it becomes both hashed-at-rest and authenticate-compatible, and leaves an already-hashed row untouched", async () => {
   const username = `db_it_legacyapikey_${RUN_ID}`;
   await createUser(username, "a-real-password-123");
   const db = getPool();
@@ -299,6 +300,18 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
   // createApiKey (which only ever writes the new hashed shape now).
   const legacyRawKey = `legacy_plaintext_key_${RUN_ID}`;
   await db.query(`INSERT INTO api_keys (key, username) VALUES ($1, $2)`, [legacyRawKey, username]);
+
+  // Also seed a NORMAL, already-migrated user via the real createUser/
+  // createApiKey path — this row is already correctly hashed (HEX64
+  // matches its api_keys.key), so migration 008's `if (HEX64.test(row.key))
+  // continue;` line is supposed to leave it completely alone. The test
+  // above only proves the RE-HASHING branch works; without this, nothing
+  // in this suite exercises the SKIP branch at all — if that condition
+  // were ever inverted or broken, it would silently re-hash (and thereby
+  // invalidate) every already-existing user's API key, and no test here
+  // would catch it.
+  const normalUsername = `db_it_legacyapikey2_${RUN_ID}`;
+  const normalRawKey = await createUser(normalUsername, "a-real-password-123");
 
   // Before migration 008 runs, this legacy row must NOT authenticate —
   // getUsernameByApiKey hashes the incoming raw key and looks up by hash,
@@ -352,6 +365,16 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
   const resolvedUsername = await usersRepo.getUsernameByApiKey(legacyRawKey);
   if (resolvedUsername !== username) {
     throw new Error(`migration 008: getUsernameByApiKey(legacyRawKey) expected to resolve "${username}" after migration, got: ${JSON.stringify(resolvedUsername)}`);
+  }
+
+  // The SKIP branch, proven the same way: the already-hashed row belonging
+  // to `normalUsername` must still authenticate its original raw key after
+  // the migration ran — proving the skip condition actually left that row
+  // alone instead of, say, re-hashing an already-correct hash (which would
+  // silently invalidate it).
+  const resolvedNormalUsername = await usersRepo.getUsernameByApiKey(normalRawKey);
+  if (resolvedNormalUsername !== normalUsername) {
+    throw new Error(`migration 008: getUsernameByApiKey(normalRawKey) expected to resolve "${normalUsername}" after migration (skip branch should have left this already-hashed row untouched), got: ${JSON.stringify(resolvedNormalUsername)}`);
   }
 });
 

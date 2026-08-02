@@ -33,15 +33,13 @@ export class InvalidUsernameError extends Error {
 // below) closes that off structurally instead of relying on every future
 // log line to escape/quote it correctly.
 //
-// Exported so auth-routes.ts's /api/register handler can run this exact
-// same check BEFORE redeemInvite claims the single-use invite token — a
-// malformed username used to only get rejected here, inside createUser,
-// which redeemInvite's caller now runs AFTER the token is already burned.
-// Since this regex rejects common real input (an email address typed as a
-// username, a space, under 3 characters), that ordering turned every such
-// mistake into a permanently wasted invite. Exporting the same regex
-// instead of letting the route redefine its own copy guarantees the two
-// checks can never drift apart.
+// Exported (used by validateNewUsername below, and available to any other
+// caller that needs the exact same rule) so nothing ever redefines its own
+// copy of this regex — a malformed username used to only get rejected
+// here, inside createUser, which redeemInvite's caller runs AFTER the
+// token is already burned. Since this regex rejects common real input (an
+// email address typed as a username, a space, under 3 characters), that
+// ordering turned every such mistake into a permanently wasted invite.
 export const USERNAME_FORMAT = /^[a-zA-Z0-9_.-]{3,32}$/;
 
 // "admin" is the literal string auth-middleware.ts assigns to req.username
@@ -54,6 +52,25 @@ export const USERNAME_FORMAT = /^[a-zA-Z0-9_.-]{3,32}$/;
 // only the literal lowercase "admin" dangerous, but reserving the whole set
 // of case variants costs nothing and removes the need to keep it in sync.
 const RESERVED_USERNAMES = new Set(["admin"]);
+
+// Runs both the format check and the reserved-username check — the two
+// pure, synchronous, no-DB-lookup checks createUser performs before ever
+// touching the database — as a single shared function, so createUser and
+// any pre-check callers (auth-routes.ts's /api/register handler, which
+// must run these checks BEFORE redeemInvite claims a single-use invite
+// token) can never validate a username differently from one another.
+// Deliberately excludes UsernameTakenError: that check requires a DB
+// lookup and is inherently race-dependent (TOCTOU) no matter where it
+// runs, so it stays exactly where it was — inside createUser's atomic
+// INSERT ... ON CONFLICT DO NOTHING — rather than being folded in here.
+export function validateNewUsername(username: string): void {
+  if (!USERNAME_FORMAT.test(username)) {
+    throw new InvalidUsernameError();
+  }
+  if (RESERVED_USERNAMES.has(username.toLowerCase())) {
+    throw new ReservedUsernameError();
+  }
+}
 
 function generateApiKey(): string {
   return `jarvis_key_${crypto.randomBytes(24).toString("hex")}`;
@@ -75,12 +92,7 @@ function hashApiKey(rawKey: string): string {
 }
 
 export async function createUser(username: string, password: string): Promise<string> {
-  if (!USERNAME_FORMAT.test(username)) {
-    throw new InvalidUsernameError();
-  }
-  if (RESERVED_USERNAMES.has(username.toLowerCase())) {
-    throw new ReservedUsernameError();
-  }
+  validateNewUsername(username);
   const db = getPool();
   const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
   // ON CONFLICT DO NOTHING instead of check-then-insert: two concurrent
