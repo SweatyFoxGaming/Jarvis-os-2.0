@@ -585,12 +585,18 @@ behalf):
    `GOOGLE_REDIRECT_URI` in `.env` exactly).
 4. Copy the generated **Client ID** and **Client Secret** into `.env` as
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, restart the stack.
-5. With the server running, open
-   `http://localhost:3000/api/integrations/google/auth-url` while sending your
-   `x-api-key` header (e.g. via a browser extension, or just `curl` and paste the
-   returned URL into a browser), approve access, and you'll land back on the
-   callback route with a "connected" confirmation. This is a one-time step — the
-   refresh token it stores in Postgres keeps working across restarts.
+5. With the server running, log in to the dashboard and click **Connect Google
+   Account** in Settings — this calls `/api/integrations/google/auth-url` from
+   your own browser session, opens the returned consent URL in a new tab, and
+   approving access lands you back on the callback route with a "connected"
+   confirmation. This is a one-time step — the refresh token it stores in
+   Postgres keeps working across restarts.
+
+   Note: the connect flow sets a short-lived, browser-bound cookie to prevent
+   an OAuth account-linking attack, so fetching `/auth-url` via `curl` (or any
+   client outside the browser that will complete the consent screen) and
+   pasting the URL elsewhere will fail with a 403 on the callback — the
+   dashboard button is the supported way to connect an account.
 
 Until step 5 is done, every calendar route/tool returns a clear "not configured" or
 "not authorized yet" error rather than failing silently or fabricating data.
