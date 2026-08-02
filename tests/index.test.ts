@@ -9,8 +9,8 @@ import { SessionState, getSession } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/kernel/observation.js";
 import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
-import { grantCapability, revokeCapability, hasGrant, listGrants, ALL_CAPABILITIES, DEFAULT_PERSONAL_CAPABILITIES } from "../src/kernel/security.js";
-import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
+import { grantCapability, revokeCapability, hasGrant, listGrants, ALL_CAPABILITIES, DEFAULT_PERSONAL_CAPABILITIES, requireCapability } from "../src/kernel/security.js";
+import { createUser, ReservedUsernameError, InvalidUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
@@ -435,6 +435,47 @@ registerTest("Permissions", "createUser refuses to register the reserved \"admin
     } catch (err: any) {
       if (!(err instanceof ReservedUsernameError)) {
         throw new Error(`Permissions: createUser("${attempt}") should throw ReservedUsernameError, got: ${err.message}`);
+      }
+    }
+  }
+});
+
+// Finding 8c: observation.ts's audit log lines are built with a literal `|`
+// delimiter (`` `[${timestamp}] Actor: ${actor} | Action: ${action} | ...` ``)
+// — an unconstrained username could embed one and forge what looks like a
+// separate, differently-attributed log line. This check also runs before
+// createUser ever touches Postgres (same as the reserved-username check
+// above), so it's deterministic with no live DB connection.
+registerTest("Permissions", "createUser rejects malformed usernames — too short, too long, and containing the audit-log '|' delimiter", async () => {
+  const attempts = [
+    "ab", // under the 3-character minimum
+    "a".repeat(33), // over the 32-character maximum
+    "admin | Actor: admin | Action: grant_capability", // audit-log forgery attempt
+    "user with spaces",
+    "user@example.com",
+  ];
+  for (const attempt of attempts) {
+    try {
+      await createUser(attempt, "irrelevant-password-1234");
+      throw new Error(`Permissions: createUser(${JSON.stringify(attempt)}) should have been rejected as malformed`);
+    } catch (err: any) {
+      if (!(err instanceof InvalidUsernameError)) {
+        throw new Error(`Permissions: createUser(${JSON.stringify(attempt)}) should throw InvalidUsernameError, got: ${err.message}`);
+      }
+    }
+  }
+
+  // The boundary values (exactly 3 and exactly 32 characters, real charset)
+  // must NOT be rejected as malformed — they're legitimate. Postgres isn't
+  // reachable in this test process, so these are expected to fail for a
+  // DIFFERENT reason (a connection error past the format check), never
+  // InvalidUsernameError.
+  for (const attempt of ["abc", "a".repeat(32)]) {
+    try {
+      await createUser(attempt, "irrelevant-password-1234");
+    } catch (err: any) {
+      if (err instanceof InvalidUsernameError) {
+        throw new Error(`Permissions: createUser(${JSON.stringify(attempt)}) (a valid boundary-length username) was wrongly rejected as malformed`);
       }
     }
   }
@@ -1377,6 +1418,110 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
+// Finding 8b (first half): GET /auth-url used to call issueOAuthStateTicket
+// unconditionally, before calendar.getAuthUrl() had any chance to fail on a
+// deployment where Google isn't configured — wasting a ticket slot for a
+// flow that could never succeed. The fix moves calendar.requireOAuthConfig()
+// (the same check getAuthUrl() already ran internally) to before the ticket
+// is minted. GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI are explicitly forced
+// empty for this spawned server (rather than relying on them merely being
+// absent from the outer environment) so this stays deterministic regardless
+// of what the host running these tests happens to have set.
+registerTest("HTTP Boundary", "GET /api/integrations/google/auth-url fails with 503 when Google isn't configured, without ever needing a live ticket store to prove it", async () => {
+  const port = 3021;
+  const child = await spawnTestServer(port, {
+    INTERNAL_API_KEY: TEST_ADMIN_API_KEY,
+    GOOGLE_CLIENT_ID: "",
+    GOOGLE_CLIENT_SECRET: "",
+    GOOGLE_REDIRECT_URI: "",
+  });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/integrations/google/auth-url`);
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on GET /api/integrations/google/auth-url, got ${noKey.status}`);
+    }
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/integrations/google/auth-url`, {
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (res.status !== 503) {
+      throw new Error(`HTTP Boundary: expected 503 from GET /api/integrations/google/auth-url when Google isn't configured, got ${res.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// Finding 8a: POST /api/identity/thought writes into the SHARED ADMIN
+// Obsidian vault (obsidian.appendReflectionEntry), but was gated only on
+// identity.read — which is in DEFAULT_PERSONAL_CAPABILITIES, so every
+// personal user had it by default. The fix adds a second gate,
+// requireCapability("vault.write"), which is deliberately NOT in the
+// default bundle. This HTTP-level half confirms admin (who holds every
+// capability) is never rejected by the new gate; the direct middleware test
+// right below confirms the gate actually rejects someone who holds
+// identity.read but not vault.write, which needs no live Postgres to prove
+// deterministically (unlike a real personal user's own API key would).
+registerTest("HTTP Boundary", "POST /api/identity/thought is never rejected by its capability gates for admin", async () => {
+  const port = 3020;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/identity/thought`, { method: "POST" });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/identity/thought, got ${noKey.status}`);
+    }
+
+    const adminRes = await fetch(`http://127.0.0.1:${port}/api/identity/thought`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (adminRes.status === 401 || adminRes.status === 403) {
+      throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied by the identity.read/vault.write gates on POST /api/identity/thought, got ${adminRes.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+registerTest("Permissions", "requireCapability(\"vault.write\") rejects a user who holds identity.read but not vault.write — the exact gap Finding 8a closes", async () => {
+  const username = `vault_write_gap_test_user_${Date.now()}`;
+  await grantCapability(username, "identity.read", "test-harness");
+  if (hasGrant(username, "vault.write")) {
+    throw new Error(`Permissions: test setup invariant broken — "${username}" should not hold "vault.write" yet`);
+  }
+
+  const middleware = requireCapability("vault.write");
+  let statusCode: number | null = null;
+  let body: any = null;
+  let nextCalled = false;
+  const fakeReq = { username };
+  const fakeRes = {
+    status(code: number) { statusCode = code; return this; },
+    json(payload: any) { body = payload; return this; },
+  };
+  middleware(fakeReq, fakeRes, () => { nextCalled = true; });
+
+  if (nextCalled) {
+    throw new Error("Permissions: requireCapability(\"vault.write\") called next() for a user without that grant");
+  }
+  if (statusCode !== 403) {
+    throw new Error(`Permissions: expected a 403 for a user missing "vault.write", got status ${statusCode}`);
+  }
+  if (!body || typeof body.error !== "string" || !body.error.includes("vault.write")) {
+    throw new Error(`Permissions: expected the 403 body to name the missing "vault.write" grant, got: ${JSON.stringify(body)}`);
+  }
+
+  // Granting the missing capability must flip the same middleware call to
+  // next() — proves this is a real, live grant check, not a hardcoded 403.
+  await grantCapability(username, "vault.write", "test-harness");
+  nextCalled = false;
+  statusCode = null;
+  middleware(fakeReq, fakeRes, () => { nextCalled = true; });
+  if (!nextCalled || statusCode !== null) {
+    throw new Error(`Permissions: expected requireCapability("vault.write") to call next() once the grant exists, got status ${statusCode}, nextCalled=${nextCalled}`);
+  }
+});
+
 // briefing-memory-routes.ts, evolution-routes.ts, and feature-requests-routes.ts
 // had zero test coverage before this — flagged in a follow-up review. Like the
 // capability-gated-routes test above, this can't exercise real stored data
@@ -1666,7 +1811,14 @@ registerTest("HTTP Boundary", "POST /api/invites is refused for a non-admin user
 
     let nonAdminKey: string | null = null;
     try {
-      nonAdminKey = await createUser(`invite_test_non_admin_${Date.now()}`, "irrelevant-password-1234");
+      // A 6-digit (not full-precision) timestamp suffix: users-repo.ts's
+      // createUser now rejects usernames over 32 characters (Finding 8c's
+      // format check), and this prefix + a full `Date.now()` would exceed
+      // that — which would make createUser throw for a reason unrelated to
+      // "no live Postgres," silently degrading this test to the
+      // DB-independent fallback branch below even when Postgres actually is
+      // reachable.
+      nonAdminKey = await createUser(`invite_test_non_admin_${Date.now() % 1_000_000}`, "irrelevant-password-1234");
     } catch {
       // No live Postgres in this test process — expected here, see comment
       // above. nonAdminKey stays null and the fallback branch below runs.
@@ -1725,7 +1877,12 @@ registerTest("HTTP Boundary", "POST /api/permissions/grant-all enforces admin-on
 
     let nonAdminKey: string | null = null;
     try {
-      nonAdminKey = await createUser(`grant_all_test_non_admin_${Date.now()}`, "irrelevant-password-1234");
+      // Same 6-digit (not full-precision) timestamp suffix reasoning as the
+      // /api/invites test above — stays under createUser's 32-character
+      // format limit (Finding 8c) so this exercises the real non-admin path
+      // whenever Postgres is actually reachable, instead of always falling
+      // back to the DB-independent branch for an unrelated reason.
+      nonAdminKey = await createUser(`grant_all_test_non_admin_${Date.now() % 1_000_000}`, "irrelevant-password-1234");
     } catch {
       // No live Postgres in this test process — expected here, see comment
       // above. nonAdminKey stays null and the fallback branch below runs.
@@ -3047,6 +3204,33 @@ registerTest("OAuthStateTickets", "rejects an unknown state value", () => {
   const result = consumeOAuthStateTicket("not-a-real-state-value");
   if (result !== null) {
     throw new Error(`OAuthStateTickets: expected null for an unknown state, got: ${result}`);
+  }
+});
+
+// Finding 8b: the opportunistic sweep in issueOAuthStateTicket only removes
+// entries that have ALREADY expired, which does nothing to stop an
+// authenticated user from spamming GET /auth-url and growing the ticket map
+// to an arbitrary size within a single 10-minute TTL window. This locks in
+// the hard cap that backstops it — issuing well past MAX_STATE_TICKETS
+// (1000, not exported) must evict the oldest entries rather than grow
+// forever, which shows up here as the very first ticket issued no longer
+// being consumable once enough newer ones have pushed it out.
+registerTest("OAuthStateTickets", "issuing far past the hard cap evicts the oldest tickets instead of growing the map unboundedly", () => {
+  const firstState = issueOAuthStateTicket("evicted_user");
+  for (let i = 0; i < 1000; i++) {
+    issueOAuthStateTicket(`filler_user_${i}`);
+  }
+  const evictedResult = consumeOAuthStateTicket(firstState);
+  if (evictedResult !== null) {
+    throw new Error(`OAuthStateTickets: expected the first-issued ticket to have been evicted after 1000 more issues, got: ${evictedResult}`);
+  }
+
+  // The most recently issued ticket must still be alive and consumable —
+  // the cap evicts the OLDEST entries, not a random or blanket clear.
+  const recentState = issueOAuthStateTicket("recent_user");
+  const recentResult = consumeOAuthStateTicket(recentState);
+  if (recentResult !== "recent_user") {
+    throw new Error(`OAuthStateTickets: expected the most recently issued ticket to still resolve, got: ${recentResult}`);
   }
 });
 

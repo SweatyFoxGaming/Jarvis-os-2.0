@@ -16,6 +16,24 @@ export class ReservedUsernameError extends Error {
   }
 }
 
+export class InvalidUsernameError extends Error {
+  constructor() {
+    super("Username must be 3-32 characters and contain only letters, numbers, underscores, dots, and hyphens");
+  }
+}
+
+// Enforced in createUser (the actual write path), not just in the
+// /api/register route's own checks, so any future caller gets the same
+// guarantee. observation.ts's audit log lines are built with a literal `|`
+// delimiter (`` `[${timestamp}] Actor: ${actor} | Action: ${action} | ...` ``)
+// — an unconstrained username could otherwise embed ` | Actor: admin | ...`
+// or similar and forge what looks like a separate, differently-attributed
+// audit-log line. Restricting the charset to what every legitimate username
+// in this codebase already looks like (see the reserved-username check right
+// below) closes that off structurally instead of relying on every future
+// log line to escape/quote it correctly.
+const USERNAME_FORMAT = /^[a-zA-Z0-9_.-]{3,32}$/;
+
 // "admin" is the literal string auth-middleware.ts assigns to req.username
 // for the INTERNAL_API_KEY holder, and the one security.ts/permissions-routes.ts
 // check against to grant every capability. It must never also be obtainable
@@ -31,7 +49,25 @@ function generateApiKey(): string {
   return `jarvis_key_${crypto.randomBytes(24).toString("hex")}`;
 }
 
+// Same threat model token-crypto.ts's doc comment describes for
+// oauth_tokens — someone getting query access to Postgres (a backup leak, a
+// compromised process) without also holding this exact process's memory.
+// Unlike OAuth tokens (which this app must be able to decrypt again to make
+// real API calls with), an API key only ever needs to be COMPARED against
+// what a caller presents, never read back out — so a one-way hash, not
+// reversible encryption, is the right tool: sha256 is deterministic, so
+// hashing an incoming key the same way and comparing hashes is exactly as
+// fast as the old raw-string lookup, but a leaked row can no longer be used
+// directly as a credential the way a leaked oauth_tokens row (pre
+// token-crypto.ts) or a leaked plaintext api_keys row could.
+function hashApiKey(rawKey: string): string {
+  return crypto.createHash("sha256").update(rawKey).digest("hex");
+}
+
 export async function createUser(username: string, password: string): Promise<string> {
+  if (!USERNAME_FORMAT.test(username)) {
+    throw new InvalidUsernameError();
+  }
   if (RESERVED_USERNAMES.has(username.toLowerCase())) {
     throw new ReservedUsernameError();
   }
@@ -60,26 +96,37 @@ export async function verifyCredentials(username: string, password: string): Pro
   return bcrypt.compare(password, result.rows[0].password_hash);
 }
 
+// Returns the RAW key — this is the one and only time it's ever available.
+// Only its sha256 hash is persisted (api_keys.key), so the raw value can
+// never be recovered from the database again after this call returns; the
+// caller (a registration or login HTTP response) must hand it to the user
+// right now or it's gone for good.
 export async function createApiKey(username: string): Promise<string> {
   const db = getPool();
-  const key = generateApiKey();
-  await db.query("INSERT INTO api_keys (key, username) VALUES ($1, $2)", [key, username]);
-  return key;
+  const rawKey = generateApiKey();
+  await db.query("INSERT INTO api_keys (key, username) VALUES ($1, $2)", [hashApiKey(rawKey), username]);
+  return rawKey;
 }
 
+// Historically this returned a previously-issued, still-valid raw key when
+// one already existed for `username` — possible only because api_keys.key
+// used to store the raw value itself. Now that the column holds only a
+// one-way hash, an existing row's raw value is permanently unrecoverable
+// (that's the whole point), so "get" is no longer something this function
+// can do: every call mints and returns a brand-new key instead. In practice
+// this means each successful /api/login now issues its own fresh key rather
+// than every login returning the same one — a strict security improvement
+// (no single long-lived key shared across every session) at the cost of
+// api_keys accumulating one row per login with no pruning yet; no route in
+// this codebase currently lists or individually revokes a user's keys, so
+// that's a real but separate gap from the one this function exists to close.
 export async function getOrCreateApiKey(username: string): Promise<string> {
-  const db = getPool();
-  const existing = await db.query(
-    "SELECT key FROM api_keys WHERE username = $1 ORDER BY created_at ASC LIMIT 1",
-    [username]
-  );
-  if ((existing.rowCount ?? 0) > 0) return existing.rows[0].key;
   return createApiKey(username);
 }
 
 export async function getUsernameByApiKey(key: string): Promise<string | null> {
   const db = getPool();
-  const result = await db.query("SELECT username FROM api_keys WHERE key = $1", [key]);
+  const result = await db.query("SELECT username FROM api_keys WHERE key = $1", [hashApiKey(key)]);
   return result.rowCount ? result.rows[0].username : null;
 }
 
@@ -116,11 +163,15 @@ export async function listUsernames(): Promise<string[]> {
 // statements and every migration file (001/004/007), then re-verified live
 // against a throwaway Postgres (see task-15-report.md under
 // .superpowers/sdd/2026-08-01-multi-user-personal-brains/) — not assumed
-// from the table names alone. This list was revised once already after an
+// from the table names alone. This list was revised twice already: an
 // initial pass (task-15) missed four of the eleven username-scoped tables
-// on a first read; a second, exhaustive `grep -rn "username"` pass across
-// db.ts and every file in migrations/ is what caught the gap and is what
-// backs the "no other username-scoped table exists" claim below.
+// on a first read, caught by a second exhaustive `grep -rn "username"` pass;
+// a later security-audit pass then caught four MORE tables that are
+// per-user-owned but don't use a literal `username` column at all
+// (`requested_by`/`registered_by` instead), which that same `username`
+// grep necessarily missed — a new user later registering a previously
+// removed username would otherwise inherit the old owner's build requests,
+// proposed commands, feature requests, and MCP server registrations.
 //
 //   - api_keys: `username TEXT NOT NULL REFERENCES users(username) ON
 //     DELETE CASCADE` (db.ts) — a real FK. Deleting the `users` row alone
@@ -130,21 +181,34 @@ export async function listUsernames(): Promise<string[]> {
 //     (db.ts) — real FKs onto kg_entities(id), not onto users. Deleting
 //     this username's kg_entities rows cascades to both; no separate
 //     DELETE needed for them.
+//   - transcript_events / coding_plan_tasks / reward_events:
+//     `build_request_id INTEGER NOT NULL REFERENCES build_requests(id) ON
+//     DELETE CASCADE` (db.ts / migrations/006_reward_events.ts) — real FKs
+//     onto build_requests(id), not onto users. Deleting this username's
+//     build_requests rows (see below) cascades to all three; no separate
+//     DELETE needed for them.
 //   - oauth_tokens, capability_grants, conversation_history,
 //     self_reflections, proactive_thoughts, kg_entities, objectives,
-//     objective_runs, push_subscriptions, memory_embeddings: all plain
-//     `username TEXT` columns with NO foreign key back to `users` at all
-//     (kg_entities/self_reflections/proactive_thoughts got their username
-//     column from migration 004; oauth_tokens from migration 007;
-//     objectives/push_subscriptions/memory_embeddings from the baseline
-//     schema; objective_runs from migration 001). objective_runs also has
-//     an *outbound* `build_request_id INTEGER REFERENCES build_requests(id)
-//     ON DELETE SET NULL` — irrelevant here: deleting an objective_runs row
-//     never cascades further, it only matters if build_requests were being
-//     deleted, which this function never does. Migration 007's own comment
-//     documents *why* oauth_tokens never got a real FK: 'admin'
-//     (auth-middleware.ts's INTERNAL_API_KEY identity) is a synthetic
-//     username that's never an actual row in `users`, and a real
+//     objective_runs, push_subscriptions, memory_embeddings, build_requests
+//     (owner column `requested_by`), command_proposals (owner column
+//     `requested_by`), feature_requests (owner column `requested_by`),
+//     mcp_servers (owner column `registered_by`): all plain TEXT owner
+//     columns with NO foreign key back to `users` at all (kg_entities/
+//     self_reflections/proactive_thoughts got their username column from
+//     migration 004; oauth_tokens from migration 007; objectives/
+//     push_subscriptions/memory_embeddings/build_requests/
+//     command_proposals/mcp_servers from the baseline schema;
+//     objective_runs from migration 001; feature_requests from the baseline
+//     schema). objective_runs also has an *outbound*
+//     `build_request_id INTEGER REFERENCES build_requests(id) ON DELETE SET
+//     NULL` — irrelevant to ordering here: it fires automatically as a
+//     side effect of deleting this user's own build_requests rows below (an
+//     objective_runs row that referenced one of them just has that
+//     column nulled out, not deleted), and nothing about it requires
+//     objective_runs to be deleted before or after build_requests. Migration
+//     007's own comment documents *why* oauth_tokens never got a real FK:
+//     'admin' (auth-middleware.ts's INTERNAL_API_KEY identity) is a
+//     synthetic username that's never an actual row in `users`, and a real
 //     `REFERENCES users(username)` constraint was verified (against a
 //     throwaway Postgres) to fail immediately after the 'admin' backfill
 //     for exactly that reason — the same fact applies to every other table
@@ -162,8 +226,11 @@ export async function listUsernames(): Promise<string[]> {
 //     every other read/write of this table.
 //
 // No FK dependency exists between any two tables in the explicit-delete
-// list, so the order among them doesn't matter for correctness; `users`
-// is deleted last since api_keys cascades from it.
+// list itself (build_requests is only ever the PARENT side of a FK from
+// transcript_events/coding_plan_tasks/reward_events/objective_runs, never
+// the child of one of the other explicitly-deleted tables), so the order
+// among them doesn't matter for correctness; `users` is deleted last since
+// api_keys cascades from it.
 //
 // Returns whether a `users` row actually existed to delete (false ->
 // caller should report 404, not 500 — this function does not throw for
@@ -181,6 +248,13 @@ export async function removeUser(username: string): Promise<boolean> {
     await client.query(`DELETE FROM objectives WHERE username = $1`, [username]);
     await client.query(`DELETE FROM objective_runs WHERE username = $1`, [username]);
     await client.query(`DELETE FROM push_subscriptions WHERE username = $1`, [username]);
+    // build_requests cascades to transcript_events/coding_plan_tasks/
+    // reward_events (see the doc comment above) — no separate statements
+    // for those three.
+    await client.query(`DELETE FROM build_requests WHERE requested_by = $1`, [username]);
+    await client.query(`DELETE FROM command_proposals WHERE requested_by = $1`, [username]);
+    await client.query(`DELETE FROM feature_requests WHERE requested_by = $1`, [username]);
+    await client.query(`DELETE FROM mcp_servers WHERE registered_by = $1`, [username]);
     if (isVectorReady()) {
       await client.query(`DELETE FROM memory_embeddings WHERE username = $1`, [username]);
     }

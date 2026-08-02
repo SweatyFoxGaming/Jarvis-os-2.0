@@ -54,7 +54,17 @@ knowledgeRouter.get("/api/identity/reflections", validateApiKey, requireCapabili
 // LLM call) on every hit — a GET here would let reloads/retries/prefetching
 // generate duplicate records, which is exactly the class of bug CodeRabbit
 // flagged in the earlier router-split review.
-knowledgeRouter.post("/api/identity/thought", validateApiKey, requireCapability("identity.read"), async (req: any, res: any) => {
+// requireCapability("vault.write") in addition to identity.read: this
+// handler's side effect (obsidian.appendReflectionEntry below) writes into
+// the SHARED ADMIN Obsidian vault — a single global vault mount, not a
+// per-user resource. identity.read is in DEFAULT_PERSONAL_CAPABILITIES, so
+// every personal user has it by default; vault.write deliberately is NOT,
+// so a default-bundle personal user can no longer steer content through
+// their own chat/reflections into admin's real vault (which admin's own
+// vault-reading tools later read back — an indirect prompt-injection
+// channel otherwise). Still reachable for anyone admin explicitly grants
+// vault.write to.
+knowledgeRouter.post("/api/identity/thought", validateApiKey, requireCapability("identity.read"), requireCapability("vault.write"), async (req: any, res: any) => {
   const groq = getGroq();
   if (!groq) return res.status(503).json({ error: "Requires GROQ_API_KEY to be configured." });
   try {

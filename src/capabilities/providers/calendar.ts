@@ -20,7 +20,12 @@ export class CalendarIntegrationError extends Error {
   }
 }
 
-function requireOAuthConfig() {
+// Exported so callers that need to fail fast BEFORE doing anything else
+// (e.g. integrations-routes.ts's /auth-url route, which must not mint an
+// OAuth state ticket at all when Google isn't even configured) can run this
+// same check up front instead of discovering the same failure only after
+// getAuthUrl() below has already had a side effect.
+export function requireOAuthConfig() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   const redirectUri = process.env.GOOGLE_REDIRECT_URI;

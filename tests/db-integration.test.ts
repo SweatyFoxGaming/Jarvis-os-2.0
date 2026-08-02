@@ -35,6 +35,10 @@ import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
 import { createObjective } from "../src/kernel/state/objectives-repo.js";
 import { startRun } from "../src/kernel/state/objective-runs-repo.js";
 import { addSubscription } from "../src/kernel/state/push-subscriptions-repo.js";
+import { createBuildRequest } from "../src/kernel/state/build-requests-repo.js";
+import { recordTranscriptEvent } from "../src/kernel/state/transcript-events-repo.js";
+import { addCommandProposal } from "../src/kernel/state/command-proposals-repo.js";
+import * as featureRequestsRepo from "../src/kernel/state/feature-requests-repo.js";
 import { spawn, ChildProcess } from "child_process";
 
 // oauth-repo.ts's saveTokens/getTokens call token-crypto.ts's
@@ -102,9 +106,19 @@ function registerTest(name: string, fn: () => Promise<void>): void {
   tests.push({ name, fn });
 }
 
-// A fresh random suffix per run avoids collisions between repeated runs
-// against a persistent (non-disposable) database someone points this at.
-const RUN_ID = process.pid.toString(36) + "_" + process.hrtime.bigint().toString(36);
+// A fresh suffix per run avoids collisions between repeated runs against a
+// persistent (non-disposable) database someone points this at. Deliberately
+// fixed-width and short (8 chars, no separator): users-repo.ts's createUser
+// now rejects any username over 32 characters (Finding 8c's format check),
+// and this file's longest username template
+// (`db_it_removeuser_other_${RUN_ID}`) is a 23-character prefix — an
+// unbounded suffix like the old `pid + "_" + hrtime.bigint()` (often 15+
+// chars) would push real, legitimately-formatted test usernames over that
+// limit and fail createUser() calls in this suite for a reason that has
+// nothing to do with what those tests are actually verifying.
+const RUN_ID =
+  (Date.now() % 36 ** 6).toString(36).padStart(6, "0") +
+  (process.pid % 1296).toString(36).padStart(2, "0");
 
 // Best-effort, independent per statement: this suite's own
 // assertSafeToRunDestructiveTests() requires an empty database on every
@@ -141,6 +155,13 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM objective_runs WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM push_subscriptions WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM memory_embeddings WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  // Same safety-net reasoning for the four Finding-6 tables — removeUser's
+  // own test asserts these are gone; this only matters if that test itself
+  // fails partway through, before reaching removeUser().
+  await db.query(`DELETE FROM build_requests WHERE requested_by = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM command_proposals WHERE requested_by = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM feature_requests WHERE requested_by = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM mcp_servers WHERE registered_by = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [`bulk_grant_user_1_${RUN_ID}`, `bulk_grant_user_2_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM capability_grants WHERE username IN ($1, $2)`, [`bulk_grant_user_1_${RUN_ID}`, `bulk_grant_user_2_${RUN_ID}`]).catch(() => {});
   // The HTTP-level /api/register race + cap tests below already clean up
@@ -154,6 +175,17 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM users WHERE username LIKE $1`, [`db_it_cap_filler_%_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM capability_grants WHERE username LIKE $1`, [`db_it_cap_filler_%_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_cap_overflow_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM feature_requests WHERE requested_by IN ($1, $2)`, [`db_it_fr_a_${RUN_ID}`, `db_it_fr_b_${RUN_ID}`]).catch(() => {});
+  // The HTTP-level login round-trip test below already cleans up after
+  // itself in its own finally block — this is only a safety net.
+  await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_login_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by = $1`, [`db_it_login_${RUN_ID}`]).catch(() => {});
+  // The HTTP-level feature-request ownership test below already cleans up
+  // after itself in its own finally block — this is only a safety net for a
+  // run that fails partway through.
+  await db.query(`DELETE FROM feature_requests WHERE requested_by = $1`, [`db_it_fr_owner_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [`db_it_fr_owner_${RUN_ID}`, `db_it_fr_other_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM capability_grants WHERE username IN ($1, $2)`, [`db_it_fr_owner_${RUN_ID}`, `db_it_fr_other_${RUN_ID}`]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -176,11 +208,35 @@ registerTest("initDatabase() creates the full schema and applies every migration
   await runMigrations(db, ALL_MIGRATIONS);
 });
 
-registerTest("createUser + verifyCredentials round-trip for real, and rejects a duplicate/reserved username", async () => {
+registerTest("createUser + verifyCredentials round-trip for real, and rejects a duplicate/reserved/malformed username", async () => {
   const username = `db_it_user_${RUN_ID}`;
   const apiKey = await createUser(username, "correct horse battery staple");
   if (!apiKey || !apiKey.startsWith("jarvis_key_")) {
     throw new Error(`createUser returned an unexpected api key: ${JSON.stringify(apiKey)}`);
+  }
+
+  // Finding 5: api_keys.key must store sha256(rawKey), never the raw key
+  // itself — confirmed here against a real row, not just by reading the
+  // implementation. getUsernameByApiKey (the actual auth-middleware.ts
+  // lookup path) must still resolve the RAW key back to this username by
+  // hashing it the same way on the way in.
+  const db = getPool();
+  const { rows: rawRow } = await db.query(`SELECT key FROM api_keys WHERE username = $1`, [username]);
+  if (rawRow.length !== 1) {
+    throw new Error(`expected exactly one api_keys row for "${username}", found ${rawRow.length}`);
+  }
+  if (rawRow[0].key === apiKey) {
+    throw new Error("Finding 5 regression: api_keys.key stored the raw API key value directly instead of a hash");
+  }
+  if (!/^[0-9a-f]{64}$/.test(rawRow[0].key)) {
+    throw new Error(`api_keys.key does not look like a sha256 hex digest: ${JSON.stringify(rawRow[0].key)}`);
+  }
+  const resolvedUsername = await usersRepo.getUsernameByApiKey(apiKey);
+  if (resolvedUsername !== username) {
+    throw new Error(`getUsernameByApiKey(rawKey) expected to resolve "${username}", got: ${JSON.stringify(resolvedUsername)}`);
+  }
+  if (await usersRepo.getUsernameByApiKey(rawRow[0].key)) {
+    throw new Error("getUsernameByApiKey accepted the STORED HASH itself as a valid credential — it must only ever accept the raw key");
   }
 
   if (!(await verifyCredentials(username, "correct horse battery staple"))) {
@@ -188,6 +244,17 @@ registerTest("createUser + verifyCredentials round-trip for real, and rejects a 
   }
   if (await verifyCredentials(username, "wrong password")) {
     throw new Error("verifyCredentials accepted an incorrect password");
+  }
+
+  // getOrCreateApiKey (the real /api/login path) now always mints a fresh
+  // key rather than returning the same raw value again (impossible once
+  // only a hash is stored) — confirm it's a real, different, working key.
+  const secondKey = await usersRepo.getOrCreateApiKey(username);
+  if (secondKey === apiKey) {
+    throw new Error("getOrCreateApiKey returned the same raw key on a second call — expected a freshly minted key");
+  }
+  if ((await usersRepo.getUsernameByApiKey(secondKey)) !== username) {
+    throw new Error("getOrCreateApiKey's freshly minted key did not resolve back to the same username");
   }
 
   let threw = false;
@@ -205,6 +272,17 @@ registerTest("createUser + verifyCredentials round-trip for real, and rejects a 
     reservedThrew = err instanceof ReservedUsernameError;
   }
   if (!reservedThrew) throw new Error("createUser did not throw ReservedUsernameError for \"admin\"");
+
+  // Finding 8c: malformed usernames (too short, or containing the `|`
+  // delimiter observation.ts's audit log lines use) must never reach
+  // Postgres at all.
+  let invalidThrew = false;
+  try {
+    await createUser(`ab | Actor: admin`, "irrelevant-password-1234");
+  } catch (err) {
+    invalidThrew = err instanceof usersRepo.InvalidUsernameError;
+  }
+  if (!invalidThrew) throw new Error('createUser did not throw InvalidUsernameError for a username containing "|" and under 3 characters of real content');
 });
 
 registerTest("register grants DEFAULT_PERSONAL_CAPABILITIES on successful invite redemption, against real Postgres", async () => {
@@ -441,6 +519,27 @@ registerTest("users-repo.removeUser: admin remove-user cascades personal-data de
     );
   }
 
+  // Four more tables a later security-audit pass caught (Finding 6):
+  // per-user-owned, but via `requested_by`/`registered_by` columns rather
+  // than a literal `username` column, which is why the original `grep -rn
+  // "username"` pass that built the list above didn't catch them. Same
+  // treatment — seed one real row via the actual repo functions, then
+  // assert it's gone.
+  const buildRequest = await createBuildRequest("a build request that must not survive account removal", username);
+  // Also proves the real FK cascade (build_requests -> transcript_events ON
+  // DELETE CASCADE) actually fires against a live Postgres, not just that
+  // the DELETE FROM build_requests statement itself parses.
+  await recordTranscriptEvent(buildRequest.id, 1, "echo test", "test output", "", 0);
+  await addCommandProposal("echo test", "a command proposal that must not survive account removal", username);
+  await featureRequestsRepo.addFeatureRequest(
+    "a feature request that must not survive account removal",
+    "description",
+    null,
+    null,
+    username
+  );
+  await proposeMcpServer(`db_it_removeuser_mcp_${RUN_ID}`, "http://example.invalid/mcp-removeuser", username);
+
   // A second, untouched user's own data — proves removeUser scopes its
   // deletes by username rather than wiping these tables wholesale.
   await addSelfReflection(otherUsername, "opinion", "a reflection belonging to a user who is NOT being removed");
@@ -482,6 +581,15 @@ registerTest("users-repo.removeUser: admin remove-user cascades personal-data de
     { label: "objectives", sql: `SELECT 1 FROM objectives WHERE username = $1`, params: [username] },
     { label: "objective_runs", sql: `SELECT 1 FROM objective_runs WHERE username = $1`, params: [username] },
     { label: "push_subscriptions", sql: `SELECT 1 FROM push_subscriptions WHERE username = $1`, params: [username] },
+    { label: "build_requests", sql: `SELECT 1 FROM build_requests WHERE requested_by = $1`, params: [username] },
+    {
+      label: "transcript_events (cascade via build_requests FK)",
+      sql: `SELECT 1 FROM transcript_events WHERE build_request_id = $1`,
+      params: [buildRequest.id],
+    },
+    { label: "command_proposals", sql: `SELECT 1 FROM command_proposals WHERE requested_by = $1`, params: [username] },
+    { label: "feature_requests", sql: `SELECT 1 FROM feature_requests WHERE requested_by = $1`, params: [username] },
+    { label: "mcp_servers", sql: `SELECT 1 FROM mcp_servers WHERE registered_by = $1`, params: [username] },
   ];
   if (vectorReady) {
     tableChecks.push({ label: "memory_embeddings", sql: `SELECT 1 FROM memory_embeddings WHERE username = $1`, params: [username] });
@@ -525,6 +633,31 @@ registerTest("grant-all grants a capability to every existing non-admin user, ag
   }
   if (!permissions.hasGrant(user1, "news.read") || !permissions.hasGrant(user2, "news.read")) {
     throw new Error("expected both users to have the bulk-granted capability");
+  }
+});
+
+registerTest("feature-requests-repo: getFeatureRequests scopes to the requester's own rows when a username is passed, and returns everything when it isn't (admin view)", async () => {
+  const userA = `db_it_fr_a_${RUN_ID}`;
+  const userB = `db_it_fr_b_${RUN_ID}`;
+  const titleA = `db_it_fr_title_a_${RUN_ID}`;
+  const titleB = `db_it_fr_title_b_${RUN_ID}`;
+  await featureRequestsRepo.addFeatureRequest(titleA, "description A", null, null, userA);
+  await featureRequestsRepo.addFeatureRequest(titleB, "description B", null, null, userB);
+
+  // The route passes req.username for every non-admin caller — a personal
+  // user must only ever see their own requests, never another user's.
+  const aOwn = await featureRequestsRepo.getFeatureRequests(undefined, userA);
+  if (aOwn.length !== 1 || aOwn[0].title !== titleA) {
+    throw new Error(`feature-requests-repo: getFeatureRequests(undefined, "${userA}") expected exactly userA's own request, got: ${JSON.stringify(aOwn)}`);
+  }
+  if (aOwn.some(r => r.requested_by === userB)) {
+    throw new Error("feature-requests-repo: getFeatureRequests scoped to userA leaked a row belonging to userB");
+  }
+
+  // The route omits the username entirely for admin — must still see both.
+  const unscoped = await featureRequestsRepo.getFeatureRequests();
+  if (!unscoped.some(r => r.title === titleA) || !unscoped.some(r => r.title === titleB)) {
+    throw new Error("feature-requests-repo: getFeatureRequests() with no username (admin view) should return every request, including both seeded here");
   }
 });
 
@@ -706,6 +839,183 @@ registerTest("HTTP: POST /api/register blocks redemption once the 10-person cap 
     if (capInviteToken) {
       await db.query(`DELETE FROM invite_tokens WHERE token = $1`, [capInviteToken]).catch(() => {});
     }
+  }
+});
+
+// Finding 5, end to end over real HTTP: register a real account, confirm the
+// raw key it returns actually authenticates, then log in again and confirm
+// login mints its own independently-working key (see the dedicated
+// users-repo test above for why login can no longer just return the same
+// raw key it did before — api_keys.key now stores only a hash, so an
+// already-issued raw value can never be read back out). Placed right after
+// the 10-person-cap test (which cleans up all its own users in its finally
+// block) and before the ownership test below (which adds 2 more users of
+// its own) so this test's own register call runs comfortably under the cap
+// regardless of exactly how many earlier tests' users are still lingering.
+registerTest("HTTP: POST /api/register then POST /api/login both issue real, hashed-at-rest, independently-working API keys, against real Postgres", async () => {
+  const port = 3303;
+  const child = await spawnRegisterTestServer(port);
+  const username = `db_it_login_${RUN_ID}`;
+  try {
+    const invite = await invitesRepo.createInvite("admin");
+    const registerRes = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password: "a-real-password-123", inviteToken: invite.token }),
+    });
+    if (registerRes.status !== 200) {
+      throw new Error(`db-integration HTTP: expected 200 from /api/register, got ${registerRes.status}`);
+    }
+    const registerBody = await registerRes.json();
+    const registerKey = registerBody.api_key;
+    if (!registerKey || typeof registerKey !== "string") {
+      throw new Error(`db-integration HTTP: /api/register did not return a usable api_key: ${JSON.stringify(registerBody)}`);
+    }
+
+    // The raw key from registration must actually authenticate — proves
+    // auth-middleware.ts's hash-then-lookup path works end-to-end against a
+    // real running server, not just in isolation against the repo function.
+    const registerKeyAuthRes = await fetch(`http://127.0.0.1:${port}/api/feature-requests`, {
+      headers: { "X-API-Key": registerKey },
+    });
+    if (registerKeyAuthRes.status !== 200) {
+      throw new Error(`db-integration HTTP: the raw api_key returned by /api/register failed to authenticate, got ${registerKeyAuthRes.status}`);
+    }
+
+    const loginRes = await fetch(`http://127.0.0.1:${port}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password: "a-real-password-123" }),
+    });
+    if (loginRes.status !== 200) {
+      throw new Error(`db-integration HTTP: expected 200 from /api/login, got ${loginRes.status}`);
+    }
+    const loginBody = await loginRes.json();
+    const loginKey = loginBody.api_key;
+    if (!loginKey || typeof loginKey !== "string") {
+      throw new Error(`db-integration HTTP: /api/login did not return a usable api_key: ${JSON.stringify(loginBody)}`);
+    }
+    if (loginKey === registerKey) {
+      throw new Error("db-integration HTTP: /api/login returned the SAME raw key as /api/register — expected a freshly minted key");
+    }
+    const loginKeyAuthRes = await fetch(`http://127.0.0.1:${port}/api/feature-requests`, {
+      headers: { "X-API-Key": loginKey },
+    });
+    if (loginKeyAuthRes.status !== 200) {
+      throw new Error(`db-integration HTTP: the raw api_key returned by /api/login failed to authenticate, got ${loginKeyAuthRes.status}`);
+    }
+
+    // Neither key's stored hash is itself usable as a credential.
+    const db = getPool();
+    const { rows: storedKeys } = await db.query(`SELECT key FROM api_keys WHERE username = $1`, [username]);
+    if (storedKeys.length !== 2) {
+      throw new Error(`db-integration HTTP: expected exactly 2 api_keys rows (register + login) for "${username}", found ${storedKeys.length}`);
+    }
+    for (const row of storedKeys) {
+      const hashAuthRes = await fetch(`http://127.0.0.1:${port}/api/feature-requests`, {
+        headers: { "X-API-Key": row.key },
+      });
+      if (hashAuthRes.status !== 401) {
+        throw new Error(`db-integration HTTP: the STORED HASH value authenticated successfully (status ${hashAuthRes.status}) — it must never be usable as a credential on its own`);
+      }
+    }
+  } finally {
+    await stopRegisterTestServer(child);
+    const db = getPool();
+    await db.query(`DELETE FROM users WHERE username = $1`, [username]).catch(() => {});
+    await db.query(`DELETE FROM capability_grants WHERE username = $1`, [username]).catch(() => {});
+    await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by = $1`, [username]).catch(() => {});
+  }
+});
+
+// Finding 7's second bug: feature.propose is in DEFAULT_PERSONAL_CAPABILITIES,
+// so every personal user holds it — POST /:id/status used to accept that
+// grant alone as authorization to change ANY user's feature request status,
+// with no ownership check at all. This hits the real route over HTTP (not
+// just the repo function directly) because the fix lives in
+// feature-requests-routes.ts's handler, not in updateFeatureRequestStatus
+// itself.
+registerTest("HTTP: POST /api/feature-requests/:id/status enforces per-user ownership, against real Postgres", async () => {
+  const port = 3304;
+  const child = await spawnRegisterTestServer(port);
+  const ownerUsername = `db_it_fr_owner_${RUN_ID}`;
+  const otherUsername = `db_it_fr_other_${RUN_ID}`;
+  try {
+    // Registered through the real /api/register route (not usersRepo.createUser
+    // + a direct permissions.grantCapability call) deliberately: this test's
+    // server runs in a SEPARATE spawned process with its own in-memory
+    // capability-grants cache (security.ts's `grants` Map), loaded once at
+    // that process's own startup and only ever updated by grants that
+    // happen INSIDE it. A grant written directly to Postgres from THIS
+    // (test) process never reaches that cache, so the owner would wrongly
+    // get 403 on their own request — going through /api/register instead
+    // means DEFAULT_PERSONAL_CAPABILITIES (which includes feature.propose)
+    // is granted by the child process itself, actually landing in its cache.
+    const ownerInvite = await invitesRepo.createInvite("admin");
+    const ownerRegisterRes = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: ownerUsername, password: "a-real-password-123", inviteToken: ownerInvite.token }),
+    });
+    if (ownerRegisterRes.status !== 200) {
+      throw new Error(`db-integration HTTP: expected 200 registering the owner test user, got ${ownerRegisterRes.status}`);
+    }
+    const ownerKey = (await ownerRegisterRes.json()).api_key;
+
+    const otherInvite = await invitesRepo.createInvite("admin");
+    const otherRegisterRes = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: otherUsername, password: "a-real-password-123", inviteToken: otherInvite.token }),
+    });
+    if (otherRegisterRes.status !== 200) {
+      throw new Error(`db-integration HTTP: expected 200 registering the other test user, got ${otherRegisterRes.status}`);
+    }
+    const otherKey = (await otherRegisterRes.json()).api_key;
+
+    const created = await featureRequestsRepo.addFeatureRequest(
+      `db_it_fr_ownership_${RUN_ID}`,
+      "description",
+      null,
+      null,
+      ownerUsername
+    );
+
+    // The non-owning user (who still holds feature.propose) must be
+    // rejected with 403, and the row's status must not actually change.
+    const crossUserRes = await fetch(`http://127.0.0.1:${port}/api/feature-requests/${created.id}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": otherKey },
+      body: JSON.stringify({ status: "declined" }),
+    });
+    if (crossUserRes.status !== 403) {
+      throw new Error(`db-integration HTTP: expected 403 for a non-owning personal user updating another user's feature request, got ${crossUserRes.status}`);
+    }
+    const afterCrossUserAttempt = await featureRequestsRepo.getFeatureRequestById(created.id);
+    if (afterCrossUserAttempt?.status !== "queued") {
+      throw new Error(`db-integration HTTP: a rejected cross-user status update still changed the row's status: ${JSON.stringify(afterCrossUserAttempt)}`);
+    }
+
+    // The actual owner can update their own request's status.
+    const ownerRes = await fetch(`http://127.0.0.1:${port}/api/feature-requests/${created.id}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": ownerKey },
+      body: JSON.stringify({ status: "declined" }),
+    });
+    if (ownerRes.status !== 200) {
+      throw new Error(`db-integration HTTP: expected 200 for the actual owner updating their own feature request, got ${ownerRes.status}`);
+    }
+    const afterOwnerUpdate = await featureRequestsRepo.getFeatureRequestById(created.id);
+    if (afterOwnerUpdate?.status !== "declined") {
+      throw new Error(`db-integration HTTP: owner's own status update did not take effect: ${JSON.stringify(afterOwnerUpdate)}`);
+    }
+  } finally {
+    await stopRegisterTestServer(child);
+    const db = getPool();
+    await db.query(`DELETE FROM feature_requests WHERE requested_by = $1`, [ownerUsername]).catch(() => {});
+    await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [ownerUsername, otherUsername]).catch(() => {});
+    await db.query(`DELETE FROM capability_grants WHERE username IN ($1, $2)`, [ownerUsername, otherUsername]).catch(() => {});
+    await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by IN ($1, $2)`, [ownerUsername, otherUsername]).catch(() => {});
   }
 });
 

@@ -14,10 +14,26 @@ import crypto from "crypto";
 const OAUTH_STATE_TICKET_TTL_MS = 10 * 60 * 1000;
 const stateTickets = new Map<string, { username: string; expiresAt: number }>();
 
+// The opportunistic sweep below only removes entries that have ALREADY
+// expired — it does nothing to stop an authenticated user from spamming
+// GET /api/integrations/google/auth-url and growing this map to an
+// arbitrary size within any single 10-minute TTL window (memory pressure).
+// This hard cap is the backstop: every Map in V8 preserves insertion order,
+// and every ticket here shares the same fixed TTL from the moment it's
+// issued, so the oldest-inserted entry is always also the soonest to expire
+// — evicting it first (rather than refusing to issue new tickets outright)
+// keeps the map bounded without ever turning a burst of legitimate
+// auth-url clicks into hard failures for the caller.
+const MAX_STATE_TICKETS = 1000;
+
 export function issueOAuthStateTicket(username: string): string {
   const now = Date.now();
   for (const [s, v] of stateTickets) {
     if (v.expiresAt < now) stateTickets.delete(s); // opportunistic sweep, keeps the map bounded
+  }
+  if (stateTickets.size >= MAX_STATE_TICKETS) {
+    const oldestKey = stateTickets.keys().next().value;
+    if (oldestKey !== undefined) stateTickets.delete(oldestKey);
   }
   const state = crypto.randomUUID();
   stateTickets.set(state, { username, expiresAt: now + OAUTH_STATE_TICKET_TTL_MS });

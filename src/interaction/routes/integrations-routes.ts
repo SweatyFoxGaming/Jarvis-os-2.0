@@ -234,6 +234,13 @@ integrationsRouter.delete("/api/integrations/files", validateApiKey, requireCapa
 
 integrationsRouter.get("/api/integrations/google/auth-url", validateApiKey, (req: any, res: any) => {
   try {
+    // Fail fast BEFORE minting a state ticket: calendar.getAuthUrl() below
+    // already throws via its own internal requireOAuthConfig() if Google
+    // isn't configured, but by then issueOAuthStateTicket() has already run
+    // and wasted a ticket slot for a flow that could never succeed. Calling
+    // the same check here first means an unconfigured deployment costs
+    // nothing per hit.
+    calendar.requireOAuthConfig();
     const state = issueOAuthStateTicket(req.username);
     // See the CSRF-binding block above: this cookie is what proves the
     // browser completing /callback is the same one that received this
