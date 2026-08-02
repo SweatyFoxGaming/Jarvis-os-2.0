@@ -1630,6 +1630,92 @@ registerTest("HTTP Boundary", "POST /api/invites is refused for a non-admin user
   }
 });
 
+// permissions-routes.ts's grant-all handler (Task 17) only had DB-integration
+// coverage proving grants actually land in Postgres — never anything at the
+// HTTP boundary locking in its own admin-only gate, capability validation,
+// or response shape. Same nonAdminKey/fallback pattern as the /api/invites
+// test above (createUser() needs live Postgres, which this process doesn't
+// have, so the non-admin path is exercised for real wherever Postgres is
+// reachable and falls back to the one assertion that's deterministic
+// without a DB otherwise).
+registerTest("HTTP Boundary", "POST /api/permissions/grant-all enforces admin-only, validates capability, and reaches its own handler for a real admin request", async () => {
+  const port = 3018; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3017
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capability: "news.read" }),
+    });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/permissions/grant-all, got ${noKey.status}`);
+    }
+
+    let nonAdminKey: string | null = null;
+    try {
+      nonAdminKey = await createUser(`grant_all_test_non_admin_${Date.now()}`, "irrelevant-password-1234");
+    } catch {
+      // No live Postgres in this test process — expected here, see comment
+      // above. nonAdminKey stays null and the fallback branch below runs.
+      nonAdminKey = null;
+    }
+
+    if (nonAdminKey) {
+      const res = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": nonAdminKey },
+        body: JSON.stringify({ capability: "news.read" }),
+      });
+      if (res.status !== 403) {
+        throw new Error(`HTTP Boundary: expected 403 for a real non-admin caller on POST /api/permissions/grant-all, got ${res.status}`);
+      }
+    } else {
+      const bogusKeyRes = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": "definitely-not-a-real-api-key" },
+        body: JSON.stringify({ capability: "news.read" }),
+      });
+      if (bogusKeyRes.status !== 401 && bogusKeyRes.status !== 503) {
+        throw new Error(`HTTP Boundary: expected 401 or 503 for an unresolvable API key on POST /api/permissions/grant-all, got ${bogusKeyRes.status}`);
+      }
+    }
+
+    // Admin caller, unknown capability — the route's own ALL_CAPABILITIES
+    // check runs before any usersRepo/Postgres call, so this is
+    // deterministic with no live DB. TEST_ADMIN_API_KEY resolves to "admin"
+    // via auth-middleware.ts's direct INTERNAL_API_KEY comparison, no
+    // Postgres lookup needed.
+    const badCapability = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+      body: JSON.stringify({ capability: "not.a.real.capability" }),
+    });
+    if (badCapability.status !== 400) {
+      throw new Error(`HTTP Boundary: expected 400 for an unknown capability on POST /api/permissions/grant-all, got ${badCapability.status}`);
+    }
+
+    // Admin caller, real capability — should never be rejected by the
+    // route's own 403/400 gates. Past those gates, usersRepo.listUsernames()
+    // needs a real Postgres this test process doesn't have, so a 500 here is
+    // expected and fine (the route's own try/catch turns that DB failure
+    // into a real response instead of a hung connection) — this assertion
+    // only locks in that a valid admin request actually reaches the real
+    // grant-all logic.
+    const adminRealCapability = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+      body: JSON.stringify({ capability: "news.read" }),
+    });
+    if (adminRealCapability.status === 401 || adminRealCapability.status === 403 || adminRealCapability.status === 400) {
+      throw new Error(
+        `HTTP Boundary: a real admin request with a real capability should not be rejected by grant-all's own auth/validation gates, got ${adminRealCapability.status}`
+      );
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // ---------- Auth ----------
 
 // The full happy path (a real invite actually redeemed, DEFAULT_PERSONAL_

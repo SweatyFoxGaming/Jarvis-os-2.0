@@ -56,14 +56,25 @@ permissionsRouter.post("/api/permissions/grant-all", validateApiKey, async (req:
   if (!(permissions.ALL_CAPABILITIES as readonly string[]).includes(capability)) {
     return res.status(400).json({ error: `Unknown capability "${capability}"` });
   }
-  const usernames = await usersRepo.listUsernames();
-  const granted: string[] = [];
-  for (const username of usernames) {
-    if (username === "admin") continue; // admin already has every ALL_CAPABILITIES entry via bootstrap
-    if (!permissions.hasGrant(username, capability)) {
-      await permissions.grantCapability(username, capability, req.username);
-      granted.push(username);
+  // usersRepo.listUsernames() is a real, un-guarded Postgres query (unlike
+  // grantCapability/revokeCapability above, which already swallow their own
+  // DB errors internally) — without this try/catch, a DB failure here would
+  // reject this async handler with nothing to catch it (Express 4 doesn't
+  // auto-catch async rejections), leaving the client's connection hanging
+  // forever instead of getting a real error back. Matches the try/catch
+  // shape invites-routes.ts already uses for the same reason.
+  try {
+    const usernames = await usersRepo.listUsernames();
+    const granted: string[] = [];
+    for (const username of usernames) {
+      if (username === "admin") continue; // admin already has every ALL_CAPABILITIES entry via bootstrap
+      if (!permissions.hasGrant(username, capability)) {
+        await permissions.grantCapability(username, capability, req.username);
+        granted.push(username);
+      }
     }
+    res.json({ status: "success", capability, grantedTo: granted });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-  res.json({ status: "success", capability, grantedTo: granted });
 });
