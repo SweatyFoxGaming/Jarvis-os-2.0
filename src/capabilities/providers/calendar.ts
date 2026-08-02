@@ -81,7 +81,10 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
     );
   }
   const expiry = new Date(Date.now() + data.expires_in * 1000);
-  await oauthRepo.saveTokens(PROVIDER, data.access_token, data.refresh_token, expiry);
+  // "admin" is a placeholder for the single-tenant deployment this predates
+  // per-user OAuth (see getAuthUrl's own comment above) — Task 10 threads a
+  // real username through every calendar.ts entry point and replaces this.
+  await oauthRepo.saveTokens(PROVIDER, "admin", data.access_token, data.refresh_token, expiry);
   observation.logTelemetry("info", "Integrations", "Google Calendar OAuth tokens stored.");
 }
 
@@ -107,7 +110,8 @@ async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: 
 
 async function getValidAccessToken(): Promise<string> {
   requireOAuthConfig(); // surface the root cause ("not configured") before the less specific "not authorized yet"
-  const stored = await oauthRepo.getTokens(PROVIDER);
+  // "admin" placeholder — see exchangeCodeForTokens's comment above; Task 10 removes this.
+  const stored = await oauthRepo.getTokens(PROVIDER, "admin");
   if (!stored) {
     throw new CalendarIntegrationError(
       "Google Calendar isn't authorized yet — visit GET /api/integrations/calendar/auth-url to start the one-time setup.",
@@ -119,7 +123,8 @@ async function getValidAccessToken(): Promise<string> {
     return stored.access_token;
   }
   const { accessToken, expiry } = await refreshAccessToken(stored.refresh_token);
-  await oauthRepo.saveTokens(PROVIDER, accessToken, stored.refresh_token, expiry);
+  // "admin" placeholder — see exchangeCodeForTokens's comment above; Task 10 removes this.
+  await oauthRepo.saveTokens(PROVIDER, "admin", accessToken, stored.refresh_token, expiry);
   return accessToken;
 }
 

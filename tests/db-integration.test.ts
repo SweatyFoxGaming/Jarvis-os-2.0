@@ -30,6 +30,16 @@ import { addSelfReflection, getRecentSelfReflections } from "../src/kernel/state
 import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import * as invitesRepo from "../src/kernel/state/invites-repo.js";
 import * as permissions from "../src/kernel/security.js";
+import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
+
+// oauth-repo.ts's saveTokens/getTokens call token-crypto.ts's
+// encryptToken/decryptToken on every call, which throw without a real,
+// validly-shaped (32-byte, base64) OAUTH_TOKEN_ENCRYPTION_KEY — this test
+// file never calls dotenv.config() itself, so nothing loads .env into this
+// process otherwise. Same fallback key tests/index.test.ts uses.
+if (!process.env.OAUTH_TOKEN_ENCRYPTION_KEY) {
+  process.env.OAUTH_TOKEN_ENCRYPTION_KEY = "PcmRyWaWKz8+8ceU/LOwDEXjb5baBxTcA1pxgcIedbg=";
+}
 
 // pruneOldMessages(0) below deletes every row in conversation_history with
 // created_at < now() — not scoped to this test's own user, because the real
@@ -110,6 +120,7 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM capability_grants WHERE username = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM oauth_tokens WHERE provider = 'test_provider' AND username = 'test_oauth_user'`).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -327,6 +338,22 @@ registerTest("identity-repo: self-reflections are scoped per username — one us
   }
   if (bReflections.some(r => r.content.includes("User A's private opinion"))) {
     throw new Error("user B's self-reflection history leaked user A's content — the privacy bug this migration exists to fix");
+  }
+});
+
+registerTest("oauth-repo: saveTokens/getTokens round-trip real encrypted values against real Postgres", async () => {
+  await oauthRepo.saveTokens("test_provider", "test_oauth_user", "real-access-token-value", "real-refresh-token-value", new Date(Date.now() + 3600_000));
+  const result = await oauthRepo.getTokens("test_provider", "test_oauth_user");
+  if (!result || result.access_token !== "real-access-token-value" || result.refresh_token !== "real-refresh-token-value") {
+    throw new Error(`oauth-repo: expected round-tripped plaintext tokens, got: ${JSON.stringify(result)}`);
+  }
+  // Confirm it's genuinely encrypted at rest, not stored as plaintext —
+  // query the raw column value directly and check it doesn't contain the
+  // original plaintext substring.
+  const db = getPool();
+  const { rows } = await db.query(`SELECT access_token FROM oauth_tokens WHERE provider = $1 AND username = $2`, ["test_provider", "test_oauth_user"]);
+  if (rows[0].access_token.includes("real-access-token-value")) {
+    throw new Error("oauth-repo: expected the stored column to be encrypted, found the plaintext value directly in it");
   }
 });
 
