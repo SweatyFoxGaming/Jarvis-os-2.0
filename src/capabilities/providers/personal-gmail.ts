@@ -1,6 +1,7 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as oauthRepo from "../../kernel/state/oauth-repo.js";
 import { fetchWithRetry } from "../../kernel/http-retry.js";
+import * as scheduler from "../../kernel/scheduler.js";
 
 const observation = ObservationPlatform.getInstance();
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -60,6 +61,20 @@ async function getValidAccessToken(username: string): Promise<string> {
     // on Google's side, or the refresh token otherwise went stale — this is
     // exactly the reconnect-needed case Task 15 handles. Throwing here with
     // a 401 lets that task's handling recognize it and prompt reconnection.
+    //
+    // Only a 400/401-class response from Google is actually the "refresh
+    // token itself is invalid" (invalid_grant) case — that's the one signal
+    // that means reconnecting is genuinely required, so it also gets a
+    // durable push notification (fire-and-forget, must not delay this
+    // throw). A transient 5xx from Google's token endpoint does NOT fire
+    // it: reconnecting wouldn't help with a retry-able blip.
+    if (res.status === 400 || res.status === 401) {
+      scheduler.pushNotification(
+        username,
+        "Your Google connection needs renewing, sir — click Connect Google Account again in the dashboard.",
+        "warning"
+      );
+    }
     throw new PersonalGmailError(`Google token refresh failed (${res.status}): ${body}`, 401);
   }
   const data = await res.json() as { access_token: string; expires_in: number };

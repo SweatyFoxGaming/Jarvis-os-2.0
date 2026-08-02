@@ -1,6 +1,7 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as oauthRepo from "../../kernel/state/oauth-repo.js";
 import { fetchWithRetry } from "../../kernel/http-retry.js";
+import * as scheduler from "../../kernel/scheduler.js";
 
 const observation = ObservationPlatform.getInstance();
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -124,9 +125,29 @@ async function getValidAccessToken(username: string): Promise<string> {
   if (new Date(stored.expiry).getTime() > Date.now() + 60_000) {
     return stored.access_token;
   }
-  const { accessToken, expiry } = await refreshAccessToken(stored.refresh_token);
-  await oauthRepo.saveTokens(PROVIDER, username, accessToken, stored.refresh_token, expiry);
-  return accessToken;
+  let refreshed: { accessToken: string; expiry: Date };
+  try {
+    refreshed = await refreshAccessToken(stored.refresh_token);
+  } catch (err) {
+    // A 400/401 from Google's token endpoint here means the refresh token
+    // itself is invalid (invalid_grant class) — the user revoked access, or
+    // it otherwise went stale, and no retry will fix it. That's the one
+    // case that actually means "reconnect your Google account", so it gets
+    // a durable push notification in addition to the thrown error below —
+    // a transient 5xx (or anything else) does NOT get this notification,
+    // since reconnecting wouldn't help there. Fire-and-forget: this must
+    // not delay or block the throw that reports failure to the caller.
+    if (err instanceof CalendarIntegrationError && (err.status === 400 || err.status === 401)) {
+      scheduler.pushNotification(
+        username,
+        "Your Google connection needs renewing, sir — click Connect Google Account again in the dashboard.",
+        "warning"
+      );
+    }
+    throw err;
+  }
+  await oauthRepo.saveTokens(PROVIDER, username, refreshed.accessToken, stored.refresh_token, refreshed.expiry);
+  return refreshed.accessToken;
 }
 
 async function calendarRequest(path: string, username: string, init: RequestInit = {}): Promise<any> {
