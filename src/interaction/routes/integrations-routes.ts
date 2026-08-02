@@ -222,15 +222,32 @@ integrationsRouter.get("/api/integrations/google/status", validateApiKey, async 
 integrationsRouter.delete("/api/integrations/google", validateApiKey, async (req: any, res: any) => {
   try {
     const stored = await oauthRepo.getTokens("google_calendar", req.username);
-    await oauthRepo.deleteTokens("google_calendar", req.username);
+    const deleted = await oauthRepo.deleteTokens("google_calendar", req.username);
     if (stored) {
+      // Best-effort, fire-and-forget: fires regardless of the local delete
+      // outcome above and must not block or fail this response if Google's
+      // revoke endpoint errors — revocation itself is genuinely best-effort
+      // per the brief.
       fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(stored.refresh_token)}`, { method: "POST" })
         .catch((err) => observation.logTelemetry("warn", "Integrations", `Google-side revocation failed for "${req.username}": ${err.message}`));
+    }
+    // deleteTokens degrades to false both when there was nothing to delete
+    // and when a genuine DB error occurred (it never throws). Only treat
+    // `false` as a failure when `stored` confirms a row existed moments
+    // ago — otherwise re-calling this route while already disconnected
+    // would wrongly report an error on an idempotent no-op. When a row DID
+    // exist and the delete still came back false, the local token row (with
+    // its now Google-side-revoked tokens) may still be sitting there and
+    // GET /status would keep reporting connected: true — that must not be
+    // reported to the caller as a success.
+    if (stored && !deleted) {
+      observation.logAuditEvent(req.username, "google_account_disconnect_local_failure", "warning", "");
+      return res.status(500).json({ error: "Failed to disconnect your Google account locally — please try again." });
     }
     observation.logAuditEvent(req.username, "google_account_disconnected", "success", "");
     res.json({ status: "success" });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    handleIntegrationError(res, err);
   }
 });
 

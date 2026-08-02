@@ -1,5 +1,8 @@
 import { getPool } from "./db.js";
 import { encryptToken, decryptToken } from "../token-crypto.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 export interface StoredOAuthTokens {
   provider: string;
@@ -49,7 +52,8 @@ export async function deleteTokens(provider: string, username: string): Promise<
     const db = getPool();
     const { rowCount } = await db.query(`DELETE FROM oauth_tokens WHERE provider = $1 AND username = $2`, [provider, username]);
     return !!rowCount;
-  } catch {
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OAuthRepo", `deleteTokens(${provider}, ${username}) failed: ${err.message}`);
     return false;
   }
 }
