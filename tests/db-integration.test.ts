@@ -20,7 +20,7 @@
  * make a reachable-but-wrong database a hard failure instead of quietly
  * running destructive operations against it.
  */
-import { pingDatabase, initDatabase, getPool } from "../src/kernel/state/db.js";
+import { pingDatabase, initDatabase, getPool, isVectorReady } from "../src/kernel/state/db.js";
 import { runMigrations, ALL_MIGRATIONS } from "../src/kernel/state/migrations/index.js";
 import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError, removeUser } from "../src/kernel/state/users-repo.js";
 import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kernel/state/session-repo.js";
@@ -31,6 +31,9 @@ import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
 import * as invitesRepo from "../src/kernel/state/invites-repo.js";
 import * as permissions from "../src/kernel/security.js";
 import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
+import { createObjective } from "../src/kernel/state/objectives-repo.js";
+import { startRun } from "../src/kernel/state/objective-runs-repo.js";
+import { addSubscription } from "../src/kernel/state/push-subscriptions-repo.js";
 
 // oauth-repo.ts's saveTokens/getTokens call token-crypto.ts's
 // encryptToken/decryptToken on every call, which throw without a real,
@@ -132,6 +135,10 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM self_reflections WHERE username IN ($1, $2)`, [`db_it_removeuser_${RUN_ID}`, `db_it_removeuser_other_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM proactive_thoughts WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM kg_entities WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM objectives WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM objective_runs WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM push_subscriptions WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM memory_embeddings WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -391,6 +398,31 @@ registerTest("users-repo.removeUser: admin remove-user cascades personal-data de
   await addFact(entityId, "a fact that must not survive account removal");
   await addRelationship(entityId, otherEntityId, "relates_to");
 
+  // The four tables a first pass at this task's cascade missed (caught in
+  // review, not by the original schema read): objectives, objective_runs,
+  // push_subscriptions, and memory_embeddings. Same treatment as everything
+  // above — seed one real row via the actual repo functions, then assert
+  // it's gone.
+  await createObjective(username, "a personal objective that must not survive account removal", null);
+  const runResult = await startRun(username, "an objective run that must not survive account removal");
+  if (!runResult.ok) {
+    throw new Error(`startRun("${username}") failed unexpectedly while seeding this test: ${JSON.stringify(runResult)}`);
+  }
+  await addSubscription(username, `https://push.example.invalid/${RUN_ID}`, "p256dh-test-value", "auth-test-value");
+  // memory_embeddings only exists when pgvector initialized successfully
+  // (db.ts's isVectorReady()) — inserted directly (not via memory-store.ts's
+  // remember(), which needs a real embedding provider) with a deterministic
+  // zero vector, since only the row's presence/absence matters here, not
+  // the embedding's content.
+  const vectorReady = isVectorReady();
+  if (vectorReady) {
+    const zeroVector = `[${Array(768).fill(0).join(",")}]`;
+    await db.query(
+      `INSERT INTO memory_embeddings (username, content, embedding) VALUES ($1, $2, $3::vector)`,
+      [username, "a memory that must not survive account removal", zeroVector]
+    );
+  }
+
   // A second, untouched user's own data — proves removeUser scopes its
   // deletes by username rather than wiping these tables wholesale.
   await addSelfReflection(otherUsername, "opinion", "a reflection belonging to a user who is NOT being removed");
@@ -429,7 +461,13 @@ registerTest("users-repo.removeUser: admin remove-user cascades personal-data de
       sql: `SELECT 1 FROM kg_relationships WHERE from_entity_id = $1 OR to_entity_id = $1`,
       params: [entityId],
     },
+    { label: "objectives", sql: `SELECT 1 FROM objectives WHERE username = $1`, params: [username] },
+    { label: "objective_runs", sql: `SELECT 1 FROM objective_runs WHERE username = $1`, params: [username] },
+    { label: "push_subscriptions", sql: `SELECT 1 FROM push_subscriptions WHERE username = $1`, params: [username] },
   ];
+  if (vectorReady) {
+    tableChecks.push({ label: "memory_embeddings", sql: `SELECT 1 FROM memory_embeddings WHERE username = $1`, params: [username] });
+  }
   for (const check of tableChecks) {
     const { rows } = await db.query(check.sql, check.params);
     if (rows.length !== 0) {

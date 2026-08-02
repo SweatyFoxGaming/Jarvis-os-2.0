@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { getPool } from "./db.js";
+import { getPool, isVectorReady } from "./db.js";
 
 const BCRYPT_ROUNDS = 12;
 
@@ -113,10 +113,14 @@ export async function listUsernames(): Promise<string[]> {
 //
 // Which tables below need an EXPLICIT DELETE (vs. relying on a real FK's
 // ON DELETE CASCADE) was verified against db.ts's actual CREATE TABLE
-// statements and migrations 004/007, then re-verified live against a
-// throwaway Postgres (see task-15-report.md under
+// statements and every migration file (001/004/007), then re-verified live
+// against a throwaway Postgres (see task-15-report.md under
 // .superpowers/sdd/2026-08-01-multi-user-personal-brains/) — not assumed
-// from the table names alone:
+// from the table names alone. This list was revised once already after an
+// initial pass (task-15) missed four of the eleven username-scoped tables
+// on a first read; a second, exhaustive `grep -rn "username"` pass across
+// db.ts and every file in migrations/ is what caught the gap and is what
+// backs the "no other username-scoped table exists" claim below.
 //
 //   - api_keys: `username TEXT NOT NULL REFERENCES users(username) ON
 //     DELETE CASCADE` (db.ts) — a real FK. Deleting the `users` row alone
@@ -127,18 +131,39 @@ export async function listUsernames(): Promise<string[]> {
 //     this username's kg_entities rows cascades to both; no separate
 //     DELETE needed for them.
 //   - oauth_tokens, capability_grants, conversation_history,
-//     self_reflections, proactive_thoughts, kg_entities: all plain
+//     self_reflections, proactive_thoughts, kg_entities, objectives,
+//     objective_runs, push_subscriptions, memory_embeddings: all plain
 //     `username TEXT` columns with NO foreign key back to `users` at all
 //     (kg_entities/self_reflections/proactive_thoughts got their username
-//     column from migration 004; oauth_tokens from migration 007).
-//     Migration 007's own comment documents *why* oauth_tokens never got a
-//     real FK: 'admin' (auth-middleware.ts's INTERNAL_API_KEY identity) is
-//     a synthetic username that's never an actual row in `users`, and a
-//     real `REFERENCES users(username)` constraint was verified (against a
+//     column from migration 004; oauth_tokens from migration 007;
+//     objectives/push_subscriptions/memory_embeddings from the baseline
+//     schema; objective_runs from migration 001). objective_runs also has
+//     an *outbound* `build_request_id INTEGER REFERENCES build_requests(id)
+//     ON DELETE SET NULL` — irrelevant here: deleting an objective_runs row
+//     never cascades further, it only matters if build_requests were being
+//     deleted, which this function never does. Migration 007's own comment
+//     documents *why* oauth_tokens never got a real FK: 'admin'
+//     (auth-middleware.ts's INTERNAL_API_KEY identity) is a synthetic
+//     username that's never an actual row in `users`, and a real
+//     `REFERENCES users(username)` constraint was verified (against a
 //     throwaway Postgres) to fail immediately after the 'admin' backfill
-//     for exactly that reason. Every one of these needs its own explicit
-//     DELETE in this transaction, or that user's data survives account
-//     removal — contrary to this plan's design intent.
+//     for exactly that reason — the same fact applies to every other table
+//     in this group, none of which ever got a real FK added. Every one of
+//     these needs its own explicit DELETE in this transaction, or that
+//     user's data survives account removal — contrary to this plan's
+//     design intent.
+//   - memory_embeddings specifically only exists when the pgvector
+//     extension initialized successfully (db.ts's createVectorSchema,
+//     gated by isVectorReady()) — a deployment where that failed has no
+//     such table at all, and an unconditional DELETE against it would
+//     throw "relation does not exist" and roll back this entire
+//     transaction, breaking user removal outright on that deployment. This
+//     matches the guard cognition/memory-store.ts already uses around
+//     every other read/write of this table.
+//
+// No FK dependency exists between any two tables in the explicit-delete
+// list, so the order among them doesn't matter for correctness; `users`
+// is deleted last since api_keys cascades from it.
 //
 // Returns whether a `users` row actually existed to delete (false ->
 // caller should report 404, not 500 — this function does not throw for
@@ -153,6 +178,12 @@ export async function removeUser(username: string): Promise<boolean> {
     await client.query(`DELETE FROM conversation_history WHERE username = $1`, [username]);
     await client.query(`DELETE FROM self_reflections WHERE username = $1`, [username]);
     await client.query(`DELETE FROM proactive_thoughts WHERE username = $1`, [username]);
+    await client.query(`DELETE FROM objectives WHERE username = $1`, [username]);
+    await client.query(`DELETE FROM objective_runs WHERE username = $1`, [username]);
+    await client.query(`DELETE FROM push_subscriptions WHERE username = $1`, [username]);
+    if (isVectorReady()) {
+      await client.query(`DELETE FROM memory_embeddings WHERE username = $1`, [username]);
+    }
     // kg_facts/kg_relationships cascade automatically from this delete
     // (see the doc comment above) — no separate statement for them.
     await client.query(`DELETE FROM kg_entities WHERE username = $1`, [username]);
