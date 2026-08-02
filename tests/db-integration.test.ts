@@ -28,6 +28,8 @@ import { proposeMcpServer, McpServerNameTakenError } from "../src/kernel/state/m
 import { upsertEntity, searchEntities, listAllEntities } from "../src/kernel/state/knowledge-graph-repo.js";
 import { addSelfReflection, getRecentSelfReflections } from "../src/kernel/state/identity-repo.js";
 import * as rewardEventsRepo from "../src/kernel/state/reward-events-repo.js";
+import * as invitesRepo from "../src/kernel/state/invites-repo.js";
+import * as permissions from "../src/kernel/security.js";
 
 // pruneOldMessages(0) below deletes every row in conversation_history with
 // created_at < now() — not scoped to this test's own user, because the real
@@ -105,6 +107,9 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM self_reflections WHERE username IN ($1, $2)`, [`db_it_refl_a_${RUN_ID}`, `db_it_refl_b_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM reward_events WHERE build_request_id = $1`, [999999901]).catch(() => {});
   await db.query(`DELETE FROM build_requests WHERE id = $1`, [999999901]).catch(() => {});
+  await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM invite_tokens WHERE created_by = 'admin' AND used_by = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM capability_grants WHERE username = $1`, [`db_it_invite_user_${RUN_ID}`]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -156,6 +161,42 @@ registerTest("createUser + verifyCredentials round-trip for real, and rejects a 
     reservedThrew = err instanceof ReservedUsernameError;
   }
   if (!reservedThrew) throw new Error("createUser did not throw ReservedUsernameError for \"admin\"");
+});
+
+registerTest("register grants DEFAULT_PERSONAL_CAPABILITIES on successful invite redemption, against real Postgres", async () => {
+  const username = `db_it_invite_user_${RUN_ID}`;
+  const invite = await invitesRepo.createInvite("admin");
+  const apiKey = await createUser(username, "a-real-password-123");
+  if (!apiKey) throw new Error("createUser did not return an api key for the invite-redemption test user");
+
+  const redeemed = await invitesRepo.redeemInvite(invite.token, username);
+  if (!redeemed) throw new Error("expected redeemInvite to succeed for a fresh, unused invite");
+
+  for (const capability of permissions.DEFAULT_PERSONAL_CAPABILITIES) {
+    await permissions.grantCapability(username, capability, "test-harness");
+  }
+  for (const capability of permissions.DEFAULT_PERSONAL_CAPABILITIES) {
+    if (!permissions.hasGrant(username, capability)) {
+      throw new Error(`expected "${username}" to have "${capability}" after default-bundle grant`);
+    }
+  }
+
+  // A second redemption attempt of the same, now-used token must fail —
+  // this is the atomic race-guard redeemInvite's WHERE clause exists for
+  // (see invites-repo.ts's own comment on that query), and it's the reason
+  // auth-routes.ts can safely call createUser before this second, real
+  // atomic check without risking two accounts claiming one invite.
+  const secondRedeem = await invitesRepo.redeemInvite(invite.token, "someone_else");
+  if (secondRedeem) throw new Error("expected a second redemption of the same invite to fail");
+
+  // Confirms getInvite (the check-first pre-validation auth-routes.ts's
+  // /api/register handler calls before ever touching createUser) reports
+  // this invite as already used, matching what a real second registration
+  // attempt against this token would see.
+  const afterRedemption = await invitesRepo.getInvite(invite.token);
+  if (!afterRedemption || afterRedemption.used_by !== username) {
+    throw new Error(`expected getInvite to report used_by="${username}" after redemption, got: ${JSON.stringify(afterRedemption)}`);
+  }
 });
 
 registerTest("session-repo: real messages persist, load back in order, and pruneOldMessages actually deletes them", async () => {

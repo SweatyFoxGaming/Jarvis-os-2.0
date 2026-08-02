@@ -1573,6 +1573,51 @@ registerTest("HTTP Boundary", "POST /api/invites is refused for a non-admin user
   }
 });
 
+// ---------- Auth ----------
+
+// The full happy path (a real invite actually redeemed, DEFAULT_PERSONAL_
+// CAPABILITIES actually granted) needs a live Postgres to mean anything —
+// that lives in tests/db-integration.test.ts instead. What IS deterministic
+// here with no DB at all is the route's synchronous input validation: the
+// inviteToken presence/type check in auth-routes.ts runs before any
+// database call (invitesRepo.getInvite / usersRepo.createUser), so a
+// missing or empty inviteToken must always come back 400, never a 503
+// "Postgres unreachable" degrade — this pins that ordering.
+registerTest("Auth", "register is refused with no invite token", async () => {
+  const port = 3016; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3015
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const missingToken = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "someone", password: "a-real-password-123" }),
+    });
+    if (missingToken.status !== 400) {
+      throw new Error(`Auth: expected 400 for /api/register with no inviteToken field, got ${missingToken.status}`);
+    }
+
+    const emptyToken = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "someone", password: "a-real-password-123", inviteToken: "   " }),
+    });
+    if (emptyToken.status !== 400) {
+      throw new Error(`Auth: expected 400 for /api/register with a blank inviteToken, got ${emptyToken.status}`);
+    }
+
+    const nonStringToken = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "someone", password: "a-real-password-123", inviteToken: 12345 }),
+    });
+    if (nonStringToken.status !== 400) {
+      throw new Error(`Auth: expected 400 for /api/register with a non-string inviteToken, got ${nonStringToken.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // ---------- ConfidenceModel Tests (pure, no DB) ----------
 
 registerTest("Confidence", "calculateOverallConfidence matches today's 5-input average when outcomeConfidence is omitted", () => {

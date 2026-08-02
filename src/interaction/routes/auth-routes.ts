@@ -2,14 +2,10 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as usersRepo from "../../kernel/state/users-repo.js";
+import * as invitesRepo from "../../kernel/state/invites-repo.js";
+import * as permissions from "../../kernel/security.js";
 
 const observation = ObservationPlatform.getInstance();
-
-// Off by default: with no gate, anyone who can reach this port (including
-// everyone on a Tailscale tailnet — see README's remote-access section) could
-// self-provision a working API key with full tool/integration access. Flip
-// this on only for the window you actually want a new account created.
-const ALLOW_REGISTRATION = (process.env.ALLOW_REGISTRATION || "false").toLowerCase() === "true";
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -41,10 +37,10 @@ export const authRouter = Router();
 
 // Authentication Endpoints
 authRouter.post("/api/register", authLimiter, async (req, res) => {
-  if (!ALLOW_REGISTRATION) {
-    return res.status(403).json({ error: "Registration is currently disabled. Set ALLOW_REGISTRATION=true to enable it." });
+  const { username, password, inviteToken } = req.body;
+  if (typeof inviteToken !== "string" || !inviteToken.trim()) {
+    return res.status(400).json({ error: "An invite token is required to register." });
   }
-  const { username, password } = req.body;
   if (typeof username !== "string" || !username.trim() || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
@@ -52,7 +48,30 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
     return res.status(400).json({ error: "Password must be at least 8 characters" });
   }
   try {
+    // Check-first, not create-then-redeem: createUser has no sensible
+    // "undo" and redeemInvite has no sensible "check without claiming", so
+    // validate the invite is real and unused BEFORE ever calling
+    // createUser. redeemInvite is still called after createUser to close
+    // the TOCTOU race atomically, but by then it's failing an already-rare
+    // case (someone else claimed the same token in between) rather than
+    // the common one (bad/expired/reused token).
+    const invite = await invitesRepo.getInvite(inviteToken);
+    if (!invite || invite.used_by || invite.expires_at.getTime() <= Date.now()) {
+      return res.status(400).json({ error: "Invalid or expired invite token." });
+    }
     const apiKey = await usersRepo.createUser(username, password);
+    const redeemed = await invitesRepo.redeemInvite(inviteToken, username);
+    if (!redeemed) {
+      // The account was already created above — this is the rare TOCTOU
+      // race (someone else redeemed the same token between the pre-check
+      // and this call) rather than the common bad-token case, which was
+      // already rejected above before createUser ran.
+      observation.logTelemetry("warn", "Database", `Invite ${inviteToken} was redeemed concurrently during registration of ${username}`);
+      return res.status(400).json({ error: "Invalid or expired invite token." });
+    }
+    for (const capability of permissions.DEFAULT_PERSONAL_CAPABILITIES) {
+      await permissions.grantCapability(username, capability, "system:invite-redemption");
+    }
     observation.logAuditEvent(username, "register", "success", `Registered new user: ${username}`);
     res.json({ username, api_key: apiKey });
   } catch (err: any) {
