@@ -9,6 +9,7 @@ import * as jarvisFiles from "../../capabilities/providers/files.js";
 import * as calendar from "../../capabilities/providers/calendar.js";
 import * as news from "../../capabilities/providers/news.js";
 import * as webSearch from "../../capabilities/providers/websearch.js";
+import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../../kernel/oauth-state-tickets.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -153,42 +154,48 @@ integrationsRouter.delete("/api/integrations/files", validateApiKey, requireCapa
   }
 });
 
-// ---------- Google Calendar (OAuth, one-time setup) ----------
+// ---------- Google Calendar + Gmail (combined OAuth connect flow) ----------
 // GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI required — see README for how to
-// create these in Google Cloud. Deployment-wide, single-tenant, same as
-// GITHUB_TOKEN/EMAIL_* — not a per-registered-user OAuth flow.
+// create these in Google Cloud. Per-registered-user OAuth: identity crosses
+// the redirect via a single-use state ticket (kernel/oauth-state-tickets.ts),
+// since Google's callback is the user's own browser and can't carry an
+// X-API-Key header.
 
-integrationsRouter.get("/api/integrations/calendar/auth-url", validateApiKey, requireCapability("calendar.write"), (req: any, res: any) => {
+integrationsRouter.get("/api/integrations/google/auth-url", validateApiKey, (req: any, res: any) => {
   try {
-    res.json({ url: calendar.getAuthUrl() });
+    const state = issueOAuthStateTicket(req.username);
+    res.json({ url: calendar.getAuthUrl(state) });
   } catch (err) {
     handleIntegrationError(res, err);
   }
 });
 
-// No validateApiKey: Google's redirect is the user's own browser navigating
-// here after consent, which can't attach an x-api-key header. The
-// authorization code itself (short-lived, tied to the registered redirect
-// URI and client secret) is what's actually being trusted here, same as any
-// standard OAuth callback.
-integrationsRouter.get("/api/integrations/calendar/callback", async (req: any, res: any) => {
-  const { code, error } = req.query;
+// No validateApiKey — same reasoning as the calendar-only callback this
+// replaces: Google's redirect is the user's own browser, which can't carry
+// an X-API-Key header. Identity crosses this boundary via the state
+// parameter instead, validated below.
+integrationsRouter.get("/api/integrations/google/callback", async (req: any, res: any) => {
+  const { code, error, state } = req.query;
   if (error) {
     // error/err.message below come from the query string or an upstream API and
     // must never be interpolated into this HTML response (reflected-XSS risk) —
     // log them server-side and show the browser a fixed, static message instead.
-    observation.logTelemetry("warn", "Integrations", `Calendar OAuth authorization denied: ${error}`);
-    return res.status(400).send("<html><body>Google Calendar authorization was denied.</body></html>");
+    observation.logTelemetry("warn", "Integrations", `Google OAuth authorization denied: ${error}`);
+    return res.status(400).send("<html><body>Google account authorization was denied.</body></html>");
   }
-  if (!code) {
-    return res.status(400).send("<html><body>Missing authorization code.</body></html>");
+  if (!code || !state) {
+    return res.status(400).send("<html><body>Missing authorization code or state.</body></html>");
+  }
+  const username = consumeOAuthStateTicket(state as string);
+  if (!username) {
+    return res.status(403).send("<html><body>Invalid or expired connection attempt — please try again.</body></html>");
   }
   try {
-    await calendar.exchangeCodeForTokens(code);
-    res.send("<html><body>Google Calendar connected — you can close this tab.</body></html>");
+    await calendar.exchangeCodeForTokens(code as string, username);
+    res.send("<html><body>Google account connected — you can close this tab.</body></html>");
   } catch (err: any) {
-    observation.logTelemetry("error", "Integrations", `Calendar OAuth callback failed: ${err.message}`);
-    res.status(err.status || 500).send("<html><body>Failed to connect Google Calendar. Check server logs for details.</body></html>");
+    observation.logTelemetry("error", "Integrations", `Google OAuth callback failed for "${username}": ${err.message}`);
+    res.status(err.status || 500).send("<html><body>Failed to connect your Google account. Try again from the dashboard.</body></html>");
   }
 });
 

@@ -6,7 +6,11 @@ const observation = ObservationPlatform.getInstance();
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
-const SCOPE = "https://www.googleapis.com/auth/calendar";
+const SCOPE = [
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.send",
+].join(" ");
 const PROVIDER = "google_calendar";
 
 export class CalendarIntegrationError extends Error {
@@ -29,11 +33,12 @@ function requireOAuthConfig() {
 }
 
 /**
- * Step 1 of the one-time OAuth setup: the URL an operator opens in a
- * browser to grant Jarvis calendar access. Deployment-wide, single-tenant
- * (like GITHUB_TOKEN/EMAIL_*), not a per-registered-user OAuth flow.
+ * Step 1 of the OAuth connect flow: the URL a user's browser is sent to in
+ * order to grant Jarvis Calendar + Gmail access. `state` carries a
+ * single-use ticket (see kernel/oauth-state-tickets.ts) so the callback can
+ * recover which user initiated the connection.
  */
-export function getAuthUrl(): string {
+export function getAuthUrl(state: string): string {
   const { clientId, redirectUri } = requireOAuthConfig();
   const params = new URLSearchParams({
     client_id: clientId,
@@ -42,6 +47,7 @@ export function getAuthUrl(): string {
     scope: SCOPE,
     access_type: "offline",
     prompt: "consent",
+    state,
   });
   return `${GOOGLE_AUTH_URL}?${params.toString()}`;
 }
@@ -52,7 +58,7 @@ export function getAuthUrl(): string {
  * The refresh token is long-lived; getValidAccessToken() below uses it to
  * mint new access tokens automatically after this one-time setup.
  */
-export async function exchangeCodeForTokens(code: string): Promise<void> {
+export async function exchangeCodeForTokens(code: string, username: string): Promise<void> {
   const { clientId, clientSecret, redirectUri } = requireOAuthConfig();
   const res = await fetchWithRetry(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -81,11 +87,8 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
     );
   }
   const expiry = new Date(Date.now() + data.expires_in * 1000);
-  // "admin" is a placeholder for the single-tenant deployment this predates
-  // per-user OAuth (see getAuthUrl's own comment above) — Task 10 threads a
-  // real username through every calendar.ts entry point and replaces this.
-  await oauthRepo.saveTokens(PROVIDER, "admin", data.access_token, data.refresh_token, expiry);
-  observation.logTelemetry("info", "Integrations", "Google Calendar OAuth tokens stored.");
+  await oauthRepo.saveTokens(PROVIDER, username, data.access_token, data.refresh_token, expiry);
+  observation.logTelemetry("info", "Integrations", `Google account connected for "${username}".`);
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; expiry: Date }> {
@@ -110,11 +113,13 @@ async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: 
 
 async function getValidAccessToken(): Promise<string> {
   requireOAuthConfig(); // surface the root cause ("not configured") before the less specific "not authorized yet"
-  // "admin" placeholder — see exchangeCodeForTokens's comment above; Task 10 removes this.
+  // "admin" placeholder — this function is still admin-only; Task 10 threads
+  // a real username through here (and every other calendar.ts entry point)
+  // and removes this.
   const stored = await oauthRepo.getTokens(PROVIDER, "admin");
   if (!stored) {
     throw new CalendarIntegrationError(
-      "Google Calendar isn't authorized yet — visit GET /api/integrations/calendar/auth-url to start the one-time setup.",
+      "Google Calendar isn't authorized yet — visit GET /api/integrations/google/auth-url to start the connect flow.",
       401
     );
   }
@@ -123,7 +128,7 @@ async function getValidAccessToken(): Promise<string> {
     return stored.access_token;
   }
   const { accessToken, expiry } = await refreshAccessToken(stored.refresh_token);
-  // "admin" placeholder — see exchangeCodeForTokens's comment above; Task 10 removes this.
+  // "admin" placeholder — see the comment above; Task 10 removes this.
   await oauthRepo.saveTokens(PROVIDER, "admin", accessToken, stored.refresh_token, expiry);
   return accessToken;
 }

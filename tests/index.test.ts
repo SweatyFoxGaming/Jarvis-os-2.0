@@ -1473,31 +1473,31 @@ registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are aut
 });
 
 // Locks in the fix for a reflected-XSS bug CodeRabbit found in review: the
-// calendar OAuth callback used to interpolate the untrusted `error` query
+// Google OAuth callback used to interpolate the untrusted `error` query
 // param straight into an HTML response with no escaping, so a crafted link
 // (?error=<script>...) would execute in whoever's browser clicked it. Its
 // own dedicated port for the same reason every HTTP Boundary test above
 // uses one now (see spawnTestServer) — a security regression test that
 // silently validated an unrelated, already-running process instead of this
 // checkout's own code could pass for the wrong reason forever.
-registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacker-controlled error value into its HTML response", async () => {
+registerTest("HTTP Boundary", "Google OAuth callback never reflects an attacker-controlled error value into its HTML response", async () => {
   const port = 3010;
   const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
 
   try {
     const payload = "<script>alert(document.cookie)</script>";
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/integrations/calendar/callback?error=${encodeURIComponent(payload)}`
+      `http://127.0.0.1:${port}/api/integrations/google/callback?error=${encodeURIComponent(payload)}`
     );
     const body = await res.text();
 
     if (res.status !== 400) {
-      throw new Error(`HTTP Boundary: expected 400 for a denied calendar OAuth callback, got ${res.status}`);
+      throw new Error(`HTTP Boundary: expected 400 for a denied Google OAuth callback, got ${res.status}`);
     }
     if (body.includes(payload) || body.includes("<script>")) {
-      throw new Error(`HTTP Boundary: calendar OAuth callback reflected an attacker-controlled value into HTML: ${body}`);
+      throw new Error(`HTTP Boundary: Google OAuth callback reflected an attacker-controlled value into HTML: ${body}`);
     }
-    if (!body.includes("Google Calendar authorization was denied")) {
+    if (!body.includes("Google account authorization was denied")) {
       throw new Error(`HTTP Boundary: expected the fixed denial message, got: ${body}`);
     }
   } finally {
