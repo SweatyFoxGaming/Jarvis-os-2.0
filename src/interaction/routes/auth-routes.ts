@@ -45,6 +45,18 @@ authRouter.post("/api/register", authLimiter, async (req, res) => {
   if (typeof username !== "string" || !username.trim() || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
+  // Same format check createUser enforces (users-repo.ts's exported
+  // USERNAME_FORMAT), run here BEFORE redeemInvite is ever called. Without
+  // this, a malformed username (an email address, a space, under 3 chars —
+  // all common real input, not edge cases) would sail past every check in
+  // this handler, burn the caller's single-use invite via redeemInvite, and
+  // only THEN get rejected by createUser's own check — leaving the user
+  // with no account and an admin-recoverable-only wasted invite. Checking
+  // the exact same regex here, before any write, means a malformed username
+  // gets a clean 400 with the invite left completely untouched.
+  if (!usersRepo.USERNAME_FORMAT.test(username)) {
+    return res.status(400).json({ error: new usersRepo.InvalidUsernameError().message });
+  }
   if (typeof password !== "string" || password.length < 8) {
     return res.status(400).json({ error: "Password must be at least 8 characters" });
   }

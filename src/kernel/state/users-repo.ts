@@ -32,7 +32,17 @@ export class InvalidUsernameError extends Error {
 // in this codebase already looks like (see the reserved-username check right
 // below) closes that off structurally instead of relying on every future
 // log line to escape/quote it correctly.
-const USERNAME_FORMAT = /^[a-zA-Z0-9_.-]{3,32}$/;
+//
+// Exported so auth-routes.ts's /api/register handler can run this exact
+// same check BEFORE redeemInvite claims the single-use invite token — a
+// malformed username used to only get rejected here, inside createUser,
+// which redeemInvite's caller now runs AFTER the token is already burned.
+// Since this regex rejects common real input (an email address typed as a
+// username, a space, under 3 characters), that ordering turned every such
+// mistake into a permanently wasted invite. Exporting the same regex
+// instead of letting the route redefine its own copy guarantees the two
+// checks can never drift apart.
+export const USERNAME_FORMAT = /^[a-zA-Z0-9_.-]{3,32}$/;
 
 // "admin" is the literal string auth-middleware.ts assigns to req.username
 // for the INTERNAL_API_KEY holder, and the one security.ts/permissions-routes.ts

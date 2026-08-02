@@ -20,8 +20,10 @@
  * make a reachable-but-wrong database a hard failure instead of quietly
  * running destructive operations against it.
  */
+import crypto from "crypto";
 import { pingDatabase, initDatabase, getPool, isVectorReady } from "../src/kernel/state/db.js";
 import { runMigrations, ALL_MIGRATIONS } from "../src/kernel/state/migrations/index.js";
+import legacyApiKeyMigration from "../src/kernel/state/migrations/008_hash_legacy_api_keys.js";
 import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError, removeUser } from "../src/kernel/state/users-repo.js";
 import * as usersRepo from "../src/kernel/state/users-repo.js";
 import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kernel/state/session-repo.js";
@@ -130,6 +132,7 @@ const RUN_ID =
 async function cleanupTestData(): Promise<void> {
   const db = getPool();
   await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_user_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM users WHERE username = $1`, [`db_it_legacyapikey_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM conversation_history WHERE username = $1`, [`db_it_session_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM mcp_servers WHERE name = $1`, [`db_it_mcp_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM kg_entities WHERE username IN ($1, $2)`, [`db_it_kg_a_${RUN_ID}`, `db_it_kg_b_${RUN_ID}`]).catch(() => {});
@@ -283,6 +286,73 @@ registerTest("createUser + verifyCredentials round-trip for real, and rejects a 
     invalidThrew = err instanceof usersRepo.InvalidUsernameError;
   }
   if (!invalidThrew) throw new Error('createUser did not throw InvalidUsernameError for a username containing "|" and under 3 characters of real content');
+});
+
+registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it becomes both hashed-at-rest and authenticate-compatible", async () => {
+  const username = `db_it_legacyapikey_${RUN_ID}`;
+  await createUser(username, "a-real-password-123");
+  const db = getPool();
+
+  // Simulate a row written BEFORE the sha256-at-rest fix: the raw key
+  // stored directly as api_keys.key (its primary key), exactly what every
+  // row looked like pre-migration. Deliberately inserted directly, not via
+  // createApiKey (which only ever writes the new hashed shape now).
+  const legacyRawKey = `legacy_plaintext_key_${RUN_ID}`;
+  await db.query(`INSERT INTO api_keys (key, username) VALUES ($1, $2)`, [legacyRawKey, username]);
+
+  // Before migration 008 runs, this legacy row must NOT authenticate —
+  // getUsernameByApiKey hashes the incoming raw key and looks up by hash,
+  // which can never match a still-plaintext row. Confirms the bug this
+  // migration exists to fix is real, not just theoretical.
+  const beforeMigration = await usersRepo.getUsernameByApiKey(legacyRawKey);
+  if (beforeMigration !== null) {
+    throw new Error(`expected the legacy plaintext api_keys row to NOT authenticate before migration 008 runs, got: ${JSON.stringify(beforeMigration)}`);
+  }
+
+  // Run migration 008's up() directly against a real transaction — not via
+  // runMigrations/ALL_MIGRATIONS, since the earlier "applies every
+  // migration cleanly" test already recorded "008_hash_legacy_api_keys" as
+  // applied in schema_migrations, and this legacy row was seeded AFTER
+  // that ran. Calling up() directly exercises the actual re-keying logic
+  // against this specific seeded row, matching what a real deployment
+  // upgrading past an old plaintext row would experience.
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await legacyApiKeyMigration.up(client);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // The raw plaintext value must no longer exist as a key in the table —
+  // it was re-keyed, not merely left in place alongside a copy.
+  const { rows: stillPlaintext } = await db.query(`SELECT 1 FROM api_keys WHERE key = $1`, [legacyRawKey]);
+  if (stillPlaintext.length !== 0) {
+    throw new Error("migration 008: the legacy row's raw plaintext value is still present in api_keys.key after the migration ran");
+  }
+
+  // A new row keyed by sha256(legacyRawKey), owned by the same username,
+  // must now exist — proving the migration didn't just delete the old row,
+  // it replaced it with the correctly-hashed equivalent.
+  const expectedHash = crypto.createHash("sha256").update(legacyRawKey).digest("hex");
+  const { rows: hashedRow } = await db.query(`SELECT username FROM api_keys WHERE key = $1`, [expectedHash]);
+  if (hashedRow.length !== 1 || hashedRow[0].username !== username) {
+    throw new Error(`migration 008: expected exactly one api_keys row keyed by sha256(legacy raw key) owned by "${username}", got: ${JSON.stringify(hashedRow)}`);
+  }
+
+  // The real proof, end to end through the app's own auth path: the SAME
+  // raw key that was rejected before migration must now resolve back to
+  // this username via getUsernameByApiKey — not just that the stored bytes
+  // look like a hash, but that they're genuinely the hash THIS key
+  // produces, and the app's hash-and-compare lookup finds it.
+  const resolvedUsername = await usersRepo.getUsernameByApiKey(legacyRawKey);
+  if (resolvedUsername !== username) {
+    throw new Error(`migration 008: getUsernameByApiKey(legacyRawKey) expected to resolve "${username}" after migration, got: ${JSON.stringify(resolvedUsername)}`);
+  }
 });
 
 registerTest("register grants DEFAULT_PERSONAL_CAPABILITIES on successful invite redemption, against real Postgres", async () => {
