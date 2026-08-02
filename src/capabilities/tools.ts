@@ -539,10 +539,10 @@ export async function executeTool(
         break;
       }
       case "calendar_list_events":
-        output = await calendar.listEvents(args.timeMinISO, args.timeMaxISO);
+        output = await calendar.listEvents(username, args.timeMinISO, args.timeMaxISO);
         break;
       case "calendar_create_event":
-        output = await calendar.createEvent(args.summary, args.startISO, args.endISO, args.description);
+        output = await calendar.createEvent(username, args.summary, args.startISO, args.endISO, args.description);
         break;
       case "get_briefing": {
         const result = await briefing.generateBriefing(briefing.getConfiguredGroq(), username);

@@ -201,7 +201,7 @@ integrationsRouter.get("/api/integrations/google/callback", async (req: any, res
 
 integrationsRouter.get("/api/integrations/calendar/events", validateApiKey, requireCapability("calendar.read"), async (req: any, res: any) => {
   try {
-    res.json(await calendar.listEvents(req.query.timeMinISO, req.query.timeMaxISO));
+    res.json(await calendar.listEvents(req.username, req.query.timeMinISO, req.query.timeMaxISO));
   } catch (err) {
     handleIntegrationError(res, err);
   }
@@ -213,7 +213,7 @@ integrationsRouter.post("/api/integrations/calendar/events", validateApiKey, req
     return res.status(400).json({ error: "summary, startISO, and endISO are required" });
   }
   try {
-    res.json(await calendar.createEvent(summary, startISO, endISO, description));
+    res.json(await calendar.createEvent(req.username, summary, startISO, endISO, description));
   } catch (err) {
     handleIntegrationError(res, err);
   }

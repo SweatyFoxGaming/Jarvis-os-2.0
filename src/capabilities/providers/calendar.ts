@@ -111,12 +111,9 @@ async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: 
   return { accessToken: data.access_token, expiry: new Date(Date.now() + data.expires_in * 1000) };
 }
 
-async function getValidAccessToken(): Promise<string> {
+async function getValidAccessToken(username: string): Promise<string> {
   requireOAuthConfig(); // surface the root cause ("not configured") before the less specific "not authorized yet"
-  // "admin" placeholder — this function is still admin-only; Task 10 threads
-  // a real username through here (and every other calendar.ts entry point)
-  // and removes this.
-  const stored = await oauthRepo.getTokens(PROVIDER, "admin");
+  const stored = await oauthRepo.getTokens(PROVIDER, username);
   if (!stored) {
     throw new CalendarIntegrationError(
       "Google Calendar isn't authorized yet — visit GET /api/integrations/google/auth-url to start the connect flow.",
@@ -128,13 +125,12 @@ async function getValidAccessToken(): Promise<string> {
     return stored.access_token;
   }
   const { accessToken, expiry } = await refreshAccessToken(stored.refresh_token);
-  // "admin" placeholder — see the comment above; Task 10 removes this.
-  await oauthRepo.saveTokens(PROVIDER, "admin", accessToken, stored.refresh_token, expiry);
+  await oauthRepo.saveTokens(PROVIDER, username, accessToken, stored.refresh_token, expiry);
   return accessToken;
 }
 
-async function calendarRequest(path: string, init: RequestInit = {}): Promise<any> {
-  const accessToken = await getValidAccessToken();
+async function calendarRequest(path: string, username: string, init: RequestInit = {}): Promise<any> {
+  const accessToken = await getValidAccessToken(username);
   const res = await fetchWithRetry(`${CALENDAR_API}${path}`, {
     ...init,
     headers: {
@@ -152,7 +148,7 @@ async function calendarRequest(path: string, init: RequestInit = {}): Promise<an
   return res.json();
 }
 
-export async function listEvents(timeMinISO?: string, timeMaxISO?: string, maxResults = 10): Promise<any[]> {
+export async function listEvents(username: string, timeMinISO?: string, timeMaxISO?: string, maxResults = 10): Promise<any[]> {
   const params = new URLSearchParams({
     timeMin: timeMinISO || new Date().toISOString(),
     maxResults: String(maxResults),
@@ -160,7 +156,7 @@ export async function listEvents(timeMinISO?: string, timeMaxISO?: string, maxRe
     orderBy: "startTime",
   });
   if (timeMaxISO) params.set("timeMax", timeMaxISO);
-  const result = await calendarRequest(`/calendars/primary/events?${params.toString()}`);
+  const result = await calendarRequest(`/calendars/primary/events?${params.toString()}`, username);
   return (result?.items || []).map((e: any) => ({
     id: e.id,
     summary: e.summary,
@@ -170,8 +166,8 @@ export async function listEvents(timeMinISO?: string, timeMaxISO?: string, maxRe
   }));
 }
 
-export async function createEvent(summary: string, startISO: string, endISO: string, description?: string): Promise<any> {
-  const created = await calendarRequest(`/calendars/primary/events`, {
+export async function createEvent(username: string, summary: string, startISO: string, endISO: string, description?: string): Promise<any> {
+  const created = await calendarRequest(`/calendars/primary/events`, username, {
     method: "POST",
     body: JSON.stringify({
       summary,
