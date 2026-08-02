@@ -55,7 +55,12 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   github_get_repo_or_file: "github.read",
   github_create_issue: "github.issues.create",
   send_email: "email.send",
-  send_personal_email: "email.send",
+  // Distinct from send_email's "email.send" (shared admin SMTP mailbox) —
+  // this gates the user's own connected Gmail account, and is auto-granted
+  // to every invited user (see DEFAULT_PERSONAL_CAPABILITIES in security.ts),
+  // whereas "email.send" is deliberately admin-only. See final-review
+  // finding C1.
+  send_personal_email: "email.personal.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
   calendar_list_events: "calendar.read",

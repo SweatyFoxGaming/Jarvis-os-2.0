@@ -31,6 +31,18 @@ const migration: Migration = {
     await client.query(`ALTER TABLE oauth_tokens DROP CONSTRAINT oauth_tokens_pkey;`);
     await client.query(`ALTER TABLE oauth_tokens ADD PRIMARY KEY (provider, username);`);
 
+    // Any row backfilled to 'admin' above was written BEFORE Task 6's
+    // token-crypto encryption existed, so its access_token/refresh_token
+    // values are still plaintext. getTokens() already fails closed on a
+    // plaintext value (decryptToken() can't parse it, returns null, admin
+    // shows up as disconnected) — but the plaintext refresh token would
+    // otherwise sit in this table, and in every backup taken since, forever,
+    // contradicting Task 6's own threat model (protect against a backup
+    // leak / compromised query access). It's already unusable to the
+    // application, so deleting it is safe: admin just needs to reconnect
+    // Google once after this migration runs (see README's upgrade note).
+    await client.query(`DELETE FROM oauth_tokens;`);
+
     await client.query(`
       CREATE TABLE invite_tokens (
         token TEXT PRIMARY KEY,

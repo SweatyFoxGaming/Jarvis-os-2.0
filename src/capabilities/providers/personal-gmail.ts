@@ -99,7 +99,15 @@ async function gmailRequest(username: string, path: string, init: RequestInit = 
 // Gmail's send endpoint takes a raw base64url-encoded RFC 2822 message, not
 // a JSON body of {to, subject, text} — this builds the minimal valid one.
 function buildRawMessage(to: string, subject: string, text: string): string {
-  const message = [`To: ${to}`, `Subject: ${subject}`, "Content-Type: text/plain; charset=utf-8", "", text].join("\r\n");
+  // to/subject come straight from LLM tool-call arguments, which can be
+  // steered by untrusted text Jarvis ingests (web results, news, emails it
+  // reads) — a prompt-injection payload could otherwise smuggle "\r\nBcc:
+  // attacker@example.com" (or a blank line + forged body) into these
+  // header-position fields. Stripping CR/LF neutralizes header injection;
+  // it can't affect `text`, which only ever appears after the blank line.
+  const safeTo = to.replace(/[\r\n]/g, " ");
+  const safeSubject = subject.replace(/[\r\n]/g, " ");
+  const message = [`To: ${safeTo}`, `Subject: ${safeSubject}`, "Content-Type: text/plain; charset=utf-8", "", text].join("\r\n");
   return Buffer.from(message).toString("base64url");
 }
 

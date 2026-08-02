@@ -20,8 +20,20 @@ export const ALL_CAPABILITIES = [
   "github.read",
   "github.issues.create",
   "github.pulls.create",
+  // Gate the SHARED ADMIN SMTP/IMAP mailbox (EMAIL_USER/EMAIL_PASSWORD env
+  // vars) — see src/interaction/routes/integrations-routes.ts's
+  // /api/integrations/email/* routes and src/capabilities/tools.ts's
+  // send_email tool. Deliberately admin-only: never include these in
+  // DEFAULT_PERSONAL_CAPABILITIES, or every invited user would be able to
+  // read/send from the operator's own inbox.
   "email.send",
   "email.read",
+  // Gate each user's OWN connected Gmail account (Task 12's
+  // src/capabilities/providers/personal-gmail.ts), resolved per-username via
+  // oauth-repo — distinct from, and safe to auto-grant alongside, the
+  // admin-only email.read/email.send above.
+  "email.personal.send",
+  "email.personal.read",
   "tts.speak",
   "executive.plan",
   "calendar.read",
@@ -67,8 +79,16 @@ export const ALL_CAPABILITIES = [
 // name here must already be a member of ALL_CAPABILITIES above; this is a
 // subset used for auto-provisioning, not a separate grantable-capability
 // concept. calendar.read/write now genuinely resolve to the granted user's
-// own Google account (Task 10), and email.read/email.send similarly resolve
-// to each user's own Gmail account (Task 12), so both are safe to include here.
+// own Google account (Task 10), and email.personal.send similarly resolves
+// to each user's own connected Gmail account (Task 12), so both are safe to
+// include here. email.read/email.send are DELIBERATELY EXCLUDED: those gate
+// the shared admin SMTP/IMAP mailbox (EMAIL_USER/EMAIL_PASSWORD), not a
+// per-user resource — auto-granting them here would let any invited user
+// read or send from the operator's own inbox (see final-review finding C1).
+// They remain grantable, but only an admin should hand them out explicitly.
+// email.personal.read is similarly excluded for now, not for a security
+// reason but because no chat tool or route currently exercises it — add it
+// here if/when one does.
 export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "web.search",
   "news.read",
@@ -80,8 +100,7 @@ export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "system.sandbox_execute",
   "calendar.read",
   "calendar.write",
-  "email.read",
-  "email.send",
+  "email.personal.send",
 ];
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

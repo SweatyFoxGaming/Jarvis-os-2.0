@@ -2979,15 +2979,22 @@ registerTest("OAuthStateTickets", "rejects an unknown state value", () => {
 });
 
 // ---------- PersonalGmail Tests (no live Postgres in this test process) ----------
-// GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET aren't set anywhere in this process
+// GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET aren't set anywhere else in this file
 // (index.test.ts never calls dotenv.config() — see the OAUTH_TOKEN_ENCRYPTION_KEY
-// comment near the top of this file). Without them, getValidAccessToken's own
-// config check short-circuits with a 503 before reaching the "not connected"
-// 401 path — that's real, correct behavior for an unconfigured deployment, so
-// this test accepts either outcome rather than injecting fake credentials
-// just to force the 401 branch.
+// comment near the top of this file), so they're set LOCALLY here, only for
+// the duration of this test, and restored in finally — this exercises the
+// real "not connected" 401 path (oauthRepo.getTokens has no live Postgres to
+// reach, fails, and personal-gmail.ts's try/catch treats that as
+// not-connected) without leaving fake credentials sitting in global
+// test-file state for every other test. The assertion still accepts a 503
+// as a fallback in case some other environment variable in a different
+// environment causes the config check itself to short-circuit first.
 registerTest("PersonalGmail", "throws a clean PersonalGmailError (never an uncaught exception) when Google isn't configured or the account isn't connected", async () => {
   const { sendPersonalEmail, PersonalGmailError } = await import("../src/capabilities/providers/personal-gmail.js");
+  const originalClientId = process.env.GOOGLE_CLIENT_ID;
+  const originalClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  process.env.GOOGLE_CLIENT_ID = "test-client-id";
+  process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
   try {
     await sendPersonalEmail("user_with_no_connection", "someone@example.com", "subject", "body");
     throw new Error("PersonalGmail: expected this to throw");
@@ -2995,6 +3002,11 @@ registerTest("PersonalGmail", "throws a clean PersonalGmailError (never an uncau
     if (!(err instanceof PersonalGmailError) || (err.status !== 401 && err.status !== 503)) {
       throw new Error(`PersonalGmail: expected a 401 (not connected) or 503 (not configured) PersonalGmailError, got: ${err}`);
     }
+  } finally {
+    if (originalClientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+    else process.env.GOOGLE_CLIENT_ID = originalClientId;
+    if (originalClientSecret === undefined) delete process.env.GOOGLE_CLIENT_SECRET;
+    else process.env.GOOGLE_CLIENT_SECRET = originalClientSecret;
   }
 });
 

@@ -581,12 +581,12 @@ behalf):
    account as a test user.
 3. Create an **OAuth client ID** (APIs & Services → Credentials → Create Credentials
    → OAuth client ID), type **Web application**. Add an **Authorized redirect URI**
-   of `http://localhost:3000/api/integrations/calendar/callback` (must match
+   of `http://localhost:3000/api/integrations/google/callback` (must match
    `GOOGLE_REDIRECT_URI` in `.env` exactly).
 4. Copy the generated **Client ID** and **Client Secret** into `.env` as
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, restart the stack.
 5. With the server running, open
-   `http://localhost:3000/api/integrations/calendar/auth-url` while sending your
+   `http://localhost:3000/api/integrations/google/auth-url` while sending your
    `x-api-key` header (e.g. via a browser extension, or just `curl` and paste the
    returned URL into a browser), approve access, and you'll land back on the
    callback route with a "connected" confirmation. This is a one-time step — the
@@ -594,6 +594,19 @@ behalf):
 
 Until step 5 is done, every calendar route/tool returns a clear "not configured" or
 "not authorized yet" error rather than failing silently or fabricating data.
+
+**Upgrading an existing deployment to this multi-user version:** the OAuth
+callback route moved from `/api/integrations/calendar/callback` to
+`/api/integrations/google/callback` (it now also covers personal Gmail, not
+just Calendar). You must update the **Authorized redirect URI** in Google
+Cloud Console to the new `/google/callback` path and update
+`GOOGLE_REDIRECT_URI` in `.env` to match — otherwise Google will redirect
+back to a route that no longer exists, the server's SPA catch-all will
+silently serve `index.html`, and the Connect Google Account flow will fail
+with no visible error. Separately, the multi-user migration deletes any
+pre-existing `oauth_tokens` row (it predates per-user token encryption and
+was plaintext), so admin will need to reconnect their Google account once
+after upgrading, even after the redirect URI is fixed.
 
 ## Testing
 
