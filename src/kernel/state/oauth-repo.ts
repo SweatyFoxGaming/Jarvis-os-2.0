@@ -40,7 +40,16 @@ export async function getTokens(provider: string, username: string): Promise<Sto
 }
 
 export async function deleteTokens(provider: string, username: string): Promise<boolean> {
-  const db = getPool();
-  const { rowCount } = await db.query(`DELETE FROM oauth_tokens WHERE provider = $1 AND username = $2`, [provider, username]);
-  return !!rowCount;
+  // Degrades cleanly (false, not a throw) on a DB outage, same read-vs-write
+  // split vault-repo.ts's read-side functions use: this backs the
+  // self-service disconnect route, where "nothing to disconnect" is a
+  // sensible fallback and a hard 500 would only block a best-effort cleanup
+  // action the user can safely retry.
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(`DELETE FROM oauth_tokens WHERE provider = $1 AND username = $2`, [provider, username]);
+    return !!rowCount;
+  } catch {
+    return false;
+  }
 }

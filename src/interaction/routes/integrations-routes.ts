@@ -214,6 +214,26 @@ integrationsRouter.get("/api/integrations/google/status", validateApiKey, async 
   }
 });
 
+// Self-service disconnect — no requireCapability: any authenticated user may
+// disconnect their OWN account (req.username is always the actor, never a
+// body/query param for who to disconnect). Local deletion is what actually
+// matters for Jarvis's own access; Google-side revocation is best-effort
+// and must not block or fail this response if it errors.
+integrationsRouter.delete("/api/integrations/google", validateApiKey, async (req: any, res: any) => {
+  try {
+    const stored = await oauthRepo.getTokens("google_calendar", req.username);
+    await oauthRepo.deleteTokens("google_calendar", req.username);
+    if (stored) {
+      fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(stored.refresh_token)}`, { method: "POST" })
+        .catch((err) => observation.logTelemetry("warn", "Integrations", `Google-side revocation failed for "${req.username}": ${err.message}`));
+    }
+    observation.logAuditEvent(req.username, "google_account_disconnected", "success", "");
+    res.json({ status: "success" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 integrationsRouter.get("/api/integrations/calendar/events", validateApiKey, requireCapability("calendar.read"), async (req: any, res: any) => {
   try {
     res.json(await calendar.listEvents(req.username, req.query.timeMinISO, req.query.timeMaxISO));

@@ -50,6 +50,7 @@ import { deriveHudBadge } from "../src/interaction/hud-badge.js";
 import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
 import { encryptToken, decryptToken } from "../src/kernel/token-crypto.js";
 import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../src/kernel/oauth-state-tickets.js";
+import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -2913,6 +2914,14 @@ registerTest("PersonalGmail", "throws a 401 PersonalGmailError with a clear mess
     if (!(err instanceof PersonalGmailError) || err.status !== 401) {
       throw new Error(`PersonalGmail: expected a 401 PersonalGmailError, got: ${err}`);
     }
+  }
+});
+
+// ---------- Integrations ----------
+registerTest("Integrations", "DELETE /api/integrations/google degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await oauthRepo.deleteTokens("google_calendar", "nonexistent_user");
+  if (result !== false) {
+    throw new Error(`Integrations: expected deleteTokens to return false for a nonexistent row, got: ${result}`);
   }
 });
 
