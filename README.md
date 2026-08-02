@@ -178,8 +178,14 @@ relying on anything not listed in "What's implemented."
   the real `/api/chat` pipeline: a genuine opinion turn was auto-extracted and stored, and
   a follow-up turn had Gemini's own function-calling select `reflect_on_self` and weave the
   real stored opinions back into a coherent answer.
-- **Auth**: a single admin key (`INTERNAL_API_KEY`) plus self-service registration/login
-  with bcrypt-hashed passwords, both backed by Postgres.
+- **Auth**: a single admin key (`INTERNAL_API_KEY`) plus multi-user registration/login
+  with bcrypt-hashed passwords, both backed by Postgres. Registration is invite-only —
+  `POST /api/register` requires a valid, unused, unexpired single-use token the admin
+  issues via `POST /api/invites`, not open self-service signup. Each registered user
+  gets their own capability grants (`capability_grants`, default-deny per capability)
+  and, once they connect their own Google account, their own OAuth tokens — a personal
+  brain per user, not one shared admin identity. The admin can bulk-grant a capability
+  to every existing user in one call via `POST /api/permissions/grant-all`.
 - **Settings**: local LLM endpoint/model/key, offline mode — persisted to disk.
 - **Observation**: real CPU/disk/memory metrics, telemetry log, audit ledger, decision
   traces — all bounded in-memory buffers, viewable in `/admin`.

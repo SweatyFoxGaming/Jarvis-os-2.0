@@ -23,6 +23,7 @@
 import { pingDatabase, initDatabase, getPool, isVectorReady } from "../src/kernel/state/db.js";
 import { runMigrations, ALL_MIGRATIONS } from "../src/kernel/state/migrations/index.js";
 import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError, removeUser } from "../src/kernel/state/users-repo.js";
+import * as usersRepo from "../src/kernel/state/users-repo.js";
 import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kernel/state/session-repo.js";
 import { proposeMcpServer, McpServerNameTakenError } from "../src/kernel/state/mcp-servers-repo.js";
 import { upsertEntity, addFact, addRelationship, searchEntities, listAllEntities } from "../src/kernel/state/knowledge-graph-repo.js";
@@ -139,6 +140,8 @@ async function cleanupTestData(): Promise<void> {
   await db.query(`DELETE FROM objective_runs WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM push_subscriptions WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
   await db.query(`DELETE FROM memory_embeddings WHERE username = $1`, [`db_it_removeuser_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM users WHERE username IN ($1, $2)`, [`bulk_grant_user_1_${RUN_ID}`, `bulk_grant_user_2_${RUN_ID}`]).catch(() => {});
+  await db.query(`DELETE FROM capability_grants WHERE username IN ($1, $2)`, [`bulk_grant_user_1_${RUN_ID}`, `bulk_grant_user_2_${RUN_ID}`]).catch(() => {});
 }
 
 registerTest("initDatabase() creates the full schema and applies every migration cleanly", async () => {
@@ -491,6 +494,23 @@ registerTest("users-repo.removeUser: admin remove-user cascades personal-data de
 
   const neverExisted = await removeUser(`db_it_removeuser_never_existed_${RUN_ID}`);
   if (neverExisted) throw new Error("removeUser reported success for a username that was never created");
+});
+
+registerTest("grant-all grants a capability to every existing non-admin user, against real Postgres", async () => {
+  const user1 = `bulk_grant_user_1_${RUN_ID}`;
+  const user2 = `bulk_grant_user_2_${RUN_ID}`;
+  await createUser(user1, "a-real-password-123");
+  await createUser(user2, "a-real-password-123");
+  const usernames = await usersRepo.listUsernames();
+  for (const username of usernames) {
+    if (username === "admin") continue;
+    if (!permissions.hasGrant(username, "news.read")) {
+      await permissions.grantCapability(username, "news.read", "admin");
+    }
+  }
+  if (!permissions.hasGrant(user1, "news.read") || !permissions.hasGrant(user2, "news.read")) {
+    throw new Error("expected both users to have the bulk-granted capability");
+  }
 });
 
 async function main(): Promise<void> {
