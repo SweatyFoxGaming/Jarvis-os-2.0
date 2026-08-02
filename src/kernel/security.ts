@@ -67,11 +67,8 @@ export const ALL_CAPABILITIES = [
 // name here must already be a member of ALL_CAPABILITIES above; this is a
 // subset used for auto-provisioning, not a separate grantable-capability
 // concept. calendar.read/write now genuinely resolve to the granted user's
-// own Google account (Task 10), so they're safe to include here.
-// email.read/email.send are still deliberately excluded until the
-// personal-OAuth work for email (Task 13) actually ships — granting them
-// earlier would point a new user at the shared admin Google account, not
-// their own. Add them here once that work is live, not before.
+// own Google account (Task 10), and email.read/email.send similarly resolve
+// to each user's own Gmail account (Task 12), so both are safe to include here.
 export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "web.search",
   "news.read",
@@ -83,6 +80,8 @@ export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "system.sandbox_execute",
   "calendar.read",
   "calendar.write",
+  "email.read",
+  "email.send",
 ];
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
