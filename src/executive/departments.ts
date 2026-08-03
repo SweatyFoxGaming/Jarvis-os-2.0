@@ -1,6 +1,7 @@
 import { Type } from "@google/genai";
-import Groq from "groq-sdk";
 import { toGroqSchema } from "../runtime/groq-client.js";
+import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
+import { generateWithFallback } from "../runtime/omniroute-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as github from "../capabilities/providers/github.js";
 import * as webSearch from "../capabilities/providers/websearch.js";
@@ -56,25 +57,28 @@ const DEPARTMENT_DECOMPOSITION_SCHEMA = {
 // without a real model actually reasoning about it).
 export async function decomposeObjective(
   objective: string,
-  groq: Groq | null,
+  omniRoute: OmniRouteConfig | null,
   offlineMode: boolean
 ): Promise<DepartmentStep[]> {
-  if (!groq || offlineMode) {
+  if (!omniRoute || offlineMode) {
     return [{ step: objective, department: "research" }];
   }
 
   try {
-    const response = await groq.chat.completions.create({
-      model: "openai/gpt-oss-20b",
-      messages: [{
-        role: "user",
-        content: `Break this objective down into 1-5 concrete steps, each tagged with the department that owns it: "${objective}"`,
-      }],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "department_decomposition", schema: toGroqSchema(DEPARTMENT_DECOMPOSITION_SCHEMA), strict: true },
+    const response = await generateWithFallback(
+      omniRoute,
+      {
+        messages: [{
+          role: "user",
+          content: `Break this objective down into 1-5 concrete steps, each tagged with the department that owns it: "${objective}"`,
+        }],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "department_decomposition", schema: toGroqSchema(DEPARTMENT_DECOMPOSITION_SCHEMA), strict: true },
+        },
       },
-    });
+      ["openai/gpt-oss-20b"]
+    );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const rawSteps = Array.isArray(parsed.steps) ? parsed.steps : [];
@@ -136,12 +140,12 @@ const RESEARCH_LOOKUPS_SCHEMA = {
 // the raw objective; the second synthesizes whatever was actually gathered.
 // Each individual lookup degrades independently — one failing read (a
 // missing BRAVE_API_KEY, a GitHub hiccup) doesn't abort the whole pass.
-export async function runResearch(objective: string, groq: Groq | null, username: string): Promise<ResearchResult> {
-  if (!groq) {
+export async function runResearch(objective: string, omniRoute: OmniRouteConfig | null, username: string): Promise<ResearchResult> {
+  if (!omniRoute) {
     return {
       summary:
         "No capable model is available right now, so I couldn't do real research on this — " +
-        "I'd need Groq reachable to plan and synthesize findings.",
+        "I'd need OmniRoute reachable to plan and synthesize findings.",
     };
   }
 
@@ -150,14 +154,17 @@ export async function runResearch(objective: string, groq: Groq | null, username
   let knowledgeQuery = "";
   let wikipediaQuery = "";
   try {
-    const lookupResponse = await groq.chat.completions.create({
-      model: "openai/gpt-oss-20b",
-      messages: [{ role: "user", content: `Plan what to research for this objective: "${objective}"` }],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "research_lookups", schema: toGroqSchema(RESEARCH_LOOKUPS_SCHEMA), strict: true },
+    const lookupResponse = await generateWithFallback(
+      omniRoute,
+      {
+        messages: [{ role: "user", content: `Plan what to research for this objective: "${objective}"` }],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "research_lookups", schema: toGroqSchema(RESEARCH_LOOKUPS_SCHEMA), strict: true },
+        },
       },
-    });
+      ["openai/gpt-oss-20b"]
+    );
     const parsed = JSON.parse(lookupResponse.choices[0]?.message?.content || "{}");
     webQueries = Array.isArray(parsed.webQueries)
       ? parsed.webQueries.filter((q: any) => typeof q === "string" && q.trim()).slice(0, 3)
@@ -244,13 +251,16 @@ export async function runResearch(objective: string, groq: Groq | null, username
   }
 
   try {
-    const synthesis = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [{
-        role: "user",
-        content: `Synthesize these raw research findings into a clear, concise report for the objective "${objective}". Findings:\n\n${findings.join("\n\n")}`,
-      }],
-    });
+    const synthesis = await generateWithFallback(
+      omniRoute,
+      {
+        messages: [{
+          role: "user",
+          content: `Synthesize these raw research findings into a clear, concise report for the objective "${objective}". Findings:\n\n${findings.join("\n\n")}`,
+        }],
+      },
+      ["llama-3.3-70b-versatile"]
+    );
     return { summary: synthesis.choices[0]?.message?.content || findings.join("\n\n") };
   } catch (err: any) {
     observation.logTelemetry("warn", "Departments", `Research synthesis failed: ${err.message}. Returning raw findings.`);
@@ -258,22 +268,25 @@ export async function runResearch(objective: string, groq: Groq | null, username
   }
 }
 
-export async function reviewCodeDiff(objective: string, files: DraftedFile[], groq: Groq | null): Promise<string> {
-  if (!groq) {
+export async function reviewCodeDiff(objective: string, files: DraftedFile[], omniRoute: OmniRouteConfig | null): Promise<string> {
+  if (!omniRoute) {
     return "No capable model was available to review this change — please review the diff yourself before merging.";
   }
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [{
-        role: "user",
-        content:
-          "Review this drafted code change against the objective it's meant to accomplish. Flag anything concerning — " +
-          "bugs, missing error handling, security issues, or ways it doesn't actually satisfy the objective. Be concise.\n\n" +
-          `Objective: ${objective}\n\nFiles:\n${filesText}`,
-      }],
-    });
+    const response = await generateWithFallback(
+      omniRoute,
+      {
+        messages: [{
+          role: "user",
+          content:
+            "Review this drafted code change against the objective it's meant to accomplish. Flag anything concerning — " +
+            "bugs, missing error handling, security issues, or ways it doesn't actually satisfy the objective. Be concise.\n\n" +
+            `Objective: ${objective}\n\nFiles:\n${filesText}`,
+        }],
+      },
+      ["llama-3.3-70b-versatile"]
+    );
     return response.choices[0]?.message?.content || "Review completed with no specific feedback.";
   } catch (err: any) {
     observation.logTelemetry("warn", "Departments", `reviewCodeDiff failed: ${err.message}`);
@@ -295,8 +308,8 @@ const TASK_REVIEW_SCHEMA = {
 // objective. Returns a structured verdict (not prose, unlike reviewCodeDiff)
 // because this drives a programmatic retry/continue decision inside
 // coding-agent.ts's fix loop. Fails CLOSED (approved: false) both when no
-// Groq client is available and when the review call itself throws — this
-// used to fail open, which meant a Groq outage silently rubber-stamped
+// OmniRoute client is available and when the review call itself throws —
+// this used to fail open, which meant an outage silently rubber-stamped
 // every task with no code ever actually reviewed, identical in the approval
 // queue to a normally-reviewed one. Failing closed doesn't loop forever: a
 // blocked task still only gets MAX_TASK_FIX_ATTEMPTS retries in
@@ -307,14 +320,28 @@ export async function reviewTaskDiff(
   taskTitle: string,
   taskDescription: string,
   files: DraftedFile[],
-  groq: Groq | null
+  omniRoute: OmniRouteConfig | null
 ): Promise<{ approved: boolean; findings: string }> {
-  if (!groq) {
-    return { approved: false, findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure GROQ_API_KEY to enable the coding agent's review gate." };
+  if (!omniRoute) {
+    return { approved: false, findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure OMNIROUTE_API_KEY to enable the coding agent's review gate." };
   }
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
-    const response = await groq.chat.completions.create({
+    const response = await generateWithFallback(
+      omniRoute,
+      {
+        messages: [{
+          role: "user",
+          content:
+            "Review this task's drafted code change against what the task was supposed to accomplish. Approve only if it " +
+            "genuinely satisfies the task with no real bugs, missing error handling, or security issues. Be concise in findings.\n\n" +
+            `Task: ${taskTitle} — ${taskDescription}\n\nFiles:\n${filesText}`,
+        }],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "task_review", schema: toGroqSchema(TASK_REVIEW_SCHEMA), strict: true },
+        },
+      },
       // llama-3.3-70b-versatile (used elsewhere in this file for plain-text
       // reviews with no response_format) doesn't support Groq's structured-
       // output mode — live-verified: a real task review against it failed
@@ -327,19 +354,8 @@ export async function reviewTaskDiff(
       // output elsewhere in this file (decomposeObjective, the
       // research-lookups call) with no rate-limit issues throughout this
       // session's live testing, so this call uses it too.
-      model: "openai/gpt-oss-20b",
-      messages: [{
-        role: "user",
-        content:
-          "Review this task's drafted code change against what the task was supposed to accomplish. Approve only if it " +
-          "genuinely satisfies the task with no real bugs, missing error handling, or security issues. Be concise in findings.\n\n" +
-          `Task: ${taskTitle} — ${taskDescription}\n\nFiles:\n${filesText}`,
-      }],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "task_review", schema: toGroqSchema(TASK_REVIEW_SCHEMA), strict: true },
-      },
-    });
+      ["openai/gpt-oss-20b"]
+    );
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     return {
       approved: parsed.approved === true,

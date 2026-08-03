@@ -1,4 +1,4 @@
-import type Groq from "groq-sdk";
+import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
 import { ObservationPlatform } from "./observation.js";
 import * as emailIntegration from "../capabilities/providers/email.js";
 import * as briefing from "../world/briefing.js";
@@ -139,9 +139,9 @@ export function startEmailWatchJob(intervalMs = 5 * 60 * 1000): NodeJS.Timeout |
  */
 let seenBriefingItemIds = new Set<string>();
 
-export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
+export function startBriefingJob(omniRoute: OmniRouteConfig | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-briefing", intervalMs, async () => {
-    const result = await briefing.generateBriefing(groq, "admin");
+    const result = await briefing.generateBriefing(omniRoute, "admin");
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
       obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {
@@ -158,7 +158,7 @@ export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000)
     seenBriefingItemIds = new Set(result.items.map(i => i.id));
 
     if (freshItems.length > 0) {
-      const freshText = await briefing.synthesizeBriefing(groq, freshItems, []);
+      const freshText = await briefing.synthesizeBriefing(omniRoute, freshItems, []);
       pushNotification("admin", freshText, freshItems.some(i => i.urgency === "high") ? "warning" : "info");
     }
 
@@ -192,13 +192,13 @@ export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000)
  * happened to be picked. One user's slow/failed generation can't block
  * another's — each iteration is independent and already-caught.
  */
-export function startSelfReflectionJob(groq: Groq | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
+export function startSelfReflectionJob(omniRoute: OmniRouteConfig | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-self-reflection", intervalMs, async () => {
-    if (!groq) return;
+    if (!omniRoute) return;
     const usernames = await usersRepo.listUsernames();
     for (const username of usernames) {
       try {
-        const result = await identity.generateProactiveThought(username, groq);
+        const result = await identity.generateProactiveThought(username, omniRoute);
         if (!result) continue;
         await identityRepo.saveProactiveThought(username, result.content, result.basedOnCount);
         obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {

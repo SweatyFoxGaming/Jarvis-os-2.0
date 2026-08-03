@@ -8,8 +8,6 @@ import { callGroqAgentChat, AgentMessage, AgentTool, DEFAULT_MODELS } from "../r
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
-import Groq from "groq-sdk";
-import { getOmniRoute } from "../runtime/clients.js";
 import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 import { classifyTaskCategory } from "./task-category.js";
@@ -134,16 +132,15 @@ export async function runCodingAgent(
   researchSummary: string,
   directionNotes: string,
   baseBranch: string,
-  groq: Groq | null
+  omniRoute: OmniRouteConfig | null
 ): Promise<CodingAgentResult> {
-  // groq still gates departments.reviewTaskDiff's review gate below (that
-  // call site hasn't migrated to OmniRoute yet); omniRoute is the actual
-  // tool-calling backend for planning/coding, retyped from Groq per the
-  // OmniRoute cognition gateway migration. Both are required for a real
-  // coding session — either being unconfigured leaves the loop unusable.
-  const omniRoute = getOmniRoute();
-  if (!groq || !omniRoute) {
-    return { ok: false, error: "No Groq/OmniRoute client is configured — the agentic coding loop is unavailable." };
+  // omniRoute is now the single client for both the tool-calling backend
+  // (planning/coding) and departments.reviewTaskDiff's review gate below —
+  // departments.ts finished migrating off the raw Groq SDK in the same
+  // OmniRoute cognition gateway migration this function did, so there's no
+  // longer a second, separately-fetched client to null-check here.
+  if (!omniRoute) {
+    return { ok: false, error: "No OmniRoute client is configured — the agentic coding loop is unavailable." };
   }
 
   const category = classifyTaskCategory(objective);
@@ -378,7 +375,7 @@ export async function runCodingAgent(
               approved: false,
               findings: `Deterministic verification failed (exit ${verifyResult.exitCode}) before LLM review:\n${verifyResult.stdout.slice(-2000)}\n${verifyResult.stderr.slice(-2000)}`,
             }
-          : await departments.reviewTaskDiff(task.title, task.description, taskFiles, groq);
+          : await departments.reviewTaskDiff(task.title, task.description, taskFiles, omniRoute);
         await rewardEventsRepo.recordRewardEvent(buildRequestId, "task_review", sessionModelUsed, category, verdict.approved ? 1 : -1);
         lastFindings = verdict.findings;
 

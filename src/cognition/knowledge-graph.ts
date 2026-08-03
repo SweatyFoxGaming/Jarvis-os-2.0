@@ -1,6 +1,7 @@
 import { Type } from "@google/genai";
-import Groq from "groq-sdk";
 import { toGroqSchema } from "../runtime/groq-client.js";
+import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
+import { generateWithFallback } from "../runtime/omniroute-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as kgRepo from "../kernel/state/knowledge-graph-repo.js";
 
@@ -52,24 +53,27 @@ const EXTRACTION_SCHEMA = {
  * Fire-and-forget, same as reflectAndLearn: must never block or slow down
  * the reply the user is waiting on.
  */
-export async function extractAndStore(username: string, groq: Groq | null, userMessage: string, replyText: string): Promise<void> {
-  if (!groq) return;
+export async function extractAndStore(username: string, omniRoute: OmniRouteConfig | null, userMessage: string, replyText: string): Promise<void> {
+  if (!omniRoute) return;
   try {
-    const response = await groq.chat.completions.create({
-      model: "openai/gpt-oss-20b",
-      messages: [{
-        role: "user",
-        content:
-          "Extract any concrete, new facts and relationships about specific named entities (people, projects, tools, preferences, decisions, organizations) " +
-          "from this exchange. Only include something if it was actually stated — never invent or infer beyond what's written. " +
-          "If nothing concrete was said, return empty arrays.\n\n" +
-          `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
-      }],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "entity_extraction", schema: toGroqSchema(EXTRACTION_SCHEMA), strict: true },
+    const response = await generateWithFallback(
+      omniRoute,
+      {
+        messages: [{
+          role: "user",
+          content:
+            "Extract any concrete, new facts and relationships about specific named entities (people, projects, tools, preferences, decisions, organizations) " +
+            "from this exchange. Only include something if it was actually stated — never invent or infer beyond what's written. " +
+            "If nothing concrete was said, return empty arrays.\n\n" +
+            `User: ${userMessage}\n\nJarvis: ${replyText.slice(0, 1500)}`,
+        }],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "entity_extraction", schema: toGroqSchema(EXTRACTION_SCHEMA), strict: true },
+        },
       },
-    });
+      ["openai/gpt-oss-20b"]
+    );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const entities: { name: string; entityType: string; fact: string }[] = Array.isArray(parsed.entities) ? parsed.entities : [];

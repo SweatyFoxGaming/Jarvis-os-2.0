@@ -6,7 +6,7 @@ import * as briefing from "../../world/briefing.js";
 import * as briefingRepo from "../../kernel/state/briefing-repo.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
 import * as memoryRepo from "../../kernel/state/memory-repo.js";
-import { getGroq } from "../../runtime/clients.js";
+import { getOmniRoute } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -31,7 +31,7 @@ function requireAdmin(req: any, res: any, next: any) {
 // scheduler.ts runs the same real synthesis on a timer without being asked.
 briefingMemoryRouter.get("/api/briefing", validateApiKey, requireCapability("briefing.read"), async (req: any, res: any) => {
   try {
-    const result = await briefing.generateBriefing(getGroq(), req.username);
+    const result = await briefing.generateBriefing(getOmniRoute(), req.username);
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
       obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {

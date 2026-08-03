@@ -11,7 +11,7 @@ import * as github from "../../capabilities/providers/github.js";
 import * as departments from "../../executive/departments.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
 import * as scheduler from "../../kernel/scheduler.js";
-import { getGroq } from "../../runtime/clients.js";
+import { getOmniRoute } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -167,7 +167,7 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
         // AI, for as long as the review call took. Computing it first means
         // its findings can actually be baked into the PR body itself instead
         // of arriving as a note attached after the fact.
-        const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getGroq());
+        const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getOmniRoute());
 
         const branchName = `jarvis/build-request-${buildRequest.id}`;
 

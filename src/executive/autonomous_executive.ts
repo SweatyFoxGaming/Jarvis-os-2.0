@@ -1,7 +1,7 @@
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
 import { GoogleGenAI } from "@google/genai";
-import Groq from "groq-sdk";
+import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
 import { MindKernel } from "../self/kernel.js";
 import { SessionState } from "../cognition/session.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
@@ -30,31 +30,31 @@ import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 export class AutonomousExecutive {
   private static instance: AutonomousExecutive | null = null;
   private observation: ObservationPlatform;
-  // Kept for future needs (per the Groq-migration design) even though no current internal call reads it — every departments.* call below uses this.groq.
+  // Kept for future needs (per the OmniRoute-migration design) even though no current internal call reads it — every departments.* call below uses this.omniRoute.
   private ai: GoogleGenAI | null;
-  private groq: Groq | null;
+  private omniRoute: OmniRouteConfig | null;
 
-  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, groq: Groq | null) {
+  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, omniRoute: OmniRouteConfig | null) {
     this.observation = observation;
     this.ai = ai;
-    this.groq = groq;
+    this.omniRoute = omniRoute;
   }
 
   // A singleton (like the other cognition engines) rather than a plain
   // constructor so tools.ts's decompose_plan/confirm_build_direction tools
   // can reach the same instance server.ts already created at startup with
-  // the real ai/groq clients, instead of needing a circular import back
+  // the real ai/omniRoute clients, instead of needing a circular import back
   // into server.ts.
   public static getInstance(
     observation?: ObservationPlatform,
     ai?: GoogleGenAI | null,
-    groq?: Groq | null
+    omniRoute?: OmniRouteConfig | null
   ): AutonomousExecutive {
     if (!this.instance) {
       if (!observation) {
         throw new Error("AutonomousExecutive.getInstance() called before server.ts initialized it");
       }
-      this.instance = new AutonomousExecutive(observation, ai ?? null, groq ?? null);
+      this.instance = new AutonomousExecutive(observation, ai ?? null, omniRoute ?? null);
     }
     return this.instance;
   }
@@ -145,7 +145,7 @@ export class AutonomousExecutive {
     await this.delay(300);
 
     // --- STAGE 3: Department-Tagged Decomposition ---
-    const steps = await departments.decomposeObjective(objective, this.groq, kernel.offlineMode);
+    const steps = await departments.decomposeObjective(objective, this.omniRoute, kernel.offlineMode);
     const hasCodingStep = steps.some(s => s.department === "coding");
 
     session.updateState({
@@ -227,7 +227,7 @@ export class AutonomousExecutive {
 
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
       runContext.buildRequestId = buildRequest.id;
-      const research = await departments.runResearch(objective, this.groq, username);
+      const research = await departments.runResearch(objective, this.omniRoute, username);
       const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
       if (recorded) {
         obsidian.writeResearchNote(buildRequest.id, objective, research.summary).catch((err: any) => {
@@ -303,7 +303,7 @@ export class AutonomousExecutive {
       }, this.observation);
       workspace.attention.focusOn(step);
 
-      const research = await departments.runResearch(step, this.groq, username);
+      const research = await departments.runResearch(step, this.omniRoute, username);
       const resultText = `[Research] ${research.summary}`;
 
       workspace.capabilities.recordResult({ step, outcome: "success", summary: resultText });
@@ -435,7 +435,7 @@ export class AutonomousExecutive {
       confirmed.research_summary || "",
       directionNotes,
       baseBranch,
-      this.groq
+      this.omniRoute
     );
 
     if (!draft.ok) {
