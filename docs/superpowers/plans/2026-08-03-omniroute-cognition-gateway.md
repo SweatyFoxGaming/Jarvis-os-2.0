@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Full design context: `docs/superpowers/specs/2026-08-03-omniroute-cognition-gateway-design.md` — read this first if any task below is ambiguous.
-- Voice-native mode (`src/interaction/live-voice.ts`, Gemini Live API) is **not touched by any task in this plan**.
+- Voice-native mode's actual Gemini Live API session (`ai.live.connect()` and everything inside `bridgeVoiceSession` that drives it, in `src/interaction/live-voice.ts`) is **not touched by any task in this plan**. Correction found during Task 5: that same file's `groq` parameter is ALSO used, separately from the Live session, for post-turn text analysis (`reflectAndLearn`/`extractAndStore`/`extractSelfReflection` — the same shared functions already being retyped elsewhere in Task 6) — that narrow, mechanical retype IS in scope for Task 6, even though the Live API itself remains fully untouched. Two different things in the same file; only one of them changes.
 - Embeddings (`src/cognition/memory-store.ts`, Gemini's `embedContent`) are **not touched by any task in this plan**.
 - `getAi()` (the Gemini `GoogleGenAI` client) is **not removed** — it stays constructed in `server.ts` exactly as today, still passed to `executeTool`, `live-voice.ts`, and `memory-store.ts`.
 - Every call site's existing model name/fallback list stays exactly as it is today (`["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]` for chat/transcription, `["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]` / `DEFAULT_MODELS` for the coding agent) — this plan changes transport, never which models are requested.
@@ -32,6 +32,9 @@
 | `src/executive/departments.ts` | Modify — `reviewCodeDiff`/`reviewTaskDiff`'s `groq: Groq \| null` parameters retype |
 | `src/self/identity.ts` | Modify — `generateProactiveThought`'s Groq parameter retypes |
 | `src/executive/coding-agent.ts`, `src/adaptation/reflection.ts`, `src/adaptation/daily-adaptation.ts`, `src/cognition/knowledge-graph.ts` | Modify — same parameter retype wherever they pass a Groq client through |
+| `src/kernel/scheduler.ts` | Modify — `startBriefingJob`/`startSelfReflectionJob`'s `groq: Groq \| null` parameters retype (found during Task 5: these call `briefing.generateBriefing`/`identity.generateProactiveThought`, already in this list as function definitions, but the call sites here were missed from the original file list) |
+| `src/executive/autonomous_executive.ts` | Modify — `AutonomousExecutive`'s `groq`/`this.groq` field retypes (passes through to `departments.decomposeObjective`/`departments.runResearch`, already in this list; found during Task 5) |
+| `src/interaction/live-voice.ts` | Modify — **only** the `groq` parameter/its 3 post-turn analysis call sites (see the corrected Global Constraints note above); the Gemini Live API session itself is untouched (found during Task 5) |
 | `src/interaction/routes/briefing-memory-routes.ts`, `knowledge-routes.ts`, `build-requests-routes.ts` | Modify — `getGroq()` → `getOmniRoute()` |
 | `src/server.ts` | Modify — client construction, three call-site migrations (voice-input transcription, chat, `/v1/chat/completions`) |
 | `.env.example` | Modify — document `OMNIROUTE_API_KEY`/`OMNIROUTE_BASE_URL` |
@@ -532,6 +535,9 @@ git commit -m "feat: construct the OmniRoute client in server.ts, document new e
 - Modify: `src/adaptation/reflection.ts`
 - Modify: `src/adaptation/daily-adaptation.ts`
 - Modify: `src/cognition/knowledge-graph.ts` (if it takes a Groq parameter — confirm via the grep in Step 1)
+- Modify: `src/kernel/scheduler.ts` — `startBriefingJob`/`startSelfReflectionJob`'s `groq: Groq | null` parameters (found during Task 5, missed from the original list)
+- Modify: `src/executive/autonomous_executive.ts` — `AutonomousExecutive`'s `groq`/`this.groq` field (found during Task 5)
+- Modify: `src/interaction/live-voice.ts` — **only** the `groq` parameter and its 3 post-turn analysis call sites (`reflectAndLearn`/`extractAndStore`/`extractSelfReflection`, around line 115-117). Do NOT touch anything related to `ai.live.connect()` or the Gemini Live API session itself — that stays on direct Gemini SDK usage, completely out of scope. This file needs the smallest, most surgical edit of the whole task: retype one parameter and rename its 3 uses, nothing else in the file changes.
 
 **Interfaces:**
 - Consumes: `OmniRouteConfig` (Task 1)
