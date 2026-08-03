@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
-import Groq from "groq-sdk";
+import type { OmniRouteConfig } from "./runtime/omniroute-client.js";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
@@ -40,7 +40,7 @@ import { settingsRouter } from "./interaction/routes/settings-routes.js";
 import { observationRouter } from "./interaction/routes/observation-routes.js";
 import { learningRouter } from "./interaction/routes/learning-routes.js";
 import { notificationsRouter } from "./interaction/routes/notifications-routes.js";
-import { setSharedClients } from "./runtime/clients.js";
+import { setSharedClient } from "./runtime/clients.js";
 import { positiveIntegerEnv } from "./kernel/env.js";
 import { knowledgeRouter } from "./interaction/routes/knowledge-routes.js";
 import { featureRequestsRouter } from "./interaction/routes/feature-requests-routes.js";
@@ -176,19 +176,22 @@ if (process.env.GEMINI_API_KEY) {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
 
-// ---------- Groq Client Initialization (primary cloud tier) ----------
-let groq: Groq | null = null;
-if (process.env.GROQ_API_KEY) {
-  groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-  observation.logTelemetry("info", "Cognition", "Groq client successfully configured with API Key.");
+// ---------- OmniRoute Client Initialization (primary cloud tier) ----------
+let omniRoute: OmniRouteConfig | null = null;
+if (process.env.OMNIROUTE_API_KEY) {
+  omniRoute = {
+    apiKey: process.env.OMNIROUTE_API_KEY,
+    baseUrl: process.env.OMNIROUTE_BASE_URL || "http://127.0.0.1:20128/v1",
+  };
+  observation.logTelemetry("info", "Cognition", "OmniRoute gateway successfully configured with API Key.");
 } else {
-  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
+  observation.logTelemetry("warn", "Cognition", "No OMNIROUTE_API_KEY detected. OmniRoute-backed features (chat, coding agent) unavailable.");
 }
-briefing.configureGroq(groq);
-dailyAdaptation.configureGroq(groq);
+briefing.configureGroq(omniRoute);
+dailyAdaptation.configureGroq(omniRoute);
 // The agentic coding loop (src/executive/coding-agent.ts) runs entirely on
-// this same Groq client — no separate API key to configure or log here;
-// the GROQ_API_KEY check above already covers whether it's available.
+// this same OmniRoute client — no separate API key to configure or log here;
+// the OMNIROUTE_API_KEY check above already covers whether it's available.
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -213,14 +216,14 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai, groq);
+const executive = AutonomousExecutive.getInstance(observation, ai, omniRoute);
 const learningEngine = LongTermLearningEngine.getInstance();
 // Makes these same already-constructed clients reachable from extracted
 // routers (src/interaction/routes/) via runtime/clients.ts's getters —
 // see that module's own comment for why this must happen here (after
 // construction) rather than the routers reading them at their own
 // module-load time.
-setSharedClients(ai, groq);
+setSharedClient(ai, omniRoute);
 
 // Users, API keys, and memory records are persisted in Postgres (src/data/) —
 // see initDatabase() near the bottom of this file, called before app.listen.
@@ -534,11 +537,11 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // in prose before Groq/Gemini ever get a turn.
     const hasPendingConfirmation = !!awaitingBuildRequest || !!pendingRewardGate;
     if (kernel.llmMode !== "strictly-local" && (looksToolShaped(message) || hasPendingConfirmation)) {
-      if (groq && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
+      if (omniRoute && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
         const idx = executionChain.indexOf("Groq");
         executionChain.splice(idx, 1);
         executionChain.unshift("Groq");
-      } else if (!groq && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
+      } else if (!omniRoute && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
         // No Groq configured — fall back to promoting Gemini for tool-shaped
         // requests, restoring this codebase's pre-Groq behavior rather than
         // silently losing tool-calling capability to LocalLLM's honest decline.
@@ -678,7 +681,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
 
       else if (step === "Groq") {
-        if (groq) {
+        if (omniRoute) {
           try {
             observation.incrementMetric("groqApiCalls");
             session.updateState({
@@ -711,7 +714,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 
             let response = await generateGroqWithFallback(
-              groq,
+              omniRoute,
               groqTools ? { messages, tools: groqTools } : { messages },
               groqModels
             );
@@ -773,7 +776,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               }
               messages.push(...toolResponseMessages);
 
-              response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+              response = await generateGroqWithFallback(omniRoute, { messages, tools: groqTools }, groqModels);
               toolCalls = response.choices[0]?.message?.tool_calls || [];
             }
 
@@ -943,14 +946,14 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       // Write side of style/mistake learning — see reflection.ts. Needs
       // Groq specifically (structured JSON output), independent of which
       // backend actually answered the user.
-      if (groq) {
-        reflectAndLearn(groq, message, fullReply).catch(() => {});
+      if (omniRoute) {
+        reflectAndLearn(omniRoute, message, fullReply).catch(() => {});
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
-        knowledgeGraph.extractAndStore(req.username, groq, message, fullReply).catch(() => {});
+        knowledgeGraph.extractAndStore(req.username, omniRoute, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see self/identity.ts.
-        identity.extractSelfReflection(req.username, groq, message, fullReply).catch(() => {});
+        identity.extractSelfReflection(req.username, omniRoute, message, fullReply).catch(() => {});
       }
     }
 
@@ -1251,12 +1254,12 @@ initDatabase().then(async (ready) => {
     }
 
     observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
-    await liveVoice.bridgeVoiceSession(ai, groq, ws, username);
+    await liveVoice.bridgeVoiceSession(ai, omniRoute, ws, username);
   });
 
   scheduler.startEmailWatchJob();
-  scheduler.startBriefingJob(groq);
-  scheduler.startSelfReflectionJob(groq);
+  scheduler.startBriefingJob(omniRoute);
+  scheduler.startSelfReflectionJob(omniRoute);
   scheduler.startMcpHealthCheckJob();
   scheduler.startVaultSyncJob();
   scheduler.startDataRetentionJob();
