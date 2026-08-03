@@ -2665,11 +2665,10 @@ registerTest("OmniRouteClient", "generateWithFallback tries the next model when 
   try {
     const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
     const result = await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
-    if (result.choices[0].message.content !== "from model-b" || attempts.join(",") !== "model-a,model-a,model-a,model-a,model-b") {
-      // fetchWithRetry retries 500s up to 3 times by default before this function's own
-      // per-model loop moves to the next model — model-a is attempted 4 times total
-      // (1 initial + 3 retries) before falling through to model-b.
-      throw new Error(`OmniRouteClient: expected fallback to model-b after model-a's retries, got content="${result.choices?.[0]?.message?.content}", attempts=${attempts.join(",")}`);
+    if (result.choices[0].message.content !== "from model-b" || attempts.join(",") !== "model-a,model-b") {
+      // The per-model loop moves to the next model when any model fails (no per-model
+      // retries by design — fetchWithRetry returns immediately on 5xx for POST).
+      throw new Error(`OmniRouteClient: expected fallback to model-b after model-a fails, got content="${result.choices?.[0]?.message?.content}", attempts=${attempts.join(",")}`);
     }
   } finally {
     global.fetch = originalFetch;
