@@ -2635,6 +2635,80 @@ registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a
   }
 });
 
+registerTest("OmniRouteClient", "generateWithFallback returns the first model's successful response", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async (url: string, init: any) => {
+    const body = JSON.parse(init.body);
+    if (body.model !== "model-a") throw new Error("expected the first model to be tried first");
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+  }) as any;
+  try {
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    const result = await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
+    if (result.choices[0].message.content !== "ok") {
+      throw new Error(`OmniRouteClient: expected "ok", got: ${JSON.stringify(result)}`);
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+registerTest("OmniRouteClient", "generateWithFallback tries the next model when the first fails", async () => {
+  const originalFetch = global.fetch;
+  let attempts: string[] = [];
+  global.fetch = (async (url: string, init: any) => {
+    const body = JSON.parse(init.body);
+    attempts.push(body.model);
+    if (body.model === "model-a") return new Response("server error", { status: 500 });
+    return new Response(JSON.stringify({ choices: [{ message: { content: "from model-b" } }] }), { status: 200 });
+  }) as any;
+  try {
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    const result = await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
+    if (result.choices[0].message.content !== "from model-b" || attempts.join(",") !== "model-a,model-a,model-a,model-a,model-b") {
+      // fetchWithRetry retries 500s up to 3 times by default before this function's own
+      // per-model loop moves to the next model — model-a is attempted 4 times total
+      // (1 initial + 3 retries) before falling through to model-b.
+      throw new Error(`OmniRouteClient: expected fallback to model-b after model-a's retries, got content="${result.choices?.[0]?.message?.content}", attempts=${attempts.join(",")}`);
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+registerTest("OmniRouteClient", "generateWithFallback throws when every model fails", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () => new Response("error", { status: 500 })) as any;
+  try {
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
+    throw new Error("OmniRouteClient: expected generateWithFallback to throw when every model fails");
+  } catch (err: any) {
+    if (err.message === "OmniRouteClient: expected generateWithFallback to throw when every model fails") throw err;
+    // any other thrown error is the expected outcome
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+registerTest("OmniRouteClient", "generateWithFallback sends the API key as a Bearer token", async () => {
+  const originalFetch = global.fetch;
+  let seenAuth: string | null = null;
+  global.fetch = (async (url: string, init: any) => {
+    seenAuth = init.headers?.Authorization ?? null;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+  }) as any;
+  try {
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    await omniRouteGenerateWithFallback({ apiKey: "my-secret-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
+    if (seenAuth !== "Bearer my-secret-key") {
+      throw new Error(`OmniRouteClient: expected "Bearer my-secret-key", got: ${seenAuth}`);
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
