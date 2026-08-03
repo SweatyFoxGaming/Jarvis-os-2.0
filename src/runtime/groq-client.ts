@@ -1,7 +1,5 @@
-import Groq from "groq-sdk";
-import { ObservationPlatform } from "../kernel/observation.js";
-
-const observation = ObservationPlatform.getInstance();
+import type { OmniRouteConfig } from "./omniroute-client.js";
+import { generateWithFallback as omniRouteGenerateWithFallback } from "./omniroute-client.js";
 
 /**
  * Normalizes a schema tree into the lowercase JSON Schema shape Groq's
@@ -59,19 +57,8 @@ export function toGroqTools(declarations: Array<{ name?: string; description?: s
  * Same multi-model retry shape as server.ts's existing
  * generateContentWithFallback, generalized for Groq's client — mitigates a
  * transient 5xx/high-demand error on one model by trying the next.
+ * Now delegates to OmniRoute for transport-agnostic gateway support.
  */
-export async function generateWithFallback(groq: Groq, params: any, models: string[]): Promise<Groq.Chat.Completions.ChatCompletion> {
-  let lastError: any = null;
-  for (const model of models) {
-    try {
-      observation.logTelemetry("info", "Cognition", `Attempting Groq content generation with model: ${model}`);
-      const response = await groq.chat.completions.create({ ...params, model });
-      observation.logTelemetry("info", "Cognition", `Successfully generated content with Groq model: ${model}`);
-      return response as Groq.Chat.Completions.ChatCompletion;
-    } catch (error: any) {
-      lastError = error;
-      observation.logTelemetry("warn", "Cognition", `Groq model ${model} failed: ${error.message || error}`);
-    }
-  }
-  throw lastError || new Error("All fallback models failed content generation");
+export async function generateWithFallback(config: OmniRouteConfig, params: any, models: string[]): Promise<any> {
+  return omniRouteGenerateWithFallback(config, params, models);
 }
