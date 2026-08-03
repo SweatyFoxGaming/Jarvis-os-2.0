@@ -9,6 +9,8 @@ import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
 import Groq from "groq-sdk";
+import { getOmniRoute } from "../runtime/clients.js";
+import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 import { classifyTaskCategory } from "./task-category.js";
 
@@ -134,8 +136,14 @@ export async function runCodingAgent(
   baseBranch: string,
   groq: Groq | null
 ): Promise<CodingAgentResult> {
-  if (!groq) {
-    return { ok: false, error: "No Groq client is configured — the agentic coding loop is unavailable." };
+  // groq still gates departments.reviewTaskDiff's review gate below (that
+  // call site hasn't migrated to OmniRoute yet); omniRoute is the actual
+  // tool-calling backend for planning/coding, retyped from Groq per the
+  // OmniRoute cognition gateway migration. Both are required for a real
+  // coding session — either being unconfigured leaves the loop unusable.
+  const omniRoute = getOmniRoute();
+  if (!groq || !omniRoute) {
+    return { ok: false, error: "No Groq/OmniRoute client is configured — the agentic coding loop is unavailable." };
   }
 
   const category = classifyTaskCategory(objective);
@@ -166,7 +174,7 @@ export async function runCodingAgent(
   }
   const baseSha = baseShaResult.stdout.trim();
 
-  const planResult = await proposePlan(buildRequestId, groq, objective, researchSummary, directionNotes, modelOrder);
+  const planResult = await proposePlan(buildRequestId, omniRoute, objective, researchSummary, directionNotes, modelOrder);
   // Planning is the session's genuinely first LLM call, so its model is the
   // session's first model. Seeding here (rather than starting at null below)
   // keeps the "first non-null wins" capture in the loops from overwriting it
@@ -181,7 +189,7 @@ export async function runCodingAgent(
     // planResult.tokensUsed seeds the flat loop's own counter so planning's
     // spend still counts against the one session budget, not a separate
     // allowance outside it.
-    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, groq, category, modelOrder, planResult.modelUsed, planResult.tokensUsed);
+    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, omniRoute, category, modelOrder, planResult.modelUsed, planResult.tokensUsed);
   }
   const plan = planResult.tasks;
 
@@ -257,7 +265,7 @@ export async function runCodingAgent(
           }
           taskTurns++;
 
-          const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL], modelOrder);
+          const response = await callGroqAgentChat(omniRoute, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL], modelOrder);
           if (response.totalTokens) {
             tokensUsed += response.totalTokens;
             await incrementTokenUsage(buildRequestId, response.totalTokens);
@@ -469,7 +477,7 @@ interface ProposePlanResult {
 // planning itself can't produce a usable list.
 async function proposePlan(
   buildRequestId: number,
-  groq: Groq,
+  omniRoute: OmniRouteConfig,
   objective: string,
   researchSummary: string,
   directionNotes: string,
@@ -492,7 +500,7 @@ async function proposePlan(
 
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await callGroqAgentChat(groq, messages, [PROPOSE_PLAN_TOOL], modelOrder);
+      const response = await callGroqAgentChat(omniRoute, messages, [PROPOSE_PLAN_TOOL], modelOrder);
       if (response.modelUsed && !modelUsed) {
         modelUsed = response.modelUsed;
       }
@@ -567,7 +575,7 @@ async function runFlatCodingLoop(
   researchSummary: string,
   directionNotes: string,
   baseSha: string,
-  groq: Groq,
+  omniRoute: OmniRouteConfig,
   category: string,
   modelOrder: string[],
   // Whatever model served the (failed) planning phase in runCodingAgent —
@@ -610,7 +618,7 @@ async function runFlatCodingLoop(
         };
       }
 
-      const response = await callGroqAgentChat(groq, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL], modelOrder);
+      const response = await callGroqAgentChat(omniRoute, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL], modelOrder);
       if (response.totalTokens) {
         tokensUsed += response.totalTokens;
         await incrementTokenUsage(buildRequestId, response.totalTokens);

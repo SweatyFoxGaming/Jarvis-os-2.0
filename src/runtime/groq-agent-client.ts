@@ -1,4 +1,4 @@
-import Groq from "groq-sdk";
+import type { OmniRouteConfig } from "./omniroute-client.js";
 import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 
 /**
@@ -116,7 +116,7 @@ export function parseGroqAgentResponse(data: any): AgentChatResult {
 }
 
 export async function callGroqAgentChat(
-  groq: Groq,
+  config: OmniRouteConfig,
   messages: AgentMessage[],
   tools: AgentTool[],
   modelOrder?: string[]
@@ -136,7 +136,7 @@ export async function callGroqAgentChat(
     function: { ...t.function, parameters: toGroqSchema(t.function.parameters) },
   }));
   const response = await generateWithFallback(
-    groq,
+    config,
     { messages: messages as any, tools: groqTools as any, tool_choice: "auto" },
     models
   );
