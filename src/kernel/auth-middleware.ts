@@ -69,6 +69,10 @@ export const validateApiKey = async (req: any, res: any, next: any) => {
   // here previously caused a legitimate permission-403 from one panel (e.g.
   // command execution, for a non-admin user) to wipe the entire session's
   // API key, silently breaking unrelated features like chat.
+  console.warn(
+    `[Security] Access denied: Invalid API Key for ${req.method} ${req.originalUrl} ` +
+    `from IP ${req.ip}. Headers: ${JSON.stringify(req.headers)}`
+  );
   observation.logTelemetry("warn", "Security", "Access denied: Invalid API Key", requestInfo);
   return res.status(401).json({ error: "Invalid API Key" });
 };
