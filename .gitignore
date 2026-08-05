@@ -79,3 +79,4 @@ node_modules/
 # Stray media/audio artifacts that shouldn't land in the repo root
 *.mp3
 *.wav
+.aider*
