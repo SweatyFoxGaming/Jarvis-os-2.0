@@ -247,7 +247,9 @@
     <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
-        let apiKey = localStorage.getItem('admin_api_key') || '';
+        // Fallback to the hardcoded key if localStorage has none. This ensures
+        // consistency with the server's auth-middleware.ts fallback logic.
+        let apiKey = localStorage.getItem('admin_api_key') || "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918";
         let CURRENT_ADMIN_TAB = 'memory';
         let telemetryInterval = null;
 

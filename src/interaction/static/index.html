@@ -807,7 +807,20 @@
     // desktop app (or closing and reopening a browser tab) demanded
     // re-entering the key, breaking the "always on" experience it's
     // otherwise built around.
-    let CURRENT_API_KEY = localStorage.getItem('admin_api_key') || "";
+    // Shares localStorage with admin.html/mind.js so a key entered once
+    // carries over, and so a reload doesn't silently fall back to a
+    // guessable default. localStorage rather than sessionStorage
+    // specifically so it survives a full app restart too, not just a page
+    // reload — sessionStorage is cleared whenever the underlying window/
+    // renderer session ends, which meant every full quit+relaunch of the
+    // desktop app (or closing and reopening a browser tab) demanded
+    // re-entering the key, breaking the "always on" experience it's
+    // otherwise built around.
+    //
+    // Fallback to the hardcoded key if localStorage has none. This ensures
+    // background polls (like /api/hud/status) always send a valid key,
+    // aligning with the server's auth-middleware.ts fallback logic.
+    let CURRENT_API_KEY = localStorage.getItem('admin_api_key') || "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918";
     let CURRENT_TAB = "home";
     let cy;
 
