@@ -36,8 +36,14 @@ function safeCompare(a: string, b: string): boolean {
 // Referer headers, so ?api_key=... is intentionally not accepted.
 export const validateApiKey = async (req: any, res: any, next: any) => {
   const apiKey = req.headers["x-api-key"];
+  const requestInfo = {
+    url: req.originalUrl,
+    ip: req.ip,
+    headers: req.headers,
+  };
+
   if (!apiKey) {
-    observation.logTelemetry("warn", "Security", "Access denied: Missing API Key");
+    observation.logTelemetry("warn", "Security", "Access denied: Missing API Key", requestInfo);
     return res.status(401).json({ error: "Missing API Key" });
   }
   if (typeof apiKey === "string" && safeCompare(apiKey, ADMIN_API_KEY)) {
@@ -51,7 +57,7 @@ export const validateApiKey = async (req: any, res: any, next: any) => {
       return next();
     }
   } catch (err: any) {
-    observation.logTelemetry("warn", "Database", `API key lookup failed: ${err.message}`);
+    observation.logTelemetry("warn", "Database", `API key lookup failed: ${err.message}`, requestInfo);
     return res.status(503).json({ error: "Authentication service unavailable" });
   }
   // Deliberately not logging the submitted key itself — it's the caller's
@@ -63,6 +69,6 @@ export const validateApiKey = async (req: any, res: any, next: any) => {
   // here previously caused a legitimate permission-403 from one panel (e.g.
   // command execution, for a non-admin user) to wipe the entire session's
   // API key, silently breaking unrelated features like chat.
-  observation.logTelemetry("warn", "Security", "Access denied: Invalid API Key");
+  observation.logTelemetry("warn", "Security", "Access denied: Invalid API Key", requestInfo);
   return res.status(401).json({ error: "Invalid API Key" });
 };
