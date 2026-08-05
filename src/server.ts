@@ -1199,6 +1199,12 @@ app.post("/api/voice-ticket", validateApiKey, (req: any, res: any) => {
   res.json({ ticket: issueVoiceTicket(req.username) });
 });
 
+// Explicitly set PostgreSQL connection parameters to ensure TCP connection to localhost
+// This helps prevent peer authentication errors that can arise from unexpected
+// Unix domain socket attempts or misconfigured host resolution within the container.
+process.env.POSTGRES_HOST = process.env.POSTGRES_HOST || "127.0.0.1";
+process.env.POSTGRES_PORT = process.env.POSTGRES_PORT || "5432";
+
 initDatabase().then(async (ready) => {
   if (ready) {
     try {
