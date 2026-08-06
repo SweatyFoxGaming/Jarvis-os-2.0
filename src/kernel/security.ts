@@ -16,6 +16,22 @@ const observation = ObservationPlatform.getInstance();
  * lookup instead of a DB round-trip per tool call.
  */
 
+import crypto from 'crypto';
+
+/**
+ * Compare two strings in constant time to prevent timing attacks.
+ */
+export function timingSafeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+  
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export const ALL_CAPABILITIES = [
   "github.read",
   "github.issues.create",

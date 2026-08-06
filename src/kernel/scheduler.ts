@@ -335,3 +335,24 @@ export function startVaultSyncJob(intervalMs = 15 * 60 * 1000): NodeJS.Timeout |
     }
   });
 }
+
+const activeJobs = new Set<string>();
+
+export function registarJob(name: string, intervalSeconds: number, taskfn: () => Promise<void>) {
+  setInterval(async () => {
+    // Prevent overlapping executions if previous interval is still processing
+    if (activeJobs.has(name)) {
+      console.warn(`[Scheduler] Skipping "${name}" — previous run still active.`);
+      return;
+    }
+
+    activeJobs.add(name);
+    try {
+      await taskfn();
+    } catch (error: any) {
+      console.error(`[Scheduler Error] Task "${name}" failed:`, error.stack || error.message || error);
+    } finally {
+      activeJobs.delete(name);
+    }
+  }, intervalSeconds * 1000);
+}

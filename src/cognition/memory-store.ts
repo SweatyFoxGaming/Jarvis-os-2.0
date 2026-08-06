@@ -96,6 +96,26 @@ export async function remember(
   }
 }
 
+export async function searchMemory(embedding: number[], limit = 5) {
+  try {
+    const db = getPool();
+    const formattedVector = `[${embedding.join(",")}]`;
+    
+    const result = await db.query(
+      `SELECT id, content, 1 - (embedding <=> $1) AS similarity 
+       FROM vector_memories 
+       ORDER BY embedding <=> $1 
+       LIMIT $2;`,
+      [formattedVector, limit]
+    );
+
+    return result.rows;
+  } catch (error: any) {
+    console.error("[Memory Store Error] Search failed:", error.message || error);
+    return []; // Return fallback array so the calling agent keeps running
+  }
+}
+
 export async function recall(
   username: string,
   query: string,

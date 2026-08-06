@@ -1,9 +1,12 @@
 import 'dotenv/config';
 import express from "express";
+import { handleChatStream } from './routes/streamRoute.js';
 import helmet from "helmet";
 import cors from "cors";
 import path from "path";
 import crypto from "crypto";
+import { applyHybridSearchSchema } from './kernel/state/hybridSearchMigration.js';
+import { getPool } from "./kernel/state/db.js";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
@@ -151,6 +154,24 @@ const aiLimiter = rateLimit({
   keyGenerator: (req: any) => req.username || req.ip,
   message: { error: "Too many requests — please slow down." },
 });
+
+app.post('/api/chat/stream', handleChatStream);
+app.get('/api/chat/stream', handleChatStream);
+
+const REQUIRED_ENV_VARS = [
+  "POSTGRES_HOST",
+  "POSTGRES_DB",
+  "POSTGRES_USER",
+  // "PORT", // Uncomment if you require PORT in .env
+];
+
+const missingEnvVars = REQUIRED_ENV_VARS.filter((varName) => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+  console.error(`[Fatal Startup Error] Missing required environment variables: ${missingEnvVars.join(", ")}`);
+  process.exit(1);
+}
+ await applyHybridSearchSchema();
 
 // ---------- Platform Instances ----------
 // Per-user conversational state lives in SessionState (src/cognition/session.ts),
@@ -1277,3 +1298,40 @@ setInterval(() => {
     observation.logTelemetry("info", "System", `Pruned ${pruned} idle session(s). ${getActiveSessionCount()} active.`);
   }
 }, 30 * 60 * 1000);
+import { Request, Response, NextFunction } from 'express';
+
+// 1. Helper wrapper to catch unhandled async errors in routes
+export const asyncHandler = (fn: Function) => 
+  (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+
+// -------------------------------------------------------------
+// [Place your Express app definition and route handlers here]
+// Example usage for async routes:
+// app.get('/api/example', asyncHandler(async (req: Request, res: Response) => { ... }));
+// app.post('/api/chat/stream', handleChatStream);
+// app.get('/api/chat/stream', handleChatStream); // Supports SSE GET fallback
+// -------------------------------------------------------------
+
+// 2. Global Express Error Handler (Place AFTER all app.get/app.post routes)
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error(`[Unhandled Error] ${req.method} ${req.path}:`, err.stack || err.message || err);
+  
+  if (res.headersSent) {
+    return next(err);
+  }
+  
+  res.status(err.status || 500).json({
+    error: err.message || "Internal Server Error"
+  });
+});
+
+// 3. Process-level crash prevention (Place at the bottom of src/server.ts)
+process.on("uncaughtException", (err: Error) => {
+  console.error("[Fatal System Error] Uncaught Exception:", err.stack || err);
+});
+
+process.on("unhandledRejection", (reason: unknown) => {
+  console.error("[Fatal System Error] Unhandled Rejection:", reason);
+});
