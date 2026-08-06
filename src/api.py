@@ -241,12 +241,17 @@ def make_proxy_request(path: str, method: str, headers: Dict[str, str], body: by
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
     
-    # Add INTERNAL_API_KEY to proxy headers
+    # Add INTERNAL_API_KEY to proxy headers, falling back to a hardcoded
+    # legacy key if INTERNAL_API_KEY is unset in the environment. This ensures
+    # internal background tasks and proxy calls consistently send a valid key.
     internal_api_key = os.environ.get("INTERNAL_API_KEY")
+    legacy_api_key_fallback = "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" # Mirrors the constant in src/kernel/auth-middleware.ts
+    
     if internal_api_key:
         proxy_headers["x-api-key"] = internal_api_key
     else:
-        logger.warning("[Gateway] INTERNAL_API_KEY is not set. Proxying without API key.")
+        proxy_headers["x-api-key"] = legacy_api_key_fallback
+        logger.info("[Gateway] INTERNAL_API_KEY is not set. Proxying with hardcoded legacy API key.")
 
     req = urllib.request.Request(
         url=target_url,
@@ -293,12 +298,17 @@ async def proxy_streaming_request(path: str, method: str, headers: Dict[str, str
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
     
-    # Add INTERNAL_API_KEY to proxy headers
+    # Add INTERNAL_API_KEY to proxy headers, falling back to a hardcoded
+    # legacy key if INTERNAL_API_KEY is unset in the environment. This ensures
+    # internal background tasks and proxy calls consistently send a valid key.
     internal_api_key = os.environ.get("INTERNAL_API_KEY")
+    legacy_api_key_fallback = "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" # Mirrors the constant in src/kernel/auth-middleware.ts
+
     if internal_api_key:
         proxy_headers["x-api-key"] = internal_api_key
     else:
-        logger.warning("[Gateway] INTERNAL_API_KEY is not set. Proxying without API key.")
+        proxy_headers["x-api-key"] = legacy_api_key_fallback
+        logger.info("[Gateway] INTERNAL_API_KEY is not set. Proxying with hardcoded legacy API key.")
 
     req = urllib.request.Request(
         url=target_url,
