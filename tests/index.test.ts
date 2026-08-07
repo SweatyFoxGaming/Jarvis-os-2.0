@@ -2635,6 +2635,75 @@ registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a
   }
 });
 
+// ---------- EventBus Tests (pure, in-process pub/sub, no I/O) ----------
+
+import { EventBus } from "../src/core/event-bus.js";
+
+registerTest("EventBus", "publish delivers the payload to a subscriber on the same topic", () => {
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  const unsubscribe = bus.subscribe("test:topic-a", (payload) => { received = payload; });
+  bus.publish("test:topic-a", { value: 42 });
+  unsubscribe();
+  if (!received || received.value !== 42) {
+    throw new Error(`EventBus: expected {value: 42}, got: ${JSON.stringify(received)}`);
+  }
+});
+
+registerTest("EventBus", "publish does not deliver to a subscriber on a different topic", () => {
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  const unsubscribe = bus.subscribe("test:topic-b", (payload) => { received = payload; });
+  bus.publish("test:topic-c", { value: 1 });
+  unsubscribe();
+  if (received !== null) {
+    throw new Error(`EventBus: expected no delivery across topics, got: ${JSON.stringify(received)}`);
+  }
+});
+
+registerTest("EventBus", "multiple subscribers on the same topic all receive the payload", () => {
+  const bus = EventBus.getInstance();
+  let countA = 0, countB = 0;
+  const unsubA = bus.subscribe("test:topic-d", () => { countA++; });
+  const unsubB = bus.subscribe("test:topic-d", () => { countB++; });
+  bus.publish("test:topic-d", {});
+  unsubA();
+  unsubB();
+  if (countA !== 1 || countB !== 1) {
+    throw new Error(`EventBus: expected both subscribers called once, got countA=${countA}, countB=${countB}`);
+  }
+});
+
+registerTest("EventBus", "the function returned by subscribe correctly unsubscribes", () => {
+  const bus = EventBus.getInstance();
+  let count = 0;
+  const unsubscribe = bus.subscribe("test:topic-e", () => { count++; });
+  bus.publish("test:topic-e", {});
+  unsubscribe();
+  bus.publish("test:topic-e", {});
+  if (count !== 1) {
+    throw new Error(`EventBus: expected exactly 1 delivery before unsubscribe, got: ${count}`);
+  }
+});
+
+registerTest("EventBus", "publish to a topic with no subscribers does not throw", () => {
+  const bus = EventBus.getInstance();
+  bus.publish("test:topic-with-nobody-listening", { anything: true });
+});
+
+registerTest("EventBus", "a handler that throws does not prevent other handlers on the same topic from running", () => {
+  const bus = EventBus.getInstance();
+  let secondHandlerRan = false;
+  const unsub1 = bus.subscribe("test:topic-f", () => { throw new Error("deliberate handler failure"); });
+  const unsub2 = bus.subscribe("test:topic-f", () => { secondHandlerRan = true; });
+  bus.publish("test:topic-f", {});
+  unsub1();
+  unsub2();
+  if (!secondHandlerRan) {
+    throw new Error("EventBus: expected the second handler to still run after the first one threw");
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
