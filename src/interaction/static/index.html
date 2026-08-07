@@ -87,6 +87,47 @@
         #mind-graph {
             width: 100%; height: 100%; position: absolute; inset: 0; z-index: 1;
         }
+
+        /* LCARS-derived per-module accent coloring for the sidebar nav.
+           switchTab() (see inline script) toggles the Tailwind utility
+           classes bg-primary/10 + text-white + border-primary/20 on the
+           active nav-btn — no semantic ".active" class exists, so the
+           selector below targets that escaped utility class directly
+           rather than replacing switchTab's own state handling. */
+        :root {
+            --mod-core: #50c8ff;
+            --mod-ops: #ffb454;
+            --mod-knowledge: #b98cff;
+            --mod-vault: #5ee6b0;
+            --mod-calendar: #ff8a8a;
+        }
+        .nav-btn[data-module] {
+            position: relative;
+        }
+        .nav-btn[data-module].bg-primary\/10::before,
+        .nav-btn[data-module]:hover::before {
+            content: "";
+            position: absolute;
+            /* left: -8px (outside the button) gets silently clipped: the
+               parent <nav> has overflow-y:auto, and per the CSS overflow
+               spec a non-"visible" overflow-y forces overflow-x to compute
+               as "auto" too (even if set to "visible" explicitly) — so
+               anything positioned outside the nav's own box is cut off.
+               Keeping the accent inside the button's box (left: 1px, inside
+               its px-3 padding) avoids that clipping entirely. */
+            left: 1px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 60%;
+            border-radius: 2px;
+            background: var(--mod-color, var(--mod-core));
+        }
+        .nav-btn[data-module="projects"] { --mod-color: var(--mod-core); }
+        .nav-btn[data-module="vault"] { --mod-color: var(--mod-vault); }
+        .nav-btn[data-module="calendar"] { --mod-color: var(--mod-calendar); }
+        .nav-btn[data-module="knowledge"] { --mod-color: var(--mod-knowledge); }
+        .nav-btn[data-module="operations"] { --mod-color: var(--mod-ops); }
     </style>
 </head>
 <body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
@@ -111,42 +152,42 @@
 
         <!-- Navigation -->
         <nav class="flex flex-col gap-1 flex-1 w-full overflow-y-auto pr-1">
-            <button onclick="switchTab('home')" id="nav-home" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('home')" id="nav-home" data-module="home" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7m-9-2v10a1 1 0 001 1h3m6-11l2 2m-8-9v3m0 0h3m-3 0h-3" />
                 </svg>
                 <span class="text-sm font-medium">Home</span>
             </button>
 
-            <button onclick="switchTab('projects')" id="nav-projects" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('projects')" id="nav-projects" data-module="projects" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
                 </svg>
                 <span class="text-sm font-medium">Projects</span>
             </button>
 
-            <button onclick="switchTab('vault')" id="nav-vault" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('vault')" id="nav-vault" data-module="vault" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s4.332.477 5.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                 </svg>
                 <span class="text-sm font-medium">Vault</span>
             </button>
 
-            <button onclick="switchTab('calendar')" id="nav-calendar" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('calendar')" id="nav-calendar" data-module="calendar" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
                 <span class="text-sm font-medium">Calendar</span>
             </button>
 
-            <button onclick="switchTab('knowledge')" id="nav-knowledge" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('knowledge')" id="nav-knowledge" data-module="knowledge" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.969 7.969 0 0014.5 4c-1.669 0-3.218.51-4.5 1.385A7.962 7.962 0 009 4.804z" />
                 </svg>
                 <span class="text-sm font-medium">Knowledge</span>
             </button>
 
-            <button onclick="switchTab('operations')" id="nav-operations" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('operations')" id="nav-operations" data-module="operations" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
@@ -155,7 +196,7 @@
 
             <div class="h-px bg-white/5 my-2"></div>
 
-            <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('settings')" id="nav-settings" data-module="settings" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                     <circle cx="12" cy="12" r="3" stroke-width="1.5" />
