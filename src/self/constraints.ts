@@ -37,7 +37,7 @@ export const CONSTRAINTS: Constraint[] = [
     id: "capability-gated-tools",
     statement: "Every tool call requires the calling user to hold the specific capability grant that tool declares — there is no tool that executes for a user who lacks its required grant, regardless of what the user asks for in conversation.",
     rationale: "A capability model that can be bypassed by clever prompting isn't a capability model — this constraint documents that the check happens structurally (grant lookup), not through the LLM's own judgment about whether the request seems reasonable.",
-    enforcedIn: "src/kernel/security.ts:hasGrant + src/capabilities/tools.ts:TOOL_REQUIRED_CAPABILITY (checked before every tool dispatch)",
+    enforcedIn: "src/kernel/security.ts:hasGrant + src/capabilities/tools.ts:PERMISSION_BY_TOOL (checked before every tool dispatch)",
   },
 ];
 
