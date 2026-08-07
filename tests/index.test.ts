@@ -33,6 +33,7 @@ import { isValidToolSchema, getCachedMcpTools, computeToolsSignature, wrapUntrus
 import * as departments from "../src/executive/departments.js";
 import { toGroqSchema, toGroqTools } from "../src/runtime/groq-client.js";
 import { parseGroqAgentResponse } from "../src/runtime/groq-agent-client.js";
+import { KeyPool } from "../src/runtime/key-pool.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
 import { recordTranscriptEvent, listTranscriptEvents } from "../src/kernel/state/transcript-events-repo.js";
 import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state/coding-plan-tasks-repo.js";
@@ -2703,6 +2704,42 @@ registerTest("OmniRouteClient", "generateWithFallback sends the API key as a Bea
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+// ---------- KeyPool Tests ----------
+registerTest("KeyPool", "getAvailableKey rotates round-robin among configured keys", () => {
+  const pool = new KeyPool({ groq: ["k1", "k2"], gemini: [] });
+  const first = pool.getAvailableKey("groq");
+  const second = pool.getAvailableKey("groq");
+  if (first === second) throw new Error(`expected rotation, got the same key twice: ${first}`);
+  if (![first, second].every((k) => ["k1", "k2"].includes(k as string))) {
+    throw new Error("returned a key not in the configured pool");
+  }
+});
+
+registerTest("KeyPool", "getAvailableKey returns null for a provider with no configured keys", () => {
+  const pool = new KeyPool({ groq: [], gemini: [] });
+  if (pool.getAvailableKey("gemini") !== null) throw new Error("expected null for an empty pool");
+});
+
+registerTest("KeyPool", "reportFailure puts a key on cooldown and it's skipped until it elapses", () => {
+  const pool = new KeyPool({ groq: ["only-key"], gemini: [] });
+  pool.reportFailure("groq", "only-key", 0.05); // 50ms cooldown for a fast test
+  if (pool.getAvailableKey("groq") !== null) throw new Error("expected the sole key to be on cooldown");
+});
+
+registerTest("KeyPool", "a key becomes available again after its cooldown elapses", async () => {
+  const pool = new KeyPool({ groq: ["only-key"], gemini: [] });
+  pool.reportFailure("groq", "only-key", 0.05);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  if (pool.getAvailableKey("groq") !== "only-key") throw new Error("expected the key to recover after cooldown");
+});
+
+registerTest("KeyPool", "all keys on cooldown for a provider returns null, not throw", () => {
+  const pool = new KeyPool({ groq: ["k1", "k2"], gemini: [] });
+  pool.reportFailure("groq", "k1", 60);
+  pool.reportFailure("groq", "k2", 60);
+  if (pool.getAvailableKey("groq") !== null) throw new Error("expected null when every key is on cooldown");
 });
 
 // ---------- Execution Main Block ----------
