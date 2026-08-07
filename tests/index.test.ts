@@ -37,6 +37,7 @@ import { KeyPool } from "../src/runtime/key-pool.js";
 import { upsertNote, listNotes, searchNotes, getBacklinks, listAllLinks } from "../src/kernel/state/vault-repo.js";
 import { recordTranscriptEvent, listTranscriptEvents } from "../src/kernel/state/transcript-events-repo.js";
 import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state/coding-plan-tasks-repo.js";
+import { recordUsage, getRecentShare } from "../src/kernel/state/usage-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { computePendingMigrations, ALL_MIGRATIONS, Migration } from "../src/kernel/state/migrations/index.js";
 import { positiveIntegerEnv } from "../src/kernel/env.js";
@@ -2480,6 +2481,20 @@ registerTest("CodingPlanTasks", "listPlanTasks degrades cleanly when Postgres is
 registerTest("CodingPlanTasks", "updateTaskStatus degrades cleanly when Postgres isn't reachable", async () => {
   await updateTaskStatus(999999, 1, "done", "test summary");
   // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+});
+
+// ---------- UsageEvents Tests ----------
+
+registerTest("UsageEvents", "recordUsage degrades cleanly when Postgres isn't reachable", async () => {
+  await recordUsage("test_user", 100);
+  // No throw is the assertion — matches this file's existing degrade-cleanly tests.
+});
+
+registerTest("UsageEvents", "getRecentShare degrades cleanly (null, not 0) when Postgres isn't reachable", async () => {
+  const result = await getRecentShare("test_user", 10);
+  if (result !== null) {
+    throw new Error(`UsageEvents: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
 });
 
 // ---------- Migrations Tests (pure functions, no live Postgres) ----------
