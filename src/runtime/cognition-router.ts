@@ -48,6 +48,17 @@ function stripKnownLocalSuffix(url: string): string {
   return url;
 }
 
+// A provider's error body/message is untrusted input — it can be
+// malicious or simply buggy (an absurdly long digit string, a value in
+// the billions). Number("9".repeat(400)) is Infinity; a naive parse of
+// that (or of a merely huge-but-finite value) straight into
+// KeyPool.reportFailure's retryAfterSeconds would either permanently
+// disable a key for the rest of the process lifetime (Infinity) or
+// effectively permanently (a cooldown lasting decades). This ceiling is
+// deliberately generous relative to any legitimate Retry-After value
+// (real APIs send seconds to low minutes) while still being finite.
+const MAX_RETRY_AFTER_SECONDS = 3600;
+
 // Best-effort extraction of a retry delay from a failed transport call.
 // The real generateWithFallback throws a plain Error with a message like
 // "OmniRoute returned 429: <body>" — it doesn't currently surface the
@@ -57,24 +68,37 @@ function stripKnownLocalSuffix(url: string): string {
 // an explicit numeric `retryAfterSeconds` property on the error (test
 // doubles and any future transport can set this) or a "retry-after: N"
 // substring in the message, so the plumbing is ready the moment a richer
-// error shape exists upstream.
+// error shape exists upstream. The extracted value — from EITHER branch —
+// is always clamped/sanitized before being returned: a non-finite result
+// (NaN/Infinity) returns `undefined` (KeyPool falls back to its own
+// DEFAULT_COOLDOWN_SECONDS), and any finite result is clamped to
+// [0, MAX_RETRY_AFTER_SECONDS]. Never trust a provider-controlled number
+// straight through to a cooldown timer.
 function parseRetryAfterSeconds(err: any): number | undefined {
-  if (err && typeof err.retryAfterSeconds === "number" && Number.isFinite(err.retryAfterSeconds)) {
-    return err.retryAfterSeconds;
+  let candidate: number | undefined;
+  if (err && typeof err.retryAfterSeconds === "number") {
+    candidate = err.retryAfterSeconds;
+  } else {
+    const message = typeof err?.message === "string" ? err.message : String(err ?? "");
+    const match = message.match(/retry-after[:\s]+(\d+(?:\.\d+)?)/i);
+    candidate = match ? Number(match[1]) : undefined;
   }
-  const message = typeof err?.message === "string" ? err.message : String(err ?? "");
-  const match = message.match(/retry-after[:\s]+(\d+(?:\.\d+)?)/i);
-  return match ? Number(match[1]) : undefined;
+  if (candidate === undefined || !Number.isFinite(candidate)) return undefined;
+  return Math.min(Math.max(candidate, 0), MAX_RETRY_AFTER_SECONDS);
 }
 
 // Prefers the response's own usage.total_tokens when the provider reported
 // it; otherwise falls back to a rough ~4-chars-per-token estimate over the
 // request messages and response content, so recordUsage always gets a
 // meaningful, non-zero number even against a provider that omits `usage`.
+// Clamped to a minimum of 1 on BOTH branches — a malformed provider
+// response with a zero or negative usage.total_tokens must not be able to
+// pollute the SUM(tokens) fair-share calculation in usage-repo.ts with a
+// non-positive contribution.
 function estimateTokens(response: any, params: any): number {
   const usage = response?.usage;
   if (usage && typeof usage.total_tokens === "number" && Number.isFinite(usage.total_tokens)) {
-    return usage.total_tokens;
+    return Math.max(1, Math.round(usage.total_tokens));
   }
   const requestChars = JSON.stringify(params?.messages ?? "").length;
   const responseChars = JSON.stringify(response?.choices ?? "").length;
@@ -151,13 +175,58 @@ export class CognitionRouter {
     this.throttleDelayMs = deps.throttleDelayMs ?? DEFAULT_THROTTLE_DELAY_MS;
   }
 
+  // The one guarantee every caller in the app is meant to rely on: this
+  // method never throws. Any unexpected failure at any stage — including
+  // in the keyword-engine tier, which is meant to be the unconditional
+  // last resort — is caught here and turned into a static, honest,
+  // OpenAI-compatible-shaped apology response instead of propagating,
+  // since not every call site in this codebase defensively wraps its own
+  // call to the router.
   async generateWithFallback(username: string, params: any, models: string[]): Promise<any> {
-    const share = await this.deps.getRecentShare(username, 10);
-    if (share !== null && share > 2.0 && this.deps.keyPool.strainRatio() > 0.5) {
+    try {
+      return await this.attemptFallbackChain(username, params, models);
+    } catch (err: any) {
+      observation.logTelemetry(
+        "error",
+        "Cognition",
+        `CognitionRouter.generateWithFallback failed unexpectedly for "${username}" — returning a static degraded response instead of throwing: ${err?.message || err}`
+      );
+      return {
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "I'm sorry, sir — I've run into an unexpected internal error and can't process that request right now. Please try again in a moment.",
+            },
+          },
+        ],
+      };
+    }
+  }
+
+  private async attemptFallbackChain(username: string, params: any, models: string[]): Promise<any> {
+    let share: number | null = null;
+    try {
+      share = await this.deps.getRecentShare(username, 10);
+    } catch (err: any) {
+      // getRecentShare's real implementation already degrades to `null`
+      // internally and never throws — but deps.getRecentShare is
+      // injectable, so a caller/test-supplied implementation isn't bound
+      // by that contract. Treat a throw exactly like `null`: "no
+      // throttling signal," never a reason to fail the whole request.
+      observation.logTelemetry("warn", "Cognition", `getRecentShare(${username}) threw unexpectedly, treating as "no throttling signal": ${err?.message || err}`);
+      share = null;
+    }
+    // Computed once and reused for both the log line and the actual
+    // throttle decision below — calling strainRatio() twice risked the
+    // logged "strain=" value silently disagreeing with what was decided,
+    // if the pool's cooldown state changed between the two calls.
+    const strain = this.deps.keyPool.strainRatio();
+    if (share !== null && share > 2.0 && strain > 0.5) {
       observation.logTelemetry(
         "info",
         "Cognition",
-        `Fair-share throttle: "${username}" is at ${share.toFixed(2)}x average recent share under a strained key pool (strain=${this.deps.keyPool.strainRatio().toFixed(2)}); delaying ${this.throttleDelayMs}ms before proceeding (not rejecting).`
+        `Fair-share throttle: "${username}" is at ${share.toFixed(2)}x average recent share under a strained key pool (strain=${strain.toFixed(2)}); delaying ${this.throttleDelayMs}ms before proceeding (not rejecting).`
       );
       await this.delayFn(this.throttleDelayMs);
     }
@@ -175,22 +244,54 @@ export class CognitionRouter {
         continue;
       }
 
-      const key = this.deps.keyPool.getAvailableKey(provider);
-      if (key === null) {
-        observation.logTelemetry("info", "Cognition", `No available ${provider} key (pool cooling down/exhausted); skipping model "${model}".`);
-        continue;
-      }
+      // Retry within THIS provider across every one of its configured
+      // keys before giving up on this model entry and moving to the next
+      // one in `models`. This matters because every real call site in
+      // this codebase passes a single-element `models` array — without
+      // this inner loop, one transient 429 on a single key would fall
+      // all the way through to the local LLM tier even with several
+      // other healthy keys sitting in the pool for the same provider.
+      // Bounded by keyCount(provider) (not just "until getAvailableKey
+      // returns null") as a hard, finite circuit breaker independent of
+      // KeyPool's own cooldown-driven termination.
+      const maxKeyAttempts = this.deps.keyPool.keyCount(provider);
+      for (let attempt = 0; attempt < maxKeyAttempts; attempt++) {
+        const key = this.deps.keyPool.getAvailableKey(provider);
+        if (key === null) {
+          observation.logTelemetry("info", "Cognition", `No available ${provider} key (pool cooling down/exhausted); skipping model "${model}".`);
+          break;
+        }
 
-      try {
-        const config: OpenAiCompatibleConfig = { apiKey: key, baseUrl: PROVIDER_BASE_URLS[provider] };
-        const response = await this.transport(config, params, [realModel]);
-        this.deps.keyPool.reportSuccess(provider, key);
-        await this.deps.recordUsage(username, estimateTokens(response, params));
+        let response: any;
+        try {
+          const config: OpenAiCompatibleConfig = { apiKey: key, baseUrl: PROVIDER_BASE_URLS[provider] };
+          response = await this.transport(config, params, [realModel]);
+          this.deps.keyPool.reportSuccess(provider, key);
+        } catch (err: any) {
+          const retryAfterSeconds = parseRetryAfterSeconds(err);
+          this.deps.keyPool.reportFailure(provider, key, retryAfterSeconds);
+          observation.logTelemetry(
+            "warn",
+            "Cognition",
+            `Cloud model "${model}" failed on one ${provider} key (retrying the next available key for this provider, if any): ${err?.message || err}`
+          );
+          continue; // next key for the same provider/model
+        }
+
+        // Transport succeeded — `response` is already the value this call
+        // is going to return. recordUsage from here on is a best-effort
+        // side effect: nothing past this point may cause a real
+        // successful result to be lost or replaced with a retry/failure.
+        try {
+          await this.deps.recordUsage(username, estimateTokens(response, params));
+        } catch (usageErr: any) {
+          observation.logTelemetry(
+            "warn",
+            "Cognition",
+            `recordUsage failed after an already-successful cloud call for "${username}" (response is still returned unchanged): ${usageErr?.message || usageErr}`
+          );
+        }
         return response;
-      } catch (err: any) {
-        const retryAfterSeconds = parseRetryAfterSeconds(err);
-        this.deps.keyPool.reportFailure(provider, key, retryAfterSeconds);
-        observation.logTelemetry("warn", "Cognition", `Cloud model "${model}" failed: ${err?.message || err}`);
       }
     }
 
@@ -225,8 +326,11 @@ export class CognitionRouter {
       );
     }
 
-    // Tier 3: offline keyword engine — always succeeds (no I/O), the final
-    // link in the chain.
+    // Tier 3: offline keyword engine — the unconditional final link in the
+    // chain. No internal try/catch needed here: the outer
+    // generateWithFallback() wrapper already guards this whole method, so
+    // any failure here (e.g. a bug in an injected localEngine) still
+    // degrades to the static apology response rather than throwing.
     const lastUserMessage = extractLastUserMessage(params);
     const workspace = new CognitiveWorkspace();
     const systemMetrics = observation.getMetrics().system;

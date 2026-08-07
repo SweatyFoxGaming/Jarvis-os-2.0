@@ -2757,6 +2757,14 @@ registerTest("KeyPool", "all keys on cooldown for a provider returns null, not t
   if (pool.getAvailableKey("groq") !== null) throw new Error("expected null when every key is on cooldown");
 });
 
+registerTest("KeyPool", "keyCount reports the number of configured keys per provider, independent of cooldown state", () => {
+  const pool = new KeyPool({ groq: ["k1", "k2", "k3"], gemini: [] });
+  if (pool.keyCount("groq") !== 3) throw new Error(`expected keyCount("groq") === 3, got ${pool.keyCount("groq")}`);
+  if (pool.keyCount("gemini") !== 0) throw new Error(`expected keyCount("gemini") === 0, got ${pool.keyCount("gemini")}`);
+  pool.reportFailure("groq", "k1", 60);
+  if (pool.keyCount("groq") !== 3) throw new Error("keyCount must reflect total configured keys, not just currently-available ones");
+});
+
 // ---------- CognitionRouter Tests ----------
 registerTest("CognitionRouter", "a normal-capacity request is not throttled and returns the cloud response", async () => {
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
@@ -2952,6 +2960,206 @@ registerTest("CognitionRouter", "local LLM tier also failing falls through to th
   }
   if (result?.choices?.[0]?.message?.role !== "assistant") {
     throw new Error(`CognitionRouter: expected role "assistant" in the wrapped response, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("CognitionRouter", "a single-model models array with 2 configured keys retries the second key before falling through to the local tier", async () => {
+  // Fix round 1 (Critical 1): every real call site in this codebase passes
+  // a single-element `models` array (e.g. departments.ts passes
+  // ["groq:llama-3.3-70b-versatile"]) — before the fix, a 429 on the first
+  // key immediately fell through to the local LLM tier even with a second,
+  // healthy key configured for the same provider. This reproduces exactly
+  // that call pattern.
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: ["gk1", "gk2"], gemini: [] });
+  const transportCalls: string[] = [];
+  let localTierCalled = false;
+  let keywordEngineCalled = false;
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://localhost:8080",
+    localModelName: "local-model",
+    localEngine: {
+      generateResponse: () => {
+        keywordEngineCalled = true;
+        return "should not be reached";
+      },
+    },
+    transport: async (config: any, params: any, models: string[]) => {
+      if (models[0] === "local-model") {
+        localTierCalled = true;
+        throw new Error("local tier should never be reached in this test");
+      }
+      transportCalls.push(config.apiKey);
+      if (config.apiKey === "gk1") {
+        throw new Error("OmniRoute returned 429: rate limited");
+      }
+      return { choices: [{ message: { content: "from gk2" } }] };
+    },
+  } as any);
+
+  const result = await router.generateWithFallback("henry", { messages: [] }, ["groq:model-a"]);
+
+  if (transportCalls.join(",") !== "gk1,gk2") {
+    throw new Error(`CognitionRouter: expected both configured keys to be tried for the single model entry, got: ${transportCalls.join(",")}`);
+  }
+  if (result.choices[0].message.content !== "from gk2") {
+    throw new Error(`CognitionRouter: expected the second key's successful response, got: ${JSON.stringify(result)}`);
+  }
+  if (localTierCalled || keywordEngineCalled) {
+    throw new Error("CognitionRouter: expected the cloud tier to succeed on the second key without ever falling through to the local/keyword tiers");
+  }
+});
+
+registerTest("CognitionRouter", "never throws — an unexpected failure in getRecentShare and the last-resort keyword tier still resolves to a degraded response", async () => {
+  // Fix round 1 (Critical 2): generateWithFallback must be Jarvis's
+  // absolute last line of defense for every LLM call — it must never
+  // throw, even when getRecentShare (untrusted, injectable) throws AND
+  // every fallback tier including the "always succeeds" keyword engine
+  // also throws.
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: [], gemini: [] });
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => {
+      throw new Error("usage-repo is unexpectedly down");
+    },
+    localLlmEndpoint: "http://localhost:8080",
+    localModelName: "local-model",
+    localEngine: {
+      generateResponse: () => {
+        throw new Error("keyword engine exploded");
+      },
+    },
+    transport: async () => {
+      throw new Error("local LLM endpoint unreachable");
+    },
+  } as any);
+
+  let result: any;
+  let threw = false;
+  try {
+    result = await router.generateWithFallback("ivy", { messages: [{ role: "user", content: "hi" }] }, ["groq:model-a"]);
+  } catch {
+    threw = true;
+  }
+
+  if (threw) {
+    throw new Error("CognitionRouter: generateWithFallback must never throw, even when getRecentShare and the keyword engine both fail");
+  }
+  if (result?.choices?.[0]?.message?.role !== "assistant" || typeof result?.choices?.[0]?.message?.content !== "string") {
+    throw new Error(`CognitionRouter: expected a degraded but well-shaped OpenAI-compatible response, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("CognitionRouter", "a successful cloud call is still returned even if recordUsage throws afterward", async () => {
+  // Fix round 1 (Critical 2b): recordUsage used to run inside the same
+  // try/catch as the transport call — a throw there incorrectly cooled
+  // down a key that had actually just succeeded, and lost the real
+  // response. recordUsage failing must never unwind a real success.
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {
+      throw new Error("usage-repo write failed");
+    },
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async () => ({ choices: [{ message: { content: "cloud reply" } }] }),
+  } as any);
+
+  const result = await router.generateWithFallback("jack", { messages: [] }, ["groq:model-a"]);
+
+  if (result?.choices?.[0]?.message?.content !== "cloud reply") {
+    throw new Error(`CognitionRouter: expected the successful cloud response even though recordUsage threw, got: ${JSON.stringify(result)}`);
+  }
+  if (keyPool.getAvailableKey("groq") !== "gk1") {
+    throw new Error("CognitionRouter: expected the key that actually succeeded to remain available (not wrongly cooled down by a recordUsage failure)");
+  }
+});
+
+registerTest("CognitionRouter", "an adversarial huge digit-string retry-after value is clamped, never propagated as Infinity", async () => {
+  // Fix round 1 (Critical 3): a provider's error body/message is untrusted
+  // input. Number("9".repeat(50)) overflows to Infinity — feeding that
+  // straight into KeyPool.reportFailure's retryAfterSeconds would
+  // permanently disable a key for the rest of the process lifetime.
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+  const capturedRetryAfterSeconds: Array<number | undefined> = [];
+  const originalReportFailure = keyPool.reportFailure.bind(keyPool);
+  (keyPool as any).reportFailure = (provider: any, key: any, retryAfterSeconds?: number) => {
+    capturedRetryAfterSeconds.push(retryAfterSeconds);
+    originalReportFailure(provider, key, retryAfterSeconds);
+  };
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "keyword fallback" },
+    transport: async () => {
+      throw new Error(`OmniRoute returned 429: rate limited, retry-after: ${"9".repeat(50)}`);
+    },
+  } as any);
+
+  await router.generateWithFallback("frank", { messages: [{ role: "user", content: "hi" }] }, ["groq:model-a"]);
+
+  if (capturedRetryAfterSeconds.length !== 1) {
+    throw new Error(`CognitionRouter: expected exactly one reportFailure call, got ${capturedRetryAfterSeconds.length}`);
+  }
+  const captured = capturedRetryAfterSeconds[0];
+  if (captured === Infinity || (captured !== undefined && !Number.isFinite(captured))) {
+    throw new Error(`CognitionRouter: retryAfterSeconds must never be Infinity/NaN, got: ${captured}`);
+  }
+  if (captured !== undefined && captured > 3600) {
+    throw new Error(`CognitionRouter: expected retryAfterSeconds to be bounded to <= 3600s, got: ${captured}`);
+  }
+});
+
+registerTest("CognitionRouter", "a huge-but-finite retry-after value (hundreds of millions of seconds) is clamped to a bounded cooldown", async () => {
+  // Fix round 1 (Critical 3): a retryAfterSeconds in the hundreds of
+  // millions (e.g. from a malformed or malicious provider response) would
+  // otherwise produce a cooldown effectively permanent for this process
+  // (cooldown until the year 2058+) without ever hitting Infinity/NaN.
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+  const capturedRetryAfterSeconds: Array<number | undefined> = [];
+  const originalReportFailure = keyPool.reportFailure.bind(keyPool);
+  (keyPool as any).reportFailure = (provider: any, key: any, retryAfterSeconds?: number) => {
+    capturedRetryAfterSeconds.push(retryAfterSeconds);
+    originalReportFailure(provider, key, retryAfterSeconds);
+  };
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "keyword fallback" },
+    transport: async () => {
+      const err: any = new Error("rate limited");
+      err.retryAfterSeconds = 300000000; // ~9.5 years — the "cooldown until 2058" bug shape
+      throw err;
+    },
+  } as any);
+
+  await router.generateWithFallback("gina", { messages: [{ role: "user", content: "hi" }] }, ["groq:model-a"]);
+
+  const captured = capturedRetryAfterSeconds[0];
+  if (captured === undefined || !Number.isFinite(captured) || captured > 3600) {
+    throw new Error(`CognitionRouter: expected the huge retryAfterSeconds to be clamped to a finite value <= 3600, got: ${captured}`);
   }
 });
 

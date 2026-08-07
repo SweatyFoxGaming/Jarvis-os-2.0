@@ -42,6 +42,15 @@ export class KeyPool {
     // Reserved for future adaptive cooldown tuning.
   }
 
+  // Used by cognition-router.ts to bound its per-provider key-retry loop
+  // (try every configured key for a provider before moving to the next
+  // model/provider) with a hard, finite cap — independent of getAvailableKey's
+  // own cooldown-driven termination, so a future bug in that logic can't
+  // turn the retry loop into a spin.
+  keyCount(provider: Provider): number {
+    return this.state[provider].length;
+  }
+
   // Used by cognition-router.ts's pool-strain check — the fraction of all
   // configured keys, across all providers, currently on cooldown.
   strainRatio(): number {
