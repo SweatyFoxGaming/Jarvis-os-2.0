@@ -35,6 +35,15 @@ const API_KEY = process.env.JARVIS_API_KEY || "";
 // eww-adapter.ts's old 2-second poll, since real events are now the
 // primary trigger, not the only one.
 const FALLBACK_REFRESH_MS = 30_000;
+// Trailing-edge debounce for event-triggered refreshes: a bulk filesystem
+// operation (git checkout, unzip, editor save-storm) can fan out to
+// hundreds of forwarded events in quick succession, and each one used to
+// trigger its own fetch + eww subprocess spawn. Coalesce a burst into a
+// single refreshStatus() call shortly after the burst ends, rather than
+// resetting/extending the timer on every event (which could starve a
+// continuous stream of updates indefinitely).
+const EVENT_DEBOUNCE_MS = 250;
+let eventDebounceTimer: NodeJS.Timeout | null = null;
 
 function ewwUpdate(pairs: Record<string, string>): void {
   const args = ["update", ...Object.entries(pairs).map(([k, v]) => `${k}=${v}`)];
@@ -88,7 +97,12 @@ function connect(): void {
       return;
     }
     if (parsed?.type === "event") {
-      refreshStatus();
+      if (!eventDebounceTimer) {
+        eventDebounceTimer = setTimeout(() => {
+          eventDebounceTimer = null;
+          refreshStatus();
+        }, EVENT_DEBOUNCE_MS);
+      }
     }
   });
 

@@ -1246,7 +1246,7 @@ function consumeEventsTicket(ticket: string): string | null {
   return entry.username;
 }
 
-app.post("/api/events-ticket", validateApiKey, (req: any, res: any) => {
+app.post("/api/events-ticket", validateApiKey, requireCapability("hud.read"), (req: any, res: any) => {
   res.json({ ticket: issueEventsTicket(req.username) });
 });
 

@@ -56,7 +56,14 @@ export function startFilesystemWatcher(watchPaths: string[]): { stop: () => void
 
   watcher.on("add", publish("add"));
   watcher.on("change", publish("change"));
-  watcher.on("unlink", publish("unlink"));
+  watcher.on("unlink", (filePath: string) => {
+    // Prune from the startup snapshot so a later recreate at this same path
+    // is treated as a genuine new "add" instead of being silently
+    // suppressed forever by the preExisting check above. Also keeps the
+    // Set from growing unbounded over the process lifetime.
+    preExisting.delete(filePath);
+    publish("unlink")(filePath);
+  });
   watcher.on("error", (err: any) => {
     observation.logTelemetry("warn", "FilesystemWatcher", `Watcher error: ${err.message || err}`);
   });
