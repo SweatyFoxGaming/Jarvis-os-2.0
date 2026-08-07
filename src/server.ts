@@ -60,6 +60,7 @@ import { hudRouter } from "./interaction/routes/hud-routes.js";
 import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
+import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
 
 dotenv.config();
 
@@ -1423,6 +1424,17 @@ initDatabase().then(async (ready) => {
       socket.destroy();
     }
   });
+
+  // Publishes filesystem:changed onto the event bus for anything watching
+  // via /ws/events — replaces cron-style polling for filesystem-driven
+  // reactions. Scoped to JARVIS_FILES_DIR (the same directory
+  // src/capabilities/providers/files.ts already treats as the one safe,
+  // scoped root) rather than the whole repo or filesystem.
+  if (process.env.JARVIS_FILES_DIR) {
+    startFilesystemWatcher([process.env.JARVIS_FILES_DIR]);
+  } else {
+    observation.logTelemetry("warn", "FilesystemWatcher", "JARVIS_FILES_DIR not set — filesystem watching disabled.");
+  }
 
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(groq);
