@@ -25,7 +25,7 @@ import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } fr
 import { getAllToolDeclarations, executeTool, looksToolShaped, looksTrivial } from "./capabilities/tools.js";
 import * as permissions from "./kernel/security.js";
 import { requireCapability } from "./kernel/security.js";
-import { validateApiKey } from "./kernel/auth-middleware.js";
+import { validateApiKey, safeCompare } from "./kernel/auth-middleware.js";
 import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "./kernel/egress.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
@@ -59,6 +59,7 @@ import { integrationsRouter } from "./interaction/routes/integrations-routes.js"
 import { hudRouter } from "./interaction/routes/hud-routes.js";
 import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
+import { EventBus } from "./core/event-bus.js";
 
 dotenv.config();
 
@@ -1220,6 +1221,34 @@ app.post("/api/voice-ticket", validateApiKey, (req: any, res: any) => {
   res.json({ ticket: issueVoiceTicket(req.username) });
 });
 
+// One-time tickets for /ws/events — same reasoning as the voice tickets
+// above: a browser WebSocket handshake can't carry a custom X-API-Key
+// header, so identity crosses via a short-lived, single-use ticket
+// obtained through a normal authenticated POST instead.
+const EVENTS_TICKET_TTL_MS = 30_000;
+const eventsTickets = new Map<string, { username: string; expiresAt: number }>();
+
+function issueEventsTicket(username: string): string {
+  const now = Date.now();
+  for (const [t, v] of eventsTickets) {
+    if (v.expiresAt < now) eventsTickets.delete(t);
+  }
+  const ticket = crypto.randomBytes(24).toString("hex");
+  eventsTickets.set(ticket, { username, expiresAt: now + EVENTS_TICKET_TTL_MS });
+  return ticket;
+}
+
+function consumeEventsTicket(ticket: string): string | null {
+  const entry = eventsTickets.get(ticket);
+  eventsTickets.delete(ticket);
+  if (!entry || entry.expiresAt < Date.now()) return null;
+  return entry.username;
+}
+
+app.post("/api/events-ticket", validateApiKey, (req: any, res: any) => {
+  res.json({ ticket: issueEventsTicket(req.username) });
+});
+
 // Explicitly set PostgreSQL connection parameters to ensure TCP connection to localhost
 // This helps prevent peer authentication errors that can arise from unexpected
 // Unix domain socket attempts or misconfigured host resolution within the container.
@@ -1261,7 +1290,11 @@ initDatabase().then(async (ready) => {
   // handshake instead carries a short-lived, single-use ticket obtained via
   // a normal authenticated POST (see /api/voice-ticket below); the permanent
   // key never touches a URL or a log line for this path either.
-  const voiceWss = new WebSocketServer({ server: httpServer, path: "/ws/voice" });
+  // noServer + the single manual dispatcher below (registered after
+  // eventsWss is also constructed) — see that dispatcher's own comment for
+  // why ws's simpler `{ server, path }` shortcut can't be used once a
+  // second WebSocketServer shares this same httpServer.
+  const voiceWss = new WebSocketServer({ noServer: true });
   voiceWss.on("connection", async (ws, req) => {
     const url = new URL(req.url || "", `http://${req.headers.host}`);
     const ticket = url.searchParams.get("ticket");
@@ -1280,6 +1313,86 @@ initDatabase().then(async (ready) => {
 
     observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
     await liveVoice.bridgeVoiceSession(ai, groq, ws, username);
+  });
+
+  // A generic event stream: every EventBus publish, regardless of topic,
+  // gets forwarded to every connected client. Two auth paths, since the two
+  // kinds of client can't authenticate the same way: a browser page (the
+  // Electron window's frontend) can't set a custom header on a WebSocket
+  // handshake, so it authenticates via a single-use ticket exactly like
+  // /ws/voice does; a Node.js client (eww-bridge.ts, a real host process,
+  // not a browser) CAN set a header, so it authenticates via the permanent
+  // X-API-Key directly, matching how eww-adapter.ts already authenticates
+  // its HTTP polling today.
+  const eventsWss = new WebSocketServer({ noServer: true });
+  eventsWss.on("connection", (ws, req) => {
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    const ticket = url.searchParams.get("ticket");
+    const apiKeyHeader = req.headers["x-api-key"];
+
+    let username: string | null = null;
+    if (ticket) {
+      username = consumeEventsTicket(ticket);
+    } else if (
+      typeof apiKeyHeader === "string" &&
+      typeof process.env.INTERNAL_API_KEY === "string" &&
+      safeCompare(apiKeyHeader, process.env.INTERNAL_API_KEY)
+    ) {
+      username = "admin";
+    }
+
+    if (!username) {
+      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid/expired events ticket, and no valid X-API-Key header." }));
+      ws.close();
+      return;
+    }
+
+    observation.logTelemetry("info", "EventsWs", `/ws/events connection opened for "${username}".`);
+    const bus = EventBus.getInstance();
+    const unsubscribers: Array<() => void> = [];
+    // Forward every topic — a per-client topic allowlist/filter is left to
+    // the client side (eww-bridge.ts only reacts to topics it cares about
+    // and ignores the rest), not enforced server-side in this first version.
+    const forward = (topic: string) => (payload: any) => {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: "event", topic, payload }));
+      }
+    };
+    // There's no bus-level "subscribe to everything" API by design (Task 1
+    // keeps the bus's interface to per-topic subscribe/publish only) — this
+    // route explicitly stays subscribed to the known Phase-1 topic set,
+    // extended as new publishers are added in later tasks/phases.
+    for (const topic of ["filesystem:changed", "system:anomaly"]) {
+      unsubscribers.push(bus.subscribe(topic, forward(topic)));
+    }
+
+    ws.on("close", () => {
+      for (const unsub of unsubscribers) unsub();
+      observation.logTelemetry("info", "EventsWs", `/ws/events connection closed for "${username}".`);
+    });
+  });
+
+  // ws's `{ server, path }` shortcut only works correctly for a single
+  // WebSocketServer per HTTP server: internally, each instance created that
+  // way registers its own 'upgrade' listener on httpServer, and the first
+  // one whose path doesn't match the incoming request immediately aborts
+  // the handshake with a 400 — it never lets a later listener (a second
+  // WebSocketServer for a different path) get a chance to handle it. This
+  // silently broke /ws/events entirely once it was added alongside the
+  // pre-existing /ws/voice (live-caught in this task's own verification: a
+  // real WS client connecting to /ws/events with a valid ticket/API key
+  // still got HTTP 400 pre-upgrade). Per ws's own documented pattern for
+  // "Multiple servers sharing a single HTTP/S server", both wss instances
+  // above use noServer:true and this single dispatcher does the routing.
+  httpServer.on("upgrade", (req, socket, head) => {
+    const { pathname } = new URL(req.url || "", `http://${req.headers.host}`);
+    if (pathname === "/ws/voice") {
+      voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit("connection", ws, req));
+    } else if (pathname === "/ws/events") {
+      eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit("connection", ws, req));
+    } else {
+      socket.destroy();
+    }
   });
 
   scheduler.startEmailWatchJob();

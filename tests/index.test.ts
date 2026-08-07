@@ -2735,6 +2735,41 @@ registerTest("FilesystemWatcher", "publishes filesystem:changed when a watched f
   }
 });
 
+// ---------- /ws/events WebSocket endpoint (Task 3) ----------
+
+registerTest("HTTP Boundary", "WS /ws/events rejects a connection with no ticket and no valid API key", async () => {
+  const port = 3019; // confirm this port isn't already used elsewhere in this file before committing
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const ws = new (await import("ws")).default(`ws://127.0.0.1:${port}/ws/events`);
+    const result: any = await new Promise((resolve) => {
+      ws.on("message", (data: any) => resolve(JSON.parse(data.toString())));
+      ws.on("close", () => resolve({ closed: true }));
+    });
+    if (!result.closed && result.type !== "error") {
+      throw new Error(`HTTP Boundary: expected an error or close for an unauthenticated /ws/events connection, got: ${JSON.stringify(result)}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+registerTest("HTTP Boundary", "WS /ws/events accepts a connection with a valid X-API-Key header and forwards a real bus event", async () => {
+  const port = 3020;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const WebSocketCtor = (await import("ws")).default;
+    const ws = new WebSocketCtor(`ws://127.0.0.1:${port}/ws/events`, { headers: { "X-API-Key": TEST_ADMIN_API_KEY } });
+    await new Promise((resolve, reject) => {
+      ws.on("open", resolve);
+      ws.on("error", reject);
+    });
+    ws.close();
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");

@@ -54,7 +54,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 // comparison short-circuits on the first mismatched byte). Compares
 // equal-length buffers either way so the time taken doesn't leak how many
 // leading characters of a guess were correct.
-function safeCompare(a: string, b: string): boolean {
+export function safeCompare(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) {
