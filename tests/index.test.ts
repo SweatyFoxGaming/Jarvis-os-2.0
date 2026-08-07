@@ -2757,6 +2757,204 @@ registerTest("KeyPool", "all keys on cooldown for a provider returns null, not t
   if (pool.getAvailableKey("groq") !== null) throw new Error("expected null when every key is on cooldown");
 });
 
+// ---------- CognitionRouter Tests ----------
+registerTest("CognitionRouter", "a normal-capacity request is not throttled and returns the cloud response", async () => {
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+  const transportCalls: any[] = [];
+  const fakeResponse = { choices: [{ message: { content: "cloud reply" } }], usage: { total_tokens: 42 } };
+  let recordedUsage: { username: string; tokens: number } | null = null;
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async (username: string, tokens: number) => {
+      recordedUsage = { username, tokens };
+    },
+    getRecentShare: async () => 1.0, // exactly average — never throttled
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async (config: any, params: any, models: string[]) => {
+      transportCalls.push({ config, params, models });
+      return fakeResponse;
+    },
+    delayFn: async () => {
+      throw new Error("should not delay a normal-capacity request");
+    },
+  } as any);
+
+  const result = await router.generateWithFallback("alice", { messages: [{ role: "user", content: "hi" }] }, ["groq:llama-3.3-70b-versatile"]);
+
+  if (result !== fakeResponse) {
+    throw new Error(`CognitionRouter: expected the router to return the cloud response unchanged, got: ${JSON.stringify(result)}`);
+  }
+  if (transportCalls.length !== 1 || transportCalls[0].models[0] !== "llama-3.3-70b-versatile") {
+    throw new Error(`CognitionRouter: expected exactly one transport call for the real model name, got: ${JSON.stringify(transportCalls)}`);
+  }
+  if (transportCalls[0].config.apiKey !== "gk1") {
+    throw new Error(`CognitionRouter: expected the pool's key to be used, got: ${JSON.stringify(transportCalls[0].config)}`);
+  }
+  if (!recordedUsage || (recordedUsage as any).username !== "alice" || (recordedUsage as any).tokens !== 42) {
+    throw new Error(`CognitionRouter: expected recordUsage("alice", 42) from the response's usage field, got: ${JSON.stringify(recordedUsage)}`);
+  }
+});
+
+registerTest("CognitionRouter", "an over-share user under a strained pool is delayed, not rejected", async () => {
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: ["gk1", "gk2", "gk3"], gemini: [] });
+  // Strain the pool: 2 of 3 configured keys on cooldown -> strainRatio = 2/3 > 0.5.
+  keyPool.reportFailure("groq", "gk1", 60);
+  keyPool.reportFailure("groq", "gk2", 60);
+
+  let delayMs: number | null = null;
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 5.0, // way over an equal share
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async () => ({ choices: [{ message: { content: "cloud reply" } }] }),
+    delayFn: async (ms: number) => {
+      delayMs = ms;
+      await new Promise((resolve) => setTimeout(resolve, 20)); // short test-only delay, not the real 3000ms
+    },
+  } as any);
+
+  const start = Date.now();
+  const result = await router.generateWithFallback("bob", { messages: [] }, ["groq:llama-3.3-70b-versatile"]);
+  const elapsed = Date.now() - start;
+
+  if (delayMs !== 3000) {
+    throw new Error(`CognitionRouter: expected the throttle to request the production 3000ms delay via delayFn, got: ${delayMs}`);
+  }
+  if (elapsed < 15) {
+    throw new Error(`CognitionRouter: expected a measurable delay before the call resolved, elapsed=${elapsed}ms`);
+  }
+  if (result.choices[0].message.content !== "cloud reply") {
+    throw new Error(`CognitionRouter: expected the call to still eventually succeed after the delay, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("CognitionRouter", "a 429-shaped failure triggers cooldown and retries the next key", async () => {
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: ["gk1", "gk2"], gemini: [] });
+  const transportCalls: string[] = [];
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async (config: any) => {
+      transportCalls.push(config.apiKey);
+      if (config.apiKey === "gk1") {
+        throw new Error("OmniRoute returned 429: rate limited, retry-after: 30");
+      }
+      return { choices: [{ message: { content: "from gk2" } }] };
+    },
+  } as any);
+
+  const result = await router.generateWithFallback("carol", { messages: [] }, ["groq:model-a", "groq:model-b"]);
+
+  if (result.choices[0].message.content !== "from gk2") {
+    throw new Error(`CognitionRouter: expected the second key's successful response, got: ${JSON.stringify(result)}`);
+  }
+  if (transportCalls.join(",") !== "gk1,gk2") {
+    throw new Error(`CognitionRouter: expected gk1 tried first then gk2, got: ${transportCalls.join(",")}`);
+  }
+  const nextKey = keyPool.getAvailableKey("groq");
+  if (nextKey === "gk1") {
+    throw new Error("CognitionRouter: expected the failed key to be on cooldown, not offered again immediately");
+  }
+});
+
+registerTest("CognitionRouter", "full cloud exhaustion falls through to the local LLM tier with tools stripped", async () => {
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: [], gemini: [] }); // no configured keys -> getAvailableKey always null
+  let localCallParams: any = null;
+  let localCallModels: string[] | null = null;
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://localhost:8080",
+    localModelName: "local-model",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async (config: any, params: any, models: string[]) => {
+      localCallParams = params;
+      localCallModels = models;
+      return { choices: [{ message: { content: "local reply" } }] };
+    },
+  } as any);
+
+  const originalParams = {
+    messages: [{ role: "user", content: "hi" }],
+    tools: [{ type: "function", function: { name: "foo" } }],
+    tool_choice: "auto",
+  };
+  const result = await router.generateWithFallback("dave", originalParams, ["groq:model-a"]);
+
+  if (result.choices[0].message.content !== "local reply") {
+    throw new Error(`CognitionRouter: expected the local tier's response, got: ${JSON.stringify(result)}`);
+  }
+  if (localCallModels?.[0] !== "local-model") {
+    throw new Error(`CognitionRouter: expected the local tier to be called with the configured local model name, got: ${JSON.stringify(localCallModels)}`);
+  }
+  if (localCallParams && "tools" in localCallParams) {
+    throw new Error("CognitionRouter: expected `tools` to be stripped from the local tier's params");
+  }
+  if (localCallParams && "tool_choice" in localCallParams) {
+    throw new Error("CognitionRouter: expected `tool_choice` to be stripped from the local tier's params");
+  }
+  if (!("tools" in originalParams)) {
+    throw new Error("test bug: originalParams should have included tools");
+  }
+});
+
+registerTest("CognitionRouter", "local LLM tier also failing falls through to the keyword engine", async () => {
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const keyPool = new KeyPool({ groq: [], gemini: [] });
+  let keywordEngineCalled = false;
+  let keywordEngineMessage: string | null = null;
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://localhost:8080",
+    localModelName: "local-model",
+    localEngine: {
+      generateResponse: (message: string) => {
+        keywordEngineCalled = true;
+        keywordEngineMessage = message;
+        return "keyword engine reply";
+      },
+    },
+    transport: async () => {
+      throw new Error("local LLM endpoint unreachable");
+    },
+  } as any);
+
+  const result = await router.generateWithFallback("erin", { messages: [{ role: "user", content: "hello there" }] }, ["groq:model-a"]);
+
+  if (!keywordEngineCalled) {
+    throw new Error("CognitionRouter: expected localEngine.generateResponse to be called after both cloud and local LLM tiers fail");
+  }
+  if (keywordEngineMessage !== "hello there") {
+    throw new Error(`CognitionRouter: expected the last user message passed to the keyword engine, got: ${JSON.stringify(keywordEngineMessage)}`);
+  }
+  if (result?.choices?.[0]?.message?.content !== "keyword engine reply") {
+    throw new Error(`CognitionRouter: expected the keyword engine's return value wrapped in the OpenAI-compatible response shape, got: ${JSON.stringify(result)}`);
+  }
+  if (result?.choices?.[0]?.message?.role !== "assistant") {
+    throw new Error(`CognitionRouter: expected role "assistant" in the wrapped response, got: ${JSON.stringify(result)}`);
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
