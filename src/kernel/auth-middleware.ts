@@ -12,7 +12,13 @@ const observation = ObservationPlatform.getInstance();
 
 import { Request, Response, NextFunction } from 'express';
 
-const ADMIN_API_KEY = process.env.ADMIN_API_KEY 
+// Exported so other modules (e.g. server.ts's /ws/events direct-API-key
+// auth path) resolve the admin key the same way this module does, instead
+// of re-deriving it from process.env.INTERNAL_API_KEY alone — that alone
+// would miss a deployment that sets ADMIN_API_KEY and (per .env.example's
+// default) leaves INTERNAL_API_KEY empty. Guaranteed truthy by the
+// fail-fast check right below — any importer gets a real, non-empty key.
+export const ADMIN_API_KEY = process.env.ADMIN_API_KEY
   || process.env.INTERNAL_API_KEY;
 
 if (!ADMIN_API_KEY) {

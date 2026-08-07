@@ -25,7 +25,7 @@ import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } fr
 import { getAllToolDeclarations, executeTool, looksToolShaped, looksTrivial } from "./capabilities/tools.js";
 import * as permissions from "./kernel/security.js";
 import { requireCapability } from "./kernel/security.js";
-import { validateApiKey, safeCompare } from "./kernel/auth-middleware.js";
+import { validateApiKey, safeCompare, ADMIN_API_KEY } from "./kernel/auth-middleware.js";
 import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "./kernel/egress.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
@@ -1335,8 +1335,20 @@ initDatabase().then(async (ready) => {
       username = consumeEventsTicket(ticket);
     } else if (
       typeof apiKeyHeader === "string" &&
-      typeof process.env.INTERNAL_API_KEY === "string" &&
-      safeCompare(apiKeyHeader, process.env.INTERNAL_API_KEY)
+      // ADMIN_API_KEY (exported from auth-middleware.ts) resolves the same
+      // way validateApiKey's admin bootstrap key does: ADMIN_API_KEY falling
+      // back to INTERNAL_API_KEY. Checking process.env.INTERNAL_API_KEY
+      // directly here was a real bug — a deployment that sets ADMIN_API_KEY
+      // and leaves INTERNAL_API_KEY empty (.env.example's shipped default)
+      // would have let a bare, empty X-API-Key header authenticate as
+      // admin, since safeCompare("", "") is true. The explicit length check
+      // below is defense-in-depth on top of auth-middleware.ts's own
+      // fail-fast (which already guarantees ADMIN_API_KEY is non-empty) —
+      // an empty configured key must never be treated as "compare succeeds
+      // against an empty header".
+      typeof ADMIN_API_KEY === "string" &&
+      ADMIN_API_KEY.length > 0 &&
+      safeCompare(apiKeyHeader, ADMIN_API_KEY)
     ) {
       username = "admin";
     }
@@ -1348,11 +1360,16 @@ initDatabase().then(async (ready) => {
     }
 
     observation.logTelemetry("info", "EventsWs", `/ws/events connection opened for "${username}".`);
+    // Abrupt peer disconnects (ECONNRESET etc., e.g. a reconnecting
+    // eww-bridge.ts client) surface as an 'error' event on the socket — with
+    // no listener, ws lets that become an uncaught exception on a routine
+    // disconnect. Matches the log-and-continue pattern used elsewhere in
+    // this codebase for WS error handling.
+    ws.on("error", (err: any) => {
+      observation.logTelemetry("warn", "EventsWs", `/ws/events socket error for "${username}": ${err.message || err}`);
+    });
     const bus = EventBus.getInstance();
     const unsubscribers: Array<() => void> = [];
-    // Forward every topic — a per-client topic allowlist/filter is left to
-    // the client side (eww-bridge.ts only reacts to topics it cares about
-    // and ignores the rest), not enforced server-side in this first version.
     const forward = (topic: string) => (payload: any) => {
       if (ws.readyState === ws.OPEN) {
         ws.send(JSON.stringify({ type: "event", topic, payload }));
@@ -1385,7 +1402,19 @@ initDatabase().then(async (ready) => {
   // "Multiple servers sharing a single HTTP/S server", both wss instances
   // above use noServer:true and this single dispatcher does the routing.
   httpServer.on("upgrade", (req, socket, head) => {
-    const { pathname } = new URL(req.url || "", `http://${req.headers.host}`);
+    // `new URL()` throws for an empty or malformed Host header (verified:
+    // "", "a b", "[bad" all throw a TypeError) — inside an 'upgrade'
+    // listener that throw becomes an uncaught exception that never reaches
+    // socket.destroy(), leaking the socket on every malformed request. ws's
+    // own internal shouldHandle() used a non-throwing check and would have
+    // cleanly 400'd instead; restore that behavior explicitly here.
+    let pathname: string;
+    try {
+      ({ pathname } = new URL(req.url || "", `http://${req.headers.host}`));
+    } catch {
+      socket.destroy();
+      return;
+    }
     if (pathname === "/ws/voice") {
       voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit("connection", ws, req));
     } else if (pathname === "/ws/events") {
