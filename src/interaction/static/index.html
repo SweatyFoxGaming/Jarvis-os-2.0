@@ -906,6 +906,48 @@
                     </div>
                 </div>
 
+                <!-- Column 3: Personality dials — persisted via the same
+                     /api/settings POST as the LLM sync matrix above (see
+                     saveSystemSettings), consumed by identity.ts's
+                     buildPersonalityPromptFragment to steer the real system
+                     prompt (see server.ts). -->
+                <div class="bg-surface/50 border border-white/5 p-6 rounded-3xl space-y-5 relative">
+                    <div class="absolute top-0 left-0 w-8 h-8 border-t border-l border-primary/20 rounded-tl-3xl"></div>
+                    <div class="absolute bottom-0 right-0 w-8 h-8 border-b border-r border-primary/20 rounded-br-3xl"></div>
+
+                    <div class="flex justify-between items-center border-b border-white/5 pb-3">
+                        <div>
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase">PERSONALITY MATRIX</h3>
+                            <p class="text-[9px] text-secondary/50 font-mono">SYSTEM_PROMPT_TONE_DIALS</p>
+                        </div>
+                        <span class="text-[10px] font-mono text-primary bg-primary/5 px-2 py-0.5 border border-primary/10 rounded">IDENTITY</span>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-mono text-secondary tracking-wider flex justify-between items-center">
+                                <span>FORMALITY</span>
+                                <span id="personality-formality-value" class="text-primary">50</span>
+                            </label>
+                            <input type="range" min="0" max="100" id="personality-formality-slider" class="w-full accent-primary" oninput="document.getElementById('personality-formality-value').textContent = this.value">
+                        </div>
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-mono text-secondary tracking-wider flex justify-between items-center">
+                                <span>HUMOR</span>
+                                <span id="personality-humor-value" class="text-primary">30</span>
+                            </label>
+                            <input type="range" min="0" max="100" id="personality-humor-slider" class="w-full accent-primary" oninput="document.getElementById('personality-humor-value').textContent = this.value">
+                        </div>
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-mono text-secondary tracking-wider flex justify-between items-center">
+                                <span>VERBOSITY</span>
+                                <span id="personality-verbosity-value" class="text-primary">50</span>
+                            </label>
+                            <input type="range" min="0" max="100" id="personality-verbosity-slider" class="w-full accent-primary" oninput="document.getElementById('personality-verbosity-value').textContent = this.value">
+                        </div>
+                    </div>
+                </div>
+
                 <div class="holo-panel rounded-2xl p-5 w-full">
                     <h3 class="font-display font-semibold text-sm text-white mb-1">Notifications</h3>
                     <p class="text-sm text-secondary mb-4 max-w-xl">Install Jarvis as an app on this device and enable push notifications so proactive updates (briefings, security findings, reflections) reach you here even when this tab isn't open — including on your phone, once installed there too.</p>
@@ -4210,6 +4252,19 @@
                 localKeyInput.value = "";
                 localKeyInput.placeholder = data.localApiKeySet ? "•••••••• (configured — leave blank to keep)" : "No local API key configured";
                 updateOfflineUIState(data.offline);
+
+                // Personality dials — fall back to kernel.ts's own defaults
+                // (see src/self/kernel.ts) when the field is absent so a
+                // fresh install shows the same values the backend would.
+                const formality = data.personalityFormality ?? 50;
+                const humor = data.personalityHumor ?? 30;
+                const verbosity = data.personalityVerbosity ?? 50;
+                document.getElementById('personality-formality-slider').value = formality;
+                document.getElementById('personality-formality-value').textContent = formality;
+                document.getElementById('personality-humor-slider').value = humor;
+                document.getElementById('personality-humor-value').textContent = humor;
+                document.getElementById('personality-verbosity-slider').value = verbosity;
+                document.getElementById('personality-verbosity-value').textContent = verbosity;
             }
         } catch (err) {
             console.error("Failed to load settings:", err);
@@ -4238,7 +4293,10 @@
             llmMode: document.getElementById('llm-mode-select').value,
             localLlmEndpoint: document.getElementById('local-endpoint-input').value.trim(),
             localModelName: document.getElementById('local-model-input').value.trim(),
-            ...(localApiKeyInput ? { localApiKey: localApiKeyInput } : {})
+            ...(localApiKeyInput ? { localApiKey: localApiKeyInput } : {}),
+            personalityFormality: parseInt(document.getElementById('personality-formality-slider').value, 10),
+            personalityHumor: parseInt(document.getElementById('personality-humor-slider').value, 10),
+            personalityVerbosity: parseInt(document.getElementById('personality-verbosity-slider').value, 10)
         };
 
         try {
