@@ -62,6 +62,7 @@ import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
 import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
 import { startLiveAnalysis } from "./adaptation/live-analysis.js";
+import { startShadowVerifier } from "./executive/shadow-verifier.js";
 
 dotenv.config();
 
@@ -1441,6 +1442,10 @@ initDatabase().then(async (ready) => {
   // filesystem:changed never fires (e.g. JARVIS_FILES_DIR unset above) — no
   // env-var gate needed, unlike the watcher itself.
   const liveAnalysis = startLiveAnalysis();
+
+  // Same unconditional-start reasoning as liveAnalysis above — it does
+  // nothing until a real high-severity adaptation:analysis event arrives.
+  const shadowVerifier = startShadowVerifier();
 
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(groq);

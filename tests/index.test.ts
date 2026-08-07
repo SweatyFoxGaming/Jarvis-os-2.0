@@ -2780,6 +2780,107 @@ registerTest("LiveAnalysis", "publishes adaptation:analysis after a debounced bu
   }
 });
 
+// ---------- ShadowVerifier Tests (anomaly-triggered sandbox re-verification) ----------
+
+registerTest("ShadowVerifier", "triggers execFn and publishes builder:shadow-verified only when hasHighSeverity is true", async () => {
+  const { startShadowVerifier } = await import("../src/executive/shadow-verifier.js");
+  const bus = EventBus.getInstance();
+
+  const sandboxCalls: { username: string; command: string }[] = [];
+  const fakeExecFn = async (username: string, command: string) => {
+    sandboxCalls.push({ username, command });
+    return { stdout: "199/199 passed", stderr: "", exitCode: 0 };
+  };
+
+  const received: any[] = [];
+  const unsubscribe = bus.subscribe("builder:shadow-verified", (payload) => received.push(payload));
+  const handle = startShadowVerifier(fakeExecFn);
+
+  try {
+    // A LOW/MEDIUM-only result must NOT trigger a sandbox run.
+    bus.publish("adaptation:analysis", {
+      timestamp: Date.now(),
+      architecture: { score: 90, issues: [] },
+      quality: { score: 90, issues: [{ severity: "low", message: "x" }] },
+      security: { score: 90, issues: [] },
+      hasHighSeverity: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (sandboxCalls.length !== 0) {
+      throw new Error(`ShadowVerifier: a non-high-severity result must not trigger a shadow verify, got ${sandboxCalls.length} call(s)`);
+    }
+
+    // A HIGH-severity result MUST trigger exactly one sandbox run.
+    bus.publish("adaptation:analysis", {
+      timestamp: Date.now(),
+      architecture: { score: 40, issues: [] },
+      quality: { score: 40, issues: [{ severity: "high", message: "tsc error" }] },
+      security: { score: 90, issues: [] },
+      hasHighSeverity: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (sandboxCalls.length !== 1) {
+      throw new Error(`ShadowVerifier: expected exactly 1 sandbox call, got ${sandboxCalls.length}`);
+    }
+    if (sandboxCalls[0].username !== "system-anomaly-verifier") {
+      throw new Error(`ShadowVerifier: must use the synthetic, non-colliding sandbox key, got "${sandboxCalls[0].username}"`);
+    }
+    if (!sandboxCalls[0].command.includes("npm test")) {
+      throw new Error(`ShadowVerifier: must actually re-run the test suite, got command "${sandboxCalls[0].command}"`);
+    }
+
+    if (received.length !== 1) {
+      throw new Error(`ShadowVerifier: expected exactly 1 builder:shadow-verified publish, got ${received.length}`);
+    }
+    if (received[0].passed !== true) {
+      throw new Error("ShadowVerifier: exitCode 0 should map to passed: true");
+    }
+    if (received[0].triggeredBy !== "adaptation:analysis") {
+      throw new Error(`ShadowVerifier: expected triggeredBy "adaptation:analysis", got "${received[0].triggeredBy}"`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("ShadowVerifier", "a rejected execFn is reported as passed: false, never an unhandled rejection", async () => {
+  const { startShadowVerifier } = await import("../src/executive/shadow-verifier.js");
+  const bus = EventBus.getInstance();
+
+  const fakeExecFn = async (): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+    throw new Error("JARVIS_BUILDER_SECRET is not set");
+  };
+
+  const received: any[] = [];
+  const unsubscribe = bus.subscribe("builder:shadow-verified", (payload) => received.push(payload));
+  const handle = startShadowVerifier(fakeExecFn);
+
+  try {
+    bus.publish("adaptation:analysis", {
+      timestamp: Date.now(),
+      architecture: { score: 40, issues: [{ severity: "high", message: "tsc error" }] },
+      quality: { score: 90, issues: [] },
+      security: { score: 90, issues: [] },
+      hasHighSeverity: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    if (received.length !== 1) {
+      throw new Error(`ShadowVerifier: expected exactly 1 builder:shadow-verified publish, got ${received.length}`);
+    }
+    if (received[0].passed !== false) {
+      throw new Error("ShadowVerifier: a thrown execFn should map to passed: false");
+    }
+    if (!received[0].summary.includes("sandbox unavailable")) {
+      throw new Error(`ShadowVerifier: expected summary to explain the sandbox was unavailable, got "${received[0].summary}"`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
 // ---------- /ws/events WebSocket endpoint (Task 3) ----------
 
 registerTest("HTTP Boundary", "WS /ws/events rejects a connection with no ticket and no valid API key", async () => {
