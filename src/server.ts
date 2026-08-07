@@ -61,6 +61,7 @@ import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
 import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
+import { startLiveAnalysis } from "./adaptation/live-analysis.js";
 
 dotenv.config();
 
@@ -1435,6 +1436,11 @@ initDatabase().then(async (ready) => {
   } else {
     observation.logTelemetry("warn", "FilesystemWatcher", "JARVIS_FILES_DIR not set — filesystem watching disabled.");
   }
+
+  // Subscribes to the bus itself and simply does nothing if
+  // filesystem:changed never fires (e.g. JARVIS_FILES_DIR unset above) — no
+  // env-var gate needed, unlike the watcher itself.
+  const liveAnalysis = startLiveAnalysis();
 
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(groq);

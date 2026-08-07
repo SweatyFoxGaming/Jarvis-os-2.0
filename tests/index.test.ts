@@ -2735,6 +2735,51 @@ registerTest("FilesystemWatcher", "publishes filesystem:changed when a watched f
   }
 });
 
+// ---------- LiveAnalysis Tests (debounced analyzer subscriber) ----------
+
+registerTest("LiveAnalysis", "publishes adaptation:analysis after a debounced burst of filesystem:changed events", async () => {
+  const { startLiveAnalysis } = await import("../src/adaptation/live-analysis.js");
+  const bus = EventBus.getInstance();
+
+  const received: any[] = [];
+  const unsubscribe = bus.subscribe("adaptation:analysis", (payload) => received.push(payload));
+
+  const handle = startLiveAnalysis({ debounceMs: 50 }); // short debounce for the test, not the 5s production default
+  try {
+    // Simulate a burst: 5 events in quick succession should yield exactly ONE publish.
+    for (let i = 0; i < 5; i++) {
+      bus.publish("filesystem:changed", { path: `/fake/file${i}.ts`, eventType: "change" });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200)); // past the 50ms debounce
+
+    if (received.length !== 1) {
+      throw new Error(`LiveAnalysis: expected exactly 1 publish after a debounced burst, got ${received.length}`);
+    }
+    const payload = received[0];
+    if (typeof payload.timestamp !== "number") {
+      throw new Error("LiveAnalysis: payload.timestamp should be a number");
+    }
+    if (typeof payload.hasHighSeverity !== "boolean") {
+      throw new Error("LiveAnalysis: payload.hasHighSeverity should be a boolean");
+    }
+    if (!payload.architecture || typeof payload.architecture.score !== "number") {
+      throw new Error("LiveAnalysis: payload.architecture should be a real AnalysisResult");
+    }
+    if (!payload.quality || typeof payload.quality.score !== "number") {
+      throw new Error("LiveAnalysis: payload.quality should be a real AnalysisResult");
+    }
+    if (!payload.security || typeof payload.security.score !== "number") {
+      throw new Error("LiveAnalysis: payload.security should be a real AnalysisResult");
+    }
+    if (payload.performance !== undefined) {
+      throw new Error("LiveAnalysis: payload should NOT include a performance field — it's excluded by design");
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
 // ---------- /ws/events WebSocket endpoint (Task 3) ----------
 
 registerTest("HTTP Boundary", "WS /ws/events rejects a connection with no ticket and no valid API key", async () => {
