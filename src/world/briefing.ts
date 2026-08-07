@@ -2,19 +2,19 @@ import { ObservationPlatform } from "../kernel/observation.js";
 import * as emailIntegration from "../capabilities/providers/email.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
-import { generateWithFallback } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import { generateWithFallback } from "../runtime/openai-compatible-client.js";
 
 const observation = ObservationPlatform.getInstance();
 
 // Set once from server.ts at startup so the get_briefing chat tool
 // (tools.ts) can generate a real briefing without server.ts needing to
 // export its module-scoped `omniRoute` variable directly.
-let configuredOmniRoute: OmniRouteConfig | null = null;
-export function configureGroq(client: OmniRouteConfig | null): void {
+let configuredOmniRoute: OpenAiCompatibleConfig | null = null;
+export function configureGroq(client: OpenAiCompatibleConfig | null): void {
   configuredOmniRoute = client;
 }
-export function getConfiguredGroq(): OmniRouteConfig | null {
+export function getConfiguredGroq(): OpenAiCompatibleConfig | null {
   return configuredOmniRoute;
 }
 
@@ -127,7 +127,7 @@ export function prioritizeSignals(signals: RawSignals): PrioritizedItem[] {
 
 // ---------- Synthesis: real Gemini call when available, honest plain list otherwise ----------
 
-export async function synthesizeBriefing(omniRoute: OmniRouteConfig | null, items: PrioritizedItem[], errors: string[]): Promise<string> {
+export async function synthesizeBriefing(omniRoute: OpenAiCompatibleConfig | null, items: PrioritizedItem[], errors: string[]): Promise<string> {
   if (items.length === 0) {
     return errors.length > 0
       ? `Nothing new to report, though some sources couldn't be checked: ${errors.join("; ")}.`
@@ -184,7 +184,7 @@ export async function synthesizeBriefing(omniRoute: OmniRouteConfig | null, item
   }
 }
 
-export async function generateBriefing(omniRoute: OmniRouteConfig | null, username: string): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
+export async function generateBriefing(omniRoute: OpenAiCompatibleConfig | null, username: string): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
   const signals = await collectSignals(username);
   const items = prioritizeSignals(signals);
   const errors = [signals.emailError, signals.githubError, signals.objectivesError].filter(Boolean) as string[];

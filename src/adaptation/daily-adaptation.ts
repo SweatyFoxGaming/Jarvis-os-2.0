@@ -10,8 +10,8 @@
 // the existing human-confirmation gate is never bypassed.
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
-import { generateWithFallback } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import { generateWithFallback } from "../runtime/openai-compatible-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
@@ -23,8 +23,8 @@ import { AutonomousExecutive } from "../executive/autonomous_executive.js";
 
 const observation = ObservationPlatform.getInstance();
 
-let configuredOmniRoute: OmniRouteConfig | null = null;
-export function configureGroq(client: OmniRouteConfig | null): void {
+let configuredOmniRoute: OpenAiCompatibleConfig | null = null;
+export function configureGroq(client: OpenAiCompatibleConfig | null): void {
   configuredOmniRoute = client;
 }
 

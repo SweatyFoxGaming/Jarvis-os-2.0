@@ -2656,7 +2656,7 @@ registerTest("OmniRouteClient", "generateWithFallback returns the first model's 
     return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
   }) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
     const result = await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
     if (result.choices[0].message.content !== "ok") {
       throw new Error(`OmniRouteClient: expected "ok", got: ${JSON.stringify(result)}`);
@@ -2676,7 +2676,7 @@ registerTest("OmniRouteClient", "generateWithFallback tries the next model when 
     return new Response(JSON.stringify({ choices: [{ message: { content: "from model-b" } }] }), { status: 200 });
   }) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
     const result = await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
     if (result.choices[0].message.content !== "from model-b" || attempts.join(",") !== "model-a,model-b") {
       // The per-model loop moves to the next model when any model fails (no per-model
@@ -2692,7 +2692,7 @@ registerTest("OmniRouteClient", "generateWithFallback throws when every model fa
   const originalFetch = global.fetch;
   global.fetch = (async () => new Response("error", { status: 500 })) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
     await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
     throw new Error("OmniRouteClient: expected generateWithFallback to throw when every model fails");
   } catch (err: any) {
@@ -2711,7 +2711,7 @@ registerTest("OmniRouteClient", "generateWithFallback sends the API key as a Bea
     return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
   }) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/omniroute-client.js");
+    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
     await omniRouteGenerateWithFallback({ apiKey: "my-secret-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
     if (seenAuth !== "Bearer my-secret-key") {
       throw new Error(`OmniRouteClient: expected "Bearer my-secret-key", got: ${seenAuth}`);

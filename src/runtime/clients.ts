@@ -1,5 +1,5 @@
 import type { GoogleGenAI } from "@google/genai";
-import type { OmniRouteConfig } from "./omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "./openai-compatible-client.js";
 
 /**
  * ai/omniRoute are constructed once, in server.ts, from whichever API keys
@@ -28,9 +28,9 @@ import type { OmniRouteConfig } from "./omniroute-client.js";
  * actually run.
  */
 let aiClient: GoogleGenAI | null = null;
-let omniRouteConfig: OmniRouteConfig | null = null;
+let omniRouteConfig: OpenAiCompatibleConfig | null = null;
 
-export function setSharedClient(ai: GoogleGenAI | null, omniRoute: OmniRouteConfig | null): void {
+export function setSharedClient(ai: GoogleGenAI | null, omniRoute: OpenAiCompatibleConfig | null): void {
   aiClient = ai;
   omniRouteConfig = omniRoute;
 }
@@ -39,6 +39,6 @@ export function getAi(): GoogleGenAI | null {
   return aiClient;
 }
 
-export function getOmniRoute(): OmniRouteConfig | null {
+export function getOmniRoute(): OpenAiCompatibleConfig | null {
   return omniRouteConfig;
 }

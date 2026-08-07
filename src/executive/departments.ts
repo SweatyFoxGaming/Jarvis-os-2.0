@@ -1,7 +1,7 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
-import { generateWithFallback } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import { generateWithFallback } from "../runtime/openai-compatible-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as github from "../capabilities/providers/github.js";
 import * as webSearch from "../capabilities/providers/websearch.js";
@@ -57,7 +57,7 @@ const DEPARTMENT_DECOMPOSITION_SCHEMA = {
 // without a real model actually reasoning about it).
 export async function decomposeObjective(
   objective: string,
-  omniRoute: OmniRouteConfig | null,
+  omniRoute: OpenAiCompatibleConfig | null,
   offlineMode: boolean
 ): Promise<DepartmentStep[]> {
   if (!omniRoute || offlineMode) {
@@ -140,7 +140,7 @@ const RESEARCH_LOOKUPS_SCHEMA = {
 // the raw objective; the second synthesizes whatever was actually gathered.
 // Each individual lookup degrades independently — one failing read (a
 // missing BRAVE_API_KEY, a GitHub hiccup) doesn't abort the whole pass.
-export async function runResearch(objective: string, omniRoute: OmniRouteConfig | null, username: string): Promise<ResearchResult> {
+export async function runResearch(objective: string, omniRoute: OpenAiCompatibleConfig | null, username: string): Promise<ResearchResult> {
   if (!omniRoute) {
     return {
       summary:
@@ -268,7 +268,7 @@ export async function runResearch(objective: string, omniRoute: OmniRouteConfig 
   }
 }
 
-export async function reviewCodeDiff(objective: string, files: DraftedFile[], omniRoute: OmniRouteConfig | null): Promise<string> {
+export async function reviewCodeDiff(objective: string, files: DraftedFile[], omniRoute: OpenAiCompatibleConfig | null): Promise<string> {
   if (!omniRoute) {
     return "No capable model was available to review this change — please review the diff yourself before merging.";
   }
@@ -320,7 +320,7 @@ export async function reviewTaskDiff(
   taskTitle: string,
   taskDescription: string,
   files: DraftedFile[],
-  omniRoute: OmniRouteConfig | null
+  omniRoute: OpenAiCompatibleConfig | null
 ): Promise<{ approved: boolean; findings: string }> {
   if (!omniRoute) {
     return { approved: false, findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure OMNIROUTE_API_KEY to enable the coding agent's review gate." };

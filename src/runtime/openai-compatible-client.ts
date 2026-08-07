@@ -3,13 +3,13 @@ import { ObservationPlatform } from "../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 
-// A plain config object, not an SDK client instance — OmniRoute exposes a
-// single OpenAI-compatible REST endpoint, so there's nothing to construct
-// beyond the credential and base URL. Threaded through call sites the same
-// way getGroq()'s Groq instance was, so every existing caller that already
+// A plain config object, not an SDK client instance — this targets any
+// OpenAI-compatible REST endpoint, so there's nothing to construct beyond
+// the credential and base URL. Threaded through call sites the same way
+// getGroq()'s Groq instance was, so every existing caller that already
 // null-checks/passes a Groq client through keeps the identical shape,
 // just retyped — see docs/superpowers/specs/2026-08-03-omniroute-cognition-gateway-design.md.
-export interface OmniRouteConfig {
+export interface OpenAiCompatibleConfig {
   apiKey: string;
   baseUrl: string;
 }
@@ -23,7 +23,7 @@ export interface OmniRouteConfig {
  * request body shape (messages, tools, response_format, ...) both of those
  * functions already accepted.
  */
-export async function generateWithFallback(config: OmniRouteConfig, params: any, models: string[]): Promise<any> {
+export async function generateWithFallback(config: OpenAiCompatibleConfig, params: any, models: string[]): Promise<any> {
   let lastError: any = null;
   for (const model of models) {
     try {

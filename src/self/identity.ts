@@ -1,7 +1,7 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
-import { generateWithFallback } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import { generateWithFallback } from "../runtime/openai-compatible-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as identityRepo from "../kernel/state/identity-repo.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
@@ -36,7 +36,7 @@ const SELF_REFLECTION_SCHEMA = {
  * this turn contained something genuinely worth remembering about itself;
  * empty category/content means nothing did, and nothing is stored.
  */
-export async function extractSelfReflection(username: string, omniRoute: OmniRouteConfig | null, userMessage: string, replyText: string): Promise<void> {
+export async function extractSelfReflection(username: string, omniRoute: OpenAiCompatibleConfig | null, userMessage: string, replyText: string): Promise<void> {
   if (!omniRoute) return;
   try {
     const response = await generateWithFallback(
@@ -111,7 +111,7 @@ export interface ProactiveThoughtResult {
  * when there isn't enough real history to draw from yet (a fresh install,
  * or too few real conversations so far).
  */
-export async function generateProactiveThought(username: string, omniRoute: OmniRouteConfig | null, minReflections = 3): Promise<ProactiveThoughtResult | null> {
+export async function generateProactiveThought(username: string, omniRoute: OpenAiCompatibleConfig | null, minReflections = 3): Promise<ProactiveThoughtResult | null> {
   let recent: identityRepo.SelfReflection[];
   try {
     recent = await identityRepo.getRecentSelfReflections(username, 15);

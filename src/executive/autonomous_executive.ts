@@ -1,7 +1,7 @@
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
 import { GoogleGenAI } from "@google/genai";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
 import { MindKernel } from "../self/kernel.js";
 import { SessionState } from "../cognition/session.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
@@ -32,9 +32,9 @@ export class AutonomousExecutive {
   private observation: ObservationPlatform;
   // Kept for future needs (per the OmniRoute-migration design) even though no current internal call reads it — every departments.* call below uses this.omniRoute.
   private ai: GoogleGenAI | null;
-  private omniRoute: OmniRouteConfig | null;
+  private omniRoute: OpenAiCompatibleConfig | null;
 
-  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, omniRoute: OmniRouteConfig | null) {
+  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, omniRoute: OpenAiCompatibleConfig | null) {
     this.observation = observation;
     this.ai = ai;
     this.omniRoute = omniRoute;
@@ -48,7 +48,7 @@ export class AutonomousExecutive {
   public static getInstance(
     observation?: ObservationPlatform,
     ai?: GoogleGenAI | null,
-    omniRoute?: OmniRouteConfig | null
+    omniRoute?: OpenAiCompatibleConfig | null
   ): AutonomousExecutive {
     if (!this.instance) {
       if (!observation) {

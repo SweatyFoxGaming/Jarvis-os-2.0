@@ -8,7 +8,7 @@ import { callGroqAgentChat, AgentMessage, AgentTool, DEFAULT_MODELS } from "../r
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 import { classifyTaskCategory } from "./task-category.js";
 
@@ -132,7 +132,7 @@ export async function runCodingAgent(
   researchSummary: string,
   directionNotes: string,
   baseBranch: string,
-  omniRoute: OmniRouteConfig | null
+  omniRoute: OpenAiCompatibleConfig | null
 ): Promise<CodingAgentResult> {
   // omniRoute is now the single client for both the tool-calling backend
   // (planning/coding) and departments.reviewTaskDiff's review gate below —
@@ -474,7 +474,7 @@ interface ProposePlanResult {
 // planning itself can't produce a usable list.
 async function proposePlan(
   buildRequestId: number,
-  omniRoute: OmniRouteConfig,
+  omniRoute: OpenAiCompatibleConfig,
   objective: string,
   researchSummary: string,
   directionNotes: string,
@@ -572,7 +572,7 @@ async function runFlatCodingLoop(
   researchSummary: string,
   directionNotes: string,
   baseSha: string,
-  omniRoute: OmniRouteConfig,
+  omniRoute: OpenAiCompatibleConfig,
   category: string,
   modelOrder: string[],
   // Whatever model served the (failed) planning phase in runCodingAgent —

@@ -1,4 +1,4 @@
-import type { OmniRouteConfig } from "./omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "./openai-compatible-client.js";
 import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 
 /**
@@ -116,7 +116,7 @@ export function parseGroqAgentResponse(data: any): AgentChatResult {
 }
 
 export async function callGroqAgentChat(
-  config: OmniRouteConfig,
+  config: OpenAiCompatibleConfig,
   messages: AgentMessage[],
   tools: AgentTool[],
   modelOrder?: string[]

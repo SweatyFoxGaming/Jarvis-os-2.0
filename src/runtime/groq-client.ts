@@ -1,5 +1,5 @@
-import type { OmniRouteConfig } from "./omniroute-client.js";
-import { generateWithFallback as omniRouteGenerateWithFallback } from "./omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "./openai-compatible-client.js";
+import { generateWithFallback as omniRouteGenerateWithFallback } from "./openai-compatible-client.js";
 
 /**
  * Normalizes a schema tree into the lowercase JSON Schema shape Groq's
@@ -59,6 +59,6 @@ export function toGroqTools(declarations: Array<{ name?: string; description?: s
  * transient 5xx/high-demand error on one model by trying the next.
  * Now delegates to OmniRoute for transport-agnostic gateway support.
  */
-export async function generateWithFallback(config: OmniRouteConfig, params: any, models: string[]): Promise<any> {
+export async function generateWithFallback(config: OpenAiCompatibleConfig, params: any, models: string[]): Promise<any> {
   return omniRouteGenerateWithFallback(config, params, models);
 }

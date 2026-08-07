@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
-import type { OmniRouteConfig } from "./runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "./runtime/openai-compatible-client.js";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
@@ -177,7 +177,7 @@ if (process.env.GEMINI_API_KEY) {
 }
 
 // ---------- OmniRoute Client Initialization (primary cloud tier) ----------
-let omniRoute: OmniRouteConfig | null = null;
+let omniRoute: OpenAiCompatibleConfig | null = null;
 if (process.env.OMNIROUTE_API_KEY) {
   omniRoute = {
     apiKey: process.env.OMNIROUTE_API_KEY,

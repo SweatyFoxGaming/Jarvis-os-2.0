@@ -1,7 +1,7 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
-import { generateWithFallback } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import { generateWithFallback } from "../runtime/openai-compatible-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as kgRepo from "../kernel/state/knowledge-graph-repo.js";
 
@@ -53,7 +53,7 @@ const EXTRACTION_SCHEMA = {
  * Fire-and-forget, same as reflectAndLearn: must never block or slow down
  * the reply the user is waiting on.
  */
-export async function extractAndStore(username: string, omniRoute: OmniRouteConfig | null, userMessage: string, replyText: string): Promise<void> {
+export async function extractAndStore(username: string, omniRoute: OpenAiCompatibleConfig | null, userMessage: string, replyText: string): Promise<void> {
   if (!omniRoute) return;
   try {
     const response = await generateWithFallback(

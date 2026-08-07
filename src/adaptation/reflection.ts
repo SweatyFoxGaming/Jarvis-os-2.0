@@ -1,7 +1,7 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OmniRouteConfig } from "../runtime/omniroute-client.js";
-import { generateWithFallback } from "../runtime/omniroute-client.js";
+import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import { generateWithFallback } from "../runtime/openai-compatible-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { LongTermLearningEngine, ICodingStylePreference } from "./long_term_learning.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
@@ -44,7 +44,7 @@ const REFLECTION_SCHEMA = {
  * user is waiting on. Every failure is caught and logged, never thrown.
  */
 export async function reflectAndLearn(
-  omniRoute: OmniRouteConfig | null,
+  omniRoute: OpenAiCompatibleConfig | null,
   userMessage: string,
   replyText: string
 ): Promise<void> {
