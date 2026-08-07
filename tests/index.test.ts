@@ -18,6 +18,7 @@ import { buildIdentityContext, generateProactiveThought, extractSelfReflection }
 import { extractAndStore, queryKnowledge } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/adaptation/reflection.js";
 import { ConfidenceModel } from "../src/self/confidence.js";
+import { CONSTRAINTS, assertConstraint, listConstraints, Constraint } from "../src/self/constraints.js";
 import type Groq from "groq-sdk";
 import { InternalDialogue } from "../src/self/dialogue.js";
 import { proposeMcpServer, getMcpServer, listMcpServers, markMcpServerApproved, setMcpServerStatus, InvalidMcpServerNameError } from "../src/kernel/state/mcp-servers-repo.js";
@@ -327,6 +328,74 @@ registerTest("Audit", "Pragmatic append-only audit tracking", () => {
   }
   if (!logs[logs.length - 1].includes("Completed audit unit test validation")) {
     throw new Error("Audit content mismatch or missing details");
+  }
+});
+
+// ---------- 10b. Constraints Tests ----------
+registerTest("Constraints", "CONSTRAINTS contains exactly the 4 expected ids, each with a non-empty statement/rationale/enforcedIn", () => {
+  if (CONSTRAINTS.length !== 4) {
+    throw new Error(`Expected exactly 4 constraints, got ${CONSTRAINTS.length}`);
+  }
+  for (const c of CONSTRAINTS) {
+    if (!c.id || !c.id.trim()) throw new Error("Constraint with empty id found");
+    if (!c.statement || !c.statement.trim()) throw new Error(`Constraint "${c.id}" has an empty statement`);
+    if (!c.rationale || !c.rationale.trim()) throw new Error(`Constraint "${c.id}" has an empty rationale`);
+    if (!c.enforcedIn || !c.enforcedIn.trim()) throw new Error(`Constraint "${c.id}" has an empty enforcedIn`);
+  }
+  const expectedIds = new Set([
+    "human-approval-before-code-apply",
+    "shadow-verify-detection-only",
+    "sandbox-isolation",
+    "capability-gated-tools",
+  ]);
+  const actualIds = new Set(CONSTRAINTS.map((c) => c.id));
+  if (actualIds.size !== expectedIds.size || ![...expectedIds].every((id) => actualIds.has(id))) {
+    throw new Error(`Constraint id set mismatch. Expected ${[...expectedIds].join(", ")}, got ${[...actualIds].join(", ")}`);
+  }
+});
+
+registerTest("Constraints", "listConstraints returns a copy, not the live array", () => {
+  const copy = listConstraints();
+  const fake: Constraint = { id: "fake-id", statement: "fake", rationale: "fake", enforcedIn: "fake" };
+  copy.push(fake);
+  if (CONSTRAINTS.length !== 4) {
+    throw new Error("Mutating the array returned by listConstraints() affected the live CONSTRAINTS registry");
+  }
+});
+
+registerTest("Constraints", "assertConstraint logs a success audit event when holds is true", () => {
+  assertConstraint("sandbox-isolation", true, "test detail: sandbox isolation held");
+  const logs = ObservationPlatform.getInstance().getAuditLogsForActor("system:constraints");
+  const last = logs[logs.length - 1];
+  if (!last) {
+    throw new Error("No audit log entry was recorded for actor system:constraints");
+  }
+  if (!last.includes("sandbox-isolation") || !last.includes("Outcome: success") || !last.includes("test detail: sandbox isolation held")) {
+    throw new Error(`Audit entry did not reflect a success for sandbox-isolation: ${last}`);
+  }
+});
+
+registerTest("Constraints", "assertConstraint logs a failed audit event when holds is false, without throwing", () => {
+  assertConstraint("capability-gated-tools", false, "test detail: capability check failed");
+  const logs = ObservationPlatform.getInstance().getAuditLogsForActor("system:constraints");
+  const last = logs[logs.length - 1];
+  if (!last) {
+    throw new Error("No audit log entry was recorded for actor system:constraints");
+  }
+  if (!last.includes("capability-gated-tools") || !last.includes("Outcome: failed") || !last.includes("test detail: capability check failed")) {
+    throw new Error(`Audit entry did not reflect a failure for capability-gated-tools: ${last}`);
+  }
+});
+
+registerTest("Constraints", "assertConstraint throws for an unknown constraint id", () => {
+  let threw = false;
+  try {
+    assertConstraint("not-a-real-id", true, "x");
+  } catch {
+    threw = true;
+  }
+  if (!threw) {
+    throw new Error("assertConstraint did not throw for an unknown constraint id");
   }
 });
 
