@@ -2704,6 +2704,37 @@ registerTest("EventBus", "a handler that throws does not prevent other handlers 
   }
 });
 
+// ---------- FilesystemWatcher Tests (chokidar publishing onto the event bus) ----------
+
+import { startFilesystemWatcher } from "../src/core/filesystem-watcher.js";
+import fs from "fs";
+import os from "os";
+
+registerTest("FilesystemWatcher", "publishes filesystem:changed when a watched file is created", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-fs-watch-test-"));
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  const unsubscribe = bus.subscribe("filesystem:changed", (payload) => { received = payload; });
+  const watcher = startFilesystemWatcher([tmpDir]);
+  try {
+    // chokidar's initial scan + the OS's own file-event latency make this
+    // inherently async and not instant — poll briefly rather than
+    // asserting immediately after the write.
+    fs.writeFileSync(path.join(tmpDir, "test-file.txt"), "hello");
+    const deadline = Date.now() + 5000;
+    while (!received && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!received || !received.path || !received.path.includes("test-file.txt")) {
+      throw new Error(`FilesystemWatcher: expected a filesystem:changed event naming test-file.txt, got: ${JSON.stringify(received)}`);
+    }
+  } finally {
+    unsubscribe();
+    watcher.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
