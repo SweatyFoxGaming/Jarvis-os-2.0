@@ -351,7 +351,26 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
     // better accuracy for a real one-off dictated command).
     if (ai && !kernel.offlineMode && !forceOffline) {
       observation.incrementMetric("geminiApiCalls");
-      
+
+      // Intentionally NOT migrated to OmniRoute (OmniRoute cognition gateway
+      // task 7 — see .superpowers/sdd/2026-08-03-omniroute-cognition-gateway/
+      // task-7-report.md for full evidence). Reading OmniRoute's own
+      // translator source confirmed it CAN convert an OpenAI-shaped
+      // `input_audio` content part into Gemini's native inlineData for
+      // models routed through its "gemini" format (open-sse/translator/
+      // request/openai-to-gemini.ts + helpers/geminiHelper.ts's
+      // convertOpenAIContentToParts). But empirically hitting the real,
+      // locally-running OmniRoute instance showed the three bare model
+      // names below ("gemini-3.5-flash", "gemini-3.1-flash-lite",
+      // "gemini-flash-latest") are rejected outright as an "Ambiguous
+      // model" (OmniRoute requires a provider/model prefix), the "gemini"
+      // provider that actually implements the audio translation has zero
+      // active credentials configured, and "gemini-flash-latest" isn't a
+      // recognized OmniRoute model ID under any provider at all. Migrating
+      // this call site today would make voice transcription fail 100% of
+      // the time instead of working via the direct Gemini SDK, so it stays
+      // on `ai.models.generateContent` (via generateContentWithFallback)
+      // until a provider-prefixed, credentialed model list is confirmed.
       const response = await generateContentWithFallback(ai, {
         contents: [
           "Please transcribe this voice recording accurately into plain English text. If there is no audible speech, return an empty string. Do not add any conversational remarks, commentary, or punctuation padding, just the literal transcribed words.",
