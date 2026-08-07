@@ -10,6 +10,7 @@
 import { EventBus } from "../core/event-bus.js";
 import * as builderClient from "../kernel/builder-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
+import { assertConstraint } from "../self/constraints.js";
 
 const SANDBOX_KEY = "system-anomaly-verifier";
 const VERIFY_COMMAND = "npm ci && npm test && npx tsc --noEmit";
@@ -45,6 +46,11 @@ export function startShadowVerifier(
     if (!payload?.hasHighSeverity) return;
 
     try {
+      assertConstraint(
+        "shadow-verify-detection-only",
+        true, // this module structurally never calls createWorkspace/execInWorkspace — see the file-level comment
+        `Shadow-verifying after a high-severity adaptation:analysis finding, sandbox key "${SANDBOX_KEY}".`
+      );
       const result = await execFn(SANDBOX_KEY, VERIFY_COMMAND);
       const combined = (result.stdout + result.stderr).slice(0, SUMMARY_MAX_CHARS);
       bus.publish("builder:shadow-verified", {

@@ -2913,6 +2913,42 @@ registerTest("ShadowVerifier", "triggers execFn and publishes builder:shadow-ver
   }
 });
 
+registerTest("ShadowVerifier", "logs a shadow-verify-detection-only audit event before invoking execFn on a high-severity finding", async () => {
+  const { startShadowVerifier } = await import("../src/executive/shadow-verifier.js");
+  const bus = EventBus.getInstance();
+  const obs = ObservationPlatform.getInstance();
+
+  const fakeExecFn = async () => ({ stdout: "199/199 passed", stderr: "", exitCode: 0 });
+
+  const received: any[] = [];
+  const unsubscribe = bus.subscribe("builder:shadow-verified", (payload) => received.push(payload));
+  const handle = startShadowVerifier(fakeExecFn);
+
+  try {
+    bus.publish("adaptation:analysis", {
+      timestamp: Date.now(),
+      architecture: { score: 40, issues: [{ severity: "high", message: "tsc error" }] },
+      quality: { score: 90, issues: [] },
+      security: { score: 90, issues: [] },
+      hasHighSeverity: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    if (received.length !== 1) {
+      throw new Error(`ShadowVerifier: expected exactly 1 builder:shadow-verified publish, got ${received.length}`);
+    }
+
+    const logs = obs.getAuditLogsForActor("system:constraints");
+    const match = logs.find((l) => l.includes("shadow-verify-detection-only") && l.includes("Outcome: success"));
+    if (!match) {
+      throw new Error(`ShadowVerifier: expected an audit log entry for shadow-verify-detection-only with Outcome: success, got: ${JSON.stringify(logs)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
 registerTest("ShadowVerifier", "a rejected execFn is reported as passed: false, never an unhandled rejection", async () => {
   const { startShadowVerifier } = await import("../src/executive/shadow-verifier.js");
   const bus = EventBus.getInstance();

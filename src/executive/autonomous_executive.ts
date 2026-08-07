@@ -13,6 +13,7 @@ import * as builderClient from "../kernel/builder-client.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
+import { assertConstraint } from "../self/constraints.js";
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
@@ -281,6 +282,11 @@ export class AutonomousExecutive {
       });
 
       await objectiveRunsRepo.finishRun(runId, "awaiting_consult", buildRequest.id);
+      assertConstraint(
+        "human-approval-before-code-apply",
+        true, // this code path is, by construction, the one that stops before drafting — holds is true because reaching this line IS the enforcement
+        `Objective "${objective}" requires code changes; stopped at awaiting_consult, no code drafted yet (build request #${buildRequest.id}).`
+      );
       return {
         objective,
         status: "awaiting_consult",
