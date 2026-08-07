@@ -84,6 +84,57 @@
             border-color: rgba(255, 120, 220, 0.75);
         }
 
+        /* AR ring + corner-bracket frame around the presence orb — appears
+           only while cameraStream is live (real sight-mode), toggled by
+           updateSensorStatusLabel(). Lives as a sibling of #quantum-eye
+           (inside .hologram-float) rather than inside it, because
+           #quantum-eye has overflow-hidden for its circular mask, which
+           would clip these corner-positioned elements. */
+        .orb-ar-frame {
+            position: absolute;
+            inset: -22px;
+            border-radius: 50%;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        #quantum-eye-container.orb-frame-active .orb-ar-frame {
+            opacity: 1;
+        }
+        .orb-ar-ring {
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            border: 1px dashed rgba(80, 200, 255, 0.22);
+            animation: orb-ring-spin 60s linear infinite;
+        }
+        .orb-ar-arc {
+            position: absolute;
+            inset: 8px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            border-top-color: rgba(80, 200, 255, 0.75);
+            border-right-color: rgba(80, 200, 255, 0.75);
+            animation: orb-ring-spin 6s linear infinite;
+        }
+        @keyframes orb-ring-spin { to { transform: rotate(360deg); } }
+        .orb-corner {
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(80, 200, 255, 0.85);
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        #quantum-eye-container.orb-frame-active .orb-corner { opacity: 1; }
+        .orb-corner.tl { top: -8px; left: -8px; border-right: none; border-bottom: none; border-radius: 4px 0 0 0; }
+        .orb-corner.tr { top: -8px; right: -8px; border-left: none; border-bottom: none; border-radius: 0 4px 0 0; }
+        .orb-corner.bl { bottom: -8px; left: -8px; border-right: none; border-top: none; border-radius: 0 0 0 4px; }
+        .orb-corner.br { bottom: -8px; right: -8px; border-left: none; border-top: none; border-radius: 0 0 4px 0; }
+        @media (prefers-reduced-motion: reduce) {
+            .orb-ar-ring, .orb-ar-arc { animation: none; }
+        }
+
         #mind-graph {
             width: 100%; height: 100%; position: absolute; inset: 0; z-index: 1;
         }
@@ -259,6 +310,19 @@
                         <div class="relative w-full h-full hologram-float">
                             <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
                                 <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
+                            </div>
+                            <!-- AR ring + corner-bracket frame, gated on real camera state
+                                 (see updateSensorStatusLabel's orb-frame-active toggle). A
+                                 sibling of #quantum-eye, NOT a child of it — that div's
+                                 circular overflow-hidden mask would invisibly clip these
+                                 corner-positioned elements. -->
+                            <div class="orb-ar-frame">
+                                <div class="orb-ar-ring"></div>
+                                <div class="orb-ar-arc"></div>
+                                <div class="orb-corner tl"></div>
+                                <div class="orb-corner tr"></div>
+                                <div class="orb-corner bl"></div>
+                                <div class="orb-corner br"></div>
                             </div>
                             <!-- Small picture-in-picture bubble, not the old full-orb-covering
                                  video — the orb (and its vault-note points) stays fully visible
@@ -1250,6 +1314,7 @@
         const orb = document.getElementById('quantum-eye');
         let active = [];
         if (cameraStream) active.push("sight");
+        document.getElementById('quantum-eye-container')?.classList.toggle('orb-frame-active', !!cameraStream);
         if (micEnabled) active.push("hearing");
         if (speechEnabled) active.push("voice");
 
