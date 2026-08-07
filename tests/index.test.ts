@@ -547,6 +547,25 @@ registerTest("Tools", "display_content executes without any capability grant", a
   }
 });
 
+registerTest("Tools", "list_constraints is registered in the tool declarations", () => {
+  const names = getAllToolDeclarations().map((t) => t.name);
+  if (!names.includes("list_constraints")) {
+    throw new Error("Tools: list_constraints should appear in getAllToolDeclarations()");
+  }
+});
+
+registerTest("Tools", "list_constraints executes without any capability grant and returns every registered constraint", async () => {
+  const result = await executeTool("list_constraints", {}, "ungranted_test_user");
+  if (result.ok !== true) {
+    throw new Error(`Tools: list_constraints should succeed with no grant required, got error: ${result.error}`);
+  }
+  const returnedIds = new Set((result.output?.constraints ?? []).map((c: Constraint) => c.id));
+  const expectedIds = new Set(CONSTRAINTS.map((c) => c.id));
+  if (returnedIds.size !== expectedIds.size || [...expectedIds].some((id) => !returnedIds.has(id))) {
+    throw new Error(`Tools: list_constraints output should contain exactly CONSTRAINTS' ids. Expected ${[...expectedIds].join(", ")}, got ${[...returnedIds].join(", ")}`);
+  }
+});
+
 registerTest("Tools", "unrelated tools never carry a displayDirective", async () => {
   const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: true, supportsRoundTrip: true });
   if ((result as any).displayDirective) {

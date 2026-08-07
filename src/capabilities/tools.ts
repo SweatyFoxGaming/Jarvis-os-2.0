@@ -23,6 +23,7 @@ import * as mcpRegistry from "./mcp-registry.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
 import * as obsidian from "./providers/obsidian.js";
 import * as builderClient from "../kernel/builder-client.js";
+import { listConstraints } from "../self/constraints.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -444,6 +445,14 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       properties: {},
     },
   },
+  {
+    name: "list_constraints",
+    description: "List Jarvis's explicit, auditable safety constraints — the hard limits on what autonomous actions Jarvis will take without human approval, and where each is enforced in the codebase.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 // Static declarations plus whatever MCP servers are currently approved and
@@ -471,7 +480,12 @@ export async function executeTool(
   // private beyond what the conversation already contains, so it's the one
   // tool deliberately left out of PERMISSION_BY_TOOL/ALL_CAPABILITIES rather
   // than gated behind a grant every user would need to be given anyway.
-  const UNGATED_TOOLS = new Set(["display_content"]);
+  // list_constraints is ungated for a different reason: per this codebase's
+  // safety-constraint registry (src/self/constraints.ts), any authenticated
+  // user must be able to ask what Jarvis's hard limits are — gating that
+  // behind a capability grant would mean a user could be denied visibility
+  // into the very boundaries meant to protect them.
+  const UNGATED_TOOLS = new Set(["display_content", "list_constraints"]);
   const requiredGrant = PERMISSION_BY_TOOL[name];
 
   // Not a static tool — check whether it's a currently-cached MCP tool
@@ -687,6 +701,9 @@ export async function executeTool(
         output = `Displayed ${args.type} "${args.title}" in the display panel.`;
         break;
       }
+      case "list_constraints":
+        output = { constraints: listConstraints() };
+        break;
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -730,6 +747,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   get_vault_note: ["read my note", "open my note", "what does my note say"],
   get_vault_backlinks: ["what links to", "backlinks for", "what references"],
   write_vault_note: ["add this to my vault", "save this to my vault", "create a vault note"],
+  list_constraints: ["what are your limits", "what won't you do", "what will you not do", "what are your safety constraints", "what are your hard limits"],
 };
 
 /**
