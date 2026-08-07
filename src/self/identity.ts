@@ -88,6 +88,50 @@ export async function buildIdentityContext(username: string, limit = 5): Promise
   }
 }
 
+/**
+ * Turns the 3 persisted personality dials (system_settings.personality_*,
+ * migrations/007_personality_settings.ts) into real natural-language
+ * guidance appended to the system prompt server.ts assembles for /api/chat —
+ * NOT a "formality: 72" style templated string. Raw numbers don't
+ * meaningfully steer an LLM's register; concrete sentences describing the
+ * desired register do. Bands are deliberately coarse (low/mid/high, not one
+ * sentence per integer) because that's the granularity an LLM can actually
+ * act on — a system prompt distinguishing "58" from "61" would be noise.
+ */
+export function buildPersonalityPromptFragment(settings: {
+  personality_formality: number;
+  personality_humor: number;
+  personality_verbosity: number;
+}): string {
+  const band = (value: number): "low" | "mid" | "high" => (value < 34 ? "low" : value < 67 ? "mid" : "high");
+
+  const formalityText: Record<"low" | "mid" | "high", string> = {
+    low: "Lean informal and casual — use contractions and plain, everyday word choices, more like a sharp friend than a corporate assistant.",
+    mid: "Keep a balanced, professional-but-approachable register — polished, but not stiff or overly buttoned-up.",
+    high: "Maintain a formal, precise register throughout — avoid slang and contractions, and address the user with full courtesy.",
+  };
+
+  const humorText: Record<"low" | "mid" | "high", string> = {
+    low: "Stay strictly businesslike — skip jokes, wit, or playful asides entirely; focus purely on the substance.",
+    mid: "A touch of dry, understated wit is welcome here and there, but don't force it or reach for a joke every turn.",
+    high: "Let real wit and playful humor come through often — dry one-liners and clever asides are encouraged, don't hold the personality back.",
+  };
+
+  const verbosityText: Record<"low" | "mid" | "high", string> = {
+    low: "Keep responses brief and to the point — a sentence or two when that's enough, no padding or restating the question.",
+    mid: "Give a moderate amount of detail — enough context to be genuinely useful without over-explaining.",
+    high: "Provide thorough, detailed explanations — walk through the reasoning, relevant context, and implications fully rather than compressing them away.",
+  };
+
+  const lines = [
+    formalityText[band(settings.personality_formality)],
+    humorText[band(settings.personality_humor)],
+    verbosityText[band(settings.personality_verbosity)],
+  ];
+
+  return `\n\nAdjust your register according to these standing preferences: ${lines.join(" ")}`;
+}
+
 export async function reflectOnSelf(username: string, query?: string): Promise<identityRepo.SelfReflection[]> {
   if (query && query.trim()) {
     return identityRepo.searchSelfReflections(username, query.trim());

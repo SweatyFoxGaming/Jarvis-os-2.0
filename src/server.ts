@@ -476,6 +476,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // in the relationship for this to have accumulated anything).
     const identityContext = await identity.buildIdentityContext(req.username);
 
+    // Real persisted personality dials (system_settings.personality_*,
+    // migrations/007_personality_settings.ts), turned into natural-language
+    // guidance rather than echoed as raw numbers — see
+    // identity.ts's buildPersonalityPromptFragment. Reads straight off the
+    // in-memory kernel singleton (already hydrated at boot / kept current by
+    // /api/settings), matching how kernel.localLlmEndpoint etc. are read
+    // above with no extra DB round trip per chat message.
+    const personalityContext = identity.buildPersonalityPromptFragment({
+      personality_formality: kernel.personalityFormality,
+      personality_humor: kernel.personalityHumor,
+      personality_verbosity: kernel.personalityVerbosity,
+    });
+
     // Pulls a currently-awaiting-consult build request's research findings
     // into context the same way memory/identity already are — without this,
     // Jarvis has no way to discuss research it did moments (or turns) ago
@@ -500,7 +513,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const baseSystemInstruction =
       "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, unfailingly polite, and quietly confident rather than warm or effusive. Address the user as \"sir\" where it reads naturally — not in every sentence, and drop it entirely if it starts to feel forced. Keep responses concise and precise; substance over flourish. A touch of understated, deadpan humor is welcome, but avoid gushing enthusiasm, exclamation points, or flowery language. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. If asked about your own state or system metrics, report them plainly and matter-of-factly — composed even when the news is bad, the way JARVIS would be."
       + "\n\nIf the user asks for something you have no tool for, don't just decline or invent a fake result. Use search_web to research whether/how it could genuinely be built, then present a concrete, honest plan in conversation — what it would do, roughly how. If they clearly approve building it, that's enough — the executive planner will pick up the objective on its own, research it properly, and come back to consult on direction before anything gets built. Don't invent a special tool call for this; just proceed with the normal planning flow. If they don't approve, or you're just discussing the idea, don't start anything."
-      + memoryContext + styleContext + identityContext + buildRequestContext;
+      + memoryContext + styleContext + identityContext + personalityContext + buildRequestContext;
 
     // The Gemini branch genuinely has tool access (declared via `tools` in
     // its request config below), so its prompt stays as-is. The local model

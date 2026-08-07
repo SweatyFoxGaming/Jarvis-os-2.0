@@ -14,7 +14,7 @@ import { createUser, ReservedUsernameError } from "../src/kernel/state/users-rep
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
-import { buildIdentityContext, generateProactiveThought, extractSelfReflection } from "../src/self/identity.js";
+import { buildIdentityContext, generateProactiveThought, extractSelfReflection, buildPersonalityPromptFragment } from "../src/self/identity.js";
 import { extractAndStore, queryKnowledge } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/adaptation/reflection.js";
 import { ConfidenceModel } from "../src/self/confidence.js";
@@ -1195,6 +1195,36 @@ registerTest("Identity", "extractSelfReflection no-ops with no Groq client", asy
   }
 });
 
+registerTest("Identity", "buildPersonalityPromptFragment produces distinct, non-placeholder text for low-formality/high-humor vs. high-formality/low-humor", () => {
+  // Real natural-language phrasing, not a "formality: 72" template — see
+  // buildPersonalityPromptFragment's own docblock on why raw numbers don't
+  // meaningfully steer an LLM's register. This asserts the two extremes
+  // actually diverge in wording, not exact copy (presentation detail).
+  const informal = buildPersonalityPromptFragment({ personality_formality: 5, personality_humor: 95, personality_verbosity: 50 });
+  const formal = buildPersonalityPromptFragment({ personality_formality: 95, personality_humor: 5, personality_verbosity: 50 });
+
+  if (!informal || !formal) {
+    throw new Error("Identity: buildPersonalityPromptFragment returned an empty fragment for a valid settings object");
+  }
+  if (informal === formal) {
+    throw new Error("Identity: expected distinctly different phrasing for opposite formality/humor settings, got identical output");
+  }
+  const placeholderPattern = /formality:\s*\d|humor:\s*\d|verbosity:\s*\d/i;
+  if (placeholderPattern.test(informal) || placeholderPattern.test(formal)) {
+    throw new Error("Identity: buildPersonalityPromptFragment appears to emit raw numeric placeholders instead of natural-language guidance");
+  }
+});
+
+registerTest("Identity", "buildPersonalityPromptFragment produces distinct text across all three verbosity bands", () => {
+  const brief = buildPersonalityPromptFragment({ personality_formality: 50, personality_humor: 50, personality_verbosity: 0 });
+  const moderate = buildPersonalityPromptFragment({ personality_formality: 50, personality_humor: 50, personality_verbosity: 50 });
+  const thorough = buildPersonalityPromptFragment({ personality_formality: 50, personality_humor: 50, personality_verbosity: 100 });
+  const unique = new Set([brief, moderate, thorough]);
+  if (unique.size !== 3) {
+    throw new Error("Identity: expected low/mid/high verbosity to each produce distinct phrasing, got at least one duplicate");
+  }
+});
+
 registerTest("KnowledgeGraph", "extractAndStore no-ops with no Groq client", async () => {
   const obs = ObservationPlatform.getInstance();
   const before = obs.getTelemetry().length;
@@ -1915,12 +1945,47 @@ registerTest("SystemSettings", "updateSystemSettings degrades to null when Postg
   }
 });
 
+registerTest("SystemSettings", "updateSystemSettings degrades to null when Postgres isn't reachable, including the personality_* fields", async () => {
+  // Same degrade-cleanly contract as the 5 original fields above, extended
+  // to the 3 new personality dials (migrations/007_personality_settings.ts)
+  // — a Postgres outage must still fail this partial update as a whole
+  // rather than silently dropping just the new fields.
+  const result = await systemSettingsRepo.updateSystemSettings(
+    { personalityFormality: 80, personalityHumor: 10, personalityVerbosity: 90 },
+    "test_user"
+  );
+  if (result !== null) {
+    throw new Error(`SystemSettings: expected null with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("SystemSettings", "MindKernel.hydrateFromDb() keeps hardcoded defaults when Postgres isn't reachable", async () => {
   const kernel = MindKernel.getInstance();
   const before = { ...kernel };
   await kernel.hydrateFromDb();
   if (kernel.offlineMode !== before.offlineMode || kernel.llmMode !== before.llmMode || kernel.localLlmEndpoint !== before.localLlmEndpoint) {
     throw new Error("SystemSettings: hydrateFromDb() should leave MindKernel's fields unchanged when getSystemSettings() degrades to null");
+  }
+  if (
+    kernel.personalityFormality !== before.personalityFormality ||
+    kernel.personalityHumor !== before.personalityHumor ||
+    kernel.personalityVerbosity !== before.personalityVerbosity
+  ) {
+    throw new Error("SystemSettings: hydrateFromDb() should leave MindKernel's personality_* fields unchanged when getSystemSettings() degrades to null");
+  }
+});
+
+registerTest("SystemSettings", "MindKernel starts with the documented personality defaults (formality=50, humor=30, verbosity=50)", () => {
+  // Locks in the specific defaults migrations/007_personality_settings.ts
+  // seeds new rows with, matching the "understated, dry-witted" baseline
+  // the hardcoded persona in server.ts already implies (humor starts
+  // low-but-present, not zero).
+  const kernel = MindKernel.getInstance();
+  if (kernel.personalityFormality !== 50 || kernel.personalityHumor !== 30 || kernel.personalityVerbosity !== 50) {
+    throw new Error(
+      `SystemSettings: expected default personality dials {formality:50, humor:30, verbosity:50}, got ` +
+      `{formality:${kernel.personalityFormality}, humor:${kernel.personalityHumor}, verbosity:${kernel.personalityVerbosity}}`
+    );
   }
 });
 
