@@ -6,13 +6,20 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node %h/jarvis-hud/eww-adapter.js
+ExecStart=/usr/bin/node %h/jarvis-hud/eww-bridge.js
 Restart=always
 RestartSec=3
 Environment=JARVIS_HUD_URL=http://localhost:3000/api/hud/status
+# The real-time trigger: eww-bridge.ts connects here and refreshes on
+# every event, instead of polling JARVIS_HUD_URL on a fixed timer the way
+# eww-adapter.ts (this unit's predecessor) used to.
+Environment=JARVIS_EVENTS_WS_URL=ws://localhost:3000/ws/events
 # JARVIS_API_KEY belongs in this file, not committed to git — the leading
 # "-" makes it optional so the unit still starts (with an unauthenticated,
-# 401-degrading adapter) before the file is created.
+# 401-degrading bridge) before the file is created. It must match the
+# server's actual resolved admin key (ADMIN_API_KEY if set, else
+# INTERNAL_API_KEY) — eww-bridge.ts sends it verbatim as a plain env var,
+# it does not replicate the server's own key-resolution logic.
 EnvironmentFile=-%h/.config/jarvis-hud.env
 
 [Install]

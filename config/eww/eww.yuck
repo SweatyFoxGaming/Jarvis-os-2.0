@@ -1,6 +1,6 @@
 ; config/eww/eww.yuck
 ;
-; jarvis_thought is a single \n-joined string (see eww-adapter.ts) rather
+; jarvis_thought is a single \n-joined string (see eww-bridge.ts) rather
 ; than a real list, since yuck has no native list-of-strings eww var type
 ; that `eww update` can push a JSON array into cleanly — splitting on \n at
 ; render time with {{}} string interpolation is simpler than wiring a
