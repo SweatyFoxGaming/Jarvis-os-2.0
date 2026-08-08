@@ -31,7 +31,8 @@ export async function assessWellbeingSignal(username: string, deps: WellbeingDep
 
   const lateHourRatio = await deps.getLateHourActivityRatio(username);
   if (lateHourRatio !== null && lateHourRatio >= LATE_HOUR_RATIO_THRESHOLD) {
-    return "I've noticed a fair amount of your recent messages have come in late at night — no pressure to respond, just checking in, sir.";
+    const percent = Math.round(lateHourRatio * 100);
+    return `I've noticed about ${percent}% of your recent messages have come in late at night — no pressure to respond, just checking in, sir.`;
   }
 
   const recentSignals = await deps.getRecentRapportSignals(username, 5);
