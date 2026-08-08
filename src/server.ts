@@ -770,9 +770,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               { role: "system", content: systemInstruction },
               { role: "user", content: message },
             ];
+            // Provider-prefixed ("groq:<model>") since
+            // CognitionRouter.generateWithFallback requires it — an
+            // unprefixed entry is silently skipped as malformed (see
+            // cognition-router.ts's "expected provider:model" log line),
+            // matching the exact fix applied to groq-agent-client.ts's
+            // DEFAULT_MODELS in commit ce54af0. This branch is still
+            // gated on `omniRoute`, which is currently always null (a
+            // separate, larger fix out of scope here) — but if that gate
+            // is ever wired up, these model strings must already be
+            // correct rather than silently degrading every call.
             const groqModels = isFastPath
-              ? ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
-              : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+              ? ["groq:llama-3.1-8b-instant", "groq:llama-3.3-70b-versatile"]
+              : ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
 
             let response = await generateGroqWithFallback(
               omniRoute,
@@ -857,7 +867,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
 
       else if (step === "Gemini") {
-        if (ai) {
+        if (cognitionRouter) {
           try {
             observation.incrementMetric("geminiApiCalls");
             session.updateState({
@@ -866,52 +876,59 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               activeCapability: "Gemini LLM Generation"
             }, observation);
 
-            // Real function-calling: Gemini can choose to invoke a tool
-            // (src/execution/tools.ts) with structured arguments it extracts
-            // from the conversation, gated by the caller's permission grants.
-            const messageParts: any[] = [{ text: message }];
-            if (image) {
-              messageParts.push({ inlineData: { mimeType: "image/jpeg", data: image } });
-            }
-            const contents: Content[] = [{ role: "user", parts: messageParts }];
-            const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+            // Real function-calling: the model can choose to invoke a tool
+            // (src/capabilities/tools.ts) with structured arguments it
+            // extracts from the conversation, gated by the caller's
+            // permission grants. Mirrors the Groq branch above exactly —
+            // both tiers now go through CognitionRouter's OpenAI-compatible
+            // transport, so the same message/tool-loop shape applies.
+            const geminiTools = toGroqTools(getAllToolDeclarations());
+            const messages: any[] = [
+              { role: "system", content: systemInstruction },
+              { role: "user", content: message },
+            ];
+            // Vision (a live camera frame) has no bearing on this router-based
+            // path — the image-attachment handling that existed in the old
+            // Gemini-native SDK call is intentionally not carried over here;
+            // if the router's OpenAI-compatible transport is later confirmed
+            // to support image_url content parts for one of these models,
+            // that's a follow-up, not part of this task.
+            const chatModels = ["gemini:gemini-2.0-flash", "gemini:gemini-1.5-flash"];
 
-            let response = await generateContentWithFallback(ai, {
-              contents,
-              config: {
-                systemInstruction,
-                tools: [{ functionDeclarations: getAllToolDeclarations() }],
-              },
-            }, chatModels);
-
-            let calls: FunctionCall[] = response.functionCalls || [];
+            let response = await cognitionRouter.generateWithFallback(req.username, { messages, tools: geminiTools }, chatModels);
+            let toolCalls = response.choices[0]?.message?.tool_calls || [];
             let guard = 0;
-            while (calls.length > 0 && guard < 3) {
-              guard++;
-              // Echo back the model's own raw content (not a hand-built
-              // { functionCall } part) — Gemini attaches a thought_signature
-              // to each function-call part and rejects a follow-up request
-              // that's missing it (confirmed live: "Function call is missing
-              // a thought_signature..." / 400 INVALID_ARGUMENT).
-              const modelContent = response.candidates?.[0]?.content;
-              contents.push(modelContent && modelContent.parts?.length
-                ? { role: "model", parts: modelContent.parts }
-                : { role: "model", parts: calls.map(c => ({ functionCall: c })) });
 
-              const responseParts = [];
-              for (const call of calls) {
+            while (toolCalls.length > 0 && guard < 3) {
+              guard++;
+              const assistantMessage = response.choices[0].message;
+              messages.push({
+                role: "assistant",
+                content: assistantMessage.content,
+                tool_calls: assistantMessage.tool_calls,
+              });
+
+              const toolResponseMessages: any[] = [];
+              for (const call of toolCalls) {
+                let args: Record<string, any> = {};
+                try {
+                  args = JSON.parse(call.function.arguments || "{}");
+                } catch {
+                  // Malformed arguments from the model — executeTool below
+                  // fails cleanly on whatever this leaves args as, same as
+                  // a genuinely empty-args call would.
+                }
+
                 const result = await executeTool(
-                  call.name || "",
-                  call.args || {},
+                  call.function.name || "",
+                  args,
                   req.username,
                   ai,
                   kernel.localLlmEndpoint,
-                  { alreadyAttached: !!image, supportsRoundTrip: true }
+                  { alreadyAttached: false, supportsRoundTrip: true }
                 );
 
-                // view_screen can't execute server-side — it needs the connected client to
-                // capture a screenshot and resubmit (see Task 1's design note). End this
-                // turn here rather than feeding a fake function response back to Gemini.
+                // Mirrors the Groq branch's identical handling above.
                 if (result.needsClientAction === "capture_screen") {
                   res.write("data: request_screen\n\n");
                   res.write("data: [DONE]\n\n");
@@ -921,9 +938,6 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                   return;
                 }
 
-                // display_content executes entirely server-side and just packages a
-                // directive for the dashboard's display panel — relay it over the
-                // existing SSE stream as its own frame (see Task 1's design note).
                 if (result.displayDirective) {
                   res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
                 }
@@ -932,23 +946,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 }
 
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
-                responseParts.push({
-                  functionResponse: {
-                    name: call.name,
-                    response: result.ok ? { output: result.output } : { error: result.error },
-                  },
+                toolResponseMessages.push({
+                  role: "tool",
+                  tool_call_id: call.id,
+                  content: JSON.stringify(result.ok ? { output: result.output } : { error: result.error }),
                 });
               }
-              contents.push({ role: "user", parts: responseParts });
+              messages.push(...toolResponseMessages);
 
-              response = await generateContentWithFallback(ai, {
-                contents,
-                config: { systemInstruction, tools: [{ functionDeclarations: getAllToolDeclarations() }] },
-              }, chatModels);
-              calls = response.functionCalls || [];
+              response = await cognitionRouter.generateWithFallback(req.username, { messages, tools: geminiTools }, chatModels);
+              toolCalls = response.choices[0]?.message?.tool_calls || [];
             }
 
-            const finalText = response.text || "";
+            const finalText = response.choices[0]?.message?.content || "";
             if (finalText) {
               for (const word of finalText.split(" ")) {
                 fullReply += word + " ";
