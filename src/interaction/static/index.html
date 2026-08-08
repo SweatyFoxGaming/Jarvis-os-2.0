@@ -1329,57 +1329,24 @@
     let motionCanvas = null;
     let motionCtx = null;
     let cameraTrackerActive = false;
-    // Ambient-awareness state derived from the same motion-diff data above —
-    // a cheap proxy for "activity resumed after stillness" (32x32 pixel diff
-    // can't reliably tell "someone left" vs "someone is just sitting still",
-    // so this only claims the more honest half: noticing renewed activity).
-    let motionActiveStreak = 0;
-    let motionIdleStreak = 0;
-    let ambientPresenceState = 'idle';
-    let lastAmbientNudgeAt = 0;
-    const AMBIENT_NUDGE_COOLDOWN_MS = 120000;
-
-    // Always-on live voice+vision (Gemini Live API bridge) — see
-    // src/cognition/live-voice.ts. This is the default sensory experience:
-    // continuous mic + camera, not a click-to-talk/click-to-see toggle. Falls
-    // back to the browser-STT + per-message-snapshot pipeline further below
-    // only when this can't run (no GEMINI_API_KEY, or the socket fails).
-    const LIVE_INPUT_SAMPLE_RATE = 16000;
-    const LIVE_OUTPUT_SAMPLE_RATE = 24000;
-    const LIVE_VIDEO_FRAME_INTERVAL_MS = 1000;
-    let liveVoiceWs = null;
-    let liveVoiceActive = false;
-    let liveVoiceMuted = false;
-    let liveInputAudioCtx = null;
-    let liveOutputAudioCtx = null;
-    let liveScriptProcessor = null;
-    let liveNextPlayTime = 0;
-    // Sources already handed to source.start() keep playing to completion
-    // regardless of liveNextPlayTime — that variable only affects where the
-    // *next* chunk gets scheduled. Tracked here so an 'interrupted' message
-    // (the user actually talking over Jarvis) can call .stop() on whatever
-    // is currently mid-playback instead of just silently letting it finish.
-    let liveScheduledSources = [];
-    let liveVideoFrameInterval = null;
-    let liveMicStream = null;
-
-    // Wake-word gating — without this, every word spoken near the mic gets
-    // sent to Gemini and treated as addressed to Jarvis. A separate,
-    // continuous local speech-recognition instance (not the raw PCM stream
-    // above, which keeps flowing to Gemini regardless) watches only for the
-    // trigger phrase; actual audio only forwards into the live session once
-    // "armed", and stays armed for a grace window so a real back-and-forth
-    // doesn't need the wake word repeated every sentence.
-    const WAKE_WORD = 'jarvis';
-    const WAKE_WORD_DISARM_MS = 12000;
-    const WAKE_WORD_MAX_CONSECUTIVE_ERRORS = 3;
-    const WAKE_WORD_POLL_INTERVAL_MS = 3000;
-    let wakeWordPollActive = false;
-    let wakeWordMediaRecorder = null;
-    let wakeWordStoppedIntentionally = false;
-    let wakeWordConsecutiveErrors = 0;
-    let liveArmed = false;
-    let liveDisarmTimer = null;
+    // NOTE: this used to also track "ambient-awareness" state (nudging the
+    // user via a live spoken acknowledgment after renewed camera motion) and
+    // an always-on live voice+vision bridge to the Gemini Live API
+    // (src/cognition/live-voice.ts) with its own wake-word gating, over a
+    // dedicated /ws/voice WebSocket authenticated by a short-lived ticket
+    // from POST /api/voice-ticket. That whole pipeline was removed
+    // server-side (voice input is now handled entirely by the local voice
+    // daemon over a Unix socket on the same machine — see
+    // daemon/voice_engine.py, src/core/audio-client.ts,
+    // src/interaction/voice-session.ts — with no browser-facing WebSocket
+    // for voice audio at all), so the matching browser-mic-capture,
+    // PCM-streaming, and wake-word JS that called those two removed
+    // endpoints was deleted here rather than left calling a 404/closed
+    // connection. Voice OUTPUT (typed or click-to-talk replies) still comes
+    // back through the existing /api/integrations/tts/speak endpoint via
+    // speakText() below; there is no browser voice INPUT path anymore other
+    // than the click-to-talk mic button, which posts a recorded clip to
+    // /api/voice-input (untouched by this change).
 
     function updateSensorStatusLabel() {
         const label = document.getElementById('sensor-status-label');
@@ -1452,17 +1419,14 @@
                 // a present assistant would notice you rather than requiring
                 // you to type first. A short delay lets the video element
                 // actually have a decoded frame ready for captureCameraFrame().
-                // Routed through whichever channel is actually live — the
-                // live voice WS if it's already up (so it comes as speech,
-                // not a redundant second text reply), the old text-chat
-                // trigger otherwise.
+                // Used to route through a live voice WebSocket when one was
+                // up (so it came out as speech, not a redundant text reply);
+                // that channel no longer exists (removed live-voice bridge —
+                // see the comment near the top of this script section), so
+                // this always goes through the ordinary text-chat trigger now.
                 setTimeout(() => {
                     const hint = "[The camera just came on and you can now see the user. Acknowledge their presence naturally and briefly, the way you would if someone just walked into the room — don't announce that you're doing this or mention the camera itself.]";
-                    if (liveVoiceActive && liveVoiceWs?.readyState === WebSocket.OPEN) {
-                        liveVoiceWs.send(JSON.stringify({ type: 'ambient', hint }));
-                    } else {
-                        triggerChatDialogue(hint);
-                    }
+                    triggerChatDialogue(hint);
                 }, 800);
             } catch (err) {
                 console.error("Camera access failed", err);
@@ -1492,16 +1456,18 @@
         requestAnimationFrame(trackMotionFrame);
     }
 
-    // Entry point for "always on" — camera and live voice both start
-    // themselves instead of waiting for a manual toggle click. Called once
-    // on load (if already logged in) and once a valid API key is first
-    // entered. The toggle buttons still work afterward as mute/off controls.
+    // Entry point for "always on" — the camera starts itself instead of
+    // waiting for a manual toggle click. Called once on load (if already
+    // logged in) and once a valid API key is first entered. The toggle
+    // button still works afterward as an on/off control. Used to also
+    // auto-start the live voice+vision bridge here; that pipeline is gone
+    // (see the comment near the top of this script section) — voice input
+    // is the click-to-talk mic button only, which stays manual.
     let sensorsAutoStarted = false;
     async function initAlwaysOnSensors() {
         if (sensorsAutoStarted || !CURRENT_API_KEY) return;
         sensorsAutoStarted = true;
         if (!cameraStream) await toggleCameraSensor();
-        await startLiveVoiceSession();
     }
 
     function stopCameraMotionTracking() {
@@ -1532,443 +1498,15 @@
         }
     }
 
-    // ---------- Always-on live voice + vision (Gemini Live API bridge) ----------
-
-    // Naive linear-interpolation resampler — audio quality isn't the point
-    // here, getting real speech recognized reliably is.
-    function downsampleTo16k(float32Samples, inputSampleRate) {
-        if (inputSampleRate === LIVE_INPUT_SAMPLE_RATE) return float32Samples;
-        const ratio = inputSampleRate / LIVE_INPUT_SAMPLE_RATE;
-        const outLength = Math.floor(float32Samples.length / ratio);
-        const result = new Float32Array(outLength);
-        for (let i = 0; i < outLength; i++) result[i] = float32Samples[Math.floor(i * ratio)];
-        return result;
-    }
-
-    function floatTo16BitPCM(float32Samples) {
-        const buffer = new ArrayBuffer(float32Samples.length * 2);
-        const view = new DataView(buffer);
-        for (let i = 0; i < float32Samples.length; i++) {
-            const s = Math.max(-1, Math.min(1, float32Samples[i]));
-            view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-        }
-        return buffer;
-    }
-
-    // Schedules each incoming chunk back-to-back on the output AudioContext's
-    // timeline so playback stays gapless despite irregular network arrival.
-    function playLiveAudioChunk(arrayBuffer) {
-        const int16 = new Int16Array(arrayBuffer);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-
-        const audioBuffer = liveOutputAudioCtx.createBuffer(1, float32.length, LIVE_OUTPUT_SAMPLE_RATE);
-        audioBuffer.copyToChannel(float32, 0);
-
-        const source = liveOutputAudioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(liveOutputAudioCtx.destination);
-
-        const now = liveOutputAudioCtx.currentTime;
-        const startAt = Math.max(now, liveNextPlayTime);
-        source.onended = () => { liveScheduledSources = liveScheduledSources.filter(s => s !== source); };
-        liveScheduledSources.push(source);
-        source.start(startAt);
-        liveNextPlayTime = startAt + audioBuffer.duration;
-    }
-
-    // Actually silences whatever's mid-playback (the user talking over
-    // Jarvis) instead of only resetting the scheduling clock for future
-    // chunks — see the comment on liveScheduledSources above.
-    function stopLiveAudioPlayback() {
-        liveScheduledSources.forEach(source => { try { source.stop(); } catch {} });
-        liveScheduledSources = [];
-        liveNextPlayTime = 0;
-    }
-
-    // True while Jarvis's own voice is coming out of the speakers — either
-    // the plain TTS playback speakText() uses for notifications/text-chat
-    // replies, or the live Gemini audio scheduled above. Without this, the
-    // always-on mic picks up Jarvis's own speech: the wake-word listener can
-    // mishear "jarvis" inside Jarvis's own notification audio and re-trigger
-    // itself, and an armed session would forward Jarvis's own voice back to
-    // Gemini as if it were the user talking. echoCancellation on the
-    // getUserMedia constraints above helps but isn't a substitute — it only
-    // filters what our own live-audio pipeline hears, not the wake-word
-    // listener's separate capture, and isn't guaranteed complete anyway.
-    function isJarvisSpeaking() {
-        if (isSpeakingNow) return true;
-        if (liveOutputAudioCtx && liveNextPlayTime > liveOutputAudioCtx.currentTime) return true;
-        return false;
-    }
-
-    // The real "always on" experience: a continuous bidirectional stream to
-    // Gemini's Live API — mic audio in, spoken audio back, plus the live
-    // camera feed (via captureCameraFrame(), the same one typed chat uses),
-    // instead of a click-to-talk record/transcribe/reply round trip. Falls
-    // back to the legacy browser-STT toggle (further below) if this can't
-    // run at all — e.g. no GEMINI_API_KEY configured server-side.
-    async function startLiveVoiceSession() {
-        if (liveVoiceActive || !CURRENT_API_KEY) return;
-
-        try {
-            // echoCancellation/noiseSuppression help the browser filter out
-            // Jarvis's own speaker output from what it captures — a partial
-            // mitigation on its own (imperfect, and does nothing for the
-            // wake-word listener's separate capture below), which is why
-            // isJarvisSpeaking() gates both pipelines explicitly further down.
-            liveMicStream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: true }
-            });
-        } catch (err) {
-            console.warn("Microphone access denied, live voice can't start: ", err);
-            addNotification(`Microphone access failed (${err.name || "unknown error"}: ${err.message || err}) — falling back to click-to-talk.`, "warning");
-            toggleMicrophoneSensor();
-            return;
-        }
-
-        liveInputAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        liveOutputAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        liveNextPlayTime = 0;
-
-        // A WebSocket handshake can't carry a custom header, so the permanent
-        // API key never rides in this URL — a short-lived, single-use ticket
-        // (fetched over a normal authenticated request) does instead.
-        let voiceTicket;
-        try {
-            const ticketRes = await authFetch('/api/voice-ticket', {
-                method: 'POST',
-                headers: { 'X-API-Key': CURRENT_API_KEY }
-            });
-            if (!ticketRes.ok) throw new Error(`ticket request failed (${ticketRes.status})`);
-            voiceTicket = (await ticketRes.json()).ticket;
-        } catch (err) {
-            console.warn("Could not obtain a voice ticket, live voice can't start: ", err);
-            addNotification("Live voice couldn't authenticate — falling back to click-to-talk.", "warning");
-            toggleMicrophoneSensor();
-            return;
-        }
-
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        liveVoiceWs = new WebSocket(`${protocol}//${location.host}/ws/voice?ticket=${encodeURIComponent(voiceTicket)}`);
-        liveVoiceWs.binaryType = 'arraybuffer';
-
-        let everConnected = false;
-
-        liveVoiceWs.onopen = () => {
-            everConnected = true;
-            liveVoiceActive = true;
-            liveVoiceMuted = false;
-
-            const source = liveInputAudioCtx.createMediaStreamSource(liveMicStream);
-            liveScriptProcessor = liveInputAudioCtx.createScriptProcessor(4096, 1, 1);
-            source.connect(liveScriptProcessor);
-            liveScriptProcessor.connect(liveInputAudioCtx.destination);
-            liveScriptProcessor.onaudioprocess = (event) => {
-                if (!liveVoiceActive || liveVoiceMuted || !liveArmed || isJarvisSpeaking() || liveVoiceWs.readyState !== WebSocket.OPEN) return;
-                const inputData = event.inputBuffer.getChannelData(0);
-                const downsampled = downsampleTo16k(inputData, liveInputAudioCtx.sampleRate);
-                liveVoiceWs.send(floatTo16BitPCM(downsampled));
-            };
-
-            liveVideoFrameInterval = setInterval(() => {
-                if (!liveVoiceActive || liveVoiceWs.readyState !== WebSocket.OPEN) return;
-                const frame = captureCameraFrame();
-                if (frame) liveVoiceWs.send(JSON.stringify({ type: 'video', data: frame }));
-            }, LIVE_VIDEO_FRAME_INTERVAL_MS);
-
-            micEnabled = true;
-            startWakeWordListener();
-            updateMicButtonVisual();
-            addNotification(`Live voice link established. Say "${WAKE_WORD}" to talk.`, "success");
-            updateSensorStatusLabel();
-        };
-
-        liveVoiceWs.onmessage = (event) => {
-            if (event.data instanceof ArrayBuffer) {
-                playLiveAudioChunk(event.data);
-                return;
-            }
-            try {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'transcript' && msg.text) {
-                    if (chatScroller.textContent.includes('Nothing yet — ask Jarvis anything above.')) {
-                        chatScroller.innerHTML = '';
-                    }
-                    appendChatMessage(msg.text, msg.role === 'user' ? 'user' : 'assistant');
-                    if (msg.role === 'assistant') {
-                        loadMindKernelData();
-                        loadLiveSystemData();
-                        setTimeout(loadIdentityStream, 2500);
-                    }
-                    resetLiveDisarmTimer(); // active exchange — keep the window open
-                } else if (msg.type === 'turnComplete') {
-                    resetLiveDisarmTimer();
-                } else if (msg.type === 'interrupted') {
-                    stopLiveAudioPlayback();
-                } else if (msg.type === 'error') {
-                    if (!everConnected) {
-                        // Never got a working session at all (e.g. no
-                        // GEMINI_API_KEY) — fall back to the legacy pipeline
-                        // rather than leaving "ears" silently off.
-                        addNotification(`Live voice unavailable (${msg.message}). Falling back to click-to-talk.`, "warning");
-                        stopLiveVoiceSession();
-                        toggleMicrophoneSensor();
-                    } else {
-                        addNotification(`Live voice error: ${msg.message}`, "danger");
-                    }
-                }
-            } catch {}
-        };
-
-        liveVoiceWs.onerror = () => {
-            if (!everConnected) {
-                addNotification("Live voice connection failed — falling back to click-to-talk.", "warning");
-                stopLiveVoiceSession();
-                toggleMicrophoneSensor();
-            }
-        };
-
-        liveVoiceWs.onclose = () => {
-            if (liveVoiceActive) stopLiveVoiceSession();
-        };
-    }
-
-    function stopLiveVoiceSession() {
-        liveVoiceActive = false;
-        stopWakeWordListener();
-        disarmLiveVoice();
-        if (liveVideoFrameInterval) { clearInterval(liveVideoFrameInterval); liveVideoFrameInterval = null; }
-        if (liveVoiceWs) {
-            if (liveVoiceWs.readyState === WebSocket.OPEN) {
-                try { liveVoiceWs.send(JSON.stringify({ type: 'end' })); } catch {}
-            }
-            liveVoiceWs.close();
-            liveVoiceWs = null;
-        }
-        if (liveScriptProcessor) { liveScriptProcessor.disconnect(); liveScriptProcessor = null; }
-        if (liveMicStream) { liveMicStream.getTracks().forEach(t => t.stop()); liveMicStream = null; }
-        if (liveInputAudioCtx) { liveInputAudioCtx.close(); liveInputAudioCtx = null; }
-        if (liveOutputAudioCtx) { liveOutputAudioCtx.close(); liveOutputAudioCtx = null; }
-        liveScheduledSources = [];
-
-        micEnabled = false;
-        const pulseDot = document.getElementById('mic-pulse-dot');
-        const btn = document.getElementById('btn-mic-toggle');
-        if (pulseDot) pulseDot.classList.add('hidden');
-        if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
-        updateSensorStatusLabel();
-    }
-
-    // ---------- Wake-word gating ----------
-
-    function updateMicButtonVisual() {
-        const pulseDot = document.getElementById('mic-pulse-dot');
-        const btn = document.getElementById('btn-mic-toggle');
-        if (!btn) return;
-        if (liveVoiceMuted) {
-            if (pulseDot) pulseDot.classList.add('hidden');
-            btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
-        } else if (liveArmed) {
-            if (pulseDot) pulseDot.classList.remove('hidden');
-            btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
-        } else {
-            // Standing by for the wake word — visibly different from "actively
-            // conversing" so it's clear Jarvis isn't currently engaged, without
-            // looking fully off/muted either.
-            if (pulseDot) pulseDot.classList.add('hidden');
-            btn.className = "p-2.5 rounded-full bg-accent/5 border border-accent/20 text-accent/60 hover:text-accent transition-all duration-300 relative";
-        }
-    }
-
-    function resetLiveDisarmTimer() {
-        if (liveDisarmTimer) clearTimeout(liveDisarmTimer);
-        liveDisarmTimer = setTimeout(disarmLiveVoice, WAKE_WORD_DISARM_MS);
-    }
-
-    function armLiveVoice() {
-        if (!liveArmed) {
-            addNotification("Listening.", "success");
-        }
-        liveArmed = true;
-        updateMicButtonVisual();
-        resetLiveDisarmTimer();
-    }
-
-    function disarmLiveVoice() {
-        if (liveDisarmTimer) { clearTimeout(liveDisarmTimer); liveDisarmTimer = null; }
-        if (liveArmed) {
-            liveArmed = false;
-            updateMicButtonVisual();
-        }
-    }
-
-    // Used only when wake-word detection itself isn't available (no
-    // SpeechRecognition support, or it silently fails to produce events) —
-    // arms without a disarm timer, since there'd be no way to re-arm
-    // afterward. Falls back to today's "responds to everything" behavior
-    // rather than leaving live voice permanently, silently unreachable.
-    function armLiveVoicePermanently() {
-        if (liveDisarmTimer) { clearTimeout(liveDisarmTimer); liveDisarmTimer = null; }
-        liveArmed = true;
-        updateMicButtonVisual();
-    }
-
-    // Wake-word spotting via the app's own local transcription pipeline
-    // (/api/voice-input, forceOffline: true -> whisper-cpp) instead of the
-    // browser's built-in SpeechRecognition — that depends on Chromium's
-    // bundled cloud speech backend, which is unreachable in Electron/many
-    // Linux builds (live-observed: both this listener and the legacy STT
-    // fallback below failed identically with a "network" error, never a
-    // one-off). Records a short clip from the same liveMicStream already
-    // captured for live voice, transcribes it locally, and checks for the
-    // wake word — repeating every WAKE_WORD_POLL_INTERVAL_MS for as long as
-    // live voice is on, unmuted, and not already armed (once armed, actual
-    // conversation flows through the live Gemini audio pipe directly, so
-    // there's nothing useful to transcribe here until it disarms again).
-    function blobToBase64(blob) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result.split(',')[1]);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-        });
-    }
-
-    function startWakeWordListener() {
-        wakeWordStoppedIntentionally = false;
-        wakeWordConsecutiveErrors = 0;
-        wakeWordPollActive = true;
-        scheduleWakeWordCycle();
-    }
-
-    function scheduleWakeWordCycle(delayMs) {
-        if (!wakeWordPollActive || wakeWordStoppedIntentionally || !liveVoiceActive || liveVoiceMuted) return;
-        setTimeout(() => {
-            if (!wakeWordPollActive || wakeWordStoppedIntentionally || !liveVoiceActive || liveVoiceMuted) return;
-            if (liveArmed || isJarvisSpeaking()) {
-                // Already in a live exchange, or Jarvis is talking — nothing
-                // useful to transcribe right now. Check back shortly rather
-                // than recording (and burning a transcription call on) audio
-                // that's either already handled live or is Jarvis's own voice.
-                scheduleWakeWordCycle(1000);
-                return;
-            }
-            recordWakeWordClip();
-        }, delayMs || 0);
-    }
-
-    function recordWakeWordClip() {
-        if (!liveMicStream) { scheduleWakeWordCycle(WAKE_WORD_POLL_INTERVAL_MS); return; }
-
-        let options = { mimeType: 'audio/webm;codecs=opus' };
-        if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'audio/webm' };
-        if (!MediaRecorder.isTypeSupported(options.mimeType)) options = {};
-
-        let recorder;
-        try {
-            recorder = new MediaRecorder(liveMicStream, options);
-        } catch (e) {
-            console.warn("Wake word: failed to create local recorder: ", e);
-            scheduleWakeWordCycle(WAKE_WORD_POLL_INTERVAL_MS);
-            return;
-        }
-
-        const chunks = [];
-        wakeWordMediaRecorder = recorder;
-        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-
-        recorder.onstop = async () => {
-            wakeWordMediaRecorder = null;
-            if (!wakeWordPollActive || wakeWordStoppedIntentionally) return;
-
-            try {
-                const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-                const base64 = await blobToBase64(blob);
-                const res = await authFetch('/api/voice-input', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
-                    body: JSON.stringify({ audio: base64, mimeType: blob.type, forceOffline: true })
-                });
-                if (res.ok) {
-                    wakeWordConsecutiveErrors = 0; // a real response proves the pipeline works
-                    const data = await res.json();
-                    const transcript = (data.transcription || '').toLowerCase();
-                    if (transcript.includes(WAKE_WORD) && !isJarvisSpeaking()) armLiveVoice();
-                } else {
-                    wakeWordConsecutiveErrors++;
-                }
-            } catch (e) {
-                wakeWordConsecutiveErrors++;
-                console.warn(`Wake word transcription failed (${wakeWordConsecutiveErrors}/${WAKE_WORD_MAX_CONSECUTIVE_ERRORS}): `, e);
-            }
-
-            if (wakeWordConsecutiveErrors >= WAKE_WORD_MAX_CONSECUTIVE_ERRORS) {
-                // Real, repeated failures (server unreachable, whisper-cpp
-                // down) — stop polling and fail open rather than retrying
-                // forever, same principle as the old SpeechRecognition path.
-                console.warn("Wake word local transcription failed repeatedly — disabling wake-word gating for this session.");
-                addNotification("Wake word detection isn't working here — live voice will respond to everything said near it.", "warning");
-                wakeWordPollActive = false;
-                armLiveVoicePermanently();
-                return;
-            }
-
-            scheduleWakeWordCycle();
-        };
-
-        recorder.start();
-        setTimeout(() => {
-            if (recorder.state !== 'inactive') recorder.stop();
-        }, WAKE_WORD_POLL_INTERVAL_MS);
-    }
-
-    function stopWakeWordListener() {
-        wakeWordStoppedIntentionally = true;
-        wakeWordPollActive = false;
-        if (wakeWordMediaRecorder && wakeWordMediaRecorder.state !== 'inactive') {
-            try { wakeWordMediaRecorder.stop(); } catch {}
-        }
-        wakeWordMediaRecorder = null;
-    }
-
-    // A cheap, honest proxy for "someone's presence just became active
-    // again after a stretch of stillness" — a 32x32 pixel diff can't tell
-    // "left the room" from "sitting still", so this only claims the more
-    // reliable half. Sends a silent synthetic prompt through the live
-    // session rather than a separate notification, so Jarvis can react in
-    // the same natural, in-conversation way a present assistant would.
-    function maybeSendAmbientNudge(motionCount) {
-        const ACTIVE_THRESHOLD = 8;
-        const IDLE_STREAK_TO_ARM = 100;   // ~5s of stillness at 20fps before re-arming
-        const ACTIVE_STREAK_TO_FIRE = 15; // ~0.75s of sustained motion to trigger
-
-        if (motionCount > ACTIVE_THRESHOLD) {
-            motionActiveStreak++;
-            motionIdleStreak = 0;
-        } else {
-            motionIdleStreak++;
-            motionActiveStreak = 0;
-        }
-
-        if (motionIdleStreak >= IDLE_STREAK_TO_ARM) {
-            ambientPresenceState = 'idle';
-        }
-
-        if (ambientPresenceState === 'idle' && motionActiveStreak >= ACTIVE_STREAK_TO_FIRE) {
-            ambientPresenceState = 'active';
-            const now = Date.now();
-            if (liveVoiceActive && !liveVoiceMuted && !isJarvisSpeaking() && liveVoiceWs?.readyState === WebSocket.OPEN
-                && now - lastAmbientNudgeAt > AMBIENT_NUDGE_COOLDOWN_MS) {
-                lastAmbientNudgeAt = now;
-                liveVoiceWs.send(JSON.stringify({
-                    type: 'ambient',
-                    hint: "[There's been renewed movement in view after a quiet stretch — if it's genuinely worth a brief, natural acknowledgment, say something short; otherwise stay silent.]"
-                }));
-            }
-        }
-    }
-
+    // Camera motion tracking (below) used to feed maybeSendAmbientNudge(),
+    // which sent a silent synthetic prompt through the live voice
+    // WebSocket when renewed motion followed a quiet stretch, so Jarvis
+    // could react the way a present assistant would notice someone
+    // returning. That whole live voice+vision bridge (Gemini Live API,
+    // wake-word gating, /api/voice-ticket + /ws/voice) was removed —
+    // there's no browser-facing channel left to send a silent ambient nudge
+    // through, so that function and its call site were removed too. The
+    // motion-diff computation below is otherwise unchanged.
     function trackMotionFrame() {
         if (!cameraTrackerActive || !cameraStream) return;
 
@@ -1999,7 +1537,10 @@
                         }
                     }
 
-                    maybeSendAmbientNudge(count);
+                    // count (and the discarded sumX/sumY average) used to
+                    // drive maybeSendAmbientNudge(), removed along with the
+                    // live voice bridge it depended on — see the comment
+                    // above this function.
                 }
                 prevFrameData = data;
             } catch (e) {
@@ -2058,27 +1599,13 @@
     let micStoppedIntentionally = false;
 
     async function toggleMicrophoneSensor() {
-        // When the live voice bridge is running, this button mutes/unmutes
-        // it rather than starting the separate legacy STT pipeline — "ears"
-        // are always on by default, this is just a privacy pause. Muting
-        // stops the wake-word listener too (a genuine pause, not just
-        // "Gemini forwarding paused while a different Google speech service
-        // keeps listening") and unmuting returns to standby — the wake word
-        // still needs to be said again, same as after the disarm timeout.
-        if (liveVoiceActive) {
-            liveVoiceMuted = !liveVoiceMuted;
-            if (liveVoiceMuted) {
-                disarmLiveVoice();
-                stopWakeWordListener();
-                addNotification("Live voice muted.", "warning");
-            } else {
-                startWakeWordListener();
-                addNotification(`Live voice unmuted. Say "${WAKE_WORD}" to talk.`, "success");
-            }
-            updateMicButtonVisual();
-            return;
-        }
-
+        // This used to first check whether the always-on live voice bridge
+        // (Gemini Live API over /ws/voice) was running and, if so, just
+        // mute/unmute it instead of starting the click-to-talk pipeline
+        // below. That bridge is gone — voice input now arrives at the local
+        // voice daemon's Unix socket directly, not through the browser — so
+        // this button is unconditionally click-to-talk: press to start
+        // listening, press again to stop and transcribe.
         if (micEnabled) {
             await stopMicrophoneSensor();
             return;
