@@ -1,7 +1,6 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
-import { generateWithFallback } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { LongTermLearningEngine, ICodingStylePreference } from "./long_term_learning.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
@@ -44,11 +43,12 @@ const REFLECTION_SCHEMA = {
  * user is waiting on. Every failure is caught and logged, never thrown.
  */
 export async function reflectAndLearn(
-  omniRoute: OpenAiCompatibleConfig | null,
+  router: CognitionRouter | null,
+  username: string,
   userMessage: string,
   replyText: string
 ): Promise<void> {
-  if (!omniRoute) return;
+  if (!router) return;
   try {
     // Best-effort, never blocks the reflection call — a related-notes
     // hint just lets the extraction judge "is this genuinely new" more
@@ -58,8 +58,8 @@ export async function reflectAndLearn(
       ? `\n\nRelated past vault notes (for context — don't repeat what's already captured there):\n${relatedNotes.map(n => `- ${n.title} (${n.path})`).join("\n")}`
       : "";
 
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
@@ -75,7 +75,7 @@ export async function reflectAndLearn(
           json_schema: { name: "style_and_mistake_reflection", schema: toGroqSchema(REFLECTION_SCHEMA), strict: true },
         },
       },
-      ["openai/gpt-oss-20b"]
+      ["groq:openai/gpt-oss-20b"]
     );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");

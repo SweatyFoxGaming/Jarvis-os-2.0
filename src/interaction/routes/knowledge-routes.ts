@@ -7,7 +7,7 @@ import * as knowledgeGraphRepo from "../../kernel/state/knowledge-graph-repo.js"
 import * as identity from "../../self/identity.js";
 import * as identityRepo from "../../kernel/state/identity-repo.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
-import { getOmniRoute } from "../../runtime/clients.js";
+import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -55,10 +55,10 @@ knowledgeRouter.get("/api/identity/reflections", validateApiKey, requireCapabili
 // generate duplicate records, which is exactly the class of bug CodeRabbit
 // flagged in the earlier router-split review.
 knowledgeRouter.post("/api/identity/thought", validateApiKey, requireCapability("identity.read"), async (req: any, res: any) => {
-  const omniRoute = getOmniRoute();
-  if (!omniRoute) return res.status(503).json({ error: "Requires OMNIROUTE_API_KEY to be configured." });
+  const router = getCognitionRouter();
+  if (!router) return res.status(503).json({ error: "Requires GROQ_API_KEYS or GEMINI_API_KEYS to be configured." });
   try {
-    const result = await identity.generateProactiveThought(req.username, omniRoute);
+    const result = await identity.generateProactiveThought(req.username, router);
     if (!result) {
       return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
     }

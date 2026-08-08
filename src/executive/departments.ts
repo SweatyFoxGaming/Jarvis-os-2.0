@@ -1,7 +1,6 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
-import { generateWithFallback } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as github from "../capabilities/providers/github.js";
 import * as webSearch from "../capabilities/providers/websearch.js";
@@ -57,16 +56,17 @@ const DEPARTMENT_DECOMPOSITION_SCHEMA = {
 // without a real model actually reasoning about it).
 export async function decomposeObjective(
   objective: string,
-  omniRoute: OpenAiCompatibleConfig | null,
-  offlineMode: boolean
+  router: CognitionRouter | null,
+  offlineMode: boolean,
+  username: string
 ): Promise<DepartmentStep[]> {
-  if (!omniRoute || offlineMode) {
+  if (!router || offlineMode) {
     return [{ step: objective, department: "research" }];
   }
 
   try {
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
@@ -77,7 +77,7 @@ export async function decomposeObjective(
           json_schema: { name: "department_decomposition", schema: toGroqSchema(DEPARTMENT_DECOMPOSITION_SCHEMA), strict: true },
         },
       },
-      ["openai/gpt-oss-20b"]
+      ["groq:openai/gpt-oss-20b"]
     );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
@@ -140,12 +140,12 @@ const RESEARCH_LOOKUPS_SCHEMA = {
 // the raw objective; the second synthesizes whatever was actually gathered.
 // Each individual lookup degrades independently — one failing read (a
 // missing BRAVE_API_KEY, a GitHub hiccup) doesn't abort the whole pass.
-export async function runResearch(objective: string, omniRoute: OpenAiCompatibleConfig | null, username: string): Promise<ResearchResult> {
-  if (!omniRoute) {
+export async function runResearch(objective: string, router: CognitionRouter | null, username: string): Promise<ResearchResult> {
+  if (!router) {
     return {
       summary:
         "No capable model is available right now, so I couldn't do real research on this — " +
-        "I'd need OmniRoute reachable to plan and synthesize findings.",
+        "I'd need the cognition router reachable to plan and synthesize findings.",
     };
   }
 
@@ -154,8 +154,8 @@ export async function runResearch(objective: string, omniRoute: OpenAiCompatible
   let knowledgeQuery = "";
   let wikipediaQuery = "";
   try {
-    const lookupResponse = await generateWithFallback(
-      omniRoute,
+    const lookupResponse = await router.generateWithFallback(
+      username,
       {
         messages: [{ role: "user", content: `Plan what to research for this objective: "${objective}"` }],
         response_format: {
@@ -163,7 +163,7 @@ export async function runResearch(objective: string, omniRoute: OpenAiCompatible
           json_schema: { name: "research_lookups", schema: toGroqSchema(RESEARCH_LOOKUPS_SCHEMA), strict: true },
         },
       },
-      ["openai/gpt-oss-20b"]
+      ["groq:openai/gpt-oss-20b"]
     );
     const parsed = JSON.parse(lookupResponse.choices[0]?.message?.content || "{}");
     webQueries = Array.isArray(parsed.webQueries)
@@ -251,15 +251,15 @@ export async function runResearch(objective: string, omniRoute: OpenAiCompatible
   }
 
   try {
-    const synthesis = await generateWithFallback(
-      omniRoute,
+    const synthesis = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
           content: `Synthesize these raw research findings into a clear, concise report for the objective "${objective}". Findings:\n\n${findings.join("\n\n")}`,
         }],
       },
-      ["llama-3.3-70b-versatile"]
+      ["groq:llama-3.3-70b-versatile"]
     );
     return { summary: synthesis.choices[0]?.message?.content || findings.join("\n\n") };
   } catch (err: any) {
@@ -268,14 +268,14 @@ export async function runResearch(objective: string, omniRoute: OpenAiCompatible
   }
 }
 
-export async function reviewCodeDiff(objective: string, files: DraftedFile[], omniRoute: OpenAiCompatibleConfig | null): Promise<string> {
-  if (!omniRoute) {
+export async function reviewCodeDiff(objective: string, files: DraftedFile[], router: CognitionRouter | null, username: string): Promise<string> {
+  if (!router) {
     return "No capable model was available to review this change — please review the diff yourself before merging.";
   }
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
@@ -285,7 +285,7 @@ export async function reviewCodeDiff(objective: string, files: DraftedFile[], om
             `Objective: ${objective}\n\nFiles:\n${filesText}`,
         }],
       },
-      ["llama-3.3-70b-versatile"]
+      ["groq:llama-3.3-70b-versatile"]
     );
     return response.choices[0]?.message?.content || "Review completed with no specific feedback.";
   } catch (err: any) {
@@ -320,15 +320,16 @@ export async function reviewTaskDiff(
   taskTitle: string,
   taskDescription: string,
   files: DraftedFile[],
-  omniRoute: OpenAiCompatibleConfig | null
+  router: CognitionRouter | null,
+  username: string
 ): Promise<{ approved: boolean; findings: string }> {
-  if (!omniRoute) {
-    return { approved: false, findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure OMNIROUTE_API_KEY to enable the coding agent's review gate." };
+  if (!router) {
+    return { approved: false, findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure GROQ_API_KEYS or GEMINI_API_KEYS to enable the coding agent's review gate." };
   }
   try {
     const filesText = files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
@@ -354,7 +355,7 @@ export async function reviewTaskDiff(
       // output elsewhere in this file (decomposeObjective, the
       // research-lookups call) with no rate-limit issues throughout this
       // session's live testing, so this call uses it too.
-      ["openai/gpt-oss-20b"]
+      ["groq:openai/gpt-oss-20b"]
     );
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     return {

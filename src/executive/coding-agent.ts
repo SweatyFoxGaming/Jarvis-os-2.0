@@ -8,7 +8,6 @@ import { callGroqAgentChat, AgentMessage, AgentTool, DEFAULT_MODELS } from "../r
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
 import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { getCognitionRouter } from "../runtime/clients.js";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
@@ -134,28 +133,16 @@ export async function runCodingAgent(
   researchSummary: string,
   directionNotes: string,
   baseBranch: string,
-  omniRoute: OpenAiCompatibleConfig | null,
   username: string
 ): Promise<CodingAgentResult> {
-  // omniRoute is now the single client for both the tool-calling backend
-  // (planning/coding) and departments.reviewTaskDiff's review gate below —
-  // departments.ts finished migrating off the raw Groq SDK in the same
-  // OmniRoute cognition gateway migration this function did, so there's no
-  // longer a second, separately-fetched client to null-check here.
-  if (!omniRoute) {
-    return { ok: false, error: "No OmniRoute client is configured — the agentic coding loop is unavailable." };
-  }
-
-  // callGroqAgentChat (the tool-calling backend this function drives) has
-  // migrated onto CognitionRouter (see groq-client.ts's own migration) —
-  // departments.reviewTaskDiff above hasn't migrated yet (that's Task 9's
-  // territory), which is why omniRoute is still threaded in separately
-  // rather than this function's own signature retyping wholesale. Read via
-  // getCognitionRouter() rather than threaded in as a new parameter from
-  // this function's own caller — the same "read at point of use, long after
-  // server.ts's startup has set it" pattern clients.ts's own doc comment
-  // documents, since autonomous_executive.ts doesn't hold a CognitionRouter
-  // reference to pass down yet.
+  // Read via getCognitionRouter() rather than threaded in as a parameter
+  // from this function's own caller — the same "read at point of use, long
+  // after server.ts's startup has set it" pattern clients.ts's own doc
+  // comment documents. departments.ts (reviewTaskDiff below) migrated onto
+  // CognitionRouter in the same pass as this function's tool-calling
+  // backend (callGroqAgentChat, via groq-client.ts), so this one router
+  // instance now serves both — no separately-threaded client needed here
+  // anymore.
   const router = getCognitionRouter();
   if (!router) {
     return { ok: false, error: "No CognitionRouter is configured — the agentic coding loop is unavailable." };
@@ -393,7 +380,7 @@ export async function runCodingAgent(
               approved: false,
               findings: `Deterministic verification failed (exit ${verifyResult.exitCode}) before LLM review:\n${verifyResult.stdout.slice(-2000)}\n${verifyResult.stderr.slice(-2000)}`,
             }
-          : await departments.reviewTaskDiff(task.title, task.description, taskFiles, omniRoute);
+          : await departments.reviewTaskDiff(task.title, task.description, taskFiles, router, username);
         await rewardEventsRepo.recordRewardEvent(buildRequestId, "task_review", sessionModelUsed, category, verdict.approved ? 1 : -1);
         lastFindings = verdict.findings;
 

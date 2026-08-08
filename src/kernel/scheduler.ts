@@ -1,4 +1,4 @@
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "./observation.js";
 import * as emailIntegration from "../capabilities/providers/email.js";
 import * as briefing from "../world/briefing.js";
@@ -139,9 +139,9 @@ export function startEmailWatchJob(intervalMs = 5 * 60 * 1000): NodeJS.Timeout |
  */
 let seenBriefingItemIds = new Set<string>();
 
-export function startBriefingJob(omniRoute: OpenAiCompatibleConfig | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
+export function startBriefingJob(router: CognitionRouter | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-briefing", intervalMs, async () => {
-    const result = await briefing.generateBriefing(omniRoute, "admin");
+    const result = await briefing.generateBriefing(router, "admin");
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
       obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {
@@ -158,7 +158,7 @@ export function startBriefingJob(omniRoute: OpenAiCompatibleConfig | null, inter
     seenBriefingItemIds = new Set(result.items.map(i => i.id));
 
     if (freshItems.length > 0) {
-      const freshText = await briefing.synthesizeBriefing(omniRoute, freshItems, []);
+      const freshText = await briefing.synthesizeBriefing(router, freshItems, [], "admin");
       pushNotification("admin", freshText, freshItems.some(i => i.urgency === "high") ? "warning" : "info");
     }
 
@@ -192,13 +192,13 @@ export function startBriefingJob(omniRoute: OpenAiCompatibleConfig | null, inter
  * happened to be picked. One user's slow/failed generation can't block
  * another's — each iteration is independent and already-caught.
  */
-export function startSelfReflectionJob(omniRoute: OpenAiCompatibleConfig | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
+export function startSelfReflectionJob(router: CognitionRouter | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-self-reflection", intervalMs, async () => {
-    if (!omniRoute) return;
+    if (!router) return;
     const usernames = await usersRepo.listUsernames();
     for (const username of usernames) {
       try {
-        const result = await identity.generateProactiveThought(username, omniRoute);
+        const result = await identity.generateProactiveThought(username, router);
         if (!result) continue;
         await identityRepo.saveProactiveThought(username, result.content, result.basedOnCount);
         obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {

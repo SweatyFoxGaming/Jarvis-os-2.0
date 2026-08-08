@@ -1,7 +1,6 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
-import { generateWithFallback } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as kgRepo from "../kernel/state/knowledge-graph-repo.js";
 
@@ -53,11 +52,11 @@ const EXTRACTION_SCHEMA = {
  * Fire-and-forget, same as reflectAndLearn: must never block or slow down
  * the reply the user is waiting on.
  */
-export async function extractAndStore(username: string, omniRoute: OpenAiCompatibleConfig | null, userMessage: string, replyText: string): Promise<void> {
-  if (!omniRoute) return;
+export async function extractAndStore(username: string, router: CognitionRouter | null, userMessage: string, replyText: string): Promise<void> {
+  if (!router) return;
   try {
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
@@ -72,7 +71,7 @@ export async function extractAndStore(username: string, omniRoute: OpenAiCompati
           json_schema: { name: "entity_extraction", schema: toGroqSchema(EXTRACTION_SCHEMA), strict: true },
         },
       },
-      ["openai/gpt-oss-20b"]
+      ["groq:openai/gpt-oss-20b"]
     );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");

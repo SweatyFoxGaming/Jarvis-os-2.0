@@ -1,7 +1,7 @@
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
 import { GoogleGenAI } from "@google/genai";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { MindKernel } from "../self/kernel.js";
 import { SessionState } from "../cognition/session.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
@@ -30,31 +30,31 @@ import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 export class AutonomousExecutive {
   private static instance: AutonomousExecutive | null = null;
   private observation: ObservationPlatform;
-  // Kept for future needs (per the OmniRoute-migration design) even though no current internal call reads it — every departments.* call below uses this.omniRoute.
+  // Kept for future needs even though no current internal call reads it — every departments.* call below uses this.router.
   private ai: GoogleGenAI | null;
-  private omniRoute: OpenAiCompatibleConfig | null;
+  private router: CognitionRouter | null;
 
-  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, omniRoute: OpenAiCompatibleConfig | null) {
+  private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, router: CognitionRouter | null) {
     this.observation = observation;
     this.ai = ai;
-    this.omniRoute = omniRoute;
+    this.router = router;
   }
 
   // A singleton (like the other cognition engines) rather than a plain
   // constructor so tools.ts's decompose_plan/confirm_build_direction tools
   // can reach the same instance server.ts already created at startup with
-  // the real ai/omniRoute clients, instead of needing a circular import back
-  // into server.ts.
+  // the real ai/CognitionRouter clients, instead of needing a circular
+  // import back into server.ts.
   public static getInstance(
     observation?: ObservationPlatform,
     ai?: GoogleGenAI | null,
-    omniRoute?: OpenAiCompatibleConfig | null
+    router?: CognitionRouter | null
   ): AutonomousExecutive {
     if (!this.instance) {
       if (!observation) {
         throw new Error("AutonomousExecutive.getInstance() called before server.ts initialized it");
       }
-      this.instance = new AutonomousExecutive(observation, ai ?? null, omniRoute ?? null);
+      this.instance = new AutonomousExecutive(observation, ai ?? null, router ?? null);
     }
     return this.instance;
   }
@@ -145,7 +145,7 @@ export class AutonomousExecutive {
     await this.delay(300);
 
     // --- STAGE 3: Department-Tagged Decomposition ---
-    const steps = await departments.decomposeObjective(objective, this.omniRoute, kernel.offlineMode);
+    const steps = await departments.decomposeObjective(objective, this.router, kernel.offlineMode, username);
     const hasCodingStep = steps.some(s => s.department === "coding");
 
     session.updateState({
@@ -227,7 +227,7 @@ export class AutonomousExecutive {
 
       const buildRequest = await buildRequestsRepo.createBuildRequest(objective, username);
       runContext.buildRequestId = buildRequest.id;
-      const research = await departments.runResearch(objective, this.omniRoute, username);
+      const research = await departments.runResearch(objective, this.router, username);
       const recorded = await buildRequestsRepo.recordResearch(buildRequest.id, research.summary);
       if (recorded) {
         obsidian.writeResearchNote(buildRequest.id, objective, research.summary).catch((err: any) => {
@@ -303,7 +303,7 @@ export class AutonomousExecutive {
       }, this.observation);
       workspace.attention.focusOn(step);
 
-      const research = await departments.runResearch(step, this.omniRoute, username);
+      const research = await departments.runResearch(step, this.router, username);
       const resultText = `[Research] ${research.summary}`;
 
       workspace.capabilities.recordResult({ step, outcome: "success", summary: resultText });
@@ -435,7 +435,6 @@ export class AutonomousExecutive {
       confirmed.research_summary || "",
       directionNotes,
       baseBranch,
-      this.omniRoute,
       username
     );
 

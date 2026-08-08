@@ -1,5 +1,5 @@
 import { GoogleGenAI, Modality } from "@google/genai";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import type WebSocket from "ws";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { buildIdentityContext } from "../self/identity.js";
@@ -78,7 +78,7 @@ async function buildVoiceSystemInstruction(username: string): Promise<string> {
  * server-side via the same executeTool() /api/chat uses — the client never
  * sees a raw toolCall message, only its eventual effect on the conversation.
  */
-export async function bridgeVoiceSession(ai: GoogleGenAI, omniRoute: OpenAiCompatibleConfig | null, clientSocket: WebSocket, username: string): Promise<void> {
+export async function bridgeVoiceSession(ai: GoogleGenAI, router: CognitionRouter | null, clientSocket: WebSocket, username: string): Promise<void> {
   let liveSession: Awaited<ReturnType<typeof ai.live.connect>> | null = null;
 
   // Accumulates each turn's transcription (arrives as incremental chunks,
@@ -112,9 +112,9 @@ export async function bridgeVoiceSession(ai: GoogleGenAI, omniRoute: OpenAiCompa
         memoryStore
           .remember(username, `User said (voice): "${userText}" — Jarvis replied: "${replyText.slice(0, 500)}"`, ai, null)
           .catch(() => {});
-        reflectAndLearn(omniRoute, userText, replyText).catch(() => {});
-        knowledgeGraph.extractAndStore(username, omniRoute, userText, replyText).catch(() => {});
-        identity.extractSelfReflection(username, omniRoute, userText, replyText).catch(() => {});
+        reflectAndLearn(router, username, userText, replyText).catch(() => {});
+        knowledgeGraph.extractAndStore(username, router, userText, replyText).catch(() => {});
+        identity.extractSelfReflection(username, router, userText, replyText).catch(() => {});
       }
     }
 

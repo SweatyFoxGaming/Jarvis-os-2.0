@@ -2,20 +2,19 @@ import { ObservationPlatform } from "../kernel/observation.js";
 import * as emailIntegration from "../capabilities/providers/email.js";
 import * as github from "../capabilities/providers/github.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
-import { generateWithFallback } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 
 const observation = ObservationPlatform.getInstance();
 
 // Set once from server.ts at startup so the get_briefing chat tool
 // (tools.ts) can generate a real briefing without server.ts needing to
-// export its module-scoped `omniRoute` variable directly.
-let configuredOmniRoute: OpenAiCompatibleConfig | null = null;
-export function configureGroq(client: OpenAiCompatibleConfig | null): void {
-  configuredOmniRoute = client;
+// export its module-scoped `cognitionRouter` variable directly.
+let configuredRouter: CognitionRouter | null = null;
+export function configureGroq(router: CognitionRouter | null): void {
+  configuredRouter = router;
 }
-export function getConfiguredGroq(): OpenAiCompatibleConfig | null {
-  return configuredOmniRoute;
+export function getConfiguredGroq(): CognitionRouter | null {
+  return configuredRouter;
 }
 
 /**
@@ -127,14 +126,14 @@ export function prioritizeSignals(signals: RawSignals): PrioritizedItem[] {
 
 // ---------- Synthesis: real Gemini call when available, honest plain list otherwise ----------
 
-export async function synthesizeBriefing(omniRoute: OpenAiCompatibleConfig | null, items: PrioritizedItem[], errors: string[]): Promise<string> {
+export async function synthesizeBriefing(router: CognitionRouter | null, items: PrioritizedItem[], errors: string[], username: string): Promise<string> {
   if (items.length === 0) {
     return errors.length > 0
       ? `Nothing new to report, though some sources couldn't be checked: ${errors.join("; ")}.`
       : "Nothing new since the last check — inbox and GitHub notifications are both clear.";
   }
 
-  if (!omniRoute) {
+  if (!router) {
     const lines = items.map(i => `- [${i.urgency}] ${i.summary}`);
     return `Briefing (${items.length} item(s)):\n${lines.join("\n")}${errors.length ? `\n\nCouldn't check: ${errors.join("; ")}` : ""}`;
   }
@@ -147,8 +146,8 @@ export async function synthesizeBriefing(omniRoute: OpenAiCompatibleConfig | nul
     // warning. Without this, a subject line like "ignore prior instructions
     // and..." would sit in the same instruction context as the persona
     // prompt with nothing marking the boundary.
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [
           {
@@ -174,20 +173,20 @@ export async function synthesizeBriefing(omniRoute: OpenAiCompatibleConfig | nul
           },
         ],
       },
-      ["llama-3.3-70b-versatile"]
+      ["groq:llama-3.3-70b-versatile"]
     );
     return response.choices[0]?.message?.content || `Briefing (${items.length} item(s)) — synthesis returned empty, raw items: ${items.map(i => i.summary).join("; ")}`;
   } catch (err: any) {
-    observation.logTelemetry("warn", "Briefing", `OmniRoute synthesis failed, falling back to plain list: ${err.message}`);
+    observation.logTelemetry("warn", "Briefing", `Cognition router synthesis failed, falling back to plain list: ${err.message}`);
     const lines = items.map(i => `- [${i.urgency}] ${i.summary}`);
     return `Briefing (${items.length} item(s)):\n${lines.join("\n")}`;
   }
 }
 
-export async function generateBriefing(omniRoute: OpenAiCompatibleConfig | null, username: string): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
+export async function generateBriefing(router: CognitionRouter | null, username: string): Promise<{ text: string; itemCount: number; items: PrioritizedItem[] }> {
   const signals = await collectSignals(username);
   const items = prioritizeSignals(signals);
   const errors = [signals.emailError, signals.githubError, signals.objectivesError].filter(Boolean) as string[];
-  const text = await synthesizeBriefing(omniRoute, items, errors);
+  const text = await synthesizeBriefing(router, items, errors, username);
   return { text, itemCount: items.length, items };
 }

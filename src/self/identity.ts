@@ -1,7 +1,6 @@
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
-import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
-import { generateWithFallback } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as identityRepo from "../kernel/state/identity-repo.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
@@ -36,11 +35,11 @@ const SELF_REFLECTION_SCHEMA = {
  * this turn contained something genuinely worth remembering about itself;
  * empty category/content means nothing did, and nothing is stored.
  */
-export async function extractSelfReflection(username: string, omniRoute: OpenAiCompatibleConfig | null, userMessage: string, replyText: string): Promise<void> {
-  if (!omniRoute) return;
+export async function extractSelfReflection(username: string, router: CognitionRouter | null, userMessage: string, replyText: string): Promise<void> {
+  if (!router) return;
   try {
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
@@ -56,7 +55,7 @@ export async function extractSelfReflection(username: string, omniRoute: OpenAiC
           json_schema: { name: "self_reflection", schema: toGroqSchema(SELF_REFLECTION_SCHEMA), strict: true },
         },
       },
-      ["openai/gpt-oss-20b"]
+      ["groq:openai/gpt-oss-20b"]
     );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
@@ -111,7 +110,7 @@ export interface ProactiveThoughtResult {
  * when there isn't enough real history to draw from yet (a fresh install,
  * or too few real conversations so far).
  */
-export async function generateProactiveThought(username: string, omniRoute: OpenAiCompatibleConfig | null, minReflections = 3): Promise<ProactiveThoughtResult | null> {
+export async function generateProactiveThought(username: string, router: CognitionRouter | null, minReflections = 3): Promise<ProactiveThoughtResult | null> {
   let recent: identityRepo.SelfReflection[];
   try {
     recent = await identityRepo.getRecentSelfReflections(username, 15);
@@ -123,11 +122,11 @@ export async function generateProactiveThought(username: string, omniRoute: Open
     observation.logTelemetry("info", "Identity", `Skipping proactive thought — only ${recent.length} self-reflection(s) recorded so far (need ${minReflections}).`);
     return null;
   }
-  if (!omniRoute) return null;
+  if (!router) return null;
 
   try {
-    const response = await generateWithFallback(
-      omniRoute,
+    const response = await router.generateWithFallback(
+      username,
       {
         messages: [{
           role: "user",
@@ -159,7 +158,7 @@ export async function generateProactiveThought(username: string, omniRoute: Open
       // that model entirely (live-verified — the same failure showed up
       // anywhere in this codebase that asked Groq for structured output).
       // gpt-oss-120b is Groq's larger structured-output-capable model.
-      ["openai/gpt-oss-120b"]
+      ["groq:openai/gpt-oss-120b"]
     );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");

@@ -182,19 +182,22 @@ if (process.env.GEMINI_API_KEY) {
 // ---------- OmniRoute Client Initialization (legacy — deprecated) ----------
 // OMNIROUTE_API_KEY/OMNIROUTE_BASE_URL are no longer read (see .env.example's
 // GROQ_API_KEYS/GEMINI_API_KEYS block below) — `omniRoute` itself stays
-// declared and permanently null purely so this file's own other,
-// still-unmigrated call sites (the /api/chat Groq/Gemini branches, the voice
-// bridge, the scheduler jobs, AutonomousExecutive's constructor just below)
-// keep compiling and running exactly as they do today. Every one of those
-// runs unconditionally at module load or on a normal request path, not dead
-// code, so deleting this identifier outright — as opposed to retiring only
-// the env-var read that used to populate it — would throw a ReferenceError
-// at import time or on the first real request, not just move a tsc error.
-// Rewiring those call sites onto getCognitionRouter() below is Tasks 10-11's
-// job specifically.
+// declared and permanently null purely so this file's own remaining
+// still-unmigrated call sites (the /api/chat Groq tool-calling branch,
+// specifically the two generateGroqWithFallback calls and the two
+// `if (omniRoute)`/`!omniRoute` execution-chain checks feeding into it)
+// keep compiling and running exactly as they do today. Every real
+// call site that used to read this identifier — briefing/daily-adaptation
+// configureGroq, AutonomousExecutive's constructor, the write-side
+// reflection/knowledge-graph/self-reflection calls, the voice bridge, and
+// the two scheduler jobs — was retyped onto `cognitionRouter` below as part
+// of Task 9 (see docs/superpowers/sdd/2026-08-07-jarvis-cognition-router).
+// Deleting this identifier outright — as opposed to retiring only the
+// env-var read that used to populate it — would throw a ReferenceError at
+// import time or on the first real /api/chat request. Rewiring the Groq
+// tool-calling branch itself onto getCognitionRouter() is Tasks 10-11's job
+// specifically.
 let omniRoute: OpenAiCompatibleConfig | null = null;
-briefing.configureGroq(omniRoute);
-dailyAdaptation.configureGroq(omniRoute);
 
 // ---------- Cognition Router Initialization (primary cloud tier) ----------
 // Jarvis's own multi-key provider pool, replacing the OmniRoute gateway
@@ -229,6 +232,8 @@ if (groqKeys.length > 0 || geminiKeys.length > 0) {
 } else {
   observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEYS or GEMINI_API_KEYS configured. Cloud-backed cognition features unavailable — falling back to local LLM/keyword engine only.");
 }
+briefing.configureGroq(cognitionRouter);
+dailyAdaptation.configureGroq(cognitionRouter);
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -253,7 +258,7 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai, omniRoute);
+const executive = AutonomousExecutive.getInstance(observation, ai, cognitionRouter);
 const learningEngine = LongTermLearningEngine.getInstance();
 // Makes these same already-constructed clients reachable from extracted
 // routers (src/interaction/routes/) via runtime/clients.ts's getters —
@@ -1000,16 +1005,16 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         .catch(() => {});
 
       // Write side of style/mistake learning — see reflection.ts. Needs
-      // Groq specifically (structured JSON output), independent of which
-      // backend actually answered the user.
-      if (omniRoute) {
-        reflectAndLearn(omniRoute, message, fullReply).catch(() => {});
+      // structured JSON output from the cognition router, independent of
+      // which backend actually answered the user.
+      if (cognitionRouter) {
+        reflectAndLearn(cognitionRouter, req.username, message, fullReply).catch(() => {});
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
-        knowledgeGraph.extractAndStore(req.username, omniRoute, message, fullReply).catch(() => {});
+        knowledgeGraph.extractAndStore(req.username, cognitionRouter, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see self/identity.ts.
-        identity.extractSelfReflection(req.username, omniRoute, message, fullReply).catch(() => {});
+        identity.extractSelfReflection(req.username, cognitionRouter, message, fullReply).catch(() => {});
       }
     }
 
@@ -1310,12 +1315,12 @@ initDatabase().then(async (ready) => {
     }
 
     observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
-    await liveVoice.bridgeVoiceSession(ai, omniRoute, ws, username);
+    await liveVoice.bridgeVoiceSession(ai, cognitionRouter, ws, username);
   });
 
   scheduler.startEmailWatchJob();
-  scheduler.startBriefingJob(omniRoute);
-  scheduler.startSelfReflectionJob(omniRoute);
+  scheduler.startBriefingJob(cognitionRouter);
+  scheduler.startSelfReflectionJob(cognitionRouter);
   scheduler.startMcpHealthCheckJob();
   scheduler.startVaultSyncJob();
   scheduler.startDataRetentionJob();
