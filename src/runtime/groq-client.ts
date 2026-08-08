@@ -1,3 +1,4 @@
+import type { CognitionRouter } from "./cognition-router.js";
 import type { OpenAiCompatibleConfig } from "./openai-compatible-client.js";
 import { generateWithFallback as omniRouteGenerateWithFallback } from "./openai-compatible-client.js";
 
@@ -57,8 +58,8 @@ export function toGroqTools(declarations: Array<{ name?: string; description?: s
  * Same multi-model retry shape as server.ts's existing
  * generateContentWithFallback, generalized for Groq's client — mitigates a
  * transient 5xx/high-demand error on one model by trying the next.
- * Now delegates to OmniRoute for transport-agnostic gateway support.
+ * Now delegates to CognitionRouter for transport-agnostic gateway support.
  */
-export async function generateWithFallback(config: OpenAiCompatibleConfig, params: any, models: string[]): Promise<any> {
-  return omniRouteGenerateWithFallback(config, params, models);
+export async function generateWithFallback(router: CognitionRouter, username: string, params: any, models: string[]): Promise<any> {
+  return router.generateWithFallback(username, params, models);
 }
