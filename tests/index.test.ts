@@ -3835,18 +3835,28 @@ registerTest("AudioClient", "publishes voice:transcript when the daemon sends a 
   }
 });
 
-registerTest("AudioClient", "publishes voice:error when the socket connection fails", async () => {
+registerTest("AudioClient", "publishes voice:error exactly once when the socket connection fails", async () => {
   const { EventBus } = await import("../src/core/event-bus.js");
   const { startAudioClient } = await import("../src/core/audio-client.js");
 
   const bus = EventBus.getInstance();
   let received: any = null;
-  const unsubscribe = bus.subscribe("voice:error", (payload) => { received = payload; });
+  let publishCount = 0;
+  const unsubscribe = bus.subscribe("voice:error", (payload) => { received = payload; publishCount++; });
 
   const client = startAudioClient("/nonexistent/path/that/cannot/possibly/exist.sock");
   try {
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!received) throw new Error("AudioClient: expected a voice:error publish on connection failure");
+    // A real ENOENT connect failure fires exactly one "error" event followed
+    // by exactly one "close" event on the same socket. Both handlers must
+    // coordinate so only ONE voice:error is published per failure episode —
+    // a downstream consumer (the voice-session handler) must not see a
+    // failure reported twice and risk double-triggering reconnect/surfacing
+    // logic.
+    if (publishCount !== 1) {
+      throw new Error(`AudioClient: expected exactly 1 voice:error publish for a single connection failure, got ${publishCount}`);
+    }
   } finally {
     unsubscribe();
     client.stop();

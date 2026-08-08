@@ -17,6 +17,12 @@ const observation = ObservationPlatform.getInstance();
 export function startAudioClient(socketPath: string): { stop: () => void } {
   const bus = EventBus.getInstance();
   let stopped = false;
+  // A real connect failure fires exactly one "error" then exactly one
+  // "close" on the same socket — both handlers below would otherwise each
+  // publish their own voice:error for that single episode. This flag is
+  // set by whichever fires first so only one voice:error ever goes out
+  // per connection-failure/drop, regardless of which event leads.
+  let errorReported = false;
 
   const socket = net.createConnection({ path: socketPath });
 
@@ -50,13 +56,15 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
   });
 
   socket.on("error", (err: any) => {
-    if (stopped) return;
+    if (stopped || errorReported) return;
+    errorReported = true;
     observation.logTelemetry("warn", "AudioClient", `Voice daemon socket error: ${err.message || err}`);
     bus.publish("voice:error", { message: err.message || String(err) });
   });
 
   socket.on("close", () => {
-    if (stopped) return;
+    if (stopped || errorReported) return;
+    errorReported = true;
     bus.publish("voice:error", { message: "Voice daemon connection closed unexpectedly" });
   });
 
