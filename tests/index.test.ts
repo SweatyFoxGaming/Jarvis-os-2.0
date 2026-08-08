@@ -3757,6 +3757,53 @@ registerTest("CognitionRouter", "a huge-but-finite retry-after value (hundreds o
   }
 });
 
+// ---------- Wellbeing Tests ----------
+registerTest("Wellbeing", "assessWellbeingSignal returns a real message for a high late-hour ratio", async () => {
+  const { assessWellbeingSignal } = await import("../src/self/wellbeing.js");
+  const result = await assessWellbeingSignal("test_user", {
+    getLateHourActivityRatio: async () => 0.6,
+    getLastCheckinAt: async () => null,
+    getRecentRapportSignals: async () => [],
+  });
+  if (!result || !result.toLowerCase().includes("late")) {
+    throw new Error(`expected a late-hour-citing message, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Wellbeing", "assessWellbeingSignal returns a real message when recent rapport signals show stress language", async () => {
+  const { assessWellbeingSignal } = await import("../src/self/wellbeing.js");
+  const result = await assessWellbeingSignal("test_user", {
+    getLateHourActivityRatio: async () => 0.1,
+    getLastCheckinAt: async () => null,
+    getRecentRapportSignals: async () => [
+      { id: 1, username: "test_user", toneDescriptor: "overwhelmed, exhausted, terse", formalityObserved: 50, createdAt: new Date() },
+    ] as any,
+  });
+  if (!result) throw new Error("expected a real message when recent tone shows stress language");
+});
+
+registerTest("Wellbeing", "assessWellbeingSignal returns null for normal activity patterns", async () => {
+  const { assessWellbeingSignal } = await import("../src/self/wellbeing.js");
+  const result = await assessWellbeingSignal("test_user", {
+    getLateHourActivityRatio: async () => 0.05,
+    getLastCheckinAt: async () => null,
+    getRecentRapportSignals: async () => [
+      { id: 1, username: "test_user", toneDescriptor: "focused, task-oriented", formalityObserved: 60, createdAt: new Date() },
+    ] as any,
+  });
+  if (result !== null) throw new Error(`expected null for a normal pattern, got: ${JSON.stringify(result)}`);
+});
+
+registerTest("Wellbeing", "assessWellbeingSignal returns null when a check-in happened recently, even with a real signal", async () => {
+  const { assessWellbeingSignal } = await import("../src/self/wellbeing.js");
+  const result = await assessWellbeingSignal("test_user", {
+    getLateHourActivityRatio: async () => 0.8,
+    getLastCheckinAt: async () => new Date(), // just now
+    getRecentRapportSignals: async () => [],
+  });
+  if (result !== null) throw new Error(`expected null when a check-in happened recently, got: ${JSON.stringify(result)}`);
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
