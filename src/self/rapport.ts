@@ -1,5 +1,5 @@
 import { Type } from "@google/genai";
-import Groq from "groq-sdk";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { toGroqSchema } from "../runtime/groq-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as rapportRepo from "../kernel/state/rapport-repo.js";
@@ -18,29 +18,32 @@ const RAPPORT_SIGNAL_SCHEMA = {
 /**
  * Write side — fire-and-forget, same trigger point and pattern as
  * identity.ts's extractSelfReflection, applied to the USER's message
- * instead of Jarvis's own reply. A real Groq call reads what the user
- * actually wrote; nothing is stored if the call fails or returns nothing
- * usable — never a fabricated/guessed signal.
+ * instead of Jarvis's own reply. A real CognitionRouter call reads what
+ * the user actually wrote; nothing is stored if the call fails or
+ * returns nothing usable — never a fabricated/guessed signal.
  */
-export async function extractRapportSignal(username: string, groq: Groq | null, userMessage: string): Promise<void> {
-  if (!groq) return;
+export async function extractRapportSignal(username: string, router: CognitionRouter | null, userMessage: string): Promise<void> {
+  if (!router) return;
   try {
-    const response = await groq.chat.completions.create({
-      model: "openai/gpt-oss-20b",
-      messages: [{
-        role: "user",
-        content:
-          "Analyze the tone of the following USER message (not any assistant reply) and describe it honestly and " +
-          "briefly. This is a real, ordinary message from a person talking to their AI assistant — most messages are " +
-          "simply neutral and task-focused, and that's a completely valid, common answer; only describe something " +
-          "more specific (frustrated, excited, playful, terse) if it's genuinely present in the wording.\n\n" +
-          `User message: ${userMessage.slice(0, 1000)}`,
-      }],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "rapport_signal", schema: toGroqSchema(RAPPORT_SIGNAL_SCHEMA), strict: true },
+    const response = await router.generateWithFallback(
+      username,
+      {
+        messages: [{
+          role: "user",
+          content:
+            "Analyze the tone of the following USER message (not any assistant reply) and describe it honestly and " +
+            "briefly. This is a real, ordinary message from a person talking to their AI assistant — most messages are " +
+            "simply neutral and task-focused, and that's a completely valid, common answer; only describe something " +
+            "more specific (frustrated, excited, playful, terse) if it's genuinely present in the wording.\n\n" +
+            `User message: ${userMessage.slice(0, 1000)}`,
+        }],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "rapport_signal", schema: toGroqSchema(RAPPORT_SIGNAL_SCHEMA), strict: true },
+        },
       },
-    });
+      ["groq:openai/gpt-oss-20b"]
+    );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const toneDescriptor = typeof parsed.toneDescriptor === "string" ? parsed.toneDescriptor.trim() : "";

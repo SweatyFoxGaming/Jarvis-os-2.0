@@ -1,35 +1,42 @@
 import type { GoogleGenAI } from "@google/genai";
-import type Groq from "groq-sdk";
+import type { CognitionRouter } from "./cognition-router.js";
 
 /**
- * ai/groq are constructed once, in server.ts, from whichever API keys are
- * actually configured in .env — never reassigned afterward. Extracted
- * routers (in src/interaction/routes/) need to reach the same
+ * ai/cognitionRouter are constructed once, in server.ts, from whichever API
+ * keys are actually configured in .env — never reassigned afterward.
+ * Extracted routers (in src/interaction/routes/) need to reach the same
  * already-constructed clients server.ts's own remaining routes (chat, voice)
  * still use directly, without re-constructing their own or awkwardly
  * threading them through a router factory function for every route that
  * happens to need one.
  *
+ * ai stays a real GoogleGenAI instance — it's still used for embeddings
+ * (memory-store.ts) and voice-native mode (live-voice.ts), neither of
+ * which this migration touches. cognitionRouter is a CognitionRouter
+ * instance (see cognition-router.ts) — it owns the provider fallback chain
+ * that replaced the single OmniRoute config object.
+ *
  * Getters, not values captured at import time: server.ts's own top-level
- * code (which calls setSharedClients()) runs after every module it imports
+ * code (which calls setSharedRouter()) runs after every module it imports
  * has already finished loading (that's how ES module evaluation order
- * works), so a router that read getGroq() at its own module's top level
- * would always see null. Reading it inside each request handler instead —
- * the same pattern ObservationPlatform.getInstance() already uses — means
- * it's always read long after server.ts's startup has actually run.
+ * works), so a router that read getCognitionRouter() at its own module's
+ * top level would always see null. Reading it inside each request handler
+ * instead — the same pattern ObservationPlatform.getInstance() already
+ * uses — means it's always read long after server.ts's startup has
+ * actually run.
  */
 let aiClient: GoogleGenAI | null = null;
-let groqClient: Groq | null = null;
+let cognitionRouter: CognitionRouter | null = null;
 
-export function setSharedClients(ai: GoogleGenAI | null, groq: Groq | null): void {
+export function setSharedRouter(ai: GoogleGenAI | null, router: CognitionRouter | null): void {
   aiClient = ai;
-  groqClient = groq;
+  cognitionRouter = router;
 }
 
 export function getAi(): GoogleGenAI | null {
   return aiClient;
 }
 
-export function getGroq(): Groq | null {
-  return groqClient;
+export function getCognitionRouter(): CognitionRouter | null {
+  return cognitionRouter;
 }
