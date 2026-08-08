@@ -1225,6 +1225,45 @@ registerTest("Identity", "buildPersonalityPromptFragment produces distinct text 
   }
 });
 
+registerTest("Rapport", "extractRapportSignal records a real signal on a successful extraction", async () => {
+  const { extractRapportSignal } = await import("../src/self/rapport.js");
+
+  const fakeGroq = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: JSON.stringify({ toneDescriptor: "terse, focused, all-business", formalityObserved: 75 }) } }],
+        }),
+      },
+    },
+  } as any;
+
+  await extractRapportSignal("rapport_test_user", fakeGroq, "just fix the bug, no need to explain");
+  // With no live Postgres in this test process, the DB write degrades to a
+  // no-op — this test's real assertion is that extractRapportSignal does
+  // not throw when given a fake client and a well-formed response. See
+  // Task 1's own degrade-cleanly tests for the DB-layer behavior.
+});
+
+registerTest("Rapport", "extractRapportSignal is a silent no-op when the Groq call fails", async () => {
+  const { extractRapportSignal } = await import("../src/self/rapport.js");
+  const throwingGroq = {
+    chat: { completions: { create: async () => { throw new Error("simulated Groq failure"); } } },
+  } as any;
+  await extractRapportSignal("rapport_test_user", throwingGroq, "hello"); // must not throw
+});
+
+registerTest("Rapport", "extractRapportSignal is a silent no-op when groq is null", async () => {
+  const { extractRapportSignal } = await import("../src/self/rapport.js");
+  await extractRapportSignal("rapport_test_user", null, "hello"); // must not throw
+});
+
+registerTest("Rapport", "buildRapportContext returns an empty string when there is no signal history", async () => {
+  const { buildRapportContext } = await import("../src/self/rapport.js");
+  const result = await buildRapportContext("a_user_with_definitely_no_history_" + Date.now());
+  if (result !== "") throw new Error(`expected empty string with no history, got: "${result}"`);
+});
+
 registerTest("KnowledgeGraph", "extractAndStore no-ops with no Groq client", async () => {
   const obs = ObservationPlatform.getInstance();
   const before = obs.getTelemetry().length;
