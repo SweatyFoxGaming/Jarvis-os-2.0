@@ -83,3 +83,85 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
     },
   };
 }
+
+// Outgoing audio_chunk messages are split into pieces this size (bytes of
+// raw PCM, pre-base64) so one big recorded clip doesn't arrive as a single
+// huge line on the socket -- mirrors SPEAK_CHUNK_BYTES on the daemon side
+// (daemon/voice_engine.py) for outgoing "speak" audio.
+const TRANSCRIBE_CHUNK_BYTES = 32000;
+
+/**
+ * One-shot request/response transcription against the voice daemon, for
+ * callers that already have a complete, pre-recorded clip (as opposed to
+ * startAudioClient's long-lived bridge for the continuous mic-stream
+ * flow). Opens its own short-lived connection: sends the whole clip as
+ * one or more "audio_chunk" messages, then an explicit "transcribe"
+ * control message (daemon/voice_engine.py's _handle_transcribe) so the
+ * daemon transcribes immediately instead of waiting for its own silence-
+ * based utterance-end detector to fire, and resolves with the first
+ * "transcript" reply. `pcmBytes` must already be raw 16-bit PCM, mono,
+ * 16kHz -- the same format the daemon's SpeechToText.transcribe expects;
+ * this function does no audio decoding of its own.
+ */
+export function transcribeOverSocket(
+  socketPath: string,
+  pcmBytes: Buffer,
+  timeoutMs = 60000
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ path: socketPath });
+    const rl = readline.createInterface({ input: socket });
+    // Same rationale as startAudioClient's identical rl.on("error", ...):
+    // readline forwards the input stream's "error" as its own, and the
+    // real handling already happens via socket.on("error", ...) below.
+    rl.on("error", () => {});
+
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("Timed out waiting for the voice daemon to transcribe audio")));
+    }, timeoutMs);
+
+    function finish(action: () => void): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rl.close();
+      socket.destroy();
+      action();
+    }
+
+    rl.on("line", (line) => {
+      if (!line.trim()) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        observation.logTelemetry(
+          "warn",
+          "AudioClient",
+          `Malformed line from voice daemon during one-shot transcription, ignoring: ${line.slice(0, 200)}`
+        );
+        return;
+      }
+      if (msg.type === "transcript") {
+        finish(() => resolve(typeof msg.text === "string" ? msg.text : ""));
+      }
+    });
+
+    socket.on("error", (err: any) => {
+      finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+    });
+
+    socket.on("close", () => {
+      finish(() => reject(new Error("Voice daemon connection closed before a transcript was received")));
+    });
+
+    socket.on("connect", () => {
+      for (let i = 0; i < pcmBytes.length; i += TRANSCRIBE_CHUNK_BYTES) {
+        const chunk = pcmBytes.subarray(i, i + TRANSCRIBE_CHUNK_BYTES);
+        socket.write(JSON.stringify({ type: "audio_chunk", data: chunk.toString("base64") }) + "\n");
+      }
+      socket.write(JSON.stringify({ type: "transcribe" }) + "\n");
+    });
+  });
+}

@@ -69,3 +69,13 @@ class UtteranceEndDetector:
             self._consecutive_silence = 0
             return True
         return False
+
+    def reset(self) -> None:
+        """Clears any in-progress utterance state. Used when the buffer
+        this detector was watching gets consumed by something other than
+        the detector's own silence trigger -- e.g. an explicit one-shot
+        "transcribe" request (see voice_engine.py's _handle_transcribe) --
+        so stale "has seen speech"/silence-count state doesn't leak into
+        whatever comes next on the same connection."""
+        self._has_seen_speech = False
+        self._consecutive_silence = 0

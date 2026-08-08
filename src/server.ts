@@ -400,7 +400,8 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
     // wake-word spotting, which records and transcribes a short clip every
     // few seconds for as long as live voice is on) — routing that to Gemini
     // would mean a real API call every few seconds indefinitely, just to
-    // check for one word. Local whisper-cpp is free and already always
+    // check for one word. The local voice daemon (daemon/voice_engine.py,
+    // via whisper.transcribeAudio below) is free and already always
     // running; forcing it here regardless of the general online/offline
     // preference is a narrower, correct choice for that specific caller,
     // not a change to this endpoint's default behavior for anyone else
@@ -444,19 +445,21 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
       observation.logTelemetry("info", "Sensors", `Voice transcription completed: "${transcription}"`);
       res.json({ transcription });
     } else {
-      // Offline-first path: a real local whisper-cpp service, matching the
-      // local-first chat pattern, instead of going straight to a canned
-      // string. Only falls back to the simulated text below if whisper-cpp
-      // itself is unreachable/not configured.
+      // Offline-first path: the real local voice daemon (see
+      // src/interaction/whisper.ts, bridging onto daemon/voice_engine.py
+      // over its Unix socket), matching the local-first chat pattern,
+      // instead of going straight to a canned string. Only falls back to
+      // the simulated text below if the daemon itself is unreachable/not
+      // running.
       try {
         const transcription = await whisper.transcribeAudio(audio, mimeType || "audio/webm");
-        observation.logTelemetry("info", "Sensors", `Offline (whisper-cpp) transcription completed: "${transcription}"`);
+        observation.logTelemetry("info", "Sensors", `Offline (voice daemon) transcription completed: "${transcription}"`);
         res.json({ transcription });
       } catch (whisperErr: any) {
         observation.logTelemetry("warn", "Sensors", `Offline transcription unavailable: ${whisperErr.message}`);
         const simText = kernel.offlineMode
           ? "Notice: Voice input was captured, but offline speech-to-text isn't reachable right now, sir."
-          : "Simulated speech transcription: Please configure your GEMINI_API_KEY, or ensure the whisper-cpp service is running, to activate voice listening.";
+          : "Simulated speech transcription: Please configure your GEMINI_API_KEY, or ensure the local voice daemon is running, to activate voice listening.";
         res.json({ transcription: simText });
       }
     }

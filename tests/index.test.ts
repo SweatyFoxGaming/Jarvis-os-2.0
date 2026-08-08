@@ -980,30 +980,104 @@ registerTest("Obsidian", "ensureLinkedInMoc serializes concurrent writes to the 
   }
 });
 
-// ---------- Voice Pipeline Tests (whisper-cpp / TTS integrations) ----------
-// Neither service is reachable in this test process (no live Docker
-// network) — these confirm the one thing that's actually testable without
-// one: a missing URL env var fails fast with the integration's own typed
-// error instead of an unhandled/confusing fetch failure.
-registerTest("Whisper", "transcribeAudio throws WhisperIntegrationError when WHISPER_URL is not set", async () => {
-  const original = process.env.WHISPER_URL;
-  delete process.env.WHISPER_URL;
+// ---------- Voice Pipeline Tests (voice daemon / TTS integrations) ----------
+// A minimal, real, well-formed WAV clip (silence) -- exercised through the
+// real ffmpeg decode step in whisper.ts's transcribeAudio, not a fake. Only
+// the voice daemon on the other end of the Unix socket is faked, matching
+// the AudioClient tests' convention below.
+function makeSilentWavBase64(durationMs = 100, sampleRate = 8000): string {
+  const numSamples = Math.floor((sampleRate * durationMs) / 1000);
+  const dataSize = numSamples * 2; // 16-bit mono
+  const buf = Buffer.alloc(44 + dataSize);
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20); // PCM
+  buf.writeUInt16LE(1, 22); // mono
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28); // byte rate
+  buf.writeUInt16LE(2, 32); // block align
+  buf.writeUInt16LE(16, 34); // bits per sample
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataSize, 40);
+  return buf.toString("base64"); // rest is already zeroed -> silence
+}
+
+registerTest("Whisper", "transcribeAudio relays a real transcript from the voice daemon", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+
+  const readline = await import("readline");
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-whisper-test-${Date.now()}.sock`);
+  const receivedTypes: string[] = [];
+  const fakeServer = net.createServer((conn) => {
+    const rl = readline.createInterface({ input: conn });
+    rl.on("line", (line: string) => {
+      if (!line.trim()) return;
+      const msg = JSON.parse(line);
+      receivedTypes.push(msg.type);
+      if (msg.type === "transcribe") {
+        conn.write(JSON.stringify({ type: "transcript", text: "hello from the daemon" }) + "\n");
+      }
+    });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const original = process.env.VOICE_DAEMON_SOCKET;
+  process.env.VOICE_DAEMON_SOCKET = socketPath;
+  try {
+    const whisper = await import("../src/interaction/whisper.js");
+    const transcription = await whisper.transcribeAudio(makeSilentWavBase64(), "audio/wav");
+    if (transcription !== "hello from the daemon") {
+      throw new Error(`Whisper: expected the daemon's real transcript, got: ${transcription}`);
+    }
+    if (!receivedTypes.includes("audio_chunk") || !receivedTypes.includes("transcribe")) {
+      throw new Error(`Whisper: expected real audio_chunk + transcribe messages sent to the daemon, got: ${JSON.stringify(receivedTypes)}`);
+    }
+  } finally {
+    if (original === undefined) delete process.env.VOICE_DAEMON_SOCKET;
+    else process.env.VOICE_DAEMON_SOCKET = original;
+    fakeServer.close();
+  }
+});
+
+registerTest("Whisper", "transcribeAudio throws WhisperIntegrationError when the voice daemon is unreachable", async () => {
+  const original = process.env.VOICE_DAEMON_SOCKET;
+  process.env.VOICE_DAEMON_SOCKET = "/nonexistent/path/that/cannot/possibly/exist.sock";
   try {
     const whisper = await import("../src/interaction/whisper.js");
     let threw = false;
     try {
-      await whisper.transcribeAudio(Buffer.from("fake audio").toString("base64"), "audio/webm");
+      await whisper.transcribeAudio(makeSilentWavBase64(), "audio/wav");
     } catch (err) {
       threw = err instanceof whisper.WhisperIntegrationError;
       if (threw && (err as any).status !== 503) {
-        throw new Error(`Whisper: expected status 503 for a missing WHISPER_URL, got ${(err as any).status}`);
+        throw new Error(`Whisper: expected status 503 for an unreachable voice daemon, got ${(err as any).status}`);
       }
     }
-    if (!threw) throw new Error("Whisper: transcribeAudio did not throw WhisperIntegrationError with WHISPER_URL unset");
+    if (!threw) throw new Error("Whisper: transcribeAudio did not throw WhisperIntegrationError with the daemon unreachable");
   } finally {
-    if (original === undefined) delete process.env.WHISPER_URL;
-    else process.env.WHISPER_URL = original;
+    if (original === undefined) delete process.env.VOICE_DAEMON_SOCKET;
+    else process.env.VOICE_DAEMON_SOCKET = original;
   }
+});
+
+registerTest("Whisper", "transcribeAudio throws WhisperIntegrationError when the audio can't be decoded", async () => {
+  const whisper = await import("../src/interaction/whisper.js");
+  const garbage = Buffer.from("this is definitely not a real audio container").toString("base64");
+  let threw = false;
+  try {
+    await whisper.transcribeAudio(garbage, "audio/webm");
+  } catch (err) {
+    threw = err instanceof whisper.WhisperIntegrationError;
+    if (threw && (err as any).status !== 400) {
+      throw new Error(`Whisper: expected status 400 for undecodable audio, got ${(err as any).status}`);
+    }
+  }
+  if (!threw) throw new Error("Whisper: transcribeAudio did not throw WhisperIntegrationError for undecodable audio");
 });
 
 registerTest("Tts", "synthesizeSpeech throws TtsIntegrationError when TTS_URL is not set", async () => {

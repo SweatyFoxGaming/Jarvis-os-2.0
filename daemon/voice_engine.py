@@ -70,6 +70,25 @@ async def _write_message(writer: asyncio.StreamWriter, message: dict) -> None:
     await writer.drain()
 
 
+async def _run_transcription(writer: asyncio.StreamWriter, pcm_for_utterance: bytes, peer: str) -> None:
+    if not pcm_for_utterance:
+        # Nothing was ever buffered (e.g. a "transcribe" request with no
+        # preceding audio_chunk) -- skip the model call entirely rather
+        # than feeding faster-whisper an empty array.
+        await _write_message(writer, {"type": "transcript", "text": ""})
+        return
+    try:
+        # STT inference is slow (tens of seconds on CPU, per Task 2's live
+        # verification) and synchronous -- run it off the event loop so a
+        # single transcription doesn't block every other connection
+        # (including the accept loop for brand-new ones) for its duration.
+        transcript = await asyncio.to_thread(_stt.transcribe, pcm_for_utterance)
+    except Exception:
+        log.exception(f"STT transcription failed for {peer}")
+        return
+    await _write_message(writer, {"type": "transcript", "text": transcript})
+
+
 async def _handle_audio_chunk(
     writer: asyncio.StreamWriter,
     msg: dict,
@@ -88,16 +107,36 @@ async def _handle_audio_chunk(
         return
     pcm_for_utterance = bytes(utterance_buffer)
     utterance_buffer.clear()
-    try:
-        # STT inference is slow (tens of seconds on CPU, per Task 2's live
-        # verification) and synchronous -- run it off the event loop so a
-        # single transcription doesn't block every other connection
-        # (including the accept loop for brand-new ones) for its duration.
-        transcript = await asyncio.to_thread(_stt.transcribe, pcm_for_utterance)
-    except Exception:
-        log.exception(f"STT transcription failed for {peer}")
-        return
-    await _write_message(writer, {"type": "transcript", "text": transcript})
+    await _run_transcription(writer, pcm_for_utterance, peer)
+
+
+async def _handle_transcribe(
+    writer: asyncio.StreamWriter,
+    detector: UtteranceEndDetector,
+    utterance_buffer: bytearray,
+    peer: str,
+) -> None:
+    """Explicit one-shot request: transcribe whatever audio has already
+    been sent on this connection via audio_chunk messages, right now --
+    bypassing UtteranceEndDetector's silence-based end-of-utterance
+    trigger entirely. This is the one-shot counterpart to the continuous
+    mic-stream flow in _handle_audio_chunk (where the daemon itself
+    decides an utterance has ended from live silence): a caller that
+    already has a complete, pre-recorded clip -- e.g. /api/voice-input's
+    click-to-talk fallback -- sends the whole clip as audio_chunk(s) and
+    then this message to get one transcription back immediately, instead
+    of depending on the clip happening to end with enough silence to trip
+    the detector on its own.
+
+    Resets detector state too: the buffer this consumes is the same one
+    the detector was watching, so leaving stale "has seen speech"/silence-
+    count state around would make the next audio_chunk on a reused
+    connection trigger prematurely.
+    """
+    pcm_for_utterance = bytes(utterance_buffer)
+    utterance_buffer.clear()
+    detector.reset()
+    await _run_transcription(writer, pcm_for_utterance, peer)
 
 
 async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
@@ -136,6 +175,8 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
                 await _handle_audio_chunk(writer, msg, detector, utterance_buffer, peer)
             elif msg_type == "speak":
                 await _handle_speak(writer, msg, peer)
+            elif msg_type == "transcribe":
+                await _handle_transcribe(writer, detector, utterance_buffer, peer)
             else:
                 log.info(f"received control message: {msg_type}")
     except (ConnectionResetError, BrokenPipeError):

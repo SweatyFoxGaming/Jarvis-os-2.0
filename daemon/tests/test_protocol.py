@@ -54,6 +54,26 @@ def test_utterance_end_detector_never_fires_on_leading_silence_alone():
     assert detector.feed(False) is False
     assert detector.feed(False) is False
 
+def test_utterance_end_detector_reset_clears_in_progress_speech_state():
+    detector = UtteranceEndDetector(silence_frames_threshold=3)
+    detector.feed(True)   # speech seen
+    detector.feed(False)  # 1 silence frame so far
+    detector.reset()
+    # If reset() didn't actually clear state, 2 more silence frames would
+    # reach the threshold of 3 and fire early.
+    assert detector.feed(False) is False
+    assert detector.feed(False) is False
+
+def test_utterance_end_detector_reset_then_new_utterance_still_fires_normally():
+    detector = UtteranceEndDetector(silence_frames_threshold=3)
+    detector.feed(True)
+    detector.feed(False)
+    detector.reset()
+    assert detector.feed(True) is False   # fresh speech after reset
+    assert detector.feed(False) is False  # 1st silence frame
+    assert detector.feed(False) is False  # 2nd
+    assert detector.feed(False) is True   # 3rd -> fires
+
 def test_parse_control_message_string_raises_protocol_error():
     # Valid JSON but not an object -- must reject
     with pytest.raises(ProtocolError):
