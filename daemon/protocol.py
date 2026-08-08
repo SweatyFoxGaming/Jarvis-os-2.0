@@ -20,9 +20,12 @@ def parse_control_message(line: str) -> dict:
     if not stripped:
         raise ProtocolError("empty control message line")
     try:
-        return json.loads(stripped)
+        result = json.loads(stripped)
     except json.JSONDecodeError as e:
         raise ProtocolError(f"malformed JSON control message: {e}") from e
+    if not isinstance(result, dict):
+        raise ProtocolError(f"control message must be a JSON object, got {type(result).__name__}")
+    return result
 
 
 def encode_audio_chunk(pcm_bytes: bytes) -> str:

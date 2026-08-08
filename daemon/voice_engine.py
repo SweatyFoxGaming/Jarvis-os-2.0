@@ -11,7 +11,6 @@ chunks. See protocol.py for the pure parsing/framing logic this file
 wires up to real socket I/O and (in a later task) real model inference.
 """
 import asyncio
-import json
 import logging
 import os
 import sys

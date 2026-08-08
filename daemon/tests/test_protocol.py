@@ -53,3 +53,20 @@ def test_utterance_end_detector_never_fires_on_leading_silence_alone():
     assert detector.feed(False) is False
     assert detector.feed(False) is False
     assert detector.feed(False) is False
+
+def test_parse_control_message_string_raises_protocol_error():
+    # Valid JSON but not an object -- must reject
+    with pytest.raises(ProtocolError):
+        parse_control_message('"just a string"')
+
+def test_parse_control_message_number_raises_protocol_error():
+    with pytest.raises(ProtocolError):
+        parse_control_message('42')
+
+def test_parse_control_message_array_raises_protocol_error():
+    with pytest.raises(ProtocolError):
+        parse_control_message('[1, 2, 3]')
+
+def test_parse_control_message_null_raises_protocol_error():
+    with pytest.raises(ProtocolError):
+        parse_control_message('null')
