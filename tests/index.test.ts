@@ -566,6 +566,23 @@ registerTest("Tools", "list_constraints executes without any capability grant an
   }
 });
 
+registerTest("Tools", "get_rapport_summary is registered in the tool declarations", () => {
+  const names = getAllToolDeclarations().map((t) => t.name);
+  if (!names.includes("get_rapport_summary")) {
+    throw new Error("Tools: get_rapport_summary should appear in getAllToolDeclarations()");
+  }
+});
+
+registerTest("Tools", "get_rapport_summary is ungated and returns a real summary shape", async () => {
+  const result = await executeTool("get_rapport_summary", {}, "ungranted_test_user");
+  if (result.ok !== true) {
+    throw new Error(`Tools: get_rapport_summary should succeed with no grant required, got error: ${result.error}`);
+  }
+  if (typeof result.output?.summary !== "string") {
+    throw new Error(`Tools: get_rapport_summary output should be { summary: string }, got ${JSON.stringify(result.output)}`);
+  }
+});
+
 registerTest("Tools", "unrelated tools never carry a displayDirective", async () => {
   const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: true, supportsRoundTrip: true });
   if ((result as any).displayDirective) {
