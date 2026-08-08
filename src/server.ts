@@ -599,7 +599,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         const idx = executionChain.indexOf("Groq");
         executionChain.splice(idx, 1);
         executionChain.unshift("Groq");
-      } else if (groqKeys.length === 0 && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
+      } else if (groqKeys.length === 0 && geminiKeys.length > 0 && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
         // No Groq configured — fall back to promoting Gemini for tool-shaped
         // requests, restoring this codebase's pre-Groq behavior rather than
         // silently losing tool-calling capability to LocalLLM's honest decline.
