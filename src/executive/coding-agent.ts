@@ -9,6 +9,8 @@ import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
 import type { OpenAiCompatibleConfig } from "../runtime/openai-compatible-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
+import { getCognitionRouter } from "../runtime/clients.js";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 import { classifyTaskCategory } from "./task-category.js";
 
@@ -132,7 +134,8 @@ export async function runCodingAgent(
   researchSummary: string,
   directionNotes: string,
   baseBranch: string,
-  omniRoute: OpenAiCompatibleConfig | null
+  omniRoute: OpenAiCompatibleConfig | null,
+  username: string
 ): Promise<CodingAgentResult> {
   // omniRoute is now the single client for both the tool-calling backend
   // (planning/coding) and departments.reviewTaskDiff's review gate below —
@@ -141,6 +144,21 @@ export async function runCodingAgent(
   // longer a second, separately-fetched client to null-check here.
   if (!omniRoute) {
     return { ok: false, error: "No OmniRoute client is configured — the agentic coding loop is unavailable." };
+  }
+
+  // callGroqAgentChat (the tool-calling backend this function drives) has
+  // migrated onto CognitionRouter (see groq-client.ts's own migration) —
+  // departments.reviewTaskDiff above hasn't migrated yet (that's Task 9's
+  // territory), which is why omniRoute is still threaded in separately
+  // rather than this function's own signature retyping wholesale. Read via
+  // getCognitionRouter() rather than threaded in as a new parameter from
+  // this function's own caller — the same "read at point of use, long after
+  // server.ts's startup has set it" pattern clients.ts's own doc comment
+  // documents, since autonomous_executive.ts doesn't hold a CognitionRouter
+  // reference to pass down yet.
+  const router = getCognitionRouter();
+  if (!router) {
+    return { ok: false, error: "No CognitionRouter is configured — the agentic coding loop is unavailable." };
   }
 
   const category = classifyTaskCategory(objective);
@@ -171,7 +189,7 @@ export async function runCodingAgent(
   }
   const baseSha = baseShaResult.stdout.trim();
 
-  const planResult = await proposePlan(buildRequestId, omniRoute, objective, researchSummary, directionNotes, modelOrder);
+  const planResult = await proposePlan(buildRequestId, router, username, objective, researchSummary, directionNotes, modelOrder);
   // Planning is the session's genuinely first LLM call, so its model is the
   // session's first model. Seeding here (rather than starting at null below)
   // keeps the "first non-null wins" capture in the loops from overwriting it
@@ -186,7 +204,7 @@ export async function runCodingAgent(
     // planResult.tokensUsed seeds the flat loop's own counter so planning's
     // spend still counts against the one session budget, not a separate
     // allowance outside it.
-    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, omniRoute, category, modelOrder, planResult.modelUsed, planResult.tokensUsed);
+    return runFlatCodingLoop(buildRequestId, objective, researchSummary, directionNotes, baseSha, router, username, category, modelOrder, planResult.modelUsed, planResult.tokensUsed);
   }
   const plan = planResult.tasks;
 
@@ -262,7 +280,7 @@ export async function runCodingAgent(
           }
           taskTurns++;
 
-          const response = await callGroqAgentChat(omniRoute, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL], modelOrder);
+          const response = await callGroqAgentChat(router, username, messages, [RUN_SHELL_TOOL, FINISH_TASK_TOOL], modelOrder);
           if (response.totalTokens) {
             tokensUsed += response.totalTokens;
             await incrementTokenUsage(buildRequestId, response.totalTokens);
@@ -474,7 +492,8 @@ interface ProposePlanResult {
 // planning itself can't produce a usable list.
 async function proposePlan(
   buildRequestId: number,
-  omniRoute: OpenAiCompatibleConfig,
+  router: CognitionRouter,
+  username: string,
   objective: string,
   researchSummary: string,
   directionNotes: string,
@@ -497,7 +516,7 @@ async function proposePlan(
 
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await callGroqAgentChat(omniRoute, messages, [PROPOSE_PLAN_TOOL], modelOrder);
+      const response = await callGroqAgentChat(router, username, messages, [PROPOSE_PLAN_TOOL], modelOrder);
       if (response.modelUsed && !modelUsed) {
         modelUsed = response.modelUsed;
       }
@@ -572,7 +591,8 @@ async function runFlatCodingLoop(
   researchSummary: string,
   directionNotes: string,
   baseSha: string,
-  omniRoute: OpenAiCompatibleConfig,
+  router: CognitionRouter,
+  username: string,
   category: string,
   modelOrder: string[],
   // Whatever model served the (failed) planning phase in runCodingAgent —
@@ -615,7 +635,7 @@ async function runFlatCodingLoop(
         };
       }
 
-      const response = await callGroqAgentChat(omniRoute, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL], modelOrder);
+      const response = await callGroqAgentChat(router, username, messages, [RUN_SHELL_TOOL, FINISH_CODING_TOOL], modelOrder);
       if (response.totalTokens) {
         tokensUsed += response.totalTokens;
         await incrementTokenUsage(buildRequestId, response.totalTokens);

@@ -435,7 +435,8 @@ export class AutonomousExecutive {
       confirmed.research_summary || "",
       directionNotes,
       baseBranch,
-      this.omniRoute
+      this.omniRoute,
+      username
     );
 
     if (!draft.ok) {

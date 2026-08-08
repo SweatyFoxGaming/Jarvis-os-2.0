@@ -1,4 +1,4 @@
-import type { OpenAiCompatibleConfig } from "./openai-compatible-client.js";
+import type { CognitionRouter } from "./cognition-router.js";
 import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 
 /**
@@ -116,7 +116,8 @@ export function parseGroqAgentResponse(data: any): AgentChatResult {
 }
 
 export async function callGroqAgentChat(
-  config: OpenAiCompatibleConfig,
+  router: CognitionRouter,
+  username: string,
   messages: AgentMessage[],
   tools: AgentTool[],
   modelOrder?: string[]
@@ -136,7 +137,8 @@ export async function callGroqAgentChat(
     function: { ...t.function, parameters: toGroqSchema(t.function.parameters) },
   }));
   const response = await generateWithFallback(
-    config,
+    router,
+    username,
     { messages: messages as any, tools: groqTools as any, tool_choice: "auto" },
     models
   );
