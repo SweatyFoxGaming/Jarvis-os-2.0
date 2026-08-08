@@ -755,6 +755,51 @@ git commit -m "feat: replace /ws/voice's Gemini Live wiring with the local voice
 
 ---
 
+## Task 5b: `src/interaction/static/index.html` — repoint the frontend voice UI
+
+> Added after Task 5's review surfaced a real gap: this file's frontend JS still calls `POST /api/voice-ticket` and opens `ws://.../ws/voice?ticket=...` — both removed by Task 5. Left as-is, the browser's voice UI button silently breaks (404 on ticket fetch, then an immediately-closed WS handshake). Not covered by any other task in this plan, so it's inserted here, before the final cleanup sweep, rather than left as a known-broken follow-up.
+
+**Files:**
+- Modify: `src/interaction/static/index.html`
+
+**Interfaces:**
+- Consumes: nothing new server-side — the new voice pipeline (Tasks 1-5) is entirely server-driven (Unix socket daemon → event bus → tool-calling pipeline), with no client-initiated ticket/WebSocket handshake analogous to the old Gemini Live flow. The browser no longer needs to open its own voice WebSocket at all.
+
+- [ ] **Step 1: Read the current frontend voice UI code completely first**
+
+Find and read every place in `src/interaction/static/index.html` that references `/api/voice-ticket`, `/ws/voice`, or any Gemini-Live-specific client-side audio-streaming logic (microphone capture, PCM chunk sending, ticket fetch-then-connect sequencing). Understand exactly what UI element (e.g. a mic button) triggers this flow and what visual/state feedback it currently gives the user (recording indicator, error states).
+
+- [ ] **Step 2: Decide the real fix**
+
+The new pipeline's voice loop runs entirely server-side against the daemon's Unix socket — there is no browser-facing WebSocket for voice audio anymore (unlike `/ws/events`, which remains for general event-bus streaming to the browser, or unlike the old `/ws/voice`). Two honest options, pick based on what you find in Step 1:
+
+(a) If the frontend's voice button was for browser-microphone capture streamed to the server (the old Gemini Live pattern), and the new architecture instead expects audio input at the daemon's Unix socket directly (e.g. from a local microphone process on the same machine as the daemon, not from the browser tab) — then the browser-side voice button's old flow is fundamentally incompatible with the new architecture. In this case, remove the broken ticket-fetch/WebSocket-connect JS and either (i) remove the mic button/UI entirely with a comment explaining voice input is now handled by the local daemon directly (not through the browser), or (ii) if `voice:transcript`/`voice:reply` events are also published on the existing `/ws/events` bus (check `src/core/event-bus.ts`'s real topic list and whether `/ws/events`'s server-side handler forwards ALL bus topics to connected browser clients or only a curated subset), wire the UI to passively display transcripts/replies as they occur via `/ws/events` instead of trying to initiate voice sessions itself.
+
+(b) If investigation reveals a different, real, working browser-to-daemon path already exists that Task 5 didn't remove, use that instead.
+
+Whichever you choose, the concrete, non-negotiable requirement is: **no remaining frontend code may call the removed `/api/voice-ticket` endpoint or attempt to open `/ws/voice`** — every reference must be either removed or repointed at something real that exists after Task 5's changes.
+
+- [ ] **Step 3: Implement the fix**
+
+Make the HTML/JS change per your Step 2 decision. Keep the diff scoped to the voice UI — don't refactor unrelated parts of `index.html`.
+
+- [ ] **Step 4: Manual verification**
+
+Since this is frontend-only HTML/JS with no automated test harness in this codebase for browser-side code, verify by reading the resulting code path once fully (from button click through to whatever it now does) and confirming no reference to the removed endpoints remains: `grep -n "voice-ticket\|/ws/voice" src/interaction/static/index.html` should return nothing (or only a comment explaining the old behavior was removed, if you choose to leave one). Document in your report exactly what you changed and why, including a plain-English description of what the voice UI does now versus what it did before, since a future engineer (or the project owner) will want to know if the browser button was removed versus rewired.
+
+- [ ] **Step 5: Run the full test suite to confirm no regression**
+
+Export the standard env vars. Run `npx tsx --env-file=.env tests/index.test.ts` and confirm the pass count matches Task 5's baseline exactly (this task touches no TypeScript, so no test should be affected either way — a changed count here would indicate something unexpected happened).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/interaction/static/index.html
+git commit -m "fix: repoint the frontend voice UI off the removed ticket/WebSocket flow"
+```
+
+---
+
 ## Task 6: `docker-compose.yml` — remove whisper-cpp/tts, add voice-daemon
 
 **Files:**
