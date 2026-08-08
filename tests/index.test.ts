@@ -2028,6 +2028,19 @@ registerTest("RewardEvents", "getOverallScore degrades cleanly (null, not 0) whe
   }
 });
 
+registerTest("RapportSignals", "recordRapportSignal degrades cleanly when Postgres isn't reachable", async () => {
+  const { recordRapportSignal } = await import("../src/kernel/state/rapport-repo.js");
+  await recordRapportSignal("test_user", "terse, businesslike", 80); // must not throw
+});
+
+registerTest("RapportSignals", "getRecentRapportSignals degrades cleanly when Postgres isn't reachable", async () => {
+  const { getRecentRapportSignals } = await import("../src/kernel/state/rapport-repo.js");
+  const result = await getRecentRapportSignals("test_user");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`expected an empty array when Postgres is unreachable, got ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("HudRoutes", "deriveHudBadge maps a recent failure to error regardless of executiveStatus", () => {
   if (deriveHudBadge("Idle", true) !== "error") {
     throw new Error("HudRoutes: expected 'error' when a recent audit failure exists, even with executiveStatus 'Idle'");
