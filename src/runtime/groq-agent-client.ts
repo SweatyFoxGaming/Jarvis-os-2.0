@@ -52,8 +52,12 @@ import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 // without a code change if a stronger option proves reliable later — check
 // actual availability, rate limits, and real multi-turn tool-calling
 // behavior (not just a single test call) before trusting a model's name
-// alone.
-export const DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+// alone. Provider-prefixed ("groq:<model>") since CognitionRouter.generateWithFallback
+// requires it — an unprefixed entry is silently skipped as malformed
+// (see cognition-router.ts's "expected provider:model" log line), which
+// would degrade every coding-agent session straight to the local engine.
+// JARVIS_CODING_AGENT_MODEL overrides must include the same prefix.
+export const DEFAULT_MODELS = ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
 
 export interface AgentToolCall {
   id: string;
