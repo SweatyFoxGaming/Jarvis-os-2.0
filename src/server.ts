@@ -742,7 +742,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
 
       else if (step === "Groq") {
-        if (omniRoute) {
+        if (cognitionRouter) {
           try {
             observation.incrementMetric("groqApiCalls");
             session.updateState({
@@ -775,17 +775,14 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
             // unprefixed entry is silently skipped as malformed (see
             // cognition-router.ts's "expected provider:model" log line),
             // matching the exact fix applied to groq-agent-client.ts's
-            // DEFAULT_MODELS in commit ce54af0. This branch is still
-            // gated on `omniRoute`, which is currently always null (a
-            // separate, larger fix out of scope here) — but if that gate
-            // is ever wired up, these model strings must already be
-            // correct rather than silently degrading every call.
+            // DEFAULT_MODELS in commit ce54af0.
             const groqModels = isFastPath
               ? ["groq:llama-3.1-8b-instant", "groq:llama-3.3-70b-versatile"]
               : ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
 
             let response = await generateGroqWithFallback(
-              omniRoute,
+              cognitionRouter,
+              req.username,
               groqTools ? { messages, tools: groqTools } : { messages },
               groqModels
             );
@@ -847,7 +844,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               }
               messages.push(...toolResponseMessages);
 
-              response = await generateGroqWithFallback(omniRoute, { messages, tools: groqTools }, groqModels);
+              response = await generateGroqWithFallback(cognitionRouter, req.username, { messages, tools: groqTools }, groqModels);
               toolCalls = response.choices[0]?.message?.tool_calls || [];
             }
 
