@@ -84,7 +84,10 @@ function parseRetryAfterSeconds(err: any): number | undefined {
     candidate = match ? Number(match[1]) : undefined;
   }
   if (candidate === undefined || !Number.isFinite(candidate)) return undefined;
-  return Math.min(Math.max(candidate, 0), MAX_RETRY_AFTER_SECONDS);
+  // Floor at 1, not 0 — a hostile or buggy "retry-after: 0" (or a negative
+  // value) must not zero out the cooldown this function exists to enforce;
+  // it should behave like "cool down briefly," never "don't cool down."
+  return Math.min(Math.max(candidate, 1), MAX_RETRY_AFTER_SECONDS);
 }
 
 // Prefers the response's own usage.total_tokens when the provider reported
