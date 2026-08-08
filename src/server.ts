@@ -33,7 +33,6 @@ import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
 import { reflectAndLearn } from "./adaptation/reflection.js";
 import { WebSocketServer } from "ws";
-import * as liveVoice from "./interaction/live-voice.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
 import * as briefing from "./world/briefing.js";
@@ -64,8 +63,10 @@ import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
 import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
+import { startAudioClient } from "./core/audio-client.js";
 import { startLiveAnalysis } from "./adaptation/live-analysis.js";
 import { startShadowVerifier } from "./executive/shadow-verifier.js";
+import { startVoiceSession } from "./interaction/voice-session.js";
 
 dotenv.config();
 
@@ -1291,36 +1292,9 @@ app.get("*", (req, res) => {
 
 observation.endProfile("startup");
 
-// One-time tickets for /ws/voice — see the comment on the WS handshake below
-// for why this exists instead of the permanent API key riding in the URL.
-const VOICE_TICKET_TTL_MS = 30_000;
-const voiceTickets = new Map<string, { username: string; expiresAt: number }>();
-
-function issueVoiceTicket(username: string): string {
-  const now = Date.now();
-  for (const [t, v] of voiceTickets) {
-    if (v.expiresAt < now) voiceTickets.delete(t); // opportunistic sweep, keeps the map bounded
-  }
-  const ticket = crypto.randomBytes(24).toString("hex");
-  voiceTickets.set(ticket, { username, expiresAt: now + VOICE_TICKET_TTL_MS });
-  return ticket;
-}
-
-function consumeVoiceTicket(ticket: string): string | null {
-  const entry = voiceTickets.get(ticket);
-  voiceTickets.delete(ticket); // single-use regardless of outcome
-  if (!entry || entry.expiresAt < Date.now()) return null;
-  return entry.username;
-}
-
-app.post("/api/voice-ticket", validateApiKey, (req: any, res: any) => {
-  res.json({ ticket: issueVoiceTicket(req.username) });
-});
-
-// One-time tickets for /ws/events — same reasoning as the voice tickets
-// above: a browser WebSocket handshake can't carry a custom X-API-Key
-// header, so identity crosses via a short-lived, single-use ticket
-// obtained through a normal authenticated POST instead.
+// One-time tickets for /ws/events — a browser WebSocket handshake can't
+// carry a custom X-API-Key header, so identity crosses via a short-lived,
+// single-use ticket obtained through a normal authenticated POST instead.
 const EVENTS_TICKET_TTL_MS = 30_000;
 const eventsTickets = new Map<string, { username: string; expiresAt: number }>();
 
@@ -1377,49 +1351,15 @@ initDatabase().then(async (ready) => {
     observation.logTelemetry("info", "System", `🚀 Jarvis OS Server running on http://localhost:${PORT}`);
   });
 
-  // ---------- Voice-native mode (Gemini Live API) ----------
-  // A continuous WebSocket audio stream, not a request/response round trip —
-  // see src/cognition/live-voice.ts. Browser WebSocket clients can't attach a
-  // custom x-api-key header on the handshake, and the permanent admin/user
-  // key deliberately never goes in a URL elsewhere (see the header-only note
-  // above validateApiKey — query strings end up in access logs). So the
-  // handshake instead carries a short-lived, single-use ticket obtained via
-  // a normal authenticated POST (see /api/voice-ticket below); the permanent
-  // key never touches a URL or a log line for this path either.
-  // noServer + the single manual dispatcher below (registered after
-  // eventsWss is also constructed) — see that dispatcher's own comment for
-  // why ws's simpler `{ server, path }` shortcut can't be used once a
-  // second WebSocketServer shares this same httpServer.
-  const voiceWss = new WebSocketServer({ noServer: true });
-  voiceWss.on("connection", async (ws, req) => {
-    const url = new URL(req.url || "", `http://${req.headers.host}`);
-    const ticket = url.searchParams.get("ticket");
-    const username = ticket ? consumeVoiceTicket(ticket) : null;
-
-    if (!username) {
-      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid/expired voice ticket." }));
-      ws.close();
-      return;
-    }
-    if (!ai) {
-      ws.send(JSON.stringify({ type: "error", message: "Voice-native mode requires GEMINI_API_KEY to be configured." }));
-      ws.close();
-      return;
-    }
-
-    observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
-    await liveVoice.bridgeVoiceSession(ai, cognitionRouter, ws, username);
-  });
-
   // A generic event stream: every EventBus publish, regardless of topic,
   // gets forwarded to every connected client. Two auth paths, since the two
   // kinds of client can't authenticate the same way: a browser page (the
   // Electron window's frontend) can't set a custom header on a WebSocket
-  // handshake, so it authenticates via a single-use ticket exactly like
-  // /ws/voice does; a Node.js client (eww-bridge.ts, a real host process,
-  // not a browser) CAN set a header, so it authenticates via the permanent
-  // X-API-Key directly, matching how eww-adapter.ts already authenticates
-  // its HTTP polling today.
+  // handshake, so it authenticates via a single-use ticket obtained through
+  // a normal authenticated POST (see /api/events-ticket above); a Node.js
+  // client (eww-bridge.ts, a real host process, not a browser) CAN set a
+  // header, so it authenticates via the permanent X-API-Key directly,
+  // matching how eww-adapter.ts already authenticates its HTTP polling today.
   const eventsWss = new WebSocketServer({ noServer: true });
   eventsWss.on("connection", (ws, req) => {
     const url = new URL(req.url || "", `http://${req.headers.host}`);
@@ -1492,11 +1432,13 @@ initDatabase().then(async (ready) => {
   // the handshake with a 400 — it never lets a later listener (a second
   // WebSocketServer for a different path) get a chance to handle it. This
   // silently broke /ws/events entirely once it was added alongside the
-  // pre-existing /ws/voice (live-caught in this task's own verification: a
+  // now-removed /ws/voice route (live-caught in earlier verification: a
   // real WS client connecting to /ws/events with a valid ticket/API key
   // still got HTTP 400 pre-upgrade). Per ws's own documented pattern for
-  // "Multiple servers sharing a single HTTP/S server", both wss instances
-  // above use noServer:true and this single dispatcher does the routing.
+  // "Multiple servers sharing a single HTTP/S server", eventsWss above uses
+  // noServer:true and this dispatcher does the routing — kept even now that
+  // it's the only WebSocketServer, so a future second one doesn't
+  // reintroduce the same silent-400 bug.
   httpServer.on("upgrade", (req, socket, head) => {
     // `new URL()` throws for an empty or malformed Host header (verified:
     // "", "a b", "[bad" all throw a TypeError) — inside an 'upgrade'
@@ -1511,9 +1453,7 @@ initDatabase().then(async (ready) => {
       socket.destroy();
       return;
     }
-    if (pathname === "/ws/voice") {
-      voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit("connection", ws, req));
-    } else if (pathname === "/ws/events") {
+    if (pathname === "/ws/events") {
       eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit("connection", ws, req));
     } else {
       socket.destroy();
@@ -1539,6 +1479,19 @@ initDatabase().then(async (ready) => {
   // Same unconditional-start reasoning as liveAnalysis above — it does
   // nothing until a real high-severity adaptation:analysis event arrives.
   const shadowVerifier = startShadowVerifier();
+
+  // Local, offline-capable voice pipeline, replacing the old browser-facing
+  // /ws/voice route straight to the Gemini Live API (see git history for
+  // src/interaction/live-voice.ts, removed in this task). startAudioClient
+  // bridges the voice daemon's Unix socket (STT/TTS only — see
+  // daemon/voice_engine.py) onto the EventBus (voice:transcript /
+  // voice:reply / voice:audio-chunk / voice:error); startVoiceSession
+  // subscribes to voice:transcript and runs each turn through the same
+  // local tool-calling pipeline /api/chat's Groq/CognitionRouter branch
+  // uses, publishing voice:reply. Neither needs an HTTP/WebSocket route —
+  // the daemon connection is host-local via a Unix socket, not a browser.
+  const audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
+  const voiceSession = startVoiceSession();
 
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(cognitionRouter);

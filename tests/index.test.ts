@@ -3216,31 +3216,19 @@ registerTest("HTTP Boundary", "WS /ws/events accepts a connection with a valid X
   }
 });
 
-// Regression test for the shared-httpServer upgrade dispatcher added
-// alongside /ws/events: both /ws/voice and /ws/events now route through one
-// manual `httpServer.on("upgrade", ...)` handler (ws's own `{ server, path }`
-// shortcut breaks with two WebSocketServer instances on one HTTP server —
-// see that handler's own comment). This locks in that /ws/voice still gets
-// its own, unchanged handshake and error message through that dispatcher,
-// so a future edit to the dispatcher that silently misroutes /ws/voice
-// fails a test instead of only showing up in manual verification.
-registerTest("HTTP Boundary", "WS /ws/voice still works through the shared upgrade dispatcher (no ticket -> its own error message)", async () => {
-  const port = 3021;
-  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
-  try {
-    const ws = new (await import("ws")).default(`ws://127.0.0.1:${port}/ws/voice`);
-    const result: any = await new Promise((resolve, reject) => {
-      ws.on("message", (data: any) => resolve(JSON.parse(data.toString())));
-      ws.on("close", () => resolve({ closed: true }));
-      ws.on("unexpected-response", (_req: any, res: any) => reject(new Error(`HTTP Boundary: /ws/voice handshake unexpectedly rejected pre-upgrade with status ${res.statusCode}`)));
-    });
-    if (result.type !== "error" || !String(result.message || "").includes("voice ticket")) {
-      throw new Error(`HTTP Boundary: expected /ws/voice's own "voice ticket" error message, got: ${JSON.stringify(result)}`);
-    }
-  } finally {
-    await stopTestServer(child);
-  }
-});
+// The "WS /ws/voice still works through the shared upgrade dispatcher"
+// regression test that used to live here was removed in the local-voice-
+// daemon plan's Task 5: /ws/voice (the Gemini Live browser WebSocket route)
+// was deleted entirely, along with its ticket-based handshake and
+// src/interaction/live-voice.ts. The new voice pipeline (audio-client.ts +
+// voice-session.ts) talks to the daemon over a host-local Unix domain
+// socket, not an HTTP-upgradeable route, so there is no equivalent
+// HTTP-boundary behavior left to assert here — real coverage for the new
+// pipeline lives in the "AudioClient" and "VoiceSession" test categories
+// above instead. The shared-dispatcher regression concern this test used to
+// guard (a second WebSocketServer silently 400ing before reaching the
+// manual routing) is still covered by the two "WS /ws/events ..." tests
+// immediately above, which exercise the same dispatcher.
 
 registerTest("OpenAiCompatibleClient", "generateWithFallback returns the first model's successful response", async () => {
   const originalFetch = global.fetch;
