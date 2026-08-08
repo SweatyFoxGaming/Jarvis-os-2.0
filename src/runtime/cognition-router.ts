@@ -61,7 +61,7 @@ const MAX_RETRY_AFTER_SECONDS = 3600;
 
 // Best-effort extraction of a retry delay from a failed transport call.
 // The real generateWithFallback throws a plain Error with a message like
-// "OmniRoute returned 429: <body>" — it doesn't currently surface the
+// "OpenAI-compatible endpoint returned 429: <body>" — it doesn't currently surface the
 // Retry-After header value on the thrown error, so this falls back to
 // KeyPool's own default cooldown in that case (which is the common,
 // real-transport case today). This is deliberately written to also honor

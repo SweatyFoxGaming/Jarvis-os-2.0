@@ -2662,7 +2662,7 @@ registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a
   }
 });
 
-registerTest("OmniRouteClient", "generateWithFallback returns the first model's successful response", async () => {
+registerTest("OpenAiCompatibleClient", "generateWithFallback returns the first model's successful response", async () => {
   const originalFetch = global.fetch;
   global.fetch = (async (url: string, init: any) => {
     const body = JSON.parse(init.body);
@@ -2670,17 +2670,17 @@ registerTest("OmniRouteClient", "generateWithFallback returns the first model's 
     return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
   }) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
-    const result = await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
+    const { generateWithFallback: openAiCompatibleGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
+    const result = await openAiCompatibleGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
     if (result.choices[0].message.content !== "ok") {
-      throw new Error(`OmniRouteClient: expected "ok", got: ${JSON.stringify(result)}`);
+      throw new Error(`OpenAiCompatibleClient: expected "ok", got: ${JSON.stringify(result)}`);
     }
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-registerTest("OmniRouteClient", "generateWithFallback tries the next model when the first fails", async () => {
+registerTest("OpenAiCompatibleClient", "generateWithFallback tries the next model when the first fails", async () => {
   const originalFetch = global.fetch;
   let attempts: string[] = [];
   global.fetch = (async (url: string, init: any) => {
@@ -2690,34 +2690,34 @@ registerTest("OmniRouteClient", "generateWithFallback tries the next model when 
     return new Response(JSON.stringify({ choices: [{ message: { content: "from model-b" } }] }), { status: 200 });
   }) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
-    const result = await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
+    const { generateWithFallback: openAiCompatibleGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
+    const result = await openAiCompatibleGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a", "model-b"]);
     if (result.choices[0].message.content !== "from model-b" || attempts.join(",") !== "model-a,model-b") {
       // The per-model loop moves to the next model when any model fails (no per-model
       // retries by design — fetchWithRetry returns immediately on 5xx for POST).
-      throw new Error(`OmniRouteClient: expected fallback to model-b after model-a fails, got content="${result.choices?.[0]?.message?.content}", attempts=${attempts.join(",")}`);
+      throw new Error(`OpenAiCompatibleClient: expected fallback to model-b after model-a fails, got content="${result.choices?.[0]?.message?.content}", attempts=${attempts.join(",")}`);
     }
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-registerTest("OmniRouteClient", "generateWithFallback throws when every model fails", async () => {
+registerTest("OpenAiCompatibleClient", "generateWithFallback throws when every model fails", async () => {
   const originalFetch = global.fetch;
   global.fetch = (async () => new Response("error", { status: 500 })) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
-    await omniRouteGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
-    throw new Error("OmniRouteClient: expected generateWithFallback to throw when every model fails");
+    const { generateWithFallback: openAiCompatibleGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
+    await openAiCompatibleGenerateWithFallback({ apiKey: "test-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
+    throw new Error("OpenAiCompatibleClient: expected generateWithFallback to throw when every model fails");
   } catch (err: any) {
-    if (err.message === "OmniRouteClient: expected generateWithFallback to throw when every model fails") throw err;
+    if (err.message === "OpenAiCompatibleClient: expected generateWithFallback to throw when every model fails") throw err;
     // any other thrown error is the expected outcome
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-registerTest("OmniRouteClient", "generateWithFallback sends the API key as a Bearer token", async () => {
+registerTest("OpenAiCompatibleClient", "generateWithFallback sends the API key as a Bearer token", async () => {
   const originalFetch = global.fetch;
   let seenAuth: string | null = null;
   global.fetch = (async (url: string, init: any) => {
@@ -2725,10 +2725,10 @@ registerTest("OmniRouteClient", "generateWithFallback sends the API key as a Bea
     return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
   }) as any;
   try {
-    const { generateWithFallback: omniRouteGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
-    await omniRouteGenerateWithFallback({ apiKey: "my-secret-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
+    const { generateWithFallback: openAiCompatibleGenerateWithFallback } = await import("../src/runtime/openai-compatible-client.js");
+    await openAiCompatibleGenerateWithFallback({ apiKey: "my-secret-key", baseUrl: "http://127.0.0.1:20128/v1" }, { messages: [] }, ["model-a"]);
     if (seenAuth !== "Bearer my-secret-key") {
-      throw new Error(`OmniRouteClient: expected "Bearer my-secret-key", got: ${seenAuth}`);
+      throw new Error(`OpenAiCompatibleClient: expected "Bearer my-secret-key", got: ${seenAuth}`);
     }
   } finally {
     global.fetch = originalFetch;
@@ -2873,7 +2873,7 @@ registerTest("CognitionRouter", "a 429-shaped failure triggers cooldown and retr
     transport: async (config: any) => {
       transportCalls.push(config.apiKey);
       if (config.apiKey === "gk1") {
-        throw new Error("OmniRoute returned 429: rate limited, retry-after: 30");
+        throw new Error("OpenAI-compatible endpoint returned 429: rate limited, retry-after: 30");
       }
       return { choices: [{ message: { content: "from gk2" } }] };
     },
@@ -3009,7 +3009,7 @@ registerTest("CognitionRouter", "a single-model models array with 2 configured k
       }
       transportCalls.push(config.apiKey);
       if (config.apiKey === "gk1") {
-        throw new Error("OmniRoute returned 429: rate limited");
+        throw new Error("OpenAI-compatible endpoint returned 429: rate limited");
       }
       return { choices: [{ message: { content: "from gk2" } }] };
     },
@@ -3123,7 +3123,7 @@ registerTest("CognitionRouter", "an adversarial huge digit-string retry-after va
     localModelName: "unused",
     localEngine: { generateResponse: () => "keyword fallback" },
     transport: async () => {
-      throw new Error(`OmniRoute returned 429: rate limited, retry-after: ${"9".repeat(50)}`);
+      throw new Error(`OpenAI-compatible endpoint returned 429: rate limited, retry-after: ${"9".repeat(50)}`);
     },
   } as any);
 

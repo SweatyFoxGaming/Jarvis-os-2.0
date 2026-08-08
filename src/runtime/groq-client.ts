@@ -1,6 +1,4 @@
 import type { CognitionRouter } from "./cognition-router.js";
-import type { OpenAiCompatibleConfig } from "./openai-compatible-client.js";
-import { generateWithFallback as omniRouteGenerateWithFallback } from "./openai-compatible-client.js";
 
 /**
  * Normalizes a schema tree into the lowercase JSON Schema shape Groq's

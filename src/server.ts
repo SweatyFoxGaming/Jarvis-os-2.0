@@ -7,7 +7,6 @@ import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
-import type { OpenAiCompatibleConfig } from "./runtime/openai-compatible-client.js";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
@@ -179,32 +178,20 @@ if (process.env.GEMINI_API_KEY) {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
 
-// ---------- OmniRoute Client Initialization (legacy — deprecated) ----------
-// OMNIROUTE_API_KEY/OMNIROUTE_BASE_URL are no longer read (see .env.example's
-// GROQ_API_KEYS/GEMINI_API_KEYS block below) — `omniRoute` itself stays
-// declared and permanently null purely so this file's own remaining
-// still-unmigrated call sites (the /api/chat Groq tool-calling branch,
-// specifically the two generateGroqWithFallback calls and the two
-// `if (omniRoute)`/`!omniRoute` execution-chain checks feeding into it)
-// keep compiling and running exactly as they do today. Every real
-// call site that used to read this identifier — briefing/daily-adaptation
-// configureGroq, AutonomousExecutive's constructor, the write-side
-// reflection/knowledge-graph/self-reflection calls, the voice bridge, and
-// the two scheduler jobs — was retyped onto `cognitionRouter` below as part
-// of Task 9 (see docs/superpowers/sdd/2026-08-07-jarvis-cognition-router).
-// Deleting this identifier outright — as opposed to retiring only the
-// env-var read that used to populate it — would throw a ReferenceError at
-// import time or on the first real /api/chat request. Rewiring the Groq
-// tool-calling branch itself onto getCognitionRouter() is Tasks 10-11's job
-// specifically.
-let omniRoute: OpenAiCompatibleConfig | null = null;
-
 // ---------- Cognition Router Initialization (primary cloud tier) ----------
-// Jarvis's own multi-key provider pool, replacing the OmniRoute gateway
-// above — see cognition-router.ts for the fallback chain (cloud providers,
-// one key/model at a time -> local LLM endpoint -> offline keyword engine)
-// and key-pool.ts for the per-provider, multi-key rotation/cooldown logic
-// that lets one key hitting a rate limit not take the whole provider down.
+// Jarvis's own multi-key provider pool, replacing the old OmniRoute gateway
+// (OMNIROUTE_API_KEY/OMNIROUTE_BASE_URL are no longer read — see
+// .env.example's GROQ_API_KEYS/GEMINI_API_KEYS block below) — see
+// cognition-router.ts for the fallback chain (cloud providers, one
+// key/model at a time -> local LLM endpoint -> offline keyword engine) and
+// key-pool.ts for the per-provider, multi-key rotation/cooldown logic that
+// lets one key hitting a rate limit not take the whole provider down. Every
+// call site that used to read the old `omniRoute` identifier — briefing/
+// daily-adaptation configureGroq, AutonomousExecutive's constructor, the
+// write-side reflection/knowledge-graph/self-reflection calls, the voice
+// bridge, the two scheduler jobs, and (as of this final cleanup pass) the
+// /api/chat tool-shaped execution-chain promotion below — has been retyped
+// onto `cognitionRouter` / the `groqKeys`/`geminiKeys` arrays declared here.
 const groqKeys = (process.env.GROQ_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
 const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
 let cognitionRouter: CognitionRouter | null = null;
@@ -596,13 +583,23 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // it needs the same treatment: promote a tool-capable backend to the
     // front instead of letting LocalLLM (no tool support at all) answer it
     // in prose before Groq/Gemini ever get a turn.
+    //
+    // `groqKeys.length > 0` (module-scope, boot-time — same "is this
+    // provider configured at all" signal `ai` already is for Gemini) is the
+    // real "does Groq have any configured keys" check here, replacing the
+    // old always-null `omniRoute` truthiness check this branched on before
+    // this final cleanup pass. KeyPool.getAvailableKey() was deliberately
+    // NOT used for this: it consumes rotation state (advances the
+    // round-robin cursor) as a side effect, which is wrong for a read-only
+    // "is this provider configured" check made on every tool-shaped
+    // request.
     const hasPendingConfirmation = !!awaitingBuildRequest || !!pendingRewardGate;
     if (kernel.llmMode !== "strictly-local" && (looksToolShaped(message) || hasPendingConfirmation)) {
-      if (omniRoute && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
+      if (groqKeys.length > 0 && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
         const idx = executionChain.indexOf("Groq");
         executionChain.splice(idx, 1);
         executionChain.unshift("Groq");
-      } else if (!omniRoute && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
+      } else if (groqKeys.length === 0 && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
         // No Groq configured — fall back to promoting Gemini for tool-shaped
         // requests, restoring this codebase's pre-Groq behavior rather than
         // silently losing tool-calling capability to LocalLLM's honest decline.

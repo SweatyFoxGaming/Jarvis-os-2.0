@@ -308,7 +308,7 @@ const TASK_REVIEW_SCHEMA = {
 // objective. Returns a structured verdict (not prose, unlike reviewCodeDiff)
 // because this drives a programmatic retry/continue decision inside
 // coding-agent.ts's fix loop. Fails CLOSED (approved: false) both when no
-// OmniRoute client is available and when the review call itself throws —
+// CognitionRouter is available and when the review call itself throws —
 // this used to fail open, which meant an outage silently rubber-stamped
 // every task with no code ever actually reviewed, identical in the approval
 // queue to a normally-reviewed one. Failing closed doesn't loop forever: a
