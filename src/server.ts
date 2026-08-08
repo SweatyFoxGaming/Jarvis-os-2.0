@@ -11,12 +11,14 @@ import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
-import Groq from "groq-sdk";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./runtime/local_engine.js";
+import { KeyPool } from "./runtime/key-pool.js";
+import { CognitionRouter } from "./runtime/cognition-router.js";
+import { recordUsage, getRecentShare } from "./kernel/state/usage-repo.js";
 import * as whisper from "./interaction/whisper.js";
 import { initDatabase, pingDatabase } from "./kernel/state/db.js";
 import * as memoryRepo from "./kernel/state/memory-repo.js";
@@ -44,7 +46,7 @@ import { settingsRouter } from "./interaction/routes/settings-routes.js";
 import { observationRouter } from "./interaction/routes/observation-routes.js";
 import { learningRouter } from "./interaction/routes/learning-routes.js";
 import { notificationsRouter } from "./interaction/routes/notifications-routes.js";
-import { setSharedClients } from "./runtime/clients.js";
+import { setSharedRouter } from "./runtime/clients.js";
 import { positiveIntegerEnv } from "./kernel/env.js";
 import { knowledgeRouter } from "./interaction/routes/knowledge-routes.js";
 import { featureRequestsRouter } from "./interaction/routes/feature-requests-routes.js";
@@ -198,19 +200,49 @@ if (process.env.GEMINI_API_KEY) {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
 
-// ---------- Groq Client Initialization (primary cloud tier) ----------
-let groq: Groq | null = null;
-if (process.env.GROQ_API_KEY) {
-  groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-  observation.logTelemetry("info", "Cognition", "Groq client successfully configured with API Key.");
+// ---------- Cognition Router Initialization (primary cloud tier) ----------
+// Jarvis's own multi-key provider pool, replacing the old OmniRoute gateway
+// (OMNIROUTE_API_KEY/OMNIROUTE_BASE_URL are no longer read — see
+// .env.example's GROQ_API_KEYS/GEMINI_API_KEYS block below) — see
+// cognition-router.ts for the fallback chain (cloud providers, one
+// key/model at a time -> local LLM endpoint -> offline keyword engine) and
+// key-pool.ts for the per-provider, multi-key rotation/cooldown logic that
+// lets one key hitting a rate limit not take the whole provider down. Every
+// call site that used to read the old `omniRoute` identifier — briefing/
+// daily-adaptation configureGroq, AutonomousExecutive's constructor, the
+// write-side reflection/knowledge-graph/self-reflection calls, the voice
+// bridge, the two scheduler jobs, and (as of this final cleanup pass) the
+// /api/chat tool-shaped execution-chain promotion below — has been retyped
+// onto `cognitionRouter` / the `groqKeys`/`geminiKeys` arrays declared here.
+const groqKeys = (process.env.GROQ_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+let cognitionRouter: CognitionRouter | null = null;
+if (groqKeys.length > 0 || geminiKeys.length > 0) {
+  const keyPool = new KeyPool({ groq: groqKeys, gemini: geminiKeys });
+  // Read fresh, synchronous defaults here (module scope, before
+  // initDatabase()/MindKernel.hydrateFromDb() run later in async startup
+  // below) — matching this block's own module-scope lifecycle exactly like
+  // the OmniRoute block it replaces. A DB-persisted override to the local
+  // LLM endpoint/model/key made via Settings after boot is not picked up by
+  // this already-constructed router until process restart; that's an
+  // existing tradeoff of RouterDeps taking plain fields rather than a live
+  // accessor (see cognition-router.ts), not something introduced here.
+  const kernelDefaults = MindKernel.getInstance();
+  cognitionRouter = new CognitionRouter({
+    keyPool,
+    recordUsage,
+    getRecentShare,
+    localLlmEndpoint: kernelDefaults.localLlmEndpoint,
+    localModelName: kernelDefaults.localModelName,
+    localApiKey: kernelDefaults.localApiKey,
+    localEngine: LocalCognitiveEngine.getInstance(),
+  });
+  observation.logTelemetry("info", "Cognition", "CognitionRouter configured from GROQ_API_KEYS/GEMINI_API_KEYS.");
 } else {
-  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
+  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEYS or GEMINI_API_KEYS configured. Cloud-backed cognition features unavailable — falling back to local LLM/keyword engine only.");
 }
-briefing.configureGroq(groq);
-dailyAdaptation.configureGroq(groq);
-// The agentic coding loop (src/executive/coding-agent.ts) runs entirely on
-// this same Groq client — no separate API key to configure or log here;
-// the GROQ_API_KEY check above already covers whether it's available.
+briefing.configureGroq(cognitionRouter);
+dailyAdaptation.configureGroq(cognitionRouter);
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -235,14 +267,14 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai, groq);
+const executive = AutonomousExecutive.getInstance(observation, ai, cognitionRouter);
 const learningEngine = LongTermLearningEngine.getInstance();
 // Makes these same already-constructed clients reachable from extracted
 // routers (src/interaction/routes/) via runtime/clients.ts's getters —
 // see that module's own comment for why this must happen here (after
 // construction) rather than the routers reading them at their own
 // module-load time.
-setSharedClients(ai, groq);
+setSharedRouter(ai, cognitionRouter);
 
 // Users, API keys, and memory records are persisted in Postgres (src/data/) —
 // see initDatabase() near the bottom of this file, called before app.listen.
@@ -370,7 +402,26 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
     // better accuracy for a real one-off dictated command).
     if (ai && !kernel.offlineMode && !forceOffline) {
       observation.incrementMetric("geminiApiCalls");
-      
+
+      // Intentionally NOT migrated to OmniRoute (OmniRoute cognition gateway
+      // task 7 — see .superpowers/sdd/2026-08-03-omniroute-cognition-gateway/
+      // task-7-report.md for full evidence). Reading OmniRoute's own
+      // translator source confirmed it CAN convert an OpenAI-shaped
+      // `input_audio` content part into Gemini's native inlineData for
+      // models routed through its "gemini" format (open-sse/translator/
+      // request/openai-to-gemini.ts + helpers/geminiHelper.ts's
+      // convertOpenAIContentToParts). But empirically hitting the real,
+      // locally-running OmniRoute instance showed the three bare model
+      // names below ("gemini-3.5-flash", "gemini-3.1-flash-lite",
+      // "gemini-flash-latest") are rejected outright as an "Ambiguous
+      // model" (OmniRoute requires a provider/model prefix), the "gemini"
+      // provider that actually implements the audio translation has zero
+      // active credentials configured, and "gemini-flash-latest" isn't a
+      // recognized OmniRoute model ID under any provider at all. Migrating
+      // this call site today would make voice transcription fail 100% of
+      // the time instead of working via the direct Gemini SDK, so it stays
+      // on `ai.models.generateContent` (via generateContentWithFallback)
+      // until a provider-prefixed, credentialed model list is confirmed.
       const response = await generateContentWithFallback(ai, {
         contents: [
           "Please transcribe this voice recording accurately into plain English text. If there is no audible speech, return an empty string. Do not add any conversational remarks, commentary, or punctuation padding, just the literal transcribed words.",
@@ -554,13 +605,23 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // it needs the same treatment: promote a tool-capable backend to the
     // front instead of letting LocalLLM (no tool support at all) answer it
     // in prose before Groq/Gemini ever get a turn.
+    //
+    // `groqKeys.length > 0` (module-scope, boot-time — same "is this
+    // provider configured at all" signal `ai` already is for Gemini) is the
+    // real "does Groq have any configured keys" check here, replacing the
+    // old always-null `omniRoute` truthiness check this branched on before
+    // this final cleanup pass. KeyPool.getAvailableKey() was deliberately
+    // NOT used for this: it consumes rotation state (advances the
+    // round-robin cursor) as a side effect, which is wrong for a read-only
+    // "is this provider configured" check made on every tool-shaped
+    // request.
     const hasPendingConfirmation = !!awaitingBuildRequest || !!pendingRewardGate;
     if (kernel.llmMode !== "strictly-local" && (looksToolShaped(message) || hasPendingConfirmation)) {
-      if (groq && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
+      if (groqKeys.length > 0 && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
         const idx = executionChain.indexOf("Groq");
         executionChain.splice(idx, 1);
         executionChain.unshift("Groq");
-      } else if (!groq && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
+      } else if (groqKeys.length === 0 && geminiKeys.length > 0 && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
         // No Groq configured — fall back to promoting Gemini for tool-shaped
         // requests, restoring this codebase's pre-Groq behavior rather than
         // silently losing tool-calling capability to LocalLLM's honest decline.
@@ -700,7 +761,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
 
       else if (step === "Groq") {
-        if (groq) {
+        if (cognitionRouter) {
           try {
             observation.incrementMetric("groqApiCalls");
             session.updateState({
@@ -728,12 +789,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               { role: "system", content: systemInstruction },
               { role: "user", content: message },
             ];
+            // Provider-prefixed ("groq:<model>") since
+            // CognitionRouter.generateWithFallback requires it — an
+            // unprefixed entry is silently skipped as malformed (see
+            // cognition-router.ts's "expected provider:model" log line),
+            // matching the exact fix applied to groq-agent-client.ts's
+            // DEFAULT_MODELS in commit ce54af0.
             const groqModels = isFastPath
-              ? ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
-              : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+              ? ["groq:llama-3.1-8b-instant", "groq:llama-3.3-70b-versatile"]
+              : ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
 
             let response = await generateGroqWithFallback(
-              groq,
+              cognitionRouter,
+              req.username,
               groqTools ? { messages, tools: groqTools } : { messages },
               groqModels
             );
@@ -795,7 +863,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               }
               messages.push(...toolResponseMessages);
 
-              response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+              response = await generateGroqWithFallback(cognitionRouter, req.username, { messages, tools: groqTools }, groqModels);
               toolCalls = response.choices[0]?.message?.tool_calls || [];
             }
 
@@ -815,7 +883,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
 
       else if (step === "Gemini") {
-        if (ai) {
+        if (cognitionRouter) {
           try {
             observation.incrementMetric("geminiApiCalls");
             session.updateState({
@@ -824,52 +892,59 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               activeCapability: "Gemini LLM Generation"
             }, observation);
 
-            // Real function-calling: Gemini can choose to invoke a tool
-            // (src/execution/tools.ts) with structured arguments it extracts
-            // from the conversation, gated by the caller's permission grants.
-            const messageParts: any[] = [{ text: message }];
-            if (image) {
-              messageParts.push({ inlineData: { mimeType: "image/jpeg", data: image } });
-            }
-            const contents: Content[] = [{ role: "user", parts: messageParts }];
-            const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+            // Real function-calling: the model can choose to invoke a tool
+            // (src/capabilities/tools.ts) with structured arguments it
+            // extracts from the conversation, gated by the caller's
+            // permission grants. Mirrors the Groq branch above exactly —
+            // both tiers now go through CognitionRouter's OpenAI-compatible
+            // transport, so the same message/tool-loop shape applies.
+            const geminiTools = toGroqTools(getAllToolDeclarations());
+            const messages: any[] = [
+              { role: "system", content: systemInstruction },
+              { role: "user", content: message },
+            ];
+            // Vision (a live camera frame) has no bearing on this router-based
+            // path — the image-attachment handling that existed in the old
+            // Gemini-native SDK call is intentionally not carried over here;
+            // if the router's OpenAI-compatible transport is later confirmed
+            // to support image_url content parts for one of these models,
+            // that's a follow-up, not part of this task.
+            const chatModels = ["gemini:gemini-2.0-flash", "gemini:gemini-1.5-flash"];
 
-            let response = await generateContentWithFallback(ai, {
-              contents,
-              config: {
-                systemInstruction,
-                tools: [{ functionDeclarations: getAllToolDeclarations() }],
-              },
-            }, chatModels);
-
-            let calls: FunctionCall[] = response.functionCalls || [];
+            let response = await cognitionRouter.generateWithFallback(req.username, { messages, tools: geminiTools }, chatModels);
+            let toolCalls = response.choices[0]?.message?.tool_calls || [];
             let guard = 0;
-            while (calls.length > 0 && guard < 3) {
-              guard++;
-              // Echo back the model's own raw content (not a hand-built
-              // { functionCall } part) — Gemini attaches a thought_signature
-              // to each function-call part and rejects a follow-up request
-              // that's missing it (confirmed live: "Function call is missing
-              // a thought_signature..." / 400 INVALID_ARGUMENT).
-              const modelContent = response.candidates?.[0]?.content;
-              contents.push(modelContent && modelContent.parts?.length
-                ? { role: "model", parts: modelContent.parts }
-                : { role: "model", parts: calls.map(c => ({ functionCall: c })) });
 
-              const responseParts = [];
-              for (const call of calls) {
+            while (toolCalls.length > 0 && guard < 3) {
+              guard++;
+              const assistantMessage = response.choices[0].message;
+              messages.push({
+                role: "assistant",
+                content: assistantMessage.content,
+                tool_calls: assistantMessage.tool_calls,
+              });
+
+              const toolResponseMessages: any[] = [];
+              for (const call of toolCalls) {
+                let args: Record<string, any> = {};
+                try {
+                  args = JSON.parse(call.function.arguments || "{}");
+                } catch {
+                  // Malformed arguments from the model — executeTool below
+                  // fails cleanly on whatever this leaves args as, same as
+                  // a genuinely empty-args call would.
+                }
+
                 const result = await executeTool(
-                  call.name || "",
-                  call.args || {},
+                  call.function.name || "",
+                  args,
                   req.username,
                   ai,
                   kernel.localLlmEndpoint,
-                  { alreadyAttached: !!image, supportsRoundTrip: true }
+                  { alreadyAttached: false, supportsRoundTrip: true }
                 );
 
-                // view_screen can't execute server-side — it needs the connected client to
-                // capture a screenshot and resubmit (see Task 1's design note). End this
-                // turn here rather than feeding a fake function response back to Gemini.
+                // Mirrors the Groq branch's identical handling above.
                 if (result.needsClientAction === "capture_screen") {
                   res.write("data: request_screen\n\n");
                   res.write("data: [DONE]\n\n");
@@ -879,9 +954,6 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                   return;
                 }
 
-                // display_content executes entirely server-side and just packages a
-                // directive for the dashboard's display panel — relay it over the
-                // existing SSE stream as its own frame (see Task 1's design note).
                 if (result.displayDirective) {
                   res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
                 }
@@ -890,23 +962,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 }
 
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
-                responseParts.push({
-                  functionResponse: {
-                    name: call.name,
-                    response: result.ok ? { output: result.output } : { error: result.error },
-                  },
+                toolResponseMessages.push({
+                  role: "tool",
+                  tool_call_id: call.id,
+                  content: JSON.stringify(result.ok ? { output: result.output } : { error: result.error }),
                 });
               }
-              contents.push({ role: "user", parts: responseParts });
+              messages.push(...toolResponseMessages);
 
-              response = await generateContentWithFallback(ai, {
-                contents,
-                config: { systemInstruction, tools: [{ functionDeclarations: getAllToolDeclarations() }] },
-              }, chatModels);
-              calls = response.functionCalls || [];
+              response = await cognitionRouter.generateWithFallback(req.username, { messages, tools: geminiTools }, chatModels);
+              toolCalls = response.choices[0]?.message?.tool_calls || [];
             }
 
-            const finalText = response.text || "";
+            const finalText = response.choices[0]?.message?.content || "";
             if (finalText) {
               for (const word of finalText.split(" ")) {
                 fullReply += word + " ";
@@ -963,16 +1031,16 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         .catch(() => {});
 
       // Write side of style/mistake learning — see reflection.ts. Needs
-      // Groq specifically (structured JSON output), independent of which
-      // backend actually answered the user.
-      if (groq) {
-        reflectAndLearn(groq, message, fullReply).catch(() => {});
+      // structured JSON output from the cognition router, independent of
+      // which backend actually answered the user.
+      if (cognitionRouter) {
+        reflectAndLearn(cognitionRouter, req.username, message, fullReply).catch(() => {});
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
-        knowledgeGraph.extractAndStore(req.username, groq, message, fullReply).catch(() => {});
+        knowledgeGraph.extractAndStore(req.username, cognitionRouter, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see self/identity.ts.
-        identity.extractSelfReflection(req.username, groq, message, fullReply).catch(() => {});
+        identity.extractSelfReflection(req.username, cognitionRouter, message, fullReply).catch(() => {});
       }
     }
 
@@ -1087,16 +1155,19 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
     const kernel = MindKernel.getInstance();
     const session = await getSession(req.username);
     const localEngine = LocalCognitiveEngine.getInstance();
-    if (ai && !kernel.offlineMode) {
+    if (cognitionRouter && !kernel.offlineMode) {
       try {
         observation.incrementMetric("geminiApiCalls");
-        const response = await generateContentWithFallback(ai, {
-          contents: userMsg,
-          config: {
-            systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences.",
-          }
-        });
-        reply = response.text || "";
+        const messages = [
+          {
+            role: "system",
+            content: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences.",
+          },
+          { role: "user", content: userMsg },
+        ];
+        const chatModels = ["gemini:gemini-2.0-flash", "gemini:gemini-1.5-flash"];
+        const response = await cognitionRouter.generateWithFallback(req.username, { messages }, chatModels);
+        reply = response.choices?.[0]?.message?.content || "";
       } catch (err: any) {
         observation.logTelemetry("warn", "Cognition", `Online completion failed: ${err.message}. Reverting to local engine.`);
         const stats = observation.getMetrics();
@@ -1279,12 +1350,12 @@ initDatabase().then(async (ready) => {
     }
 
     observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
-    await liveVoice.bridgeVoiceSession(ai, groq, ws, username);
+    await liveVoice.bridgeVoiceSession(ai, cognitionRouter, ws, username);
   });
 
   scheduler.startEmailWatchJob();
-  scheduler.startBriefingJob(groq);
-  scheduler.startSelfReflectionJob(groq);
+  scheduler.startBriefingJob(cognitionRouter);
+  scheduler.startSelfReflectionJob(cognitionRouter);
   scheduler.startMcpHealthCheckJob();
   scheduler.startVaultSyncJob();
   scheduler.startDataRetentionJob();
