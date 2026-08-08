@@ -3804,6 +3804,147 @@ registerTest("Wellbeing", "assessWellbeingSignal returns null when a check-in ha
   if (result !== null) throw new Error(`expected null when a check-in happened recently, got: ${JSON.stringify(result)}`);
 });
 
+// ---------- AudioClient Tests ----------
+registerTest("AudioClient", "publishes voice:transcript when the daemon sends a transcript message", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+  const fakeServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "transcript", text: "hello from the daemon" }) + "\n");
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  const unsubscribe = bus.subscribe("voice:transcript", (payload) => { received = payload; });
+
+  const client = startAudioClient(socketPath);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (!received || received.text !== "hello from the daemon") {
+      throw new Error(`AudioClient: expected a real voice:transcript publish, got: ${JSON.stringify(received)}`);
+    }
+  } finally {
+    unsubscribe();
+    client.stop();
+    fakeServer.close();
+  }
+});
+
+registerTest("AudioClient", "publishes voice:error when the socket connection fails", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  const unsubscribe = bus.subscribe("voice:error", (payload) => { received = payload; });
+
+  const client = startAudioClient("/nonexistent/path/that/cannot/possibly/exist.sock");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (!received) throw new Error("AudioClient: expected a voice:error publish on connection failure");
+  } finally {
+    unsubscribe();
+    client.stop();
+  }
+});
+
+registerTest("AudioClient", "forwards a voice:reply bus event to the daemon as a speak message", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+  let receivedByDaemon = "";
+  const fakeServer = net.createServer((conn) => {
+    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  const client = startAudioClient(socketPath);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    bus.publish("voice:reply", { text: "here is my answer" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const parsed = JSON.parse(receivedByDaemon.trim());
+    if (parsed.type !== "speak" || parsed.text !== "here is my answer") {
+      throw new Error(`AudioClient: expected a real "speak" message forwarded to the daemon, got: ${receivedByDaemon}`);
+    }
+  } finally {
+    client.stop();
+    fakeServer.close();
+  }
+});
+
+registerTest("AudioClient", "publishes voice:audio-chunk when the daemon sends an audio_chunk message", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+  const fakeServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "audio_chunk", data: "ZmFrZS1hdWRpby1ieXRlcw==" }) + "\n");
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  const unsubscribe = bus.subscribe("voice:audio-chunk", (payload) => { received = payload; });
+
+  const client = startAudioClient(socketPath);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (!received || received.data !== "ZmFrZS1hdWRpby1ieXRlcw==") {
+      throw new Error(`AudioClient: expected a real voice:audio-chunk publish, got: ${JSON.stringify(received)}`);
+    }
+  } finally {
+    unsubscribe();
+    client.stop();
+    fakeServer.close();
+  }
+});
+
+registerTest("AudioClient", "stop() closes the socket and unsubscribes so no further bus activity occurs", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+  const fakeServer = net.createServer((conn) => {
+    conn.on("data", () => { /* ignore */ });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  let errorCount = 0;
+  const unsubscribe = bus.subscribe("voice:error", () => { errorCount++; });
+
+  const client = startAudioClient(socketPath);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  client.stop();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  try {
+    if (errorCount !== 0) {
+      throw new Error(`AudioClient: expected no voice:error publish after a deliberate stop(), got ${errorCount}`);
+    }
+  } finally {
+    unsubscribe();
+    fakeServer.close();
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
