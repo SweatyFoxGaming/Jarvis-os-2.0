@@ -35,6 +35,12 @@ services:
       # so they still correctly no-op even though a mount now technically
       # exists pointing at this placeholder folder.
       - ${OBSIDIAN_VAULT_DIR:-./obsidian-vault-unconfigured}:/obsidian-vault
+      # Shared with voice-daemon below so audio-client.ts's Unix-socket
+      # connection (VOICE_DAEMON_SOCKET, defaulting to
+      # /tmp/jarvis-voice/voice.sock in src/server.ts) actually reaches the
+      # daemon process -- both containers must mount the same named volume
+      # at the same path for the socket file to be visible to both sides.
+      - voice-socket:/tmp/jarvis-voice
     # Lets the container reach services on the host (e.g. a local Ollama instance
     # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
     extra_hosts:
@@ -42,9 +48,8 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
-      - tts
       - llama-cpp
-      - whisper-cpp
+      - voice-daemon
       - jarvis-builder
 
   # Offline-first local inference: serves a GGUF model you already have on
@@ -59,18 +64,19 @@ services:
     command: ["-m", "/models/${LOCAL_MODEL_FILE}", "--host", "0.0.0.0", "--port", "8080", "-c", "4096"]
     restart: unless-stopped
 
-  # Offline-first speech-to-text, mirroring the llama-cpp pattern above: a
-  # real ggml model (a genuine ~142MB whisper-base.en, not a stub) is already
-  # baked into this image, so no extra host download/volume is needed the way
-  # the LLM model requires. --convert uses the image's bundled ffmpeg to
-  # accept whatever format the browser's MediaRecorder sends (webm/opus)
-  # instead of requiring pre-converted WAV.
-  whisper-cpp:
-    image: ghcr.io/ggml-org/whisper.cpp:main
-    container_name: jarvis-whisper-cpp
-    entrypoint: ["/app/build/bin/whisper-server"]
-    command: ["--host", "0.0.0.0", "--port", "8081", "-m", "/app/models/ggml-base.en.bin", "--convert"]
+  # Local Unix-socket STT/TTS service (see daemon/) that replaced the
+  # whisper-cpp + openai-edge-tts services below -- one Python process
+  # doing faster-whisper transcription and Kokoro synthesis over a shared
+  # socket instead of two separate HTTP services. jarvis-os-api reaches it
+  # via the voice-socket volume mounted into both containers at
+  # /tmp/jarvis-voice (see api's volumes: above and audio-client.ts).
+  voice-daemon:
+    build:
+      context: ./daemon
+    container_name: jarvis-voice-daemon
     restart: unless-stopped
+    volumes:
+      - voice-socket:/tmp/jarvis-voice
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -81,15 +87,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
     volumes:
       - /mnt/jarvis_home/postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-
-  tts:
-    image: travisvn/openai-edge-tts:latest
-    container_name: jarvis-tts
-    environment:
-      - API_KEY=${TTS_API_KEY}
-    ports:
-      - "5051:5050"
     restart: unless-stopped
 
   # The only service in this stack with access to the host's Docker
@@ -115,3 +112,10 @@ services:
     # No ports: — never published to the host or reachable outside this
     # compose network. api reaches it at http://jarvis-builder:4100.
     restart: unless-stopped
+
+# Shared between api and voice-daemon so both containers see the same
+# voice.sock file at /tmp/jarvis-voice (see api's and voice-daemon's
+# volumes: above). postgres uses a host bind mount instead of a named
+# volume, so this is the first entry in this section.
+volumes:
+  voice-socket:
