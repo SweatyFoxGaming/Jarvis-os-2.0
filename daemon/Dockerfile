@@ -2,11 +2,16 @@
 # against Python 3.11.
 FROM python:3.11-slim
 
-# espeak-ng: a real system-level runtime dependency of kokoro's misaki G2P
-# backend (daemon/venv/.../kokoro/pipeline.py does `from misaki import en,
-# espeak` and calls into it for every synthesize() call), not just a build
-# nicety -- TextToSpeech.synthesize() in models.py will fail at first use
-# without it, even though `pip install -r requirements.txt` succeeds fine.
+# espeak-ng: improves TTS quality for out-of-dictionary English words.
+# models.py's _load_kokoro_model() calls KPipeline(lang_code="a") (hardcoded
+# American English). In the installed kokoro package, pipeline.py's
+# __init__ wraps espeak.EspeakFallback(...) in try/except for lang_code in
+# 'ab' -- without espeak-ng that just logs "EspeakFallback not Enabled: OOD
+# words will be skipped" and proceeds with fallback=None, it does not raise.
+# (The unconditional, raising espeak.EspeakG2P(...) call only fires for
+# lang_code in 'efhip' -- Spanish/French/Hindi/Italian/Portuguese -- none of
+# which this daemon uses.) So this is a quality/robustness improvement, not
+# a hard runtime dependency for synthesize() to succeed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     espeak-ng \
     && rm -rf /var/lib/apt/lists/*
