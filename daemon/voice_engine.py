@@ -89,7 +89,11 @@ async def _handle_audio_chunk(
     pcm_for_utterance = bytes(utterance_buffer)
     utterance_buffer.clear()
     try:
-        transcript = _stt.transcribe(pcm_for_utterance)
+        # STT inference is slow (tens of seconds on CPU, per Task 2's live
+        # verification) and synchronous -- run it off the event loop so a
+        # single transcription doesn't block every other connection
+        # (including the accept loop for brand-new ones) for its duration.
+        transcript = await asyncio.to_thread(_stt.transcribe, pcm_for_utterance)
     except Exception:
         log.exception(f"STT transcription failed for {peer}")
         return
@@ -99,7 +103,10 @@ async def _handle_audio_chunk(
 async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
     text = msg.get("text", "")
     try:
-        audio_bytes = _tts.synthesize(text)
+        # Same reasoning as the STT call in _handle_audio_chunk: TTS
+        # inference is slow and synchronous, so it must not run directly
+        # on the event loop.
+        audio_bytes = await asyncio.to_thread(_tts.synthesize, text)
     except Exception:
         log.exception(f"TTS synthesis failed for {peer}")
         return

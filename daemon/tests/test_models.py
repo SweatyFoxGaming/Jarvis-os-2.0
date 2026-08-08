@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 def test_speech_to_text_transcribe_calls_underlying_model(monkeypatch):
     from daemon.models import SpeechToText
