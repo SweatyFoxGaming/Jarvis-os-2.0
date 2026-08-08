@@ -2729,6 +2729,25 @@ registerTest("UsageEvents", "getRecentShare degrades cleanly (null, not 0) when 
   }
 });
 
+// ---------- WellbeingRepo Tests ----------
+
+registerTest("WellbeingRepo", "getLateHourActivityRatio returns null when Postgres isn't reachable", async () => {
+  const { getLateHourActivityRatio } = await import("../src/kernel/state/wellbeing-repo.js");
+  const result = await getLateHourActivityRatio("test_user");
+  if (result !== null) throw new Error(`expected null when Postgres is unreachable, got ${result}`);
+});
+
+registerTest("WellbeingRepo", "getLastCheckinAt returns null when Postgres isn't reachable", async () => {
+  const { getLastCheckinAt } = await import("../src/kernel/state/wellbeing-repo.js");
+  const result = await getLastCheckinAt("test_user");
+  if (result !== null) throw new Error(`expected null when Postgres is unreachable, got ${result}`);
+});
+
+registerTest("WellbeingRepo", "recordCheckin degrades cleanly when Postgres isn't reachable", async () => {
+  const { recordCheckin } = await import("../src/kernel/state/wellbeing-repo.js");
+  await recordCheckin("test_user"); // must not throw
+});
+
 // ---------- Migrations Tests (pure functions, no live Postgres) ----------
 // The actual live-apply behavior (BEGIN/INSERT INTO schema_migrations/COMMIT
 // against a real database) is deploy-time-verified like every other DB

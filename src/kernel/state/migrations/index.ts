@@ -7,6 +7,7 @@ import m006 from "./006_reward_events.js";
 import m007 from "./007_personality_settings.js";
 import m008 from "./008_rapport_signals.js";
 import m009 from "./009_usage_events.js";
+import m010 from "./010_wellbeing_checkins.js";
 
 export { runMigrations, computePendingMigrations } from "./runner.js";
 export type { Migration } from "./runner.js";
@@ -17,4 +18,4 @@ export type { Migration } from "./runner.js";
 // renumber, or remove an id once it's shipped to a real deployment; add a
 // new migration to fix a mistake in an old one, the same way you'd fix any
 // other already-shipped code.
-export const ALL_MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009];
+export const ALL_MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010];
