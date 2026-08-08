@@ -3955,6 +3955,148 @@ registerTest("AudioClient", "stop() closes the socket and unsubscribes so no fur
   }
 });
 
+// ---------- VoiceSession Tests ----------
+registerTest("VoiceSession", "a real transcript produces a real voice:reply", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let reply: any = null;
+  const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
+
+  const fakeRouter = {
+    generateWithFallback: async () => ({
+      choices: [{ message: { content: "Here's my spoken answer.", tool_calls: undefined } }],
+    }),
+  } as any;
+
+  const handle = voiceSessionModule.startVoiceSession({ router: fakeRouter, username: "voice_test_user" });
+  try {
+    bus.publish("voice:transcript", { text: "what's the weather like" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (!reply || !reply.text.includes("spoken answer")) {
+      throw new Error(`VoiceSession: expected a real voice:reply, got: ${JSON.stringify(reply)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "an empty transcript produces no reply", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let replyCount = 0;
+  const unsubscribe = bus.subscribe("voice:reply", () => { replyCount++; });
+
+  const handle = voiceSessionModule.startVoiceSession({ router: null, username: "voice_test_user" });
+  try {
+    bus.publish("voice:transcript", { text: "" });
+    bus.publish("voice:transcript", { text: "   " });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (replyCount !== 0) throw new Error(`VoiceSession: expected no reply for an empty/whitespace-only transcript, got ${replyCount}`);
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "a pipeline failure produces an honest spoken error, never a fabricated answer", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let reply: any = null;
+  const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
+
+  const throwingRouter = { generateWithFallback: async () => { throw new Error("simulated failure"); } } as any;
+  const handle = voiceSessionModule.startVoiceSession({ router: throwingRouter, username: "voice_test_user" });
+  try {
+    bus.publish("voice:transcript", { text: "do something" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest error reply, got none");
+    if (reply.text.toLowerCase().includes("spoken answer")) {
+      throw new Error(`VoiceSession: error reply must never look like a fabricated real answer, got: ${JSON.stringify(reply)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "no cognition router configured produces an honest decline, not a crash", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let reply: any = null;
+  const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
+
+  const handle = voiceSessionModule.startVoiceSession({ router: null, username: "voice_test_user" });
+  try {
+    bus.publish("voice:transcript", { text: "do something real" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest decline reply when no router is configured, got none");
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "executes a tool call via executeTool before producing the final voice:reply", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let reply: any = null;
+  const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
+
+  let callCount = 0;
+  const fakeRouter = {
+    generateWithFallback: async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          choices: [{
+            message: {
+              content: null,
+              tool_calls: [{ id: "call_1", function: { name: "get_time", arguments: "{}" } }],
+            },
+          }],
+        };
+      }
+      return { choices: [{ message: { content: "It is noon, sir.", tool_calls: undefined } }] };
+    },
+  } as any;
+
+  let executedToolName: string | null = null;
+  const fakeExecuteTool = async (name: string) => {
+    executedToolName = name;
+    return { name, ok: true, output: "12:00 PM" };
+  };
+
+  const handle = voiceSessionModule.startVoiceSession({
+    router: fakeRouter,
+    username: "voice_test_user",
+    executeTool: fakeExecuteTool as any,
+  });
+  try {
+    bus.publish("voice:transcript", { text: "what time is it" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (executedToolName !== "get_time") {
+      throw new Error(`VoiceSession: expected executeTool to be called with "get_time", got: ${executedToolName}`);
+    }
+    if (!reply || !reply.text.includes("noon")) {
+      throw new Error(`VoiceSession: expected the post-tool-call final reply, got: ${JSON.stringify(reply)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
