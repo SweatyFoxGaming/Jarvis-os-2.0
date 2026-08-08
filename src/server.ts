@@ -13,6 +13,9 @@ import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./runtime/local_engine.js";
+import { KeyPool } from "./runtime/key-pool.js";
+import { CognitionRouter } from "./runtime/cognition-router.js";
+import { recordUsage, getRecentShare } from "./kernel/state/usage-repo.js";
 import * as whisper from "./interaction/whisper.js";
 import { initDatabase, pingDatabase } from "./kernel/state/db.js";
 import * as memoryRepo from "./kernel/state/memory-repo.js";
@@ -40,7 +43,7 @@ import { settingsRouter } from "./interaction/routes/settings-routes.js";
 import { observationRouter } from "./interaction/routes/observation-routes.js";
 import { learningRouter } from "./interaction/routes/learning-routes.js";
 import { notificationsRouter } from "./interaction/routes/notifications-routes.js";
-import { setSharedClient } from "./runtime/clients.js";
+import { setSharedRouter } from "./runtime/clients.js";
 import { positiveIntegerEnv } from "./kernel/env.js";
 import { knowledgeRouter } from "./interaction/routes/knowledge-routes.js";
 import { featureRequestsRouter } from "./interaction/routes/feature-requests-routes.js";
@@ -176,22 +179,56 @@ if (process.env.GEMINI_API_KEY) {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
 
-// ---------- OmniRoute Client Initialization (primary cloud tier) ----------
+// ---------- OmniRoute Client Initialization (legacy — deprecated) ----------
+// OMNIROUTE_API_KEY/OMNIROUTE_BASE_URL are no longer read (see .env.example's
+// GROQ_API_KEYS/GEMINI_API_KEYS block below) — `omniRoute` itself stays
+// declared and permanently null purely so this file's own other,
+// still-unmigrated call sites (the /api/chat Groq/Gemini branches, the voice
+// bridge, the scheduler jobs, AutonomousExecutive's constructor just below)
+// keep compiling and running exactly as they do today. Every one of those
+// runs unconditionally at module load or on a normal request path, not dead
+// code, so deleting this identifier outright — as opposed to retiring only
+// the env-var read that used to populate it — would throw a ReferenceError
+// at import time or on the first real request, not just move a tsc error.
+// Rewiring those call sites onto getCognitionRouter() below is Tasks 10-11's
+// job specifically.
 let omniRoute: OpenAiCompatibleConfig | null = null;
-if (process.env.OMNIROUTE_API_KEY) {
-  omniRoute = {
-    apiKey: process.env.OMNIROUTE_API_KEY,
-    baseUrl: process.env.OMNIROUTE_BASE_URL || "http://127.0.0.1:20128/v1",
-  };
-  observation.logTelemetry("info", "Cognition", "OmniRoute gateway successfully configured with API Key.");
-} else {
-  observation.logTelemetry("warn", "Cognition", "No OMNIROUTE_API_KEY detected. OmniRoute-backed features (chat, coding agent) unavailable.");
-}
 briefing.configureGroq(omniRoute);
 dailyAdaptation.configureGroq(omniRoute);
-// The agentic coding loop (src/executive/coding-agent.ts) runs entirely on
-// this same OmniRoute client — no separate API key to configure or log here;
-// the OMNIROUTE_API_KEY check above already covers whether it's available.
+
+// ---------- Cognition Router Initialization (primary cloud tier) ----------
+// Jarvis's own multi-key provider pool, replacing the OmniRoute gateway
+// above — see cognition-router.ts for the fallback chain (cloud providers,
+// one key/model at a time -> local LLM endpoint -> offline keyword engine)
+// and key-pool.ts for the per-provider, multi-key rotation/cooldown logic
+// that lets one key hitting a rate limit not take the whole provider down.
+const groqKeys = (process.env.GROQ_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+let cognitionRouter: CognitionRouter | null = null;
+if (groqKeys.length > 0 || geminiKeys.length > 0) {
+  const keyPool = new KeyPool({ groq: groqKeys, gemini: geminiKeys });
+  // Read fresh, synchronous defaults here (module scope, before
+  // initDatabase()/MindKernel.hydrateFromDb() run later in async startup
+  // below) — matching this block's own module-scope lifecycle exactly like
+  // the OmniRoute block it replaces. A DB-persisted override to the local
+  // LLM endpoint/model/key made via Settings after boot is not picked up by
+  // this already-constructed router until process restart; that's an
+  // existing tradeoff of RouterDeps taking plain fields rather than a live
+  // accessor (see cognition-router.ts), not something introduced here.
+  const kernelDefaults = MindKernel.getInstance();
+  cognitionRouter = new CognitionRouter({
+    keyPool,
+    recordUsage,
+    getRecentShare,
+    localLlmEndpoint: kernelDefaults.localLlmEndpoint,
+    localModelName: kernelDefaults.localModelName,
+    localApiKey: kernelDefaults.localApiKey,
+    localEngine: LocalCognitiveEngine.getInstance(),
+  });
+  observation.logTelemetry("info", "Cognition", "CognitionRouter configured from GROQ_API_KEYS/GEMINI_API_KEYS.");
+} else {
+  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEYS or GEMINI_API_KEYS configured. Cloud-backed cognition features unavailable — falling back to local LLM/keyword engine only.");
+}
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -223,7 +260,7 @@ const learningEngine = LongTermLearningEngine.getInstance();
 // see that module's own comment for why this must happen here (after
 // construction) rather than the routers reading them at their own
 // module-load time.
-setSharedClient(ai, omniRoute);
+setSharedRouter(ai, cognitionRouter);
 
 // Users, API keys, and memory records are persisted in Postgres (src/data/) —
 // see initDatabase() near the bottom of this file, called before app.listen.
