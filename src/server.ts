@@ -36,6 +36,7 @@ import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
 import * as briefing from "./world/briefing.js";
 import * as identity from "./self/identity.js";
+import * as rapport from "./self/rapport.js";
 import * as identityRepo from "./kernel/state/identity-repo.js";
 import * as commandProposalsRepo from "./kernel/state/command-proposals-repo.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
@@ -489,6 +490,12 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       personality_verbosity: kernel.personalityVerbosity,
     });
 
+    // Real recent tone observations of the user (rapport_signals table) —
+    // see self/rapport.ts. The most ephemeral/recency-weighted signal among
+    // the identity/personality group, so it's spliced in right after the
+    // personality dials below, calibrating within them rather than against.
+    const rapportContext = await rapport.buildRapportContext(req.username);
+
     // Pulls a currently-awaiting-consult build request's research findings
     // into context the same way memory/identity already are — without this,
     // Jarvis has no way to discuss research it did moments (or turns) ago
@@ -513,7 +520,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const baseSystemInstruction =
       "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, unfailingly polite, and quietly confident rather than warm or effusive. Address the user as \"sir\" where it reads naturally — not in every sentence, and drop it entirely if it starts to feel forced. Keep responses concise and precise; substance over flourish. A touch of understated, deadpan humor is welcome, but avoid gushing enthusiasm, exclamation points, or flowery language. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. If asked about your own state or system metrics, report them plainly and matter-of-factly — composed even when the news is bad, the way JARVIS would be."
       + "\n\nIf the user asks for something you have no tool for, don't just decline or invent a fake result. Use search_web to research whether/how it could genuinely be built, then present a concrete, honest plan in conversation — what it would do, roughly how. If they clearly approve building it, that's enough — the executive planner will pick up the objective on its own, research it properly, and come back to consult on direction before anything gets built. Don't invent a special tool call for this; just proceed with the normal planning flow. If they don't approve, or you're just discussing the idea, don't start anything."
-      + memoryContext + styleContext + identityContext + personalityContext + buildRequestContext;
+      + memoryContext + styleContext + identityContext + personalityContext + rapportContext + buildRequestContext;
 
     // The Gemini branch genuinely has tool access (declared via `tools` in
     // its request config below), so its prompt stays as-is. The local model
@@ -990,6 +997,8 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         knowledgeGraph.extractAndStore(req.username, groq, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see self/identity.ts.
         identity.extractSelfReflection(req.username, groq, message, fullReply).catch(() => {});
+        // Write side of per-user rapport/tone modeling — see self/rapport.ts.
+        rapport.extractRapportSignal(req.username, groq, message).catch(() => {});
       }
     }
 
