@@ -11,21 +11,109 @@ chunks. See protocol.py for the pure parsing/framing logic this file
 wires up to real socket I/O and (in a later task) real model inference.
 """
 import asyncio
+import json
 import logging
 import os
 import sys
 
-from protocol import ProtocolError, parse_control_message
+import numpy as np
+
+from protocol import (
+    ProtocolError,
+    UtteranceEndDetector,
+    decode_audio_chunk,
+    encode_audio_chunk,
+    parse_control_message,
+)
+from models import SpeechToText, TextToSpeech
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("voice_engine")
 
 SOCKET_PATH = os.environ.get("VOICE_DAEMON_SOCKET", "/tmp/jarvis-voice/voice.sock")
 
+# Below this int16 RMS energy, an audio_chunk frame is treated as silence
+# for utterance-end detection purposes. Not a real VAD model -- a cheap
+# energy gate is enough to drive UtteranceEndDetector, and keeps this file
+# free of any additional model dependency beyond STT/TTS themselves.
+SILENCE_RMS_THRESHOLD = 500
+
+# Outgoing "speak" audio is split into chunks this size (bytes of raw PCM,
+# pre-base64) so a long synthesized utterance doesn't arrive as one huge
+# line on the socket.
+SPEAK_CHUNK_BYTES = 32000
+
+# Model instances are constructed once per daemon process and shared across
+# connections -- constructing them is cheap (lazy-loads real weights on
+# first real transcribe/synthesize call, per models.py), but loading real
+# weights per-connection would be wasteful and slow.
+_stt = SpeechToText()
+_tts = TextToSpeech()
+
+
+def _is_speech_frame(pcm_bytes: bytes) -> bool:
+    if not pcm_bytes:
+        return False
+    if len(pcm_bytes) % 2 != 0:
+        pcm_bytes = pcm_bytes[:-1]
+    if not pcm_bytes:
+        return False
+    audio = np.frombuffer(pcm_bytes, dtype=np.int16)
+    if audio.size == 0:
+        return False
+    rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+    return rms > SILENCE_RMS_THRESHOLD
+
+
+async def _write_message(writer: asyncio.StreamWriter, message: dict) -> None:
+    writer.write((json.dumps(message) + "\n").encode("utf-8"))
+    await writer.drain()
+
+
+async def _handle_audio_chunk(
+    writer: asyncio.StreamWriter,
+    msg: dict,
+    detector: UtteranceEndDetector,
+    utterance_buffer: bytearray,
+    peer: str,
+) -> None:
+    try:
+        pcm = decode_audio_chunk(msg.get("data", ""))
+    except ProtocolError as e:
+        log.warning(f"malformed audio_chunk from {peer}, ignoring: {e}")
+        return
+    utterance_buffer.extend(pcm)
+    utterance_ended = detector.feed(_is_speech_frame(pcm))
+    if not utterance_ended:
+        return
+    pcm_for_utterance = bytes(utterance_buffer)
+    utterance_buffer.clear()
+    try:
+        transcript = _stt.transcribe(pcm_for_utterance)
+    except Exception:
+        log.exception(f"STT transcription failed for {peer}")
+        return
+    await _write_message(writer, {"type": "transcript", "text": transcript})
+
+
+async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
+    text = msg.get("text", "")
+    try:
+        audio_bytes = _tts.synthesize(text)
+    except Exception:
+        log.exception(f"TTS synthesis failed for {peer}")
+        return
+    for i in range(0, len(audio_bytes), SPEAK_CHUNK_BYTES):
+        chunk = audio_bytes[i : i + SPEAK_CHUNK_BYTES]
+        await _write_message(writer, {"type": "audio_chunk", "data": encode_audio_chunk(chunk)})
+    await _write_message(writer, {"type": "speak_done"})
+
 
 async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     peer = writer.get_extra_info("peername") or "unix-client"
     log.info(f"connection opened: {peer}")
+    detector = UtteranceEndDetector()
+    utterance_buffer = bytearray()
     try:
         while True:
             line = await reader.readline()
@@ -36,8 +124,13 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
             except ProtocolError as e:
                 log.warning(f"malformed message from {peer}, ignoring: {e}")
                 continue
-            # Task 2 wires real STT/TTS handling in here based on msg["type"].
-            log.info(f"received control message: {msg.get('type', 'unknown')}")
+            msg_type = msg.get("type", "unknown")
+            if msg_type == "audio_chunk":
+                await _handle_audio_chunk(writer, msg, detector, utterance_buffer, peer)
+            elif msg_type == "speak":
+                await _handle_speak(writer, msg, peer)
+            else:
+                log.info(f"received control message: {msg_type}")
     except (ConnectionResetError, BrokenPipeError):
         log.info(f"connection reset: {peer}")
     finally:
