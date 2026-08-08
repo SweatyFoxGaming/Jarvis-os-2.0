@@ -7,6 +7,7 @@ which is what keeps voice_engine.py's own import graph testable without
 real weights (see tests/test_models.py's injected model_loader).
 """
 import logging
+import threading
 from typing import Callable, Optional
 
 log = logging.getLogger("voice_engine.models")
@@ -31,10 +32,23 @@ class SpeechToText:
     def __init__(self, model_loader: Optional[Callable] = None):
         self._loader = model_loader or _load_whisper_model
         self._model = None
+        # transcribe() runs off the event loop via asyncio.to_thread, so
+        # multiple connections can call _ensure_loaded() concurrently on
+        # separate worker threads. A plain "if self._model is None: load"
+        # check-then-set is a race: two threads can both pass the check
+        # before either has set self._model, triggering two redundant
+        # (44s+, real-weights-downloading) loads instead of one. Guard
+        # with a real threading.Lock (not asyncio.Lock -- this runs in
+        # worker threads, not on the event loop) using the standard
+        # double-checked-locking pattern so the fast path (already loaded)
+        # stays lock-free.
+        self._load_lock = threading.Lock()
 
     def _ensure_loaded(self):
         if self._model is None:
-            self._model = self._loader()
+            with self._load_lock:
+                if self._model is None:
+                    self._model = self._loader()
         return self._model
 
     def transcribe(self, pcm_bytes: bytes) -> str:
@@ -54,10 +68,15 @@ class TextToSpeech:
     def __init__(self, model_loader: Optional[Callable] = None):
         self._loader = model_loader or _load_kokoro_model
         self._model = None
+        # Same concurrent-lazy-load race as SpeechToText above -- see that
+        # class's __init__ comment for the full explanation.
+        self._load_lock = threading.Lock()
 
     def _ensure_loaded(self):
         if self._model is None:
-            self._model = self._loader()
+            with self._load_lock:
+                if self._model is None:
+                    self._model = self._loader()
         return self._model
 
     def synthesize(self, text: str) -> bytes:
