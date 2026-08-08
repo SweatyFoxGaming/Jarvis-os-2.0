@@ -15,6 +15,8 @@ import * as vaultRepo from "./state/vault-repo.js";
 import * as sessionRepo from "./state/session-repo.js";
 import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
 import * as evolutionRepo from "./state/evolution-repo.js";
+import * as wellbeing from "../self/wellbeing.js";
+import * as wellbeingRepo from "./state/wellbeing-repo.js";
 import { positiveIntegerEnv } from "./env.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -207,6 +209,39 @@ export function startSelfReflectionJob(router: CognitionRouter | null, intervalM
         pushNotification(username, result.content, "info");
       } catch (err: any) {
         observation.logTelemetry("warn", "Identity", `Failed to generate/persist proactive thought for "${username}": ${err.message}`);
+      }
+    }
+  });
+}
+
+/**
+ * Proactive wellbeing check-ins — periodically asks self/wellbeing.ts
+ * whether this user's real recorded signals (late-hour messaging ratio,
+ * stress language in recent rapport signals) warrant a gentle, honestly
+ * grounded check-in, and pushes one if so. Mirrors
+ * startSelfReflectionJob's per-user isolation exactly: one user's failed
+ * assessment or check-in write can't block or skip another's, and a run
+ * with nothing to say (assessWellbeingSignal returns null) is a genuine,
+ * expected no-op rather than an error.
+ *
+ * The check-in is only recorded (wellbeingRepo.recordCheckin) once a
+ * message has actually been pushed — assessWellbeingSignal's own
+ * MIN_DAYS_BETWEEN_CHECKINS cooldown is keyed off that same timestamp, so
+ * recording it any earlier (e.g. on every tick regardless of outcome)
+ * would silently suppress a real future signal without ever having told
+ * the user anything.
+ */
+export function startWellbeingCheckJob(intervalMs = 24 * 60 * 60 * 1000): NodeJS.Timeout {
+  return registerJob("wellbeing-check", intervalMs, async () => {
+    const usernames = await usersRepo.listUsernames();
+    for (const username of usernames) {
+      try {
+        const message = await wellbeing.assessWellbeingSignal(username);
+        if (!message) continue;
+        pushNotification(username, message, "info");
+        await wellbeingRepo.recordCheckin(username);
+      } catch (err: any) {
+        observation.logTelemetry("warn", "Wellbeing", `Failed to assess/checkin for "${username}": ${err.message}`);
       }
     }
   });

@@ -1543,6 +1543,7 @@ initDatabase().then(async (ready) => {
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(cognitionRouter);
   scheduler.startSelfReflectionJob(cognitionRouter);
+  scheduler.startWellbeingCheckJob();
   scheduler.startMcpHealthCheckJob();
   scheduler.startVaultSyncJob();
   scheduler.startDataRetentionJob();
