@@ -1136,16 +1136,19 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
     const kernel = MindKernel.getInstance();
     const session = await getSession(req.username);
     const localEngine = LocalCognitiveEngine.getInstance();
-    if (ai && !kernel.offlineMode) {
+    if (cognitionRouter && !kernel.offlineMode) {
       try {
         observation.incrementMetric("geminiApiCalls");
-        const response = await generateContentWithFallback(ai, {
-          contents: userMsg,
-          config: {
-            systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences.",
-          }
-        });
-        reply = response.text || "";
+        const messages = [
+          {
+            role: "system",
+            content: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences.",
+          },
+          { role: "user", content: userMsg },
+        ];
+        const chatModels = ["gemini:gemini-2.0-flash", "gemini:gemini-1.5-flash"];
+        const response = await cognitionRouter.generateWithFallback(req.username, { messages }, chatModels);
+        reply = response.choices?.[0]?.message?.content || "";
       } catch (err: any) {
         observation.logTelemetry("warn", "Cognition", `Online completion failed: ${err.message}. Reverting to local engine.`);
         const stats = observation.getMetrics();
