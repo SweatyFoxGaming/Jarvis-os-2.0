@@ -4147,6 +4147,92 @@ registerTest("AudioClient", "stop() closes the socket and unsubscribes so no fur
   }
 });
 
+registerTest("AudioClient", "reconnects with backoff and starts working once the daemon becomes available", async () => {
+  // I5 regression test: docker-compose.yml's depends_on only controls
+  // container START ORDER, not readiness -- the daemon can take many
+  // seconds to import torch/faster-whisper/kokoro after its process
+  // starts. Before the reconnect-with-backoff fix, a client that lost that
+  // race gave up permanently after its first failed connection attempt.
+  // This drives the real failure-then-recovery sequence: no server
+  // listening yet (so the client's first attempt genuinely fails), then a
+  // real fake daemon appears on the same path, and the client must pick
+  // it up on its own with no restart.
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  const unsubscribe = bus.subscribe("voice:transcript", (payload) => { received = payload; });
+
+  const client = startAudioClient(socketPath);
+  let fakeServer: import("net").Server | null = null;
+  try {
+    // Nothing is listening yet -- confirm the first connection attempt
+    // genuinely fails and produces no transcript, rather than this test
+    // accidentally passing because a server already existed.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (received) {
+      throw new Error(`AudioClient: expected no transcript before any daemon exists, got: ${JSON.stringify(received)}`);
+    }
+
+    fakeServer = net.createServer((conn) => {
+      conn.write(JSON.stringify({ type: "transcript", text: "hello after reconnect" }) + "\n");
+    });
+    await new Promise<void>((resolve) => fakeServer!.listen(socketPath, resolve));
+
+    // The client's backoff starts at ~1s -- give it comfortably longer
+    // than that for its next scheduled reconnect attempt to land.
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    if (!received || received.text !== "hello after reconnect") {
+      throw new Error(`AudioClient: expected the client to reconnect on its own and receive a real transcript, got: ${JSON.stringify(received)}`);
+    }
+  } finally {
+    unsubscribe();
+    client.stop();
+    if (fakeServer) fakeServer.close();
+  }
+});
+
+registerTest("AudioClient", "synthesizeOverSocket drops a malformed base64 audio_chunk instead of passing garbage through", async () => {
+  // M12 regression test: Buffer.from(str, "base64") never throws on
+  // malformed input in Node.js -- it silently decodes whatever
+  // valid-looking characters it finds. A bare try/catch around it (the
+  // pre-fix code) never actually caught anything, so a malformed chunk
+  // from the daemon would previously corrupt the concatenated result with
+  // garbage bytes rather than being dropped. This drives a fake daemon
+  // that sends one deliberately malformed audio_chunk, then one real one,
+  // then speak_done, and asserts only the real one survives.
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { synthesizeOverSocket } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+  const validPayload = Buffer.from("real-audio-bytes");
+  const fakeServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "audio_chunk", data: "not-valid-base64!!!" }) + "\n");
+    conn.write(JSON.stringify({ type: "audio_chunk", data: validPayload.toString("base64") }) + "\n");
+    conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  try {
+    const result = await synthesizeOverSocket(socketPath, "hello", 5000);
+    if (!result.equals(validPayload)) {
+      throw new Error(
+        `AudioClient: expected the malformed chunk to be dropped and only the valid one kept, got: ${result.toString("hex")}`
+      );
+    }
+  } finally {
+    fakeServer.close();
+  }
+});
+
 // ---------- VoiceSession Tests ----------
 registerTest("VoiceSession", "a real transcript produces a real voice:reply", async () => {
   const { EventBus } = await import("../src/core/event-bus.js");
@@ -4282,6 +4368,117 @@ registerTest("VoiceSession", "executes a tool call via executeTool before produc
     }
     if (!reply || !reply.text.includes("noon")) {
       throw new Error(`VoiceSession: expected the post-tool-call final reply, got: ${JSON.stringify(reply)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "a successful voice turn writes to session history, memory, and learning (I4)", async () => {
+  // I4 regression test: before this fix, voice-session.ts only published
+  // voice:reply -- it never called sessionRepo.appendMessage, memoryStore.
+  // recall/remember, reflectAndLearn, knowledgeGraph.extractAndStore, or
+  // identity.extractSelfReflection/rapport.extractRapportSignal, making
+  // every spoken turn invisible to everything /api/chat's text pipeline
+  // draws on. This asserts the real DI-injected write/read-side hooks are
+  // actually called (and with real arguments) on a successful turn.
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let reply: any = null;
+  const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
+
+  const fakeRouter = {
+    generateWithFallback: async () => ({
+      choices: [{ message: { content: "Here's my spoken answer.", tool_calls: undefined } }],
+    }),
+  } as any;
+
+  const appendCalls: any[] = [];
+  let recallCalled = false;
+  let rememberCalled = false;
+  let reflectAndLearnCalled = false;
+  let extractAndStoreCalled = false;
+  let extractSelfReflectionCalled = false;
+  let extractRapportSignalCalled = false;
+
+  const handle = voiceSessionModule.startVoiceSession({
+    router: fakeRouter,
+    username: "voice_test_user",
+    appendMessage: (async (username: string, role: string, content: string) => {
+      appendCalls.push({ username, role, content });
+    }) as any,
+    recall: (async () => { recallCalled = true; return []; }) as any,
+    remember: (async () => { rememberCalled = true; return true; }) as any,
+    reflectAndLearn: (async () => { reflectAndLearnCalled = true; }) as any,
+    extractAndStore: (async () => { extractAndStoreCalled = true; }) as any,
+    extractSelfReflection: (async () => { extractSelfReflectionCalled = true; }) as any,
+    extractRapportSignal: (async () => { extractRapportSignalCalled = true; }) as any,
+  });
+  try {
+    bus.publish("voice:transcript", { text: "what's the weather like" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    if (!reply || !reply.text.includes("spoken answer")) {
+      throw new Error(`VoiceSession: expected a real voice:reply, got: ${JSON.stringify(reply)}`);
+    }
+    if (appendCalls.length !== 2 || appendCalls[0].role !== "user" || appendCalls[1].role !== "assistant") {
+      throw new Error(`VoiceSession: expected appendMessage("user", ...) then appendMessage("assistant", ...), got: ${JSON.stringify(appendCalls)}`);
+    }
+    if (!recallCalled) throw new Error("VoiceSession: expected memoryStore.recall to be called");
+    if (!rememberCalled) throw new Error("VoiceSession: expected memoryStore.remember to be called after a real reply");
+    if (!reflectAndLearnCalled) throw new Error("VoiceSession: expected reflectAndLearn to be called after a real reply");
+    if (!extractAndStoreCalled) throw new Error("VoiceSession: expected knowledgeGraph.extractAndStore to be called after a real reply");
+    if (!extractSelfReflectionCalled) throw new Error("VoiceSession: expected identity.extractSelfReflection to be called after a real reply");
+    if (!extractRapportSignalCalled) throw new Error("VoiceSession: expected rapport.extractRapportSignal to be called after a real reply");
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "a pipeline failure still logs the user's message but skips the learning writes (I4)", async () => {
+  // The honest error/decline replies must still be persisted to session
+  // history (so a real conversation record exists), but the learning
+  // writes (memory/reflection/knowledge-graph/identity/rapport) must NOT
+  // fire for a fabricated-looking fallback reply -- mirrors /api/chat only
+  // learning from a real (non-"Simulated") reply.
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let reply: any = null;
+  const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
+
+  const throwingRouter = { generateWithFallback: async () => { throw new Error("simulated failure"); } } as any;
+  const appendCalls: any[] = [];
+  let learningWriteCalled = false;
+
+  const handle = voiceSessionModule.startVoiceSession({
+    router: throwingRouter,
+    username: "voice_test_user",
+    appendMessage: (async (username: string, role: string, content: string) => {
+      appendCalls.push({ username, role, content });
+    }) as any,
+    recall: (async () => []) as any,
+    remember: (async () => { learningWriteCalled = true; return true; }) as any,
+    reflectAndLearn: (async () => { learningWriteCalled = true; }) as any,
+    extractAndStore: (async () => { learningWriteCalled = true; }) as any,
+    extractSelfReflection: (async () => { learningWriteCalled = true; }) as any,
+    extractRapportSignal: (async () => { learningWriteCalled = true; }) as any,
+  });
+  try {
+    bus.publish("voice:transcript", { text: "do something" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest error reply, got none");
+    if (appendCalls.length !== 2 || appendCalls[0].role !== "user" || appendCalls[1].role !== "assistant") {
+      throw new Error(`VoiceSession: expected the user message and the honest error reply both persisted, got: ${JSON.stringify(appendCalls)}`);
+    }
+    if (learningWriteCalled) {
+      throw new Error("VoiceSession: expected NO memory/learning writes for a pipeline-failure fallback reply");
     }
   } finally {
     unsubscribe();

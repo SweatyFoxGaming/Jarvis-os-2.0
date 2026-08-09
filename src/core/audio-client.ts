@@ -5,6 +5,40 @@ import { ObservationPlatform } from "../kernel/observation.js";
 
 const observation = ObservationPlatform.getInstance();
 
+// Reconnect-with-backoff tuning for startAudioClient (I5) -- docker-
+// compose.yml's `depends_on` only controls container START ORDER, not
+// readiness, and the daemon takes many seconds to import torch/
+// faster-whisper/kokoro after its process starts. Without a retry loop, a
+// connection attempt that loses that race (ECONNREFUSED/ENOENT) would
+// previously give up permanently for the life of the process. Starts at
+// 1s and doubles on every failed attempt, capped at 30s, resetting back to
+// the initial delay on the next successful connection.
+const INITIAL_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 30000;
+
+// Only real base64 alphabet characters, with 0-2 trailing "=" padding, and
+// a length that's a multiple of 4 (base64's own encoding invariant).
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/**
+ * Decodes a base64 string, actually rejecting malformed input -- unlike
+ * plain `Buffer.from(str, "base64")`, which never throws on malformed
+ * base64 in Node.js: it silently decodes whatever valid-looking characters
+ * it finds and ignores the rest, producing garbage bytes rather than
+ * raising. A bare try/catch around Buffer.from(..., "base64") therefore
+ * never actually catches anything (M12 finding) -- this does a real format
+ * check (character set + length-is-a-multiple-of-4) BEFORE decoding, so a
+ * genuinely malformed chunk is dropped instead of silently corrupting the
+ * concatenated result with garbage bytes. Returns null (not a partial/
+ * garbage Buffer) on anything that isn't well-formed base64.
+ */
+function decodeBase64Strict(value: unknown): Buffer | null {
+  if (typeof value !== "string") return null;
+  if (value.length === 0) return Buffer.alloc(0);
+  if (value.length % 4 !== 0 || !BASE64_PATTERN.test(value)) return null;
+  return Buffer.from(value, "base64");
+}
+
 /**
  * Bridges the voice daemon's Unix domain socket to the in-process event
  * bus — and does nothing else. No LLM calls, no tool-calling, no memory/
@@ -13,73 +47,120 @@ const observation = ObservationPlatform.getInstance();
  * separate piece of work). This module only translates newline-delimited
  * JSON control messages on the socket into bus events, and voice:reply
  * bus events back into a "speak" message on the socket.
+ *
+ * Reconnects automatically with capped exponential backoff (I5) on any
+ * connection failure or drop that wasn't caused by an explicit stop() —
+ * see INITIAL_RECONNECT_DELAY_MS/MAX_RECONNECT_DELAY_MS above. Each failed
+ * connection attempt still publishes exactly one voice:error (deduped per
+ * attempt, same guarantee the original single-shot version had), but the
+ * client keeps retrying indefinitely instead of giving up after the first
+ * failure.
  */
 export function startAudioClient(socketPath: string): { stop: () => void } {
   const bus = EventBus.getInstance();
   let stopped = false;
-  // A real connect failure fires exactly one "error" then exactly one
-  // "close" on the same socket — both handlers below would otherwise each
-  // publish their own voice:error for that single episode. This flag is
-  // set by whichever fires first so only one voice:error ever goes out
-  // per connection-failure/drop, regardless of which event leads.
-  let errorReported = false;
-
-  const socket = net.createConnection({ path: socketPath });
-
-  const rl = readline.createInterface({ input: socket });
-  // readline.Interface forwards its input stream's own "error" event as an
-  // "error" event on itself (see node:internal/readline/interface's
-  // onerror listener) — with no listener here, Node's default EventEmitter
-  // behavior re-throws it as an uncaught exception and kills the process.
-  // The real handling already happens in socket.on("error", ...) below;
-  // this is only here so that forwarded duplicate doesn't crash the host.
-  rl.on("error", () => {});
-  rl.on("line", (line) => {
-    if (!line.trim()) return;
-    let msg: any;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      observation.logTelemetry(
-        "warn",
-        "AudioClient",
-        `Malformed line from voice daemon, ignoring: ${line.slice(0, 200)}`
-      );
-      return;
-    }
-
-    if (msg.type === "transcript") {
-      bus.publish("voice:transcript", { text: msg.text });
-    } else if (msg.type === "audio_chunk") {
-      bus.publish("voice:audio-chunk", { data: msg.data });
-    }
-  });
-
-  socket.on("error", (err: any) => {
-    if (stopped || errorReported) return;
-    errorReported = true;
-    observation.logTelemetry("warn", "AudioClient", `Voice daemon socket error: ${err.message || err}`);
-    bus.publish("voice:error", { message: err.message || String(err) });
-  });
-
-  socket.on("close", () => {
-    if (stopped || errorReported) return;
-    errorReported = true;
-    bus.publish("voice:error", { message: "Voice daemon connection closed unexpectedly" });
-  });
+  let socket: net.Socket | null = null;
+  let rl: readline.Interface | null = null;
+  let reconnectTimer: NodeJS.Timeout | null = null;
+  let backoffMs = INITIAL_RECONNECT_DELAY_MS;
 
   const unsubscribeReply = bus.subscribe("voice:reply", (payload: any) => {
-    if (stopped || !socket.writable) return;
+    if (stopped || !socket || !socket.writable) return;
     socket.write(JSON.stringify({ type: "speak", text: payload.text }) + "\n");
   });
+
+  const scheduleReconnect = () => {
+    if (stopped) return;
+    const delay = backoffMs;
+    backoffMs = Math.min(backoffMs * 2, MAX_RECONNECT_DELAY_MS);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  };
+
+  const connect = () => {
+    if (stopped) return;
+    // A real connect failure fires exactly one "error" then exactly one
+    // "close" on the same socket — both handlers below would otherwise each
+    // publish their own voice:error for that single episode. This flag is
+    // scoped per connection attempt so only one voice:error ever goes out
+    // per connection-failure/drop, regardless of which event leads — and a
+    // fresh one applies to each new attempt across reconnects.
+    let errorReported = false;
+
+    const newSocket = net.createConnection({ path: socketPath });
+    socket = newSocket;
+
+    const newRl = readline.createInterface({ input: newSocket });
+    rl = newRl;
+    // readline.Interface forwards its input stream's own "error" event as an
+    // "error" event on itself (see node:internal/readline/interface's
+    // onerror listener) — with no listener here, Node's default EventEmitter
+    // behavior re-throws it as an uncaught exception and kills the process.
+    // The real handling already happens in newSocket.on("error", ...) below;
+    // this is only here so that forwarded duplicate doesn't crash the host.
+    newRl.on("error", () => {});
+    newRl.on("line", (line) => {
+      if (!line.trim()) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        observation.logTelemetry(
+          "warn",
+          "AudioClient",
+          `Malformed line from voice daemon, ignoring: ${line.slice(0, 200)}`
+        );
+        return;
+      }
+
+      if (msg.type === "transcript") {
+        bus.publish("voice:transcript", { text: msg.text });
+      } else if (msg.type === "audio_chunk") {
+        bus.publish("voice:audio-chunk", { data: msg.data });
+      }
+    });
+
+    newSocket.on("connect", () => {
+      // A real connection succeeded -- reset backoff so the *next*
+      // failure episode (if any) starts fresh from the initial delay
+      // rather than continuing to climb from wherever a prior episode
+      // left off.
+      backoffMs = INITIAL_RECONNECT_DELAY_MS;
+    });
+
+    newSocket.on("error", (err: any) => {
+      if (stopped || errorReported) return;
+      errorReported = true;
+      observation.logTelemetry("warn", "AudioClient", `Voice daemon socket error: ${err.message || err}`);
+      bus.publish("voice:error", { message: err.message || String(err) });
+    });
+
+    newSocket.on("close", () => {
+      newRl.close();
+      if (stopped) return;
+      if (!errorReported) {
+        errorReported = true;
+        bus.publish("voice:error", { message: "Voice daemon connection closed unexpectedly" });
+      }
+      scheduleReconnect();
+    });
+  };
+
+  connect();
 
   return {
     stop: () => {
       if (stopped) return;
       stopped = true;
       unsubscribeReply();
-      rl.close();
-      socket.destroy();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (rl) rl.close();
+      if (socket) socket.destroy();
     },
   };
 }
@@ -241,11 +322,15 @@ export function synthesizeOverSocket(
         return;
       }
       if (msg.type === "audio_chunk") {
-        try {
-          chunks.push(Buffer.from(typeof msg.data === "string" ? msg.data : "", "base64"));
-        } catch {
-          // Malformed base64 from the daemon -- drop this chunk rather than
-          // corrupt the concatenated result with garbage bytes.
+        const decoded = decodeBase64Strict(msg.data);
+        if (decoded === null) {
+          observation.logTelemetry(
+            "warn",
+            "AudioClient",
+            `Malformed base64 audio_chunk from voice daemon during one-shot synthesis, dropping: ${String(msg.data).slice(0, 100)}`
+          );
+        } else {
+          chunks.push(decoded);
         }
       } else if (msg.type === "speak_done") {
         finish(() => resolve(Buffer.concat(chunks)));

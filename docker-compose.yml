@@ -46,11 +46,34 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # The long (mapping) form is required here, not the short `- service`
+    # list form, because voice-daemon needs `condition: service_healthy`
+    # (see below) -- Compose's depends_on doesn't allow mixing the two
+    # forms in one block, so every entry uses the mapping form even though
+    # postgres/llama-cpp/jarvis-builder only need plain start-order.
     depends_on:
-      - postgres
-      - llama-cpp
-      - voice-daemon
-      - jarvis-builder
+      postgres:
+        condition: service_started
+      llama-cpp:
+        condition: service_started
+      jarvis-builder:
+        condition: service_started
+      # depends_on's plain start-order form only controls container START
+      # ORDER, not readiness -- the daemon takes many seconds to import
+      # torch/faster-whisper/kokoro after its process starts, and
+      # audio-client.ts previously connected exactly once at api's own
+      # startup with no retry, so a plain start-order dependency here
+      # meant the very first connection attempt would very likely hit
+      # ECONNREFUSED/ENOENT before the daemon's socket even existed, and
+      # (pre-fix) never try again for the life of the process. Using
+      # `condition: service_healthy` makes Docker actually wait for
+      # voice-daemon's healthcheck (see its own definition below) to pass
+      # before starting api. audio-client.ts also independently gained its
+      # own reconnect-with-backoff loop as defense in depth (I5) -- this
+      # healthcheck reduces how often that loop is needed on a normal
+      # boot, it doesn't replace it.
+      voice-daemon:
+        condition: service_healthy
 
   # Offline-first local inference: serves a GGUF model you already have on
   # disk over an OpenAI-compatible API, entirely inside the Docker network —
@@ -77,6 +100,36 @@ services:
     restart: unless-stopped
     volumes:
       - voice-socket:/tmp/jarvis-voice
+      # Persists faster-whisper/Kokoro-82M model weights (downloaded from
+      # Hugging Face into ~/.cache/huggingface on first real use -- this
+      # daemon runs as root per daemon/Dockerfile, so that's
+      # /root/.cache/huggingface) across restarts and rebuilds. Without
+      # this, the weights live only in the container's ephemeral
+      # filesystem layer and re-download on every `docker compose up
+      # --force-recreate`/image rebuild, which defeats the "offline-
+      # capable" claim on anything but a container that's never been
+      # recreated. Named-volume, matching this file's existing convention
+      # for shared state (voice-socket above) rather than a host bind
+      # mount, since (unlike llama-cpp's model dir) there's no existing
+      # host-side model directory a user is expected to already have for
+      # these weights -- they're fetched automatically on first use.
+      - voice-model-cache:/root/.cache/huggingface
+    # Unix-socket service, so there's no HTTP endpoint to probe -- checks
+    # that the socket file the daemon creates at startup (see
+    # voice_engine.py's main()) actually exists and is a real socket.
+    # start_period is generous because faster-whisper/Kokoro/torch import
+    # alone (before the socket is even created) has been observed to take
+    # tens of seconds on this CPU-only box, on top of any first-run model
+    # download.
+    healthcheck:
+      # CMD-SHELL (not CMD) because `test` is used as a shell builtin here,
+      # not relied on as a standalone /usr/bin/test binary that may or may
+      # not exist in daemon/Dockerfile's python:3.11-slim base.
+      test: ["CMD-SHELL", "test -S /tmp/jarvis-voice/voice.sock || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 90s
+      retries: 5
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -119,3 +172,6 @@ services:
 # volume, so this is the first entry in this section.
 volumes:
   voice-socket:
+  # Persistent faster-whisper/Kokoro-82M model-weight cache -- see
+  # voice-daemon's volumes: above for the full rationale.
+  voice-model-cache:

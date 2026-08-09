@@ -6,6 +6,12 @@ import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { executeTool as realExecuteTool, getAllToolDeclarations as realGetAllToolDeclarations } from "../capabilities/tools.js";
 import { toGroqTools as realToGroqTools } from "../runtime/groq-client.js";
 import { MindKernel } from "../self/kernel.js";
+import * as sessionRepo from "../kernel/state/session-repo.js";
+import * as memoryStore from "../cognition/memory-store.js";
+import { reflectAndLearn as realReflectAndLearn } from "../adaptation/reflection.js";
+import * as knowledgeGraph from "../cognition/knowledge-graph.js";
+import * as identity from "../self/identity.js";
+import * as rapport from "../self/rapport.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -18,6 +24,18 @@ const observation = ObservationPlatform.getInstance();
  * Gemini Live's bespoke functionResponse/thought_signature handling; that
  * pattern belonged to the old voice path this daemon replaces and is out
  * of scope here.
+ *
+ * Also mirrors /api/chat's per-turn memory/session-history/learning side
+ * effects (I4 fix): sessionRepo.appendMessage for both the user's
+ * transcript and the final spoken reply, memoryStore.recall to pull
+ * relevant memory into context, and — on a genuine successful reply —
+ * memoryStore.remember/reflectAndLearn/knowledgeGraph.extractAndStore/
+ * identity.extractSelfReflection/rapport.extractRapportSignal. Without
+ * these, a spoken conversation would leave zero trace anywhere text
+ * chat's memory/learning draws from, making voice and text two
+ * disconnected personas — see handleTranscript() below and the now-
+ * deleted src/interaction/live-voice.ts's flushTurn() (git history, commit
+ * e97ab96^) for the original version of this same pattern.
  *
  * A single fixed username is used because this is a single local device
  * with one primary user, the same "admin" fallback daily-adaptation.ts and
@@ -65,12 +83,44 @@ export interface VoiceSessionDeps {
   executeTool: typeof realExecuteTool;
   getAllToolDeclarations: typeof realGetAllToolDeclarations;
   toGroqTools: typeof realToGroqTools;
+  // Write/read-side memory & session-history hooks (I4) -- mirror
+  // /api/chat's real per-turn side effects (server.ts) so a spoken
+  // conversation leaves the same trace a typed one does, instead of being
+  // invisible to everything downstream that draws on memory/session
+  // history/learning. Injectable for the same DI/testability reason as
+  // executeTool/getAllToolDeclarations/toGroqTools above.
+  appendMessage: typeof sessionRepo.appendMessage;
+  recall: typeof memoryStore.recall;
+  remember: typeof memoryStore.remember;
+  reflectAndLearn: typeof realReflectAndLearn;
+  extractAndStore: typeof knowledgeGraph.extractAndStore;
+  extractSelfReflection: typeof identity.extractSelfReflection;
+  extractRapportSignal: typeof rapport.extractRapportSignal;
 }
 
-const defaultInjectableDeps: Pick<VoiceSessionDeps, "executeTool" | "getAllToolDeclarations" | "toGroqTools"> = {
+const defaultInjectableDeps: Pick<
+  VoiceSessionDeps,
+  | "executeTool"
+  | "getAllToolDeclarations"
+  | "toGroqTools"
+  | "appendMessage"
+  | "recall"
+  | "remember"
+  | "reflectAndLearn"
+  | "extractAndStore"
+  | "extractSelfReflection"
+  | "extractRapportSignal"
+> = {
   executeTool: realExecuteTool,
   getAllToolDeclarations: realGetAllToolDeclarations,
   toGroqTools: realToGroqTools,
+  appendMessage: sessionRepo.appendMessage,
+  recall: memoryStore.recall,
+  remember: memoryStore.remember,
+  reflectAndLearn: realReflectAndLearn,
+  extractAndStore: knowledgeGraph.extractAndStore,
+  extractSelfReflection: identity.extractSelfReflection,
+  extractRapportSignal: rapport.extractRapportSignal,
 };
 
 /**
@@ -113,9 +163,26 @@ async function handleTranscript(text: string, deps: VoiceSessionDeps, bus: Event
   const router = deps.router !== undefined ? deps.router : getCognitionRouter();
   const username = deps.username ?? DEFAULT_USERNAME;
 
+  // Session-history write side — every spoken turn is persisted the same
+  // way a typed one is (see /api/chat's sessionRepo.appendMessage call in
+  // server.ts), regardless of whether the pipeline below actually
+  // succeeds; a restart mid-conversation shouldn't lose it. Fire-and-
+  // forget, matching /api/chat's own .catch(() => {}) on this exact call —
+  // must never block or fail the actual voice reply.
+  deps.appendMessage(username, "user", text).catch(() => {});
+
+  // Every branch below publishes voice:reply exactly once and, whatever
+  // text that turns out to be (a real answer or an honest decline/error),
+  // persists it the same way /api/chat persists fullReply regardless of
+  // whether it came from a real backend or a fallback.
+  const publishReply = (replyText: string) => {
+    bus.publish("voice:reply", { text: replyText });
+    deps.appendMessage(username, "assistant", replyText).catch(() => {});
+  };
+
   if (!router) {
     observation.logTelemetry("warn", "VoiceSession", "No cognition router configured; publishing an honest decline instead of fabricating an answer.");
-    bus.publish("voice:reply", { text: HONEST_NO_ROUTER_REPLY });
+    publishReply(HONEST_NO_ROUTER_REPLY);
     return;
   }
 
@@ -123,9 +190,19 @@ async function handleTranscript(text: string, deps: VoiceSessionDeps, bus: Event
   const localLlmEndpoint = deps.localLlmEndpoint !== undefined ? deps.localLlmEndpoint : MindKernel.getInstance().localLlmEndpoint;
 
   try {
+    // Read side of the same memory chat already draws on every turn (see
+    // memoryStore.recall in /api/chat) — best-effort: recall() itself
+    // never throws, degrading to [] internally on any failure (no vector
+    // store configured, embedding failure, DB error), so this never blocks
+    // the voice reply.
+    const memoryHits = await deps.recall(username, text, ai, localLlmEndpoint);
+    const memoryContext = memoryHits.length > 0
+      ? `\n\nRelevant things you remember about this user from past conversations:\n${memoryHits.map(m => `- ${m}`).join("\n")}`
+      : "";
+
     const tools = deps.toGroqTools(deps.getAllToolDeclarations());
     const messages: any[] = [
-      { role: "system", content: VOICE_SYSTEM_INSTRUCTION },
+      { role: "system", content: VOICE_SYSTEM_INSTRUCTION + memoryContext },
       { role: "user", content: text },
     ];
 
@@ -183,13 +260,34 @@ async function handleTranscript(text: string, deps: VoiceSessionDeps, bus: Event
       : "";
 
     if (finalText) {
-      bus.publish("voice:reply", { text: finalText });
+      publishReply(finalText);
+
+      // Write side of the same continuous-learning pipeline /api/chat
+      // triggers on every real (non-fallback) exchange (server.ts):
+      // semantic memory, style/mistake reflection, the knowledge graph,
+      // continuity-of-self, and rapport/tone modeling. All fire-and-forget
+      // — matching /api/chat's own .catch(() => {}) on each of these exact
+      // calls — so a slow or failing write can never delay or break the
+      // reply already published above. Only fires for a genuine answer
+      // (finalText truthy), not for the honest decline/error replies
+      // below, mirroring /api/chat gating these on a real
+      // (non-"Simulated") reply.
+      deps.remember(
+        username,
+        `User said (voice): "${text}" — Jarvis replied: "${finalText.slice(0, 500)}"`,
+        ai,
+        localLlmEndpoint
+      ).catch(() => {});
+      deps.reflectAndLearn(router, username, text, finalText).catch(() => {});
+      deps.extractAndStore(username, router, text, finalText).catch(() => {});
+      deps.extractSelfReflection(username, router, text, finalText).catch(() => {});
+      deps.extractRapportSignal(username, router, text).catch(() => {});
     } else {
       observation.logTelemetry("warn", "VoiceSession", `Pipeline produced no final text for "${username}"; publishing an honest empty-result reply instead of fabricating an answer.`);
-      bus.publish("voice:reply", { text: HONEST_NO_TEXT_REPLY });
+      publishReply(HONEST_NO_TEXT_REPLY);
     }
   } catch (err: any) {
     observation.logTelemetry("warn", "VoiceSession", `Voice pipeline failed for "${username}": ${err?.message || err}`);
-    bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY });
+    publishReply(HONEST_PIPELINE_ERROR_REPLY);
   }
 }

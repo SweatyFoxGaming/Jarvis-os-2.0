@@ -22,9 +22,12 @@ const DEFAULT_VOICE_DAEMON_SOCKET = "/tmp/jarvis-voice/voice.sock";
  * format daemon/models.py's SpeechToText.transcribe expects (it does a
  * bare np.frombuffer(..., dtype=np.int16) with no decoding of its own).
  * Shells out to ffmpeg rather than pulling in a JS decoding dependency;
- * ffmpeg is already a real prerequisite of this stack (see daemon/
- * Dockerfile) and reliably handles every container format a browser might
- * produce.
+ * ffmpeg runs HERE, in the main api container, not the voice daemon's
+ * container -- it must be installed in the repo-root Dockerfile (the api
+ * image's own Dockerfile), not daemon/Dockerfile (a separate container
+ * that only does STT/TTS model inference and has never needed ffmpeg).
+ * The repo-root Dockerfile's `apk add` step installs it alongside
+ * python3/py3-pip/bash.
  */
 function decodeToPcm16Mono16k(audioBuffer: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {

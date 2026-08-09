@@ -1,8 +1,15 @@
 # Use official Node.js 20 lightweight Alpine image
 FROM node:20-alpine
 
-# Install Python 3, pip, and bash for scripting
-RUN apk add --no-cache python3 py3-pip bash
+# Install Python 3, pip, bash, and ffmpeg for scripting/audio decoding.
+# ffmpeg is a real runtime prerequisite of THIS image, not daemon/Dockerfile
+# (a separate container) -- src/interaction/whisper.ts spawns ffmpeg
+# in-process to decode browser-recorded audio (webm/opus/ogg/wav) to raw
+# 16-bit PCM before sending it to the voice daemon over the Unix socket.
+# Without it here, /api/voice-input's ffmpeg spawn fails with ENOENT in
+# production and silently falls back to a canned "Simulated speech
+# transcription" stub -- this was live-verified missing (C1 finding).
+RUN apk add --no-cache python3 py3-pip bash ffmpeg
 
 # Set working directory inside the container
 WORKDIR /app
