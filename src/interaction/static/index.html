@@ -270,7 +270,20 @@
            controls. No JS needed: the existing flex layout (#app as a row of
            [sidebar, main-column], header stacked above <main> in that
            column) turns out to compose cleanly with position:fixed, so a
-           pure-CSS reveal was possible without restructuring the DOM. */
+           pure-CSS reveal was possible without restructuring the DOM.
+
+           #app-header is inset from the left by the sidebar's own width
+           (16rem, matching #left-sidebar's w-64) rather than spanning the
+           full viewport — this restores the original pre-reveal layout
+           (header used to start exactly where the sidebar's right edge
+           was) and, critically, means the two revealed panels no longer
+           overlap at all: without this inset, the opaque z-20 sidebar would
+           paint directly on top of the header's left content cluster
+           (0-256px, y:0-56px) every time both are revealed, permanently
+           hiding and disabling the offline-mode toggle button that lives
+           there. Fixed via a real click-through Playwright test, not just a
+           visual "did it slide into view" check — see the fix-round entry
+           in the task report. */
         #nav-trigger-strip {
             position: fixed;
             top: 0; left: 0; right: 0;
@@ -283,20 +296,21 @@
             position: fixed;
             top: 0; left: 0; bottom: 0;
             transform: translateX(-100%);
-            /* Explicit property list (not transition-all) so this coexists with
-               the pre-existing manual collapse toggle (toggleSidebar() in the
-               inline script below, driven by the sidebar's own collapse
-               button), which animates width/padding/border-right-width via
-               inline styles — a plain "transition: transform ..." shorthand
-               here would silently drop that animation by resetting
-               transition-property to just "transform". */
-            transition-property: transform, width, padding, border-right-width;
+            /* Only duration/timing are overridden here — transition-property
+               is deliberately left alone so it keeps inheriting "all" from
+               the sidebar's existing Tailwind transition-all utility class
+               (below this in specificity, but never contested since this
+               rule doesn't touch transition-property at all). "all" is a
+               superset that already covers transform, so this composes for
+               free with the pre-existing manual collapse toggle
+               (toggleSidebar(), inline script below) which separately
+               animates width/padding/border-right-width via inline styles. */
             transition-duration: 0.28s;
             transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
         }
         #app-header {
             position: fixed;
-            top: 0; left: 0; right: 0;
+            top: 0; left: 16rem; right: 0;
             transform: translateY(-100%);
             transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
         }
@@ -306,6 +320,25 @@
         html:has(#nav-trigger-strip:hover, #left-sidebar:hover, #app-header:hover, #left-sidebar:focus-within, #app-header:focus-within) #app-header {
             transform: translateY(0);
         }
+        /* #nav-trigger-strip intentionally keeps a static z-index:25 (always
+           above #app) rather than conditionally dropping below it once
+           revealed. A conditional drop was tried (to close the ~1.5px sliver
+           where the strip's 8px band technically outranks the sleep button's
+           topmost pixels once the header is revealed) but caused a real
+           flicker: dropping the strip's z-index the instant it's hovered —
+           before the sidebar/header have actually animated into that same
+           screen position — briefly exposes whatever's underneath (<main>)
+           at that pixel, which doesn't match the :has() condition, so the
+           reveal reverts, the strip's z-index un-drops, hover returns to the
+           strip, and the cycle repeats (confirmed live: Playwright's own
+           hover actionability check failed for a full 5s against this
+           exact race before a manual retry happened to land outside the
+           window). The dead-zone this leaves is real but negligible —
+           verified live that #left-sidebar's collapse button, the offline
+           toggle, and the sidebar/header nav buttons all sit well clear of
+           the strip's y:0-8px band; only the sleep button's top ~1.5px of a
+           42px-tall hit target overlaps it. Left as a known, harmless
+           trade-off rather than risk the flicker. */
     </style>
 </head>
 <body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
