@@ -135,6 +135,56 @@
             .orb-ar-ring, .orb-ar-arc { animation: none; }
         }
 
+        /* Heartbeat ping + drifting sparks — always visible (unlike .orb-ar-frame,
+           which only shows in camera mode), giving the orb a sense of being alive
+           even at idle. Recolors based on #quantum-eye-container's data-orb-state
+           attribute (set alongside NeuralOrb.setState — see Task 1/2 JS wiring).
+           #quantum-eye-container is the only real instance of this orb (single
+           id, checked via grep) so a single --orb-spark-radius override here is
+           enough — no other usage site to tune separately. 90px sits just outside
+           the orb's own 80px rendered radius (w-40 h-40 = 160px box), the same
+           margin logic .orb-ar-frame uses via its inset: -22px. */
+        #quantum-eye-container {
+            --orb-spark-radius: 90px;
+        }
+        .orb-ping {
+            position: absolute;
+            inset: -10px;
+            border-radius: 50%;
+            border: 1px solid rgba(80, 200, 255, 0.5);
+            pointer-events: none;
+            animation: orb-ping-pulse 3.2s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+        }
+        .orb-ping.orb-ping-delay {
+            animation-delay: 1.6s;
+        }
+        @keyframes orb-ping-pulse {
+            0% { transform: scale(0.85); opacity: 0.5; }
+            100% { transform: scale(1.35); opacity: 0; }
+        }
+        #quantum-eye-container[data-orb-state="thinking"] .orb-ping {
+            border-color: rgba(180, 130, 255, 0.5);
+        }
+
+        .orb-spark {
+            position: absolute;
+            width: 3px;
+            height: 3px;
+            border-radius: 50%;
+            background: rgba(180, 225, 255, 0.9);
+            box-shadow: 0 0 6px rgba(120, 200, 255, 0.9);
+            pointer-events: none;
+        }
+        .orb-spark.orb-spark-1 { animation: orb-spark-orbit-1 9s linear infinite; }
+        .orb-spark.orb-spark-2 { animation: orb-spark-orbit-2 7s linear infinite; }
+        .orb-spark.orb-spark-3 { animation: orb-spark-orbit-3 11s linear infinite; }
+        @keyframes orb-spark-orbit-1 { from { transform: rotate(0deg) translateX(var(--orb-spark-radius, 60px)) rotate(0deg); } to { transform: rotate(360deg) translateX(var(--orb-spark-radius, 60px)) rotate(-360deg); } }
+        @keyframes orb-spark-orbit-2 { from { transform: rotate(120deg) translateX(var(--orb-spark-radius, 60px)) rotate(-120deg); } to { transform: rotate(480deg) translateX(var(--orb-spark-radius, 60px)) rotate(-480deg); } }
+        @keyframes orb-spark-orbit-3 { from { transform: rotate(240deg) translateX(var(--orb-spark-radius, 60px)) rotate(-240deg); } to { transform: rotate(600deg) translateX(var(--orb-spark-radius, 60px)) rotate(-600deg); } }
+        @media (prefers-reduced-motion: reduce) {
+            .orb-ping, .orb-spark { animation: none; opacity: 0; }
+        }
+
         #mind-graph {
             width: 100%; height: 100%; position: absolute; inset: 0; z-index: 1;
         }
@@ -346,6 +396,14 @@
                                 <div class="orb-corner bl"></div>
                                 <div class="orb-corner br"></div>
                             </div>
+                            <!-- Heartbeat ping + drifting sparks — always visible (not gated on
+                                 camera state like .orb-ar-frame above), same sibling-of-#quantum-eye
+                                 placement for the same overflow-hidden-clipping reason. -->
+                            <div class="orb-ping"></div>
+                            <div class="orb-ping orb-ping-delay"></div>
+                            <div class="orb-spark orb-spark-1"></div>
+                            <div class="orb-spark orb-spark-2"></div>
+                            <div class="orb-spark orb-spark-3"></div>
                             <!-- Small picture-in-picture bubble, not the old full-orb-covering
                                  video — the orb (and its vault-note points) stays fully visible
                                  around it. Sits outside #quantum-eye on purpose: that div's
@@ -1185,6 +1243,15 @@
         function setState(scene, state) {
             scene.state = STATE_CONFIG[state] ? state : "idle";
             scene.canvas.dataset.orbState = scene.state;
+            // Single funnel point for every NeuralOrb.setState call site (home orb,
+            // listening/thinking/speaking transitions, etc). Mirrors the state onto
+            // the nearest "*-container" ancestor (e.g. #quantum-eye-container) so the
+            // always-visible .orb-ping/.orb-spark CSS — which lives outside the
+            // canvas's own overflow-hidden circular mask — can recolor via a plain
+            // sibling attribute selector, no :has() needed. No-op for scenes whose
+            // canvas has no such ancestor (e.g. the full-page neural-bg-canvas).
+            const container = scene.canvas.closest('[id$="-container"]');
+            if (container) container.dataset.orbState = scene.state;
         }
 
         function setNeurons(scene, neurons, links) {
