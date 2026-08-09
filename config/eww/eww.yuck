@@ -1,10 +1,13 @@
 ; config/eww/eww.yuck
 ;
-; Orb-only HUD — no text panel. jarvis_badge (already pushed by
-; eww-bridge.ts) drives which orb-state class is applied via badge-class
-; below; jarvis_status/jarvis_thought/jarvis_task/jarvis_notes are no
-; longer rendered (kept as unused defvars only if eww-bridge.ts still
-; pushes them — see Task 7 for whether that plumbing gets simplified too).
+; Orb-only HUD — no text panel. jarvis_badge (pushed by eww-bridge.ts)
+; drives which orb-state class is applied via badge-class below.
+; jarvis_status/jarvis_thought/jarvis_task/jarvis_notes (the old text-panel
+; defvars) were removed in Task 7: eww-bridge.ts no longer pushes them
+; (nothing in this file rendered them since the orb-only rebuild), and
+; with the pushes gone, the "Variable X not scope" crash risk that
+; previously required keeping them as unused defvars no longer applies —
+; there's nothing left calling `eww update` with those keys.
 ;
 ; jarvis_badge's real values, confirmed against src/interaction/hud-badge.ts
 ; (deriveHudBadge) and src/ipc/eww-bridge.ts's `eww update` call sites:
@@ -15,19 +18,12 @@
 ; WindowStacking::from_str ("background"|"bg") and eww's X11 display
 ; backend, which maps WindowStacking::Background to
 ; window.set_keep_below(true) — the real, working "don't sit on top of
-; every window" mechanism for this host, not :windowtype "desktop".
+; every window" mechanism for this host, not :windowtype "desktop". Task 7
+; confirmed this live via X11 protocol inspection (_NET_WM_STATE_BELOW is
+; set on the mapped window, and _NET_CLIENT_LIST_STACKING places it below
+; a freshly-focused overlapping test window) — see Task 7 report.
 
 (defvar jarvis_badge "idle")
-; Kept as unused defvars: eww-bridge.ts's refreshStatus() still calls
-; `eww update` with jarvis_status/jarvis_thought/jarvis_task/jarvis_notes
-; on every refresh (confirmed live — removing these defvars produced real
-; "Variable X not scope" errors in `journalctl --user -u
-; jarvis-hud-eww.service` on deploy). See Task 7 for whether the bridge
-; itself stops pushing these.
-(defvar jarvis_status "Idle")
-(defvar jarvis_thought "")
-(defvar jarvis_task "None")
-(defvar jarvis_notes "None yet")
 
 (defwidget orb []
   (box :class "orb-stage"
