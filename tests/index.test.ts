@@ -4515,6 +4515,20 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
   }
 });
 
+registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem when ObservationPlatform reports a non-green status", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => true,
+    getHealth: () => ({ status: "yellow" } as any),
+    checkSocketReachable: async () => true,
+    checkHttpReachable: async () => true,
+  };
+  const result = await assessSystemHealth(deps);
+  if (result.ok || !result.problems.some(p => /degraded/i.test(p))) {
+    throw new Error(`HealthWatchdog: expected a specific degraded-status problem, got: ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem when the voice daemon is unreachable", async () => {
   const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
   const deps = {

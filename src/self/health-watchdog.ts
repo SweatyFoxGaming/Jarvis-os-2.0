@@ -38,6 +38,11 @@ export async function checkHttpReachable(url: string): Promise<boolean> {
   const timer = setTimeout(() => controller.abort(), HTTP_CHECK_TIMEOUT_MS);
   try {
     const res = await fetch(url, { signal: controller.signal });
+    // Any response at all (including 4xx) means something is actually
+    // listening and answering HTTP on the other end — reachability is what
+    // this check is for, not endpoint correctness. Only a genuine 5xx or a
+    // failed/timed-out fetch (network unreachable, connection refused, DNS
+    // failure) counts as unreachable.
     return res.ok || res.status < 500;
   } catch {
     return false;
@@ -48,7 +53,7 @@ export async function checkHttpReachable(url: string): Promise<boolean> {
 
 export interface HealthWatchdogDeps {
   pingDatabase: typeof pingDatabase;
-  getHealth: () => { status: string };
+  getHealth: typeof observation.getHealth;
   checkSocketReachable: typeof checkSocketReachable;
   checkHttpReachable: typeof checkHttpReachable;
 }
@@ -70,6 +75,20 @@ export async function assessSystemHealth(
     if (!dbOk) problems.push("Postgres is unreachable.");
   } catch (err: any) {
     problems.push(`Postgres health check itself failed: ${err.message}`);
+  }
+
+  try {
+    // "green" is the only fully-healthy status ObservationPlatform.getHealth()
+    // reports today (src/kernel/observation.ts) — "yellow" means it's running
+    // in a degraded/simulated mode (currently: no GEMINI_API_KEY configured,
+    // so cloud calls are simulated rather than real). Anything other than
+    // "green" is a real, reportable problem, not just informational.
+    const health = deps.getHealth();
+    if (health.status !== "green") {
+      problems.push(`ObservationPlatform reports degraded status: ${health.status}.`);
+    }
+  } catch (err: any) {
+    problems.push(`ObservationPlatform health check itself failed: ${err.message}`);
   }
 
   try {
