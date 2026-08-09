@@ -141,15 +141,27 @@
            attribute (set alongside NeuralOrb.setState — see Task 1/2 JS wiring).
            #quantum-eye-container is the only real instance of this orb (single
            id, checked via grep) so a single --orb-spark-radius override here is
-           enough — no other usage site to tune separately. 90px sits just outside
-           the orb's own 80px rendered radius (w-40 h-40 = 160px box), the same
-           margin logic .orb-ar-frame uses via its inset: -22px. */
+           enough — no other usage site to tune separately. 90px sat just outside
+           the orb's old 80px rendered radius (w-40 h-40 = 160px box), the same
+           margin logic .orb-ar-frame uses via its inset: -22px.
+
+           Task 5 note: the container grew to w-80 h-80 (320px, an exact 2x of
+           the old 160px box) as part of the hero-scale resize, so this value
+           and .orb-ping's inset below are scaled by that same exact 2x
+           (90px -> 180px) to stay just outside the orb's new 160px rendered
+           radius, keeping the proportion this comment describes intact.
+           .orb-ar-frame/.orb-corner (the camera-mode AR ring/corner brackets)
+           were deliberately left unscaled — out of this task's explicit scope
+           per the plan's "don't restructure existing selectors beyond what
+           each task calls for" constraint; documented as a known, accepted
+           minor proportion trade-off in the Task 5 report (only visible while
+           the camera sensor is toggled on). */
         #quantum-eye-container {
-            --orb-spark-radius: 90px;
+            --orb-spark-radius: 180px;
         }
         .orb-ping {
             position: absolute;
-            inset: -10px;
+            inset: -20px;
             border-radius: 50%;
             border: 1px solid rgba(80, 200, 255, 0.5);
             pointer-events: none;
@@ -491,13 +503,24 @@
         <main class="flex-1 overflow-y-auto p-8 relative z-0">
             
             <!-- ================= HOME: the primary surface — presence orb + ask-anything ================= -->
-            <div id="view-home" class="view-pane flex flex-col items-center min-h-full relative py-10 px-4">
+            <div id="view-home" class="view-pane flex flex-col items-center justify-center min-h-full relative py-10 px-4">
                 <div class="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto" id="home-hero">
-                    <div class="relative w-40 h-40 flex items-center justify-center" id="quantum-eye-container">
+                    <!-- Task 5: hero-scale resize — 160px (w-40 h-40) to 320px
+                         (w-80 h-80), an exact 2x so every orb-adjacent CSS value
+                         tuned relative to the old box size scales by one simple,
+                         exact factor instead of an approximated one. draw()'s
+                         R/cy scene properties (NeuralOrb.register's { R: 0.9,
+                         cy: 0.5 }) are fractions of the canvas's own
+                         clientWidth/clientHeight (see draw()'s `cx = W/2, cy = H
+                         * scene.cy, R = Math.min(W,H) * scene.R`), so they need
+                         no change — confirmed safe before resizing. -->
+                    <div class="relative w-80 h-80 flex items-center justify-center" id="quantum-eye-container">
                         <!-- Cast shadow, deliberately NOT part of the floating group below —
                              stays anchored while the orb bobs above it, reading as an object
-                             elevated above the page rather than a flat inline element. -->
-                        <div class="absolute left-1/2 bottom-1 -translate-x-1/2 w-24 h-3 rounded-full bg-black/45 blur-md pointer-events-none" aria-hidden="true"></div>
+                             elevated above the page rather than a flat inline element. Scaled
+                             2x alongside the container (w-24 h-3 blur-md -> w-48 h-6 blur-lg)
+                             to stay proportionate to the enlarged orb. -->
+                        <div class="absolute left-1/2 bottom-1 -translate-x-1/2 w-48 h-6 rounded-full bg-black/45 blur-lg pointer-events-none" aria-hidden="true"></div>
                         <div class="relative w-full h-full hologram-float">
                             <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
                                 <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
@@ -541,9 +564,15 @@
                     <!-- Sensor status + toggles -->
                     <div class="flex flex-col items-center gap-3">
                         <span id="sensor-status-label" class="text-[11px] text-secondary uppercase tracking-[0.2em]">Sensors standby</span>
-                        <div id="identity-ticker" class="hidden text-center max-w-sm">
-                            <p id="identity-ticker-text" class="text-xs text-secondary/80 italic leading-snug"></p>
-                        </div>
+                        <!-- Task 5: the idle-quote ticker (#identity-ticker /
+                             #identity-ticker-text, rendering reflections[0]'s
+                             content under "Sensors standby") is removed from the
+                             default view — the enlarged orb is the hero now.
+                             loadIdentityStream()'s /api/identity/reflections
+                             fetch is NOT dead code: it still drives
+                             #continuity-count-badge and #self-reflections-stream
+                             elsewhere in the app, see the JS block near
+                             loadIdentityStream() for what was trimmed. -->
                         <!-- Current mission/goal — real data from session.workspace
                              (see loadLiveSystemData's "Mission Goal" block), not a
                              placeholder: activeGoal defaults to a real value and
@@ -1163,6 +1192,41 @@
         </main>
     </div>
 </div>
+
+<!-- Task 5: ambient corner readouts — near-invisible, always at the window's
+     actual physical corners (not clustered near the orb), fixed regardless
+     of #main's scroll/view state. Siblings of #app, not children of it.
+
+     z-index note (learned live, via a real rendering bug caught in this
+     task's own verification, not assumed): #app is `relative z-10`, which
+     establishes a stacking context — and its main-column child div (`flex-1
+     flex flex-col h-full ... bg-bg relative`, no explicit z-index of its
+     own) paints a fully OPAQUE background across the entire remaining
+     viewport (sidebar is position:fixed/out-of-flow, so main-column fills
+     100% width whenever it's hidden). Since that opaque background is part
+     of #app's z=10 stacking context as a whole, giving these divs a LOWER
+     z-index (5 — the original attempt) put the ambient text fully BEHIND
+     that opaque fill, invisible at every corner, confirmed via
+     elementsFromPoint() during live verification (see the Task 5 report).
+     z-[15] (above #app's 10, below #nav-trigger-strip's 25 and the
+     sleep-overlay/toast-container's 50) fixes the visibility — but as a
+     side effect, since #app's ENTIRE contents (including the revealed
+     #left-sidebar's locally-ranked z-20 / #app-header) are still grouped
+     under #app's single z=10 rank, no z-index on the revealed sidebar/header
+     can rank above these ambient divs anymore either. Accepted, documented
+     trade-off: while the reveal-nav is hovered open, the top-left/top-right
+     ambient text can render visually over the sidebar brand mark / header's
+     right-side buttons at those exact corners — harmless (pointer-events:
+     none, so nothing becomes unclickable) and only visible during a
+     deliberate hover interaction, not the resting/default view. Text-only,
+     aria-hidden — decorative ambient awareness, not interactive controls.
+     Default textContent below matches what each driving function sets on
+     first real update (updateAmbientClock(), updateOfflineUIState(),
+     updateAmbientPendingReadout()), so there's no placeholder flash before
+     the first tick/poll. -->
+<div id="ambient-clock" class="fixed top-4 left-4 z-[15] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">00:00</div>
+<div id="ambient-connection" class="fixed top-4 right-4 z-[15] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">ONLINE</div>
+<div id="ambient-pending" class="fixed bottom-4 left-4 z-[15] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">0 pending</div>
 
 <!-- Core Sleep Mode Curtain -->
 <div id="sleep-mode-overlay" class="fixed inset-0 bg-[#020308]/96 z-50 flex flex-col items-center justify-center gap-3 transition-all duration-500 opacity-0 pointer-events-none">
@@ -2699,13 +2763,15 @@
                     }).join('');
                 }
 
-                const ticker = document.getElementById('identity-ticker');
-                if (reflections.length > 0) {
-                    document.getElementById('identity-ticker-text').textContent = `"${reflections[0].content}"`;
-                    ticker.classList.remove('hidden');
-                } else {
-                    ticker.classList.add('hidden');
-                }
+                // Task 5: #identity-ticker/#identity-ticker-text (the idle-quote
+                // paragraph that used to render `"${reflections[0].content}"`
+                // under "Sensors standby") was removed from the DOM — nothing
+                // renders reflections[0] on Home anymore. Deliberately not left
+                // as dead code referencing a missing element: the old code here
+                // called `ticker.classList.add/remove('hidden')` unguarded,
+                // which would throw on a null `ticker` and — since this whole
+                // function is one big try/catch — silently abort the
+                // resThoughts fetch below (proactive-thought-callout) too.
             }
 
             const resThoughts = await authFetch('/api/identity/thoughts/history', { headers });
@@ -2740,6 +2806,39 @@
 
     let BUILD_REQUESTS_CACHE = [];
 
+    // Task 5 ambient corner readout (bottom-left): a combined "N pending"
+    // count. Judgment call, documented per the brief: this combines the
+    // existing unread-notifications computation (loadProactiveNotifications,
+    // data.notifications.filter(n => !n.read).length) with awaiting_consult
+    // build-requests (loadBuildRequests, the same pendingCount-style pattern
+    // used by #command-pending-badge/#mcp-servers-badge) rather than falling
+    // back to unread-notifications alone. Reusing both was clean given the
+    // real code shape — each source already computes the number it needs for
+    // its own badge, so this just taps those two existing computations
+    // in-place (no second poller). One real caveat, worth being explicit
+    // about: loadProactiveNotifications() POSTs /api/notifications/mark_read
+    // immediately after processing unread notifications, so
+    // pendingNotificationsCount is a point-in-time snapshot that naturally
+    // decays back to 0 within the same poll — the combined number will show
+    // brief bumps when new proactive notifications land, settling to mostly
+    // reflect pendingConsultCount (a genuinely persistent "needs your input"
+    // count) between polls. That's real data either way, not a placeholder.
+    let pendingNotificationsCount = 0;
+    let pendingConsultCount = 0;
+    function updateAmbientPendingReadout() {
+        const el = document.getElementById('ambient-pending');
+        if (el) el.textContent = `${pendingNotificationsCount + pendingConsultCount} pending`;
+    }
+
+    // Task 5 ambient corner readout (top-left): a simple local-time clock,
+    // updated every second per the brief, formatted as zero-padded HH:MM.
+    function updateAmbientClock() {
+        const el = document.getElementById('ambient-clock');
+        if (!el) return;
+        const d = new Date();
+        el.textContent = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
     async function loadBuildRequests() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
@@ -2752,6 +2851,11 @@
 
             const activeCount = requests.filter(r => !BUILD_REQUEST_TERMINAL_STATUSES.includes(r.status)).length;
             document.getElementById('build-requests-count-badge').textContent = `${activeCount} ACTIVE`;
+
+            // Task 5 ambient pending-count readout: reuses this same real
+            // computation (no second poller) — see updateAmbientPendingReadout().
+            pendingConsultCount = requests.filter(r => r.status === 'awaiting_consult').length;
+            updateAmbientPendingReadout();
 
             const list = document.getElementById('build-requests-list');
             if (requests.length === 0) {
@@ -3177,6 +3281,15 @@
             if (!res.ok) return;
             const data = await res.json();
             const unread = (data.notifications || []).filter(n => !n.read);
+
+            // Task 5 ambient pending-count readout: captured here, before the
+            // mark_read call below flips these back to read — see
+            // updateAmbientPendingReadout()'s doc comment for why this value
+            // is inherently a point-in-time snapshot rather than a stable
+            // "inbox" count.
+            pendingNotificationsCount = unread.length;
+            updateAmbientPendingReadout();
+
             if (unread.length === 0) return;
 
             for (const n of unread) {
@@ -3985,6 +4098,15 @@
     let offlineModeActive = false;
     function updateOfflineUIState(isOffline) {
         offlineModeActive = isOffline;
+
+        // Task 5 ambient corner readout (top-right): mirrors this same real
+        // state — the single funnel point every call site (loadLiveSystemData's
+        // /api/status poll, toggleOfflineMode()'s two response branches) already
+        // goes through, so no second parallel poller is needed for the ambient
+        // copy.
+        const ambientConn = document.getElementById('ambient-connection');
+        if (ambientConn) ambientConn.textContent = offlineModeActive ? 'OFFLINE_MODE' : 'ONLINE';
+
         const btn = document.getElementById('btn-offline-toggle');
         const dot = document.getElementById('offline-dot');
         const text = document.getElementById('offline-text');
@@ -4630,6 +4752,8 @@
 
         switchTab('home');
         registerServiceWorker();
+        updateAmbientClock();
+        setInterval(updateAmbientClock, 1000);
         loadLiveSystemData();
         loadMindKernelData();
         loadSystemSettings();
