@@ -1,50 +1,59 @@
 // config/eww/eww.scss
+// Orb-only HUD, GTK-CSS compatible (no conic-gradient, no
+// backdrop-filter — both unsupported here, see the design spec's note on
+// this). radial-gradient + a scale/opacity breathing animation is the
+// closest achievable equivalent to the web orb's richer treatment.
+//
+// @keyframes-driven animation was deployed and tested live against the
+// real running jarvis-hud-eww.service (GTK's CSS engine, not a browser) —
+// see the task report for what journalctl showed. Kept here because it
+// rendered without any GTK CSS parser errors.
 * {
   all: unset;
-  font-family: monospace;
 }
 
-.hud {
-  background-color: rgba(20, 20, 25, 0.78);
-  border-radius: 10px;
-  padding: 12px 14px;
-  color: #e8e8e8;
+.orb-stage {
+  min-width: 160px;
+  min-height: 160px;
 }
 
-.hud-header {
-  margin-bottom: 8px;
+.orb-core {
+  min-width: 92px;
+  min-height: 92px;
+  border-radius: 9999px;
+  background-image: radial-gradient(circle at 35% 30%, rgba(160,230,255,0.95), rgba(60,160,255,0.5) 45%, rgba(60,160,255,0.0) 72%);
+  animation: orb-breathe 3s ease-in-out infinite;
 }
 
-.hud-status {
-  font-weight: bold;
-  font-size: 13px;
-  margin-left: 8px;
+.orb-ping {
+  min-width: 92px;
+  min-height: 92px;
+  border-radius: 9999px;
+  border: 1px solid rgba(80,200,255,0.5);
+  animation: orb-ping-pulse 2.4s ease-out infinite;
 }
 
-.badge-dot {
-  min-width: 10px;
-  min-height: 10px;
-  border-radius: 5px;
+.orb-ping-delay {
+  animation-delay: 1.2s;
 }
 
-.badge-idle { background-color: #3ddc84; }
-.badge-thinking { background-color: #f4c542; }
-.badge-executing { background-color: #4aa3ff; }
-.badge-error { background-color: #ff4d4d; }
-
-.hud-section {
-  margin-top: 6px;
+@keyframes orb-breathe {
+  0% { opacity: 0.82; }
+  50% { opacity: 1; }
+  100% { opacity: 0.82; }
 }
 
-// GTK-CSS (what eww's scss actually compiles to) has no text-transform
-// property — the labels themselves are written in uppercase in eww.yuck
-// instead of relying on CSS to transform them.
-.hud-label {
-  font-size: 10px;
-  color: #9a9a9a;
+@keyframes orb-ping-pulse {
+  0% { opacity: 0.55; }
+  100% { opacity: 0; }
 }
 
-.hud-thought, .hud-note {
-  font-size: 11px;
-  color: #d8d8d8;
+.orb-badge-thinking.orb-core {
+  background-image: radial-gradient(circle at 35% 30%, rgba(220,190,255,0.95), rgba(150,90,255,0.5) 45%, rgba(150,90,255,0.0) 72%);
+}
+.orb-badge-thinking.orb-ping {
+  border-color: rgba(180,130,255,0.5);
+}
+.orb-badge-executing.orb-core, .orb-badge-error.orb-core {
+  background-image: radial-gradient(circle at 35% 30%, rgba(255,190,190,0.95), rgba(255,90,90,0.5) 45%, rgba(255,90,90,0.0) 72%);
 }
