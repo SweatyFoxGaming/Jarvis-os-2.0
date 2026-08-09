@@ -110,6 +110,32 @@ async def _handle_audio_chunk(
     await _run_transcription(writer, pcm_for_utterance, peer)
 
 
+async def _handle_audio_data(
+    msg: dict,
+    utterance_buffer: bytearray,
+    peer: str,
+) -> None:
+    """One-shot counterpart to _handle_audio_chunk's buffering -- appends
+    decoded PCM to utterance_buffer WITHOUT ever calling
+    UtteranceEndDetector.feed(). Reserved exclusively for the one-shot
+    /api/voice-input path (see _handle_transcribe below): that path
+    already knows exactly when its clip is complete (the client's own
+    explicit "transcribe" message) and must never have the silence-based
+    auto-trigger built for the continuous mic-stream flow fire early and
+    hand back a truncated transcript -- e.g. a long trailing pause in a
+    recorded clip, before the browser got around to sending "transcribe",
+    must not be mistaken for "utterance ended, respond now." Using a
+    distinct message type (rather than reusing "audio_chunk") makes that
+    guarantee structural instead of a race between two possible triggers.
+    """
+    try:
+        pcm = decode_audio_chunk(msg.get("data", ""))
+    except ProtocolError as e:
+        log.warning(f"malformed audio_data from {peer}, ignoring: {e}")
+        return
+    utterance_buffer.extend(pcm)
+
+
 async def _handle_transcribe(
     writer: asyncio.StreamWriter,
     detector: UtteranceEndDetector,
@@ -117,21 +143,19 @@ async def _handle_transcribe(
     peer: str,
 ) -> None:
     """Explicit one-shot request: transcribe whatever audio has already
-    been sent on this connection via audio_chunk messages, right now --
-    bypassing UtteranceEndDetector's silence-based end-of-utterance
-    trigger entirely. This is the one-shot counterpart to the continuous
-    mic-stream flow in _handle_audio_chunk (where the daemon itself
-    decides an utterance has ended from live silence): a caller that
-    already has a complete, pre-recorded clip -- e.g. /api/voice-input's
-    click-to-talk fallback -- sends the whole clip as audio_chunk(s) and
-    then this message to get one transcription back immediately, instead
-    of depending on the clip happening to end with enough silence to trip
-    the detector on its own.
+    been sent on this connection via audio_data messages, right now. This
+    is the one-shot counterpart to the continuous mic-stream flow in
+    _handle_audio_chunk (where the daemon itself decides an utterance has
+    ended from live silence): a caller that already has a complete,
+    pre-recorded clip -- e.g. /api/voice-input's click-to-talk fallback --
+    sends the whole clip as audio_data message(s) and then this message to
+    get one transcription back immediately.
 
-    Resets detector state too: the buffer this consumes is the same one
-    the detector was watching, so leaving stale "has seen speech"/silence-
-    count state around would make the next audio_chunk on a reused
-    connection trigger prematurely.
+    Resets detector state too, as a defensive measure in case a connection
+    ever mixes audio_chunk and audio_data traffic: the buffer this
+    consumes might overlap with what the detector was watching, so leaving
+    stale "has seen speech"/silence-count state around could make a
+    subsequent audio_chunk on a reused connection trigger prematurely.
     """
     pcm_for_utterance = bytes(utterance_buffer)
     utterance_buffer.clear()
@@ -173,6 +197,8 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
             msg_type = msg.get("type", "unknown")
             if msg_type == "audio_chunk":
                 await _handle_audio_chunk(writer, msg, detector, utterance_buffer, peer)
+            elif msg_type == "audio_data":
+                await _handle_audio_data(msg, utterance_buffer, peer)
             elif msg_type == "speak":
                 await _handle_speak(writer, msg, peer)
             elif msg_type == "transcribe":

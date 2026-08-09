@@ -1034,8 +1034,17 @@ registerTest("Whisper", "transcribeAudio relays a real transcript from the voice
     if (transcription !== "hello from the daemon") {
       throw new Error(`Whisper: expected the daemon's real transcript, got: ${transcription}`);
     }
-    if (!receivedTypes.includes("audio_chunk") || !receivedTypes.includes("transcribe")) {
-      throw new Error(`Whisper: expected real audio_chunk + transcribe messages sent to the daemon, got: ${JSON.stringify(receivedTypes)}`);
+    if (!receivedTypes.includes("audio_data") || !receivedTypes.includes("transcribe")) {
+      throw new Error(`Whisper: expected real audio_data + transcribe messages sent to the daemon, got: ${JSON.stringify(receivedTypes)}`);
+    }
+    if (receivedTypes.includes("audio_chunk")) {
+      // The one-shot path must never send "audio_chunk" -- that message
+      // type is routed through the daemon's silence-based
+      // UtteranceEndDetector (continuous mic-stream flow), which could
+      // fire early on a long silent stretch and truncate this clip. See
+      // src/core/audio-client.ts's transcribeOverSocket for the full
+      // rationale.
+      throw new Error(`Whisper: transcribeAudio must send "audio_data", not "audio_chunk" -- got: ${JSON.stringify(receivedTypes)}`);
     }
   } finally {
     if (original === undefined) delete process.env.VOICE_DAEMON_SOCKET;

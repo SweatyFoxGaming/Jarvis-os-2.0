@@ -84,7 +84,7 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
   };
 }
 
-// Outgoing audio_chunk messages are split into pieces this size (bytes of
+// Outgoing audio_data messages are split into pieces this size (bytes of
 // raw PCM, pre-base64) so one big recorded clip doesn't arrive as a single
 // huge line on the socket -- mirrors SPEAK_CHUNK_BYTES on the daemon side
 // (daemon/voice_engine.py) for outgoing "speak" audio.
@@ -95,13 +95,24 @@ const TRANSCRIBE_CHUNK_BYTES = 32000;
  * callers that already have a complete, pre-recorded clip (as opposed to
  * startAudioClient's long-lived bridge for the continuous mic-stream
  * flow). Opens its own short-lived connection: sends the whole clip as
- * one or more "audio_chunk" messages, then an explicit "transcribe"
+ * one or more "audio_data" messages, then an explicit "transcribe"
  * control message (daemon/voice_engine.py's _handle_transcribe) so the
- * daemon transcribes immediately instead of waiting for its own silence-
- * based utterance-end detector to fire, and resolves with the first
- * "transcript" reply. `pcmBytes` must already be raw 16-bit PCM, mono,
- * 16kHz -- the same format the daemon's SpeechToText.transcribe expects;
- * this function does no audio decoding of its own.
+ * daemon transcribes immediately, and resolves with the first "transcript"
+ * reply. `pcmBytes` must already be raw 16-bit PCM, mono, 16kHz -- the
+ * same format the daemon's SpeechToText.transcribe expects; this function
+ * does no audio decoding of its own.
+ *
+ * Deliberately sends "audio_data", NOT "audio_chunk": the daemon routes
+ * every "audio_chunk" through UtteranceEndDetector.feed() (see
+ * daemon/voice_engine.py's _handle_audio_chunk), which is silence-based
+ * heuristic logic built for the continuous mic-stream flow. A pre-recorded
+ * clip can easily contain a long silent stretch (e.g. a trailing pause
+ * before the browser stopped recording) that would trip that detector and
+ * produce a truncated transcript *before* the explicit "transcribe"
+ * message below even arrives. "audio_data" (see _handle_audio_data) only
+ * ever buffers PCM -- it never touches the detector -- so this function's
+ * own "transcribe" message is the only thing that can ever trigger a
+ * response here.
  */
 export function transcribeOverSocket(
   socketPath: string,
@@ -159,7 +170,7 @@ export function transcribeOverSocket(
     socket.on("connect", () => {
       for (let i = 0; i < pcmBytes.length; i += TRANSCRIBE_CHUNK_BYTES) {
         const chunk = pcmBytes.subarray(i, i + TRANSCRIBE_CHUNK_BYTES);
-        socket.write(JSON.stringify({ type: "audio_chunk", data: chunk.toString("base64") }) + "\n");
+        socket.write(JSON.stringify({ type: "audio_data", data: chunk.toString("base64") }) + "\n");
       }
       socket.write(JSON.stringify({ type: "transcribe" }) + "\n");
     });

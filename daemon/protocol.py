@@ -65,8 +65,7 @@ class UtteranceEndDetector:
             # Reset so the SAME detector instance can be reused for the
             # next utterance in the same connection, rather than requiring
             # the caller to construct a fresh one every time.
-            self._has_seen_speech = False
-            self._consecutive_silence = 0
+            self.reset()
             return True
         return False
 
