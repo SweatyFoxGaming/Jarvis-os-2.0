@@ -92,7 +92,7 @@
            would clip these corner-positioned elements. */
         .orb-ar-frame {
             position: absolute;
-            inset: -22px;
+            inset: -44px;
             border-radius: 50%;
             pointer-events: none;
             opacity: 0;
@@ -120,17 +120,17 @@
         @keyframes orb-ring-spin { to { transform: rotate(360deg); } }
         .orb-corner {
             position: absolute;
-            width: 18px;
-            height: 18px;
+            width: 36px;
+            height: 36px;
             border: 2px solid rgba(80, 200, 255, 0.85);
             opacity: 0;
             transition: opacity 0.4s ease;
         }
         #quantum-eye-container.orb-frame-active .orb-corner { opacity: 1; }
-        .orb-corner.tl { top: -8px; left: -8px; border-right: none; border-bottom: none; border-radius: 4px 0 0 0; }
-        .orb-corner.tr { top: -8px; right: -8px; border-left: none; border-bottom: none; border-radius: 0 4px 0 0; }
-        .orb-corner.bl { bottom: -8px; left: -8px; border-right: none; border-top: none; border-radius: 0 0 0 4px; }
-        .orb-corner.br { bottom: -8px; right: -8px; border-left: none; border-top: none; border-radius: 0 0 4px 0; }
+        .orb-corner.tl { top: -16px; left: -16px; border-right: none; border-bottom: none; border-radius: 4px 0 0 0; }
+        .orb-corner.tr { top: -16px; right: -16px; border-left: none; border-bottom: none; border-radius: 0 4px 0 0; }
+        .orb-corner.bl { bottom: -16px; left: -16px; border-right: none; border-top: none; border-radius: 0 0 0 4px; }
+        .orb-corner.br { bottom: -16px; right: -16px; border-left: none; border-top: none; border-radius: 0 0 4px 0; }
         @media (prefers-reduced-motion: reduce) {
             .orb-ar-ring, .orb-ar-arc { animation: none; }
         }
@@ -151,11 +151,10 @@
            (90px -> 180px) to stay just outside the orb's new 160px rendered
            radius, keeping the proportion this comment describes intact.
            .orb-ar-frame/.orb-corner (the camera-mode AR ring/corner brackets)
-           were deliberately left unscaled — out of this task's explicit scope
-           per the plan's "don't restructure existing selectors beyond what
-           each task calls for" constraint; documented as a known, accepted
-           minor proportion trade-off in the Task 5 report (only visible while
-           the camera sensor is toggled on). */
+           were also scaled 2x (inset -22px -> -44px, corner offsets -8px ->
+           -16px, corner size 18px -> 36px) to match — see the final-review
+           fix report for when this got reconciled after initially being
+           left unscaled. */
         #quantum-eye-container {
             --orb-spark-radius: 180px;
         }
@@ -180,6 +179,16 @@
 
         .orb-spark {
             position: absolute;
+            /* Centering point for the rotate()/translateX() orbit below: an
+               absolutely-positioned element with no top/left resolves to its
+               static in-flow position (the bottom-left of the orb container,
+               given this DOM structure), NOT the container's center — so
+               without this, the orbit sweeps sparks across unrelated UI
+               instead of circling the orb. 1.5px = half this element's own
+               3px width/height, so the centering point is the spark's own
+               center, not its top-left corner. */
+            top: calc(50% - 1.5px);
+            left: calc(50% - 1.5px);
             width: 3px;
             height: 3px;
             border-radius: 50%;
@@ -295,7 +304,20 @@
            hiding and disabling the offline-mode toggle button that lives
            there. Fixed via a real click-through Playwright test, not just a
            visual "did it slide into view" check — see the fix-round entry
-           in the task report. */
+           in the task report.
+
+           Final-review fix (I2): the inset reads a --sidebar-width custom
+           property (falling back to 16rem) instead of a hardcoded 16rem,
+           because the pre-existing manual sidebar-collapse feature
+           (toggleSidebar(), localStorage['sidebar-collapsed']) can set the
+           sidebar's real width to 0px independently of this reveal-on-hover
+           rework. Without this, a user who had collapsed the sidebar
+           before this plan shipped would load with the sidebar
+           permanently 0-width (collapse state restored on page load) but
+           the header still hardcoded 256px in — a permanent empty band
+           with nothing painted behind it. toggleSidebar() and the page-load
+           restore logic (inline script) both keep --sidebar-width in sync
+           with the sidebar's real current width. */
         #nav-trigger-strip {
             position: fixed;
             top: 0; left: 0; right: 0;
@@ -322,9 +344,9 @@
         }
         #app-header {
             position: fixed;
-            top: 0; left: 16rem; right: 0;
+            top: 0; left: var(--sidebar-width, 16rem); right: 0;
             transform: translateY(-100%);
-            transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), left 0.28s cubic-bezier(0.4, 0, 0.2, 1);
         }
         html:has(#nav-trigger-strip:hover, #left-sidebar:hover, #app-header:hover, #left-sidebar:focus-within, #app-header:focus-within) #left-sidebar {
             transform: translateX(0);
@@ -382,7 +404,7 @@
 <div id="nav-trigger-strip" aria-hidden="true"></div>
 <canvas id="neural-bg-canvas" class="fixed inset-0 w-full h-full" style="z-index: 0; pointer-events: none;"></canvas>
 
-<div id="app" class="h-full w-full flex relative z-10">
+<div id="app" class="h-full w-full flex relative">
     
     <!-- 1. LEFT COGNITIVE RAIL (Presence Side-Deck) -->
     <div id="left-sidebar" class="w-64 bg-[#08090d] border-r border-white/5 flex flex-col p-5 gap-6 z-20 flex-shrink-0 relative overflow-hidden transition-all duration-300 ease-in-out">
@@ -1197,36 +1219,61 @@
      actual physical corners (not clustered near the orb), fixed regardless
      of #main's scroll/view state. Siblings of #app, not children of it.
 
-     z-index note (learned live, via a real rendering bug caught in this
-     task's own verification, not assumed): #app is `relative z-10`, which
-     establishes a stacking context — and its main-column child div (`flex-1
-     flex flex-col h-full ... bg-bg relative`, no explicit z-index of its
-     own) paints a fully OPAQUE background across the entire remaining
-     viewport (sidebar is position:fixed/out-of-flow, so main-column fills
-     100% width whenever it's hidden). Since that opaque background is part
-     of #app's z=10 stacking context as a whole, giving these divs a LOWER
-     z-index (5 — the original attempt) put the ambient text fully BEHIND
-     that opaque fill, invisible at every corner, confirmed via
-     elementsFromPoint() during live verification (see the Task 5 report).
-     z-[15] (above #app's 10, below #nav-trigger-strip's 25 and the
-     sleep-overlay/toast-container's 50) fixes the visibility — but as a
-     side effect, since #app's ENTIRE contents (including the revealed
-     #left-sidebar's locally-ranked z-20 / #app-header) are still grouped
-     under #app's single z=10 rank, no z-index on the revealed sidebar/header
-     can rank above these ambient divs anymore either. Accepted, documented
-     trade-off: while the reveal-nav is hovered open, the top-left/top-right
-     ambient text can render visually over the sidebar brand mark / header's
-     right-side buttons at those exact corners — harmless (pointer-events:
-     none, so nothing becomes unclickable) and only visible during a
-     deliberate hover interaction, not the resting/default view. Text-only,
-     aria-hidden — decorative ambient awareness, not interactive controls.
-     Default textContent below matches what each driving function sets on
-     first real update (updateAmbientClock(), updateOfflineUIState(),
-     updateAmbientPendingReadout()), so there's no placeholder flash before
-     the first tick/poll. -->
-<div id="ambient-clock" class="fixed top-4 left-4 z-[15] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">00:00</div>
-<div id="ambient-connection" class="fixed top-4 right-4 z-[15] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">ONLINE</div>
-<div id="ambient-pending" class="fixed bottom-4 left-4 z-[15] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">0 pending</div>
+     z-index note, final-review fix (I3) — supersedes the Task 5-era
+     reasoning below the line: #app previously carried `relative z-10`,
+     which established its OWN stacking context. That meant #left-sidebar's
+     z-20 and #app-header's z-10 were only ranked against each other and
+     against #app's other children — never against these ambient divs,
+     which live outside #app's stacking context entirely (at the body
+     level). Net effect: whenever the nav was revealed via hover, these
+     ambient readouts painted OVER the sidebar brand and header's
+     right-hand buttons, since #app's context (z=10) as a whole still had
+     to be compared against these divs' z-[15], and that comparison always
+     lost regardless of what z-index the sidebar/header carried internally.
+     Fix: #app no longer carries an explicit z-index (stays `position:
+     relative` — it doesn't need to stack above anything specific, it just
+     needed to not create an accidental stacking context), so its children
+     now stack in the SAME shared context as these ambient divs, the
+     background canvas, and everything else at the body level. Ambient
+     divs dropped from z-[15] to z-[5] — still positive, so they clear the
+     main-column's opaque background (which paints at the default stack
+     level, ~0) and the neural-bg-canvas (z-index 0), but now genuinely
+     below #left-sidebar's z-20 and #app-header's z-10, so the revealed nav
+     paints over the ambient readouts instead of the reverse. Verified live
+     via Playwright hover + elementsFromPoint() — see the final-review fix
+     report.
+
+     Task 5-era history (kept for context): giving these divs a lower
+     z-index (5) was tried originally and appeared to fail, because at the
+     time #app's z-10 stacking context still wrapped the opaque main-column
+     background — that specific failure mode no longer applies now that
+     #app has no z-index of its own; z-[5] works correctly in the current
+     (flattened) stacking arrangement. Text-only, aria-hidden — decorative
+     ambient awareness, not interactive controls (pointer-events: none
+     throughout, so nothing was ever actually unclickable, only visually
+     misleading). Default textContent below matches what each driving
+     function sets on first real update (updateAmbientClock(),
+     updateOfflineUIState(), updateAmbientPendingReadout()), so there's no
+     placeholder flash before the first tick/poll.
+
+     Known, honest residual (checked live, not assumed): #app-header
+     itself has no opaque background (only its individual buttons/text do)
+     — verified via getComputedStyle: backgroundColor is transparent. So
+     while these ambient divs no longer render OVER the header's actual
+     buttons/brand text (confirmed via elementFromPoint at both corners —
+     the sidebar's wordmark and the header's rightmost button now win),
+     a thin sliver of ambient-connection's "ONLINE"/"OFFLINE_MODE" text can
+     still peek through the truly empty transparent gap next to the
+     sleep-toggle button when the header is revealed, since z-ordering
+     alone can't hide something behind a transparent surface. Left as-is:
+     it doesn't obscure or garble any real interactive element (the
+     original complaint), and it's pointer-events:none either way — giving
+     #app-header its own opaque background to fully mask this is a
+     separate, out-of-scope design change (the ambient-nav concept is
+     deliberately minimal chrome), not part of this stacking-order fix. -->
+<div id="ambient-clock" class="fixed top-4 left-4 z-[5] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">00:00</div>
+<div id="ambient-connection" class="fixed top-4 right-4 z-[5] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">ONLINE</div>
+<div id="ambient-pending" class="fixed bottom-4 left-4 z-[5] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">0 pending</div>
 
 <!-- Core Sleep Mode Curtain -->
 <div id="sleep-mode-overlay" class="fixed inset-0 bg-[#020308]/96 z-50 flex flex-col items-center justify-center gap-3 transition-all duration-500 opacity-0 pointer-events-none">
@@ -3819,10 +3866,45 @@
     function scheduleConvoCardDissolve(exchangeId) {
         if (exchangeId !== convoCardExchangeId) return; // stale — a newer exchange has since started
         cancelConvoCardDissolve();
+        cancelConvoCardBackstop();
         convoCardFadeTimer = setTimeout(() => {
             orbConvoCard.classList.remove('orb-convo-card-visible');
             convoCardFadeTimer = null;
         }, CONVO_CARD_FADE_DELAY_MS);
+    }
+
+    // Final-review fix (I1): speakText()/playAudioBase64() both call
+    // currentAudioEl.pause() on any PREVIOUSLY-playing audio before starting
+    // new playback (e.g. a proactive-notification speakText() call firing
+    // off the 20s unread-notifications poll, interrupting a reply that's
+    // still mid-sentence) — and pause() fires neither 'ended' nor 'error',
+    // so the interrupted reply's scheduleConvoCardDissolve() (armed only
+    // from onended/onerror) never runs, and its card can be stranded
+    // on-screen forever. Rather than trying to perfectly cover every
+    // audio-interruption edge case via pause/abort handlers, this is an
+    // unconditional backstop: as soon as a reply's real text arrives
+    // (updateConvoCardReply, below), arm a generous "dissolve no later than
+    // this" timer independent of audio state. The precise onended-driven
+    // scheduleConvoCardDissolve() above still fires in the normal case and
+    // cancels this backstop when it does (it's just the faster, more
+    // precise path); if that precise path never fires because the audio
+    // was interrupted, this backstop still clears the card. The exchange
+    // token guard makes this safe to double-arm with the precise path.
+    const CONVO_CARD_BACKSTOP_DELAY_MS = 45000;
+    let convoCardBackstopTimer = null;
+
+    function cancelConvoCardBackstop() {
+        if (convoCardBackstopTimer) { clearTimeout(convoCardBackstopTimer); convoCardBackstopTimer = null; }
+    }
+
+    function scheduleConvoCardBackstop(exchangeId) {
+        cancelConvoCardBackstop();
+        convoCardBackstopTimer = setTimeout(() => {
+            convoCardBackstopTimer = null;
+            if (exchangeId !== convoCardExchangeId) return; // stale — a newer exchange has since started
+            orbConvoCard.classList.remove('orb-convo-card-visible');
+            cancelConvoCardDissolve();
+        }, CONVO_CARD_BACKSTOP_DELAY_MS);
     }
 
     // Called on a real, user-initiated message send (never for
@@ -3839,6 +3921,7 @@
         if (!orbConvoCard) return 0;
         convoCardExchangeId += 1;
         cancelConvoCardDissolve();
+        cancelConvoCardBackstop();
         orbConvoUserEl.textContent = userText;
         orbConvoReplyEl.textContent = '...';
         orbConvoCard.classList.add('orb-convo-card-visible');
@@ -4009,7 +4092,16 @@
             // case there's no "speaking ended" signal to wait for, so the
             // dissolve timer starts right away instead (~6s of visible
             // text-only reply, per the brief).
+            //
+            // Final-review fix (I1): also arm the unconditional backstop
+            // timer right here, the moment real text is available — covers
+            // the case where speakText()'s playback gets interrupted by a
+            // LATER speakText()/playAudioBase64() call (e.g. a proactive
+            // notification firing mid-reply) before onended/onerror ever
+            // fires, which would otherwise leave scheduleConvoCardDissolve()
+            // never called and this card stranded on-screen indefinitely.
             updateConvoCardReply(fullText, convoExchangeId);
+            scheduleConvoCardBackstop(convoExchangeId);
             speakText(fullText, convoExchangeId).then(spoke => { if (!spoke) scheduleConvoCardDissolve(convoExchangeId); });
             loadMindKernelData();
             loadLiveSystemData();
@@ -4401,6 +4493,10 @@
             if (expandBtn) expandBtn.classList.add('hidden');
             localStorage.removeItem('sidebar-collapsed');
         }
+        // I2 fix: keep #app-header's --sidebar-width inset in sync with the
+        // sidebar's real current width, so a collapsed sidebar never leaves
+        // a hardcoded-256px empty band under the header.
+        document.documentElement.style.setProperty('--sidebar-width', sidebarCollapsed ? '0px' : '16rem');
         
         // Trigger a cytoscape layout redraw since the container size changed
         if (typeof cy !== 'undefined' && cy) {
@@ -4737,6 +4833,13 @@
                 sidebar.style.borderRightWidth = '0px';
             }
             if (expandBtn) expandBtn.classList.remove('hidden');
+            // I2 fix: a pre-existing collapsed-sidebar preference restored
+            // on load must also collapse #app-header's --sidebar-width
+            // inset, or the header stays hardcoded 256px in over a
+            // 0-width sidebar — a permanent empty band with nothing behind
+            // it. The (already-existing) expand button revealed above
+            // remains the way back to a full-width sidebar.
+            document.documentElement.style.setProperty('--sidebar-width', '0px');
         }
 
         // Restore trace sidebar state if collapsed

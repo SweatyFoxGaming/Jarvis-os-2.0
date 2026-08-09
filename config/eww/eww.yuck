@@ -3,11 +3,12 @@
 ; Orb-only HUD — no text panel. jarvis_badge (pushed by eww-bridge.ts)
 ; drives which orb-state class is applied via badge-class below.
 ; jarvis_status/jarvis_thought/jarvis_task/jarvis_notes (the old text-panel
-; defvars) were removed in Task 7: eww-bridge.ts no longer pushes them
-; (nothing in this file rendered them since the orb-only rebuild), and
-; with the pushes gone, the "Variable X not scope" crash risk that
-; previously required keeping them as unused defvars no longer applies —
-; there's nothing left calling `eww update` with those keys.
+; defvars) were removed when the HUD became orb-only: eww-bridge.ts no
+; longer pushes them (nothing in this file rendered them since the
+; orb-only rebuild), and with the pushes gone, the "Variable X not scope"
+; crash risk that previously required keeping them as unused defvars no
+; longer applies — there's nothing left calling `eww update` with those
+; keys.
 ;
 ; jarvis_badge's real values, confirmed against src/interaction/hud-badge.ts
 ; (deriveHudBadge) and src/ipc/eww-bridge.ts's `eww update` call sites:
@@ -18,18 +19,30 @@
 ; WindowStacking::from_str ("background"|"bg") and eww's X11 display
 ; backend, which maps WindowStacking::Background to
 ; window.set_keep_below(true) — the real, working "don't sit on top of
-; every window" mechanism for this host, not :windowtype "desktop". Task 7
-; confirmed this live via X11 protocol inspection (_NET_WM_STATE_BELOW is
+; every window" mechanism for this host, not :windowtype "desktop". This
+; was confirmed live via X11 protocol inspection (_NET_WM_STATE_BELOW is
 ; set on the mapped window, and _NET_CLIENT_LIST_STACKING places it below
-; a freshly-focused overlapping test window) — see Task 7 report.
+; a freshly-focused overlapping test window) — see the task report.
+;
+; The orb widget uses `overlay`, not `box`, for its outer container:
+; `box` lays children out side-by-side (and this eww build's `box`
+; defaults to space-evenly/homogeneous), which squeezed the two ping
+; rings and the core into three clipped side-by-side shapes instead of
+; layering them into one orb. `overlay` takes its size from its first
+; child (the sizing `.orb-stage` box) and stacks the rest on top of it.
+; Each layered child gets explicit :halign/:valign "center" because GTK's
+; default alignment is "fill", which would otherwise stretch each ping/core
+; box to the full stage size instead of keeping their own min-width/
+; min-height and centering within it.
 
 (defvar jarvis_badge "idle")
 
 (defwidget orb []
-  (box :class "orb-stage"
-    (box :class "orb-ping orb-badge-${jarvis_badge}")
-    (box :class "orb-ping orb-ping-delay orb-badge-${jarvis_badge}")
-    (box :class "orb-core orb-badge-${jarvis_badge}")))
+  (overlay
+    (box :class "orb-stage")
+    (box :class "orb-ping orb-badge-${jarvis_badge}" :halign "center" :valign "center")
+    (box :class "orb-ping orb-ping-delay orb-badge-${jarvis_badge}" :halign "center" :valign "center")
+    (box :class "orb-core orb-badge-${jarvis_badge}" :halign "center" :valign "center")))
 
 (defwindow jarvis-hud
   :monitor 0
