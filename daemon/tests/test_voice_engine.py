@@ -170,6 +170,132 @@ def test_audio_chunk_continuous_flow_still_auto_triggers_on_silence(monkeypatch)
     _run(scenario())
 
 
+def test_audio_chunk_force_flushes_when_utterance_buffer_exceeds_the_cap(monkeypatch):
+    # I8 regression test: a streaming connection whose silence detector
+    # never fires (e.g. continuous "speech"-level noise, or a misbehaving
+    # source) must not grow utterance_buffer unbounded. Sending only
+    # "speech"-level audio_chunk messages (never silence, so
+    # UtteranceEndDetector.feed() never naturally returns True) past
+    # MAX_UTTERANCE_BYTES must still produce a transcript -- the
+    # MAX_UTTERANCE_BYTES cap force-flushing on its own, independent of the
+    # silence detector.
+    captured_pcm_lengths = []
+
+    def fake_transcribe(pcm_bytes: bytes) -> str:
+        captured_pcm_lengths.append(len(pcm_bytes))
+        return f"transcript-of-{len(pcm_bytes)}-bytes"
+
+    monkeypatch.setattr(voice_engine._stt, "transcribe", fake_transcribe)
+
+    async def scenario():
+        sock_path = tempfile.mktemp(suffix=".sock")
+        server = await asyncio.start_unix_server(voice_engine.handle_connection, path=sock_path)
+        try:
+            async with server:
+                asyncio.ensure_future(server.serve_forever())
+                reader, writer = await asyncio.open_unix_connection(sock_path)
+                try:
+                    # 16,000 int16 samples = 32,000 bytes/message -- the
+                    # same per-message size real clients use
+                    # (SPEAK_CHUNK_BYTES/TRANSCRIBE_CHUNK_BYTES), well under
+                    # asyncio.StreamReader's default readline() buffer
+                    # limit once base64-encoded (unlike a single huge
+                    # message, which would hit that unrelated limit before
+                    # ever reaching this cap logic). All well above
+                    # voice_engine.SILENCE_RMS_THRESHOLD so the detector
+                    # never sees silence. voice_engine.MAX_UTTERANCE_BYTES
+                    # is 3,840,000 bytes = 120 messages exactly, so the
+                    # 121st message crosses it.
+                    speech_chunk = _make_pcm(2000, num_samples=16_000)
+                    for _ in range(121):
+                        writer.write((json.dumps({
+                            "type": "audio_chunk",
+                            "data": base64.b64encode(speech_chunk).decode(),
+                        }) + "\n").encode())
+                    await writer.drain()
+
+                    line = await asyncio.wait_for(reader.readline(), timeout=10)
+                    msg = json.loads(line.decode())
+                    assert msg["type"] == "transcript", (
+                        f"expected the buffer cap to force a transcript with no silence ever sent, got: {msg}"
+                    )
+                    assert captured_pcm_lengths, "expected the model to actually be called"
+                    assert captured_pcm_lengths[0] > voice_engine.MAX_UTTERANCE_BYTES, (
+                        f"expected the force-flush to fire only once the buffer exceeded the cap, "
+                        f"got a flush at {captured_pcm_lengths[0]} bytes (cap is {voice_engine.MAX_UTTERANCE_BYTES})"
+                    )
+                finally:
+                    writer.close()
+        finally:
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
+
+    _run(scenario())
+
+
+def test_audio_data_drops_oldest_bytes_once_the_buffer_exceeds_the_cap(monkeypatch):
+    # I8 regression test, one-shot path: audio_data must never trigger a
+    # transcript on its own (see the other tests above), but its buffer
+    # still must not grow unbounded if a caller sends far more than a real
+    # recorded clip's worth of audio without ever sending "transcribe".
+    # Once the cap is exceeded, the oldest bytes are dropped so the buffer
+    # never exceeds MAX_UTTERANCE_BYTES.
+    captured_pcm_lengths = []
+
+    def fake_transcribe(pcm_bytes: bytes) -> str:
+        captured_pcm_lengths.append(len(pcm_bytes))
+        return f"transcript-of-{len(pcm_bytes)}-bytes"
+
+    monkeypatch.setattr(voice_engine._stt, "transcribe", fake_transcribe)
+
+    async def scenario():
+        sock_path = tempfile.mktemp(suffix=".sock")
+        server = await asyncio.start_unix_server(voice_engine.handle_connection, path=sock_path)
+        try:
+            async with server:
+                asyncio.ensure_future(server.serve_forever())
+                reader, writer = await asyncio.open_unix_connection(sock_path)
+                try:
+                    # 130 messages of 32,000 bytes each = 4,160,000 bytes
+                    # sent, past MAX_UTTERANCE_BYTES (3,840,000 = exactly
+                    # 120 messages) -- each overflow trims the buffer back
+                    # down to exactly the cap, so it should sit at exactly
+                    # the cap by the time "transcribe" is sent.
+                    chunk = _make_pcm(2000, num_samples=16_000)
+                    for _ in range(130):
+                        writer.write((json.dumps({
+                            "type": "audio_data",
+                            "data": base64.b64encode(chunk).decode(),
+                        }) + "\n").encode())
+                    await writer.drain()
+
+                    try:
+                        premature = await asyncio.wait_for(reader.readline(), timeout=0.3)
+                    except asyncio.TimeoutError:
+                        premature = b""
+                    assert premature == b"", (
+                        f"audio_data must never trigger a transcript on its own, even past the cap, got: {premature!r}"
+                    )
+
+                    writer.write((json.dumps({"type": "transcribe"}) + "\n").encode())
+                    await writer.drain()
+                    line = await asyncio.wait_for(reader.readline(), timeout=5)
+                    msg = json.loads(line.decode())
+                    assert msg["type"] == "transcript"
+                    assert captured_pcm_lengths == [voice_engine.MAX_UTTERANCE_BYTES], (
+                        f"expected the buffer to have been capped at exactly MAX_UTTERANCE_BYTES "
+                        f"({voice_engine.MAX_UTTERANCE_BYTES}) via oldest-bytes dropping, "
+                        f"got: {captured_pcm_lengths}"
+                    )
+                finally:
+                    writer.close()
+        finally:
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
+
+    _run(scenario())
+
+
 def test_transcribe_with_no_preceding_audio_returns_empty_transcript_without_crashing(monkeypatch):
     calls = []
 

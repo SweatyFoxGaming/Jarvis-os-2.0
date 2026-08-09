@@ -33,7 +33,14 @@ WORKDIR /app
 # already has a satisfying "torch" installed by the time kokoro's unpinned
 # dependency on it is resolved -- once satisfied, pip won't reach back to
 # PyPI's default index and pull the GPU build.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# Pinned exactly (not left floating) for the same reason kokoro is pinned
+# exactly in requirements.txt (I10): an unpinned install could resolve a
+# newer torch on a future rebuild with no guarantee kokoro's actually-
+# installed 0.9.4 stays compatible with it. 2.13.0+cpu is the version
+# `pip install --dry-run --ignore-installed torch --index-url
+# https://download.pytorch.org/whl/cpu` actually resolved when this pin
+# was verified (live-checked against this daemon's own dev venv).
+RUN pip install --no-cache-dir torch==2.13.0+cpu --index-url https://download.pytorch.org/whl/cpu
 
 # Copy dependency manifest first to leverage Docker layer caching.
 COPY requirements.txt ./
