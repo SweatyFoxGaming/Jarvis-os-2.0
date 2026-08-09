@@ -1089,9 +1089,130 @@ registerTest("Whisper", "transcribeAudio throws WhisperIntegrationError when the
   if (!threw) throw new Error("Whisper: transcribeAudio did not throw WhisperIntegrationError for undecodable audio");
 });
 
-registerTest("Tts", "synthesizeSpeech throws TtsIntegrationError when TTS_URL is not set", async () => {
-  const original = process.env.TTS_URL;
-  delete process.env.TTS_URL;
+// A 44-byte canonical WAV header for the given raw PCM, matching the shape
+// src/interaction/tts.ts's pcm16ToWav produces (mono, 16-bit, given sample
+// rate) -- used below to assert synthesizeSpeech returns a real, playable
+// WAV, not bare PCM.
+function wavHeaderFields(buf: Buffer): { riff: string; wave: string; dataSize: number; sampleRate: number } {
+  return {
+    riff: buf.toString("ascii", 0, 4),
+    wave: buf.toString("ascii", 8, 12),
+    dataSize: buf.readUInt32LE(40),
+    sampleRate: buf.readUInt32LE(24),
+  };
+}
+
+registerTest("Tts", "synthesizeSpeech sends a real \"speak\" message and returns a real WAV built from the daemon's audio_chunk replies", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const readline = await import("readline");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-tts-test-${Date.now()}.sock`);
+  const receivedMessages: any[] = [];
+  // Two chunks, deliberately unequal size and order-sensitive content, so
+  // a concatenation bug (wrong order, dropped chunk) is detectable.
+  const chunkA = Buffer.from([1, 2, 3, 4]);
+  const chunkB = Buffer.from([5, 6, 7]);
+  const fakeServer = net.createServer((conn) => {
+    const rl = readline.createInterface({ input: conn });
+    rl.on("line", (line: string) => {
+      if (!line.trim()) return;
+      const msg = JSON.parse(line);
+      receivedMessages.push(msg);
+      if (msg.type === "speak") {
+        conn.write(JSON.stringify({ type: "audio_chunk", data: chunkA.toString("base64") }) + "\n");
+        conn.write(JSON.stringify({ type: "audio_chunk", data: chunkB.toString("base64") }) + "\n");
+        conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+      }
+    });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const original = process.env.VOICE_DAEMON_SOCKET;
+  process.env.VOICE_DAEMON_SOCKET = socketPath;
+  try {
+    const tts = await import("../src/interaction/tts.js");
+    const { audio, contentType } = await tts.synthesizeSpeech("hello there");
+
+    if (receivedMessages.length !== 1 || receivedMessages[0].type !== "speak" || receivedMessages[0].text !== "hello there") {
+      throw new Error(`Tts: expected exactly one real "speak" message with the text, got: ${JSON.stringify(receivedMessages)}`);
+    }
+    if (contentType !== "audio/wav") {
+      throw new Error(`Tts: expected contentType "audio/wav" (the daemon's raw PCM has no container of its own), got: ${contentType}`);
+    }
+    const { riff, wave, dataSize } = wavHeaderFields(audio);
+    if (riff !== "RIFF" || wave !== "WAVE") {
+      throw new Error(`Tts: expected a real RIFF/WAVE header wrapping the daemon's PCM, got riff=${riff} wave=${wave}`);
+    }
+    const expectedPcm = Buffer.concat([chunkA, chunkB]);
+    const actualPcm = audio.subarray(44);
+    if (dataSize !== expectedPcm.length || !actualPcm.equals(expectedPcm)) {
+      throw new Error(
+        `Tts: expected the two audio_chunk replies concatenated IN ORDER (${expectedPcm.toString("hex")}), got dataSize=${dataSize} bytes=${actualPcm.toString("hex")}`
+      );
+    }
+  } finally {
+    if (original === undefined) delete process.env.VOICE_DAEMON_SOCKET;
+    else process.env.VOICE_DAEMON_SOCKET = original;
+    fakeServer.close();
+  }
+});
+
+registerTest("Tts", "synthesizeSpeech does not resolve on the first audio_chunk -- only after speak_done", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const readline = await import("readline");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-tts-early-test-${Date.now()}.sock`);
+  let resolvedTooEarly = false;
+  const fakeServer = net.createServer((conn) => {
+    const rl = readline.createInterface({ input: conn });
+    rl.on("line", (line: string) => {
+      if (!line.trim()) return;
+      const msg = JSON.parse(line);
+      if (msg.type !== "speak") return;
+      // Write the first audio_chunk, then wait well past the point a
+      // premature "resolve on first chunk" bug would already have settled
+      // the caller's promise, before ever sending speak_done.
+      conn.write(JSON.stringify({ type: "audio_chunk", data: Buffer.from([9]).toString("base64") }) + "\n");
+      setTimeout(() => {
+        conn.write(JSON.stringify({ type: "audio_chunk", data: Buffer.from([10]).toString("base64") }) + "\n");
+        conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+      }, 300);
+    });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const original = process.env.VOICE_DAEMON_SOCKET;
+  process.env.VOICE_DAEMON_SOCKET = socketPath;
+  try {
+    const tts = await import("../src/interaction/tts.js");
+    const synthesisPromise = tts.synthesizeSpeech("hello");
+    let raceResolvedFirst = false;
+    await Promise.race([
+      synthesisPromise.then(() => { raceResolvedFirst = true; }),
+      new Promise((resolve) => setTimeout(resolve, 100)),
+    ]);
+    resolvedTooEarly = raceResolvedFirst;
+    const { audio } = await synthesisPromise;
+    if (resolvedTooEarly) {
+      throw new Error("Tts: synthesizeSpeech resolved on the first audio_chunk instead of waiting for speak_done");
+    }
+    if (audio.subarray(44).length !== 2) {
+      throw new Error(`Tts: expected both audio_chunk replies (sent before and after the delay) in the final result, got ${audio.subarray(44).length} PCM bytes`);
+    }
+  } finally {
+    if (original === undefined) delete process.env.VOICE_DAEMON_SOCKET;
+    else process.env.VOICE_DAEMON_SOCKET = original;
+    fakeServer.close();
+  }
+});
+
+registerTest("Tts", "synthesizeSpeech throws TtsIntegrationError when the voice daemon is unreachable", async () => {
+  const original = process.env.VOICE_DAEMON_SOCKET;
+  process.env.VOICE_DAEMON_SOCKET = "/nonexistent/path/that/cannot/possibly/exist.sock";
   try {
     const tts = await import("../src/interaction/tts.js");
     let threw = false;
@@ -1100,13 +1221,13 @@ registerTest("Tts", "synthesizeSpeech throws TtsIntegrationError when TTS_URL is
     } catch (err) {
       threw = err instanceof tts.TtsIntegrationError;
       if (threw && (err as any).status !== 503) {
-        throw new Error(`Tts: expected status 503 for a missing TTS_URL, got ${(err as any).status}`);
+        throw new Error(`Tts: expected status 503 for an unreachable voice daemon, got ${(err as any).status}`);
       }
     }
-    if (!threw) throw new Error("Tts: synthesizeSpeech did not throw TtsIntegrationError with TTS_URL unset");
+    if (!threw) throw new Error("Tts: synthesizeSpeech did not throw TtsIntegrationError with the daemon unreachable");
   } finally {
-    if (original === undefined) delete process.env.TTS_URL;
-    else process.env.TTS_URL = original;
+    if (original === undefined) delete process.env.VOICE_DAEMON_SOCKET;
+    else process.env.VOICE_DAEMON_SOCKET = original;
   }
 });
 

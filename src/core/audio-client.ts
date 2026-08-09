@@ -176,3 +176,92 @@ export function transcribeOverSocket(
     });
   });
 }
+
+/**
+ * One-shot request/response synthesis against the voice daemon -- the TTS
+ * mirror of transcribeOverSocket above, following the same conventions
+ * (short-lived connection, timeout, single-settle resolve/reject). Sends a
+ * single "speak" control message (daemon/voice_engine.py's _handle_speak),
+ * then collects every "audio_chunk" reply it writes back -- one per
+ * SPEAK_CHUNK_BYTES-sized slice of the synthesized PCM -- and resolves with
+ * all of them concatenated IN ORDER once (and only once) the terminal
+ * "speak_done" message arrives.
+ *
+ * Deliberately does NOT resolve on the first "audio_chunk": _handle_speak
+ * can (and for anything but a very short utterance, will) write several
+ * audio_chunk messages before speak_done, so resolving early would silently
+ * truncate the synthesized audio -- the same bug class Task 7 found and
+ * fixed for the transcription direction (see transcribeOverSocket's
+ * "audio_data" vs "audio_chunk" rationale above).
+ *
+ * Returns the raw concatenated PCM bytes exactly as the daemon produced
+ * them (16-bit signed, mono, Kokoro's fixed 24kHz -- see daemon/models.py's
+ * TextToSpeech.synthesize) with no container/format wrapping; callers that
+ * need a playable file (e.g. a browser <audio> element) are responsible for
+ * that, same separation of concerns as transcribeOverSocket returning bare
+ * text rather than an SRT/VTT file.
+ */
+export function synthesizeOverSocket(
+  socketPath: string,
+  text: string,
+  timeoutMs = 60000
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ path: socketPath });
+    const rl = readline.createInterface({ input: socket });
+    // Same rationale as transcribeOverSocket's identical rl.on("error", ...).
+    rl.on("error", () => {});
+
+    let settled = false;
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("Timed out waiting for the voice daemon to synthesize speech")));
+    }, timeoutMs);
+
+    function finish(action: () => void): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rl.close();
+      socket.destroy();
+      action();
+    }
+
+    rl.on("line", (line) => {
+      if (!line.trim()) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        observation.logTelemetry(
+          "warn",
+          "AudioClient",
+          `Malformed line from voice daemon during one-shot synthesis, ignoring: ${line.slice(0, 200)}`
+        );
+        return;
+      }
+      if (msg.type === "audio_chunk") {
+        try {
+          chunks.push(Buffer.from(typeof msg.data === "string" ? msg.data : "", "base64"));
+        } catch {
+          // Malformed base64 from the daemon -- drop this chunk rather than
+          // corrupt the concatenated result with garbage bytes.
+        }
+      } else if (msg.type === "speak_done") {
+        finish(() => resolve(Buffer.concat(chunks)));
+      }
+    });
+
+    socket.on("error", (err: any) => {
+      finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+    });
+
+    socket.on("close", () => {
+      finish(() => reject(new Error("Voice daemon connection closed before speak_done was received")));
+    });
+
+    socket.on("connect", () => {
+      socket.write(JSON.stringify({ type: "speak", text }) + "\n");
+    });
+  });
+}
