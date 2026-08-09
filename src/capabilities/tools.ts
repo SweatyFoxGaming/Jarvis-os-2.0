@@ -45,10 +45,15 @@ export interface ToolCallResult {
   // /api/chat, the same way displayDirective is. Without this, the audio
   // synthesizeSpeech() actually produced was computed and then discarded:
   // the tool reported {synthesized: true} back to the model as if the user
-  // had heard something, but the bytes never left the server. Not used by
-  // the live-voice path (live-voice.ts) — Gemini's Live API already speaks
-  // directly there, so a speak_text call in that context has no client
-  // channel to deliver a second, separate audio clip through.
+  // had heard something, but the bytes never left the server. Not read on
+  // the local voice-daemon pipeline (src/interaction/voice-session.ts) —
+  // its tool loop only consumes result.ok/output/error, and that path's
+  // TTS happens once, over the daemon's socket, on the final assistant
+  // text (see audio-client.ts's voice:reply subscriber), not per
+  // speak_text call mid-turn. (Formerly worded around the removed
+  // live-voice.ts/Gemini-Live path, which had the same non-consumption for
+  // a different reason — no client channel at all, since Gemini's Live API
+  // spoke directly.)
   audioDirective?: { mimeType: string; base64: string };
 }
 

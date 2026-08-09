@@ -1,5 +1,47 @@
 # Core Event Bus & Local Voice Engine (Phase 1)
 
+> **Status (added post-implementation, Task 9 of the local-voice-daemon
+> plan):** This design was fully implemented (Tasks 1-8 plus an inserted
+> Task 5b), but real implementation work corrected several of this
+> document's design-time assumptions. Left as originally written below for
+> historical record; read these corrections alongside it:
+>
+> - **Kokoro's real API doesn't have a `.create()`-style call** — `KPipeline`
+>   is callable directly (`model(text, voice=...)`), returns a generator of
+>   `Result` objects, and its audio output is fixed at **24kHz**, not a
+>   sample rate this document ever assumed. See Task 2's report for the
+>   full discrepancy.
+> - **The "raw PCM streamed back to the client speakers" data flow is only
+>   half the picture.** That's accurate for the continuous mic→daemon
+>   streaming path. But the one-shot `speak_text` tool / TTS-notification
+>   path (`src/interaction/tts.ts`) hands its result to browser
+>   `Blob`/`<audio>` callers that cannot decode headerless PCM, so Task 8
+>   added a minimal 44-byte WAV header wrap (`audio/wav`) on top of the
+>   same underlying PCM bytes — a real, necessary format fix this document
+>   didn't anticipate.
+> - **The protocol needed an explicit one-shot/streaming split that isn't
+>   in this document.** `/api/voice-input`'s HTTP-upload fallback (Task 7)
+>   turned out to need a genuinely separate request/response shape from the
+>   continuous `audio_chunk` + silence-detection flow this document
+>   describes as the only ingestion path — reusing the streaming path's
+>   message type for a one-shot upload made silence-detector state leak
+>   across the two use cases. The daemon protocol gained a distinct
+>   `"audio_data"`/`"transcribe"` message type, decoupled from
+>   `UtteranceEndDetector`, to fix this (see Task 7's report).
+> - **The frontend voice UI's actual fate is narrower than this document's
+>   Components table implies.** No new `/ws/events`-driven live-voice
+>   frontend was built. `/ws/events` (as implemented) forwards only
+>   `filesystem:changed`/`system:anomaly` — not `voice:transcript`/
+>   `voice:reply` — so there is no browser-facing live voice+vision
+>   experience anymore. Task 5b removed the entire always-on
+>   voice+vision/wake-word bridge from `src/interaction/static/index.html`
+>   as dead code (it depended on the removed `/ws/voice` + ticket flow) and
+>   left the pre-existing, self-contained click-to-talk path (browser
+>   `SpeechRecognition` / recorded-clip → `/api/voice-input`) as the sole
+>   browser voice-input mechanism. Voice *output* for chat replies still
+>   goes through the ordinary text-chat/TTS-notification path, not a live
+>   socket.
+
 ## Goal
 
 Replace Jarvis's cloud-based voice pipeline (Gemini Live API) and its two separate audio services (whisper-cpp for STT, openai-edge-tts for TTS) with a single, fully local, low-latency voice daemon (Faster-Whisper + Kokoro-82M), orchestrated through a new central TypeScript event bus that becomes the backbone for real-time subsystem communication — replacing today's cron-style polling with genuine pub/sub. This is Phase 1 of a larger architecture initiative; later phases will build on this backbone to touch the UI and builder modules, which are explicitly out of scope here.

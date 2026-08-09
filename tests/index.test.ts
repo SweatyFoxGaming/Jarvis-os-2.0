@@ -531,10 +531,10 @@ registerTest("Tools", "view_screen declines cleanly where the round trip isn't s
   }
 });
 
-registerTest("Tools", "view_screen's default screenContext is safe (supportsRoundTrip: false) — the property live-voice.ts's call site relies on", async () => {
+registerTest("Tools", "view_screen's default screenContext is safe (supportsRoundTrip: false) when a caller omits it entirely", async () => {
   const result = await executeTool("view_screen", {}, "admin");
   if (result.ok !== false || result.needsClientAction) {
-    throw new Error("Tools: view_screen with NO screenContext argument (the default) must decline cleanly with no needsClientAction — if this fails, the default was flipped to supportsRoundTrip: true again, which would break live-voice.ts's safe fallback");
+    throw new Error("Tools: view_screen with NO screenContext argument (the default) must decline cleanly with no needsClientAction — every current executeTool call site (server.ts's /api/chat branches, voice-session.ts) passes screenContext explicitly, so this default is only exercised by a caller that omits it; if this fails, the default was flipped to supportsRoundTrip: true again, which would make such a caller silently claim round-trip support it can't actually fulfill");
   }
 });
 

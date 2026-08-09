@@ -1,3 +1,16 @@
+# kokoro (below) pulls in torch as an unpinned transitive dependency. Do
+# NOT just `pip install -r requirements.txt` on a fresh CPU-only machine --
+# plain PyPI resolves torch's default (CUDA/GPU) build, which drags in
+# several GB of nvidia-*/triton packages this daemon has no use for (no
+# GPU on this stack). Install a CPU-only torch FIRST -- see daemon/
+# Dockerfile's dedicated `pip install torch --index-url
+# https://download.pytorch.org/whl/cpu` step -- so this file's own install
+# finds torch already satisfied and never reaches back to PyPI's default
+# build. (daemon/venv, this repo's own dev venv, predates this fix and
+# still has the GPU build installed; regenerating it isn't required for
+# anything to function -- CPU inference works fine with either build, it's
+# purely a disk/bandwidth concern -- but a fresh venv should follow the
+# same CPU-first install order as the Dockerfile.)
 faster-whisper==1.0.3
 kokoro>=0.3.4
 soundfile>=0.12.1

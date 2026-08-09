@@ -11,8 +11,12 @@ import type { CognitionRouter } from "./cognition-router.js";
  * happens to need one.
  *
  * ai stays a real GoogleGenAI instance — it's still used for embeddings
- * (memory-store.ts) and voice-native mode (live-voice.ts), neither of
- * which this migration touches. cognitionRouter is a CognitionRouter
+ * (memory-store.ts) and other Gemini call sites (e.g. vision tools),
+ * neither of which this migration touches. (The voice-native mode this
+ * comment used to cite, live-voice.ts, was removed by the local-voice-
+ * daemon migration — voice now runs through the local Groq/CognitionRouter
+ * pipeline in voice-session.ts instead, with no GoogleGenAI dependency of
+ * its own.) cognitionRouter is a CognitionRouter
  * instance (see cognition-router.ts) — it owns the provider fallback chain
  * that replaced the single OmniRoute config object.
  *
