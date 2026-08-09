@@ -92,7 +92,7 @@
            would clip these corner-positioned elements. */
         .orb-ar-frame {
             position: absolute;
-            inset: -22px;
+            inset: -44px;
             border-radius: 50%;
             pointer-events: none;
             opacity: 0;
@@ -120,19 +120,90 @@
         @keyframes orb-ring-spin { to { transform: rotate(360deg); } }
         .orb-corner {
             position: absolute;
-            width: 18px;
-            height: 18px;
+            width: 36px;
+            height: 36px;
             border: 2px solid rgba(80, 200, 255, 0.85);
             opacity: 0;
             transition: opacity 0.4s ease;
         }
         #quantum-eye-container.orb-frame-active .orb-corner { opacity: 1; }
-        .orb-corner.tl { top: -8px; left: -8px; border-right: none; border-bottom: none; border-radius: 4px 0 0 0; }
-        .orb-corner.tr { top: -8px; right: -8px; border-left: none; border-bottom: none; border-radius: 0 4px 0 0; }
-        .orb-corner.bl { bottom: -8px; left: -8px; border-right: none; border-top: none; border-radius: 0 0 0 4px; }
-        .orb-corner.br { bottom: -8px; right: -8px; border-left: none; border-top: none; border-radius: 0 0 4px 0; }
+        .orb-corner.tl { top: -16px; left: -16px; border-right: none; border-bottom: none; border-radius: 4px 0 0 0; }
+        .orb-corner.tr { top: -16px; right: -16px; border-left: none; border-bottom: none; border-radius: 0 4px 0 0; }
+        .orb-corner.bl { bottom: -16px; left: -16px; border-right: none; border-top: none; border-radius: 0 0 0 4px; }
+        .orb-corner.br { bottom: -16px; right: -16px; border-left: none; border-top: none; border-radius: 0 0 4px 0; }
         @media (prefers-reduced-motion: reduce) {
             .orb-ar-ring, .orb-ar-arc { animation: none; }
+        }
+
+        /* Heartbeat ping + drifting sparks — always visible (unlike .orb-ar-frame,
+           which only shows in camera mode), giving the orb a sense of being alive
+           even at idle. Recolors based on #quantum-eye-container's data-orb-state
+           attribute (set alongside NeuralOrb.setState — see Task 1/2 JS wiring).
+           #quantum-eye-container is the only real instance of this orb (single
+           id, checked via grep) so a single --orb-spark-radius override here is
+           enough — no other usage site to tune separately. 90px sat just outside
+           the orb's old 80px rendered radius (w-40 h-40 = 160px box), the same
+           margin logic .orb-ar-frame uses via its inset: -22px.
+
+           Task 5 note: the container grew to w-80 h-80 (320px, an exact 2x of
+           the old 160px box) as part of the hero-scale resize, so this value
+           and .orb-ping's inset below are scaled by that same exact 2x
+           (90px -> 180px) to stay just outside the orb's new 160px rendered
+           radius, keeping the proportion this comment describes intact.
+           .orb-ar-frame/.orb-corner (the camera-mode AR ring/corner brackets)
+           were also scaled 2x (inset -22px -> -44px, corner offsets -8px ->
+           -16px, corner size 18px -> 36px) to match — see the final-review
+           fix report for when this got reconciled after initially being
+           left unscaled. */
+        #quantum-eye-container {
+            --orb-spark-radius: 180px;
+        }
+        .orb-ping {
+            position: absolute;
+            inset: -20px;
+            border-radius: 50%;
+            border: 1px solid rgba(80, 200, 255, 0.5);
+            pointer-events: none;
+            animation: orb-ping-pulse 3.2s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+        }
+        .orb-ping.orb-ping-delay {
+            animation-delay: 1.6s;
+        }
+        @keyframes orb-ping-pulse {
+            0% { transform: scale(0.85); opacity: 0.5; }
+            100% { transform: scale(1.35); opacity: 0; }
+        }
+        #quantum-eye-container[data-orb-state="thinking"] .orb-ping {
+            border-color: rgba(180, 130, 255, 0.5);
+        }
+
+        .orb-spark {
+            position: absolute;
+            /* Centering point for the rotate()/translateX() orbit below: an
+               absolutely-positioned element with no top/left resolves to its
+               static in-flow position (the bottom-left of the orb container,
+               given this DOM structure), NOT the container's center — so
+               without this, the orbit sweeps sparks across unrelated UI
+               instead of circling the orb. 1.5px = half this element's own
+               3px width/height, so the centering point is the spark's own
+               center, not its top-left corner. */
+            top: calc(50% - 1.5px);
+            left: calc(50% - 1.5px);
+            width: 3px;
+            height: 3px;
+            border-radius: 50%;
+            background: rgba(180, 225, 255, 0.9);
+            box-shadow: 0 0 6px rgba(120, 200, 255, 0.9);
+            pointer-events: none;
+        }
+        .orb-spark.orb-spark-1 { animation: orb-spark-orbit-1 9s linear infinite; }
+        .orb-spark.orb-spark-2 { animation: orb-spark-orbit-2 7s linear infinite; }
+        .orb-spark.orb-spark-3 { animation: orb-spark-orbit-3 11s linear infinite; }
+        @keyframes orb-spark-orbit-1 { from { transform: rotate(0deg) translateX(var(--orb-spark-radius, 60px)) rotate(0deg); } to { transform: rotate(360deg) translateX(var(--orb-spark-radius, 60px)) rotate(-360deg); } }
+        @keyframes orb-spark-orbit-2 { from { transform: rotate(120deg) translateX(var(--orb-spark-radius, 60px)) rotate(-120deg); } to { transform: rotate(480deg) translateX(var(--orb-spark-radius, 60px)) rotate(-480deg); } }
+        @keyframes orb-spark-orbit-3 { from { transform: rotate(240deg) translateX(var(--orb-spark-radius, 60px)) rotate(-240deg); } to { transform: rotate(600deg) translateX(var(--orb-spark-radius, 60px)) rotate(-600deg); } }
+        @media (prefers-reduced-motion: reduce) {
+            .orb-ping, .orb-spark { animation: none; opacity: 0; }
         }
 
         #mind-graph {
@@ -201,12 +272,139 @@
             background: rgba(56, 189, 248, 0.35);
             transition: height 0.05s linear;
         }
+
+        /* ---- Ambient nav: #left-sidebar and #app-header are hidden by
+           default and revealed only by hovering the top edge of the window.
+           Both are pulled out of normal flow via position:fixed (not just
+           translated) so the main content fills the full viewport while
+           they're hidden, rather than leaving a blank sidebar/header-shaped
+           gap — transform alone does NOT remove an element from flow, it only
+           moves its painted box, which would otherwise leave that space
+           reserved and empty in the flex layout below.
+           #nav-trigger-strip is a slim 8px invisible band pinned to the very
+           top of the window. Hovering it, OR the sidebar, OR the header
+           (once either has slid into view), all satisfy the same :has()
+           condition below, so moving the mouse from the trigger strip into
+           the revealed nav doesn't flicker it closed — and tabbing a
+           focusable element inside either (:focus-within) reveals them too,
+           so keyboard users aren't left focusing invisible off-screen
+           controls. No JS needed: the existing flex layout (#app as a row of
+           [sidebar, main-column], header stacked above <main> in that
+           column) turns out to compose cleanly with position:fixed, so a
+           pure-CSS reveal was possible without restructuring the DOM.
+
+           #app-header is inset from the left by the sidebar's own width
+           (16rem, matching #left-sidebar's w-64) rather than spanning the
+           full viewport — this restores the original pre-reveal layout
+           (header used to start exactly where the sidebar's right edge
+           was) and, critically, means the two revealed panels no longer
+           overlap at all: without this inset, the opaque z-20 sidebar would
+           paint directly on top of the header's left content cluster
+           (0-256px, y:0-56px) every time both are revealed, permanently
+           hiding and disabling the offline-mode toggle button that lives
+           there. Fixed via a real click-through Playwright test, not just a
+           visual "did it slide into view" check — see the fix-round entry
+           in the task report.
+
+           Final-review fix (I2): the inset reads a --sidebar-width custom
+           property (falling back to 16rem) instead of a hardcoded 16rem,
+           because the pre-existing manual sidebar-collapse feature
+           (toggleSidebar(), localStorage['sidebar-collapsed']) can set the
+           sidebar's real width to 0px independently of this reveal-on-hover
+           rework. Without this, a user who had collapsed the sidebar
+           before this plan shipped would load with the sidebar
+           permanently 0-width (collapse state restored on page load) but
+           the header still hardcoded 256px in — a permanent empty band
+           with nothing painted behind it. toggleSidebar() and the page-load
+           restore logic (inline script) both keep --sidebar-width in sync
+           with the sidebar's real current width. */
+        #nav-trigger-strip {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 8px;
+            z-index: 25;
+            background: transparent;
+            pointer-events: auto;
+        }
+        #left-sidebar {
+            position: fixed;
+            top: 0; left: 0; bottom: 0;
+            transform: translateX(-100%);
+            /* Only duration/timing are overridden here — transition-property
+               is deliberately left alone so it keeps inheriting "all" from
+               the sidebar's existing Tailwind transition-all utility class
+               (below this in specificity, but never contested since this
+               rule doesn't touch transition-property at all). "all" is a
+               superset that already covers transform, so this composes for
+               free with the pre-existing manual collapse toggle
+               (toggleSidebar(), inline script below) which separately
+               animates width/padding/border-right-width via inline styles. */
+            transition-duration: 0.28s;
+            transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        #app-header {
+            position: fixed;
+            top: 0; left: var(--sidebar-width, 16rem); right: 0;
+            transform: translateY(-100%);
+            transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), left 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        html:has(#nav-trigger-strip:hover, #left-sidebar:hover, #app-header:hover, #left-sidebar:focus-within, #app-header:focus-within) #left-sidebar {
+            transform: translateX(0);
+        }
+        html:has(#nav-trigger-strip:hover, #left-sidebar:hover, #app-header:hover, #left-sidebar:focus-within, #app-header:focus-within) #app-header {
+            transform: translateY(0);
+        }
+        /* #nav-trigger-strip intentionally keeps a static z-index:25 (always
+           above #app) rather than conditionally dropping below it once
+           revealed. A conditional drop was tried (to close the ~1.5px sliver
+           where the strip's 8px band technically outranks the sleep button's
+           topmost pixels once the header is revealed) but caused a real
+           flicker: dropping the strip's z-index the instant it's hovered —
+           before the sidebar/header have actually animated into that same
+           screen position — briefly exposes whatever's underneath (<main>)
+           at that pixel, which doesn't match the :has() condition, so the
+           reveal reverts, the strip's z-index un-drops, hover returns to the
+           strip, and the cycle repeats (confirmed live: Playwright's own
+           hover actionability check failed for a full 5s against this
+           exact race before a manual retry happened to land outside the
+           window). The dead-zone this leaves is real but negligible —
+           verified live that #left-sidebar's collapse button, the offline
+           toggle, and the sidebar/header nav buttons all sit well clear of
+           the strip's y:0-8px band; only the sleep button's top ~1.5px of a
+           42px-tall hit target overlaps it. Left as a known, harmless
+           trade-off rather than risk the flicker. */
+
+        /* ---- Ephemeral conversation card (Task 4): replaces the old
+           always-visible "Conversation" transcript on Home. Hidden by
+           default (opacity/pointer-events, not `hidden`, so it can fade)
+           — shown by showConvoCard() on message send, updated by
+           updateConvoCardReply() once the real reply text arrives, and
+           faded back out by scheduleConvoCardDissolve() a few seconds
+           after Jarvis's spoken reply finishes (or after being visible on
+           its own for a few seconds if TTS is off). See the inline script
+           near triggerChatDialogue()/speakText(). Reuses .holo-panel for
+           the glass treatment — no new panel surface invented here. */
+        #orb-convo-card {
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(8px);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+        #orb-convo-card.orb-convo-card-visible {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateY(0);
+        }
     </style>
 </head>
 <body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
+<!-- Ambient nav reveal trigger: hovering this thin strip (or #left-sidebar /
+     #app-header themselves once revealed) slides the sidebar/header into
+     view. See the #nav-trigger-strip rules in <head> for the mechanics. -->
+<div id="nav-trigger-strip" aria-hidden="true"></div>
 <canvas id="neural-bg-canvas" class="fixed inset-0 w-full h-full" style="z-index: 0; pointer-events: none;"></canvas>
 
-<div id="app" class="h-full w-full flex relative z-10">
+<div id="app" class="h-full w-full flex relative">
     
     <!-- 1. LEFT COGNITIVE RAIL (Presence Side-Deck) -->
     <div id="left-sidebar" class="w-64 bg-[#08090d] border-r border-white/5 flex flex-col p-5 gap-6 z-20 flex-shrink-0 relative overflow-hidden transition-all duration-300 ease-in-out">
@@ -292,7 +490,7 @@
     <!-- 2. MAIN DISPLAY SYSTEM -->
     <div class="flex-1 flex flex-col h-full overflow-hidden bg-bg relative">
         <!-- Top Bar -->
-        <header class="h-14 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0">
+        <header id="app-header" class="h-14 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0">
             <div class="flex items-center gap-3">
                 <button id="sidebar-expand-btn" onclick="toggleSidebar()" class="p-1.5 hover:bg-white/5 border border-white/10 rounded-lg text-secondary hover:text-white transition-all hidden" title="Expand Sidebar">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -310,6 +508,11 @@
                 <span title="Memory"><span id="health-ram">0.0 GB</span></span>
                 <span title="Latency"><span id="health-latency">0ms</span></span>
                 <div class="h-4 w-px bg-white/10"></div>
+                <button onclick="toggleConversationHistory()" id="btn-history-toggle" class="p-1.5 hover:bg-white/5 rounded-lg text-secondary hover:text-white transition-all" title="Conversation history">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </button>
                 <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="p-1.5 hover:bg-white/5 rounded-lg text-secondary hover:text-white transition-all" title="Sleep">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
@@ -322,13 +525,24 @@
         <main class="flex-1 overflow-y-auto p-8 relative z-0">
             
             <!-- ================= HOME: the primary surface — presence orb + ask-anything ================= -->
-            <div id="view-home" class="view-pane flex flex-col items-center min-h-full relative py-10 px-4">
+            <div id="view-home" class="view-pane flex flex-col items-center justify-center min-h-full relative py-10 px-4">
                 <div class="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto" id="home-hero">
-                    <div class="relative w-40 h-40 flex items-center justify-center" id="quantum-eye-container">
+                    <!-- Task 5: hero-scale resize — 160px (w-40 h-40) to 320px
+                         (w-80 h-80), an exact 2x so every orb-adjacent CSS value
+                         tuned relative to the old box size scales by one simple,
+                         exact factor instead of an approximated one. draw()'s
+                         R/cy scene properties (NeuralOrb.register's { R: 0.9,
+                         cy: 0.5 }) are fractions of the canvas's own
+                         clientWidth/clientHeight (see draw()'s `cx = W/2, cy = H
+                         * scene.cy, R = Math.min(W,H) * scene.R`), so they need
+                         no change — confirmed safe before resizing. -->
+                    <div class="relative w-80 h-80 flex items-center justify-center" id="quantum-eye-container">
                         <!-- Cast shadow, deliberately NOT part of the floating group below —
                              stays anchored while the orb bobs above it, reading as an object
-                             elevated above the page rather than a flat inline element. -->
-                        <div class="absolute left-1/2 bottom-1 -translate-x-1/2 w-24 h-3 rounded-full bg-black/45 blur-md pointer-events-none" aria-hidden="true"></div>
+                             elevated above the page rather than a flat inline element. Scaled
+                             2x alongside the container (w-24 h-3 blur-md -> w-48 h-6 blur-lg)
+                             to stay proportionate to the enlarged orb. -->
+                        <div class="absolute left-1/2 bottom-1 -translate-x-1/2 w-48 h-6 rounded-full bg-black/45 blur-lg pointer-events-none" aria-hidden="true"></div>
                         <div class="relative w-full h-full hologram-float">
                             <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
                                 <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
@@ -346,6 +560,14 @@
                                 <div class="orb-corner bl"></div>
                                 <div class="orb-corner br"></div>
                             </div>
+                            <!-- Heartbeat ping + drifting sparks — always visible (not gated on
+                                 camera state like .orb-ar-frame above), same sibling-of-#quantum-eye
+                                 placement for the same overflow-hidden-clipping reason. -->
+                            <div class="orb-ping"></div>
+                            <div class="orb-ping orb-ping-delay"></div>
+                            <div class="orb-spark orb-spark-1"></div>
+                            <div class="orb-spark orb-spark-2"></div>
+                            <div class="orb-spark orb-spark-3"></div>
                             <!-- Small picture-in-picture bubble, not the old full-orb-covering
                                  video — the orb (and its vault-note points) stays fully visible
                                  around it. Sits outside #quantum-eye on purpose: that div's
@@ -364,9 +586,15 @@
                     <!-- Sensor status + toggles -->
                     <div class="flex flex-col items-center gap-3">
                         <span id="sensor-status-label" class="text-[11px] text-secondary uppercase tracking-[0.2em]">Sensors standby</span>
-                        <div id="identity-ticker" class="hidden text-center max-w-sm">
-                            <p id="identity-ticker-text" class="text-xs text-secondary/80 italic leading-snug"></p>
-                        </div>
+                        <!-- Task 5: the idle-quote ticker (#identity-ticker /
+                             #identity-ticker-text, rendering reflections[0]'s
+                             content under "Sensors standby") is removed from the
+                             default view — the enlarged orb is the hero now.
+                             loadIdentityStream()'s /api/identity/reflections
+                             fetch is NOT dead code: it still drives
+                             #continuity-count-badge and #self-reflections-stream
+                             elsewhere in the app, see the JS block near
+                             loadIdentityStream() for what was trimmed. -->
                         <!-- Current mission/goal — real data from session.workspace
                              (see loadLiveSystemData's "Mission Goal" block), not a
                              placeholder: activeGoal defaults to a real value and
@@ -429,10 +657,37 @@
                     </div>
                 </div>
 
-                <!-- Conversation transcript — appears below the hero once a conversation
-                     is underway. Kept in the same view rather than a separate tab, so
-                     "ask anything" and "see the reply" are one continuous surface. -->
-                <div class="w-full max-w-3xl mx-auto mt-8 flex-1 flex flex-col min-h-0">
+                <!-- Ephemeral conversation card (Task 4) — the ambient, orb-centric
+                     replacement for the old always-visible transcript below. Hidden
+                     by default; showConvoCard()/updateConvoCardReply()/
+                     scheduleConvoCardDissolve() (inline script, near
+                     triggerChatDialogue()) drive it: shown with the user's message
+                     + a "..." placeholder on send, updated with the real reply text
+                     once it arrives, then faded back out a few seconds after
+                     Jarvis's spoken reply finishes (or after ~6s visible if TTS is
+                     off). The full scrollable history below (now off by default)
+                     still receives every message in real time via the unchanged
+                     appendChatMessage()/chat-scroller — reopen it via the "History"
+                     button in the top header (hover the top edge to reveal it, per
+                     Task 3's reveal-nav). -->
+                <div id="orb-convo-card" class="w-full max-w-xl mx-auto mt-8 holo-panel rounded-2xl p-5" aria-live="polite">
+                    <div class="flex items-center gap-2 text-[10px] text-primary font-bold uppercase tracking-widest mb-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-primary"></span> Operator
+                    </div>
+                    <p id="orb-convo-user" class="text-white text-sm leading-snug mb-3"></p>
+                    <div class="flex items-center gap-2 text-[10px] text-accent font-bold uppercase tracking-widest mb-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-accent"></span> Jarvis
+                    </div>
+                    <p id="orb-convo-reply" class="text-secondary text-sm leading-snug"></p>
+                </div>
+
+                <!-- Full conversation history — the pre-Task-4 transcript panel,
+                     preserved in full (same #chat-scroller, same Decision trace
+                     sidebar, same #display-panel) but hidden by default now that
+                     the ephemeral card above is the default ambient view. Reachable
+                     via the "History" toggle button in #app-header (behind Task
+                     3's reveal-nav) — see toggleConversationHistory(). -->
+                <div id="conversation-history-panel" class="hidden w-full max-w-3xl mx-auto mt-8 flex-1 flex flex-col min-h-0">
                     <div class="flex items-center justify-between px-1 mb-2">
                         <span class="text-[11px] text-secondary/60 uppercase tracking-wider">Conversation</span>
                         <button onclick="toggleTraceSidebar()" class="text-[11px] text-secondary/60 hover:text-white transition-all" title="Toggle decision trace">Decision trace</button>
@@ -960,6 +1215,66 @@
     </div>
 </div>
 
+<!-- Task 5: ambient corner readouts — near-invisible, always at the window's
+     actual physical corners (not clustered near the orb), fixed regardless
+     of #main's scroll/view state. Siblings of #app, not children of it.
+
+     z-index note, final-review fix (I3) — supersedes the Task 5-era
+     reasoning below the line: #app previously carried `relative z-10`,
+     which established its OWN stacking context. That meant #left-sidebar's
+     z-20 and #app-header's z-10 were only ranked against each other and
+     against #app's other children — never against these ambient divs,
+     which live outside #app's stacking context entirely (at the body
+     level). Net effect: whenever the nav was revealed via hover, these
+     ambient readouts painted OVER the sidebar brand and header's
+     right-hand buttons, since #app's context (z=10) as a whole still had
+     to be compared against these divs' z-[15], and that comparison always
+     lost regardless of what z-index the sidebar/header carried internally.
+     Fix: #app no longer carries an explicit z-index (stays `position:
+     relative` — it doesn't need to stack above anything specific, it just
+     needed to not create an accidental stacking context), so its children
+     now stack in the SAME shared context as these ambient divs, the
+     background canvas, and everything else at the body level. Ambient
+     divs dropped from z-[15] to z-[5] — still positive, so they clear the
+     main-column's opaque background (which paints at the default stack
+     level, ~0) and the neural-bg-canvas (z-index 0), but now genuinely
+     below #left-sidebar's z-20 and #app-header's z-10, so the revealed nav
+     paints over the ambient readouts instead of the reverse. Verified live
+     via Playwright hover + elementsFromPoint() — see the final-review fix
+     report.
+
+     Task 5-era history (kept for context): giving these divs a lower
+     z-index (5) was tried originally and appeared to fail, because at the
+     time #app's z-10 stacking context still wrapped the opaque main-column
+     background — that specific failure mode no longer applies now that
+     #app has no z-index of its own; z-[5] works correctly in the current
+     (flattened) stacking arrangement. Text-only, aria-hidden — decorative
+     ambient awareness, not interactive controls (pointer-events: none
+     throughout, so nothing was ever actually unclickable, only visually
+     misleading). Default textContent below matches what each driving
+     function sets on first real update (updateAmbientClock(),
+     updateOfflineUIState(), updateAmbientPendingReadout()), so there's no
+     placeholder flash before the first tick/poll.
+
+     Known, honest residual (checked live, not assumed): #app-header
+     itself has no opaque background (only its individual buttons/text do)
+     — verified via getComputedStyle: backgroundColor is transparent. So
+     while these ambient divs no longer render OVER the header's actual
+     buttons/brand text (confirmed via elementFromPoint at both corners —
+     the sidebar's wordmark and the header's rightmost button now win),
+     a thin sliver of ambient-connection's "ONLINE"/"OFFLINE_MODE" text can
+     still peek through the truly empty transparent gap next to the
+     sleep-toggle button when the header is revealed, since z-ordering
+     alone can't hide something behind a transparent surface. Left as-is:
+     it doesn't obscure or garble any real interactive element (the
+     original complaint), and it's pointer-events:none either way — giving
+     #app-header its own opaque background to fully mask this is a
+     separate, out-of-scope design change (the ambient-nav concept is
+     deliberately minimal chrome), not part of this stacking-order fix. -->
+<div id="ambient-clock" class="fixed top-4 left-4 z-[5] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">00:00</div>
+<div id="ambient-connection" class="fixed top-4 right-4 z-[5] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">ONLINE</div>
+<div id="ambient-pending" class="fixed bottom-4 left-4 z-[5] text-[11px] font-mono text-secondary/40 tracking-wider pointer-events-none select-none" aria-hidden="true">0 pending</div>
+
 <!-- Core Sleep Mode Curtain -->
 <div id="sleep-mode-overlay" class="fixed inset-0 bg-[#020308]/96 z-50 flex flex-col items-center justify-center gap-3 transition-all duration-500 opacity-0 pointer-events-none">
     <div class="w-16 h-16 rounded-full border border-primary/20 flex items-center justify-center shadow-[0_0_32px_rgba(56,189,248,0.2)]">
@@ -1048,10 +1363,24 @@
             return [cx + X * R, cy + Y * R, (Z + 1.6) / 3.2];
         }
 
+        // Simple linear RGB interpolation toward a violet target, used by the
+        // "thinking" state's hueShift config field to tint the core/glow
+        // gradients without a full HSL conversion pipeline. hueShift is a
+        // 0-100-ish magnitude (40 == blend 40% of the way to violet); states
+        // without a hueShift field pass undefined here and get the original
+        // color back unchanged (no-op for idle/active/speaking).
+        function blendTowardViolet(r, gCh, b, hueShift) {
+            if (!hueShift) return [r, gCh, b];
+            const t = Math.min(1, hueShift / 100);
+            return [r + (170 - r) * t, gCh + (110 - gCh) * t, b + (255 - b) * t];
+        }
+
         const STATE_CONFIG = {
             idle: { speed: 0.2, pinkMix: 0.35, brightness: 1 },
             active: { speed: 0.32, pinkMix: 0.55, brightness: 1.25 },
             speaking: { speed: 0.5, pinkMix: 0.85, brightness: 1.6 },
+            listening: { speed: 0.4, pinkMix: 0.4, brightness: 1.35 },
+            thinking: { speed: 0.55, pinkMix: 0.7, brightness: 1.2, hueShift: 40 },
         };
 
         const scenes = [];
@@ -1080,8 +1409,9 @@
             bg.addColorStop(0, "#020714"); bg.addColorStop(0.45, "#071328"); bg.addColorStop(1, "#01040c");
             g.fillStyle = bg; g.fillRect(0, 0, W, H);
 
+            const [glowR, glowG, glowB] = blendTowardViolet(30, 100, 220, cfg.hueShift);
             const glow = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.7);
-            glow.addColorStop(0.4, `rgba(30,100,220,${0.22 * dim})`); glow.addColorStop(1, "rgba(0,0,0,0)");
+            glow.addColorStop(0.4, `rgba(${glowR},${glowG},${glowB},${0.22 * dim})`); glow.addColorStop(1, "rgba(0,0,0,0)");
             g.fillStyle = glow; g.beginPath(); g.arc(cx, cy, R * 1.7, 0, 6.29); g.fill();
 
             g.strokeStyle = `rgba(90,190,255,${0.2 * dim})`; g.lineWidth = 1;
@@ -1097,8 +1427,9 @@
             }
 
             const corePink = 0.3 + cfg.pinkMix * 0.5;
+            const [coreR, coreG, coreB] = blendTowardViolet(255, 120, 220, cfg.hueShift);
             const core = g.createRadialGradient(cx, cy - R * 0.06, 0, cx, cy - R * 0.06, R * 0.5);
-            core.addColorStop(0, `rgba(255,120,220,${corePink * dim})`); core.addColorStop(1, "rgba(0,0,0,0)");
+            core.addColorStop(0, `rgba(${coreR},${coreG},${coreB},${corePink * dim})`); core.addColorStop(1, "rgba(0,0,0,0)");
             g.fillStyle = core; g.beginPath(); g.arc(cx, cy - R * 0.06, R * 0.5, 0, 6.29); g.fill();
 
             scene.projected = [];
@@ -1169,6 +1500,15 @@
         function setState(scene, state) {
             scene.state = STATE_CONFIG[state] ? state : "idle";
             scene.canvas.dataset.orbState = scene.state;
+            // Single funnel point for every NeuralOrb.setState call site (home orb,
+            // listening/thinking/speaking transitions, etc). Mirrors the state onto
+            // the nearest "*-container" ancestor (e.g. #quantum-eye-container) so the
+            // always-visible .orb-ping/.orb-spark CSS — which lives outside the
+            // canvas's own overflow-hidden circular mask — can recolor via a plain
+            // sibling attribute selector, no :has() needed. No-op for scenes whose
+            // canvas has no such ancestor (e.g. the full-page neural-bg-canvas).
+            const container = scene.canvas.closest('[id$="-container"]');
+            if (container) container.dataset.orbState = scene.state;
         }
 
         function setNeurons(scene, neurons, links) {
@@ -1661,6 +2001,7 @@
                     
                     addNotification("Neural speech recognition active. Speak now.", "success");
                     updateSensorStatusLabel();
+                    NeuralOrb.setState(focalOrbScene, 'listening');
                 };
                 
                 localSpeechRecognition.onresult = (event) => {
@@ -1805,6 +2146,7 @@
             
             addNotification("Neural listening active. Click again to transmit.", "success");
             updateSensorStatusLabel();
+            NeuralOrb.setState(focalOrbScene, 'listening');
 
         } catch (e) {
             console.error("Microphone access failed: ", e);
@@ -1841,8 +2183,18 @@
         updateSensorStatusLabel();
     }
 
-    async function speakText(text) {
-        if (!speechEnabled || !CURRENT_API_KEY) return;
+    // Returns whether speech actually started (true) or was skipped/failed
+    // (false) — used by triggerChatDialogue (Task 4) to know whether to wait
+    // for the real "speaking ended" signal below before fading the ephemeral
+    // conversation card, or to start that fade timer immediately because
+    // there's no speech to wait for. `exchangeId` is Task 4's convo-card
+    // exchange token (review fix round 1) — only triggerChatDialogue's main
+    // reply passes one; every other fire-and-forget caller in this file
+    // (e.g. "Vocalization matrix enabled.") omits it, so it's `undefined`
+    // here, which scheduleConvoCardDissolve's `exchangeId !== convoCardExchangeId`
+    // check always treats as stale — those calls safely never touch the card.
+    async function speakText(text, exchangeId) {
+        if (!speechEnabled || !CURRENT_API_KEY) return false;
         try {
             if (currentAudioEl) { currentAudioEl.pause(); URL.revokeObjectURL(currentAudioEl.src); }
 
@@ -1851,24 +2203,28 @@
                 .replace(/\[[^\]]*\]/g, '')
                 .replace(/uuid:[a-f0-9-]+/gi, 'node')
                 .slice(0, 500);
-            if (!cleanText.trim()) return;
+            if (!cleanText.trim()) return false;
 
             const res = await authFetch('/api/integrations/tts/speak', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
                 body: JSON.stringify({ text: cleanText })
             });
-            if (!res.ok) return; // TTS is optional polish — degrade silently, same as before
+            if (!res.ok) return false; // TTS is optional polish — degrade silently, same as before
 
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
             currentAudioEl = new Audio(url);
             isSpeakingNow = true;
             updateSensorStatusLabel();
-            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); };
-            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); };
+            // The real "speaking ended" signal (Task 1) — also the real
+            // signal Task 4's ephemeral card waits on before it starts its
+            // fade-out timer (see scheduleConvoCardDissolve).
+            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); scheduleConvoCardDissolve(exchangeId); };
+            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); scheduleConvoCardDissolve(exchangeId); };
             await currentAudioEl.play();
-        } catch {}
+            return true;
+        } catch { return false; }
     }
 
     // Plays audio the server already synthesized (the speak_text tool call,
@@ -2454,13 +2810,15 @@
                     }).join('');
                 }
 
-                const ticker = document.getElementById('identity-ticker');
-                if (reflections.length > 0) {
-                    document.getElementById('identity-ticker-text').textContent = `"${reflections[0].content}"`;
-                    ticker.classList.remove('hidden');
-                } else {
-                    ticker.classList.add('hidden');
-                }
+                // Task 5: #identity-ticker/#identity-ticker-text (the idle-quote
+                // paragraph that used to render `"${reflections[0].content}"`
+                // under "Sensors standby") was removed from the DOM — nothing
+                // renders reflections[0] on Home anymore. Deliberately not left
+                // as dead code referencing a missing element: the old code here
+                // called `ticker.classList.add/remove('hidden')` unguarded,
+                // which would throw on a null `ticker` and — since this whole
+                // function is one big try/catch — silently abort the
+                // resThoughts fetch below (proactive-thought-callout) too.
             }
 
             const resThoughts = await authFetch('/api/identity/thoughts/history', { headers });
@@ -2495,6 +2853,39 @@
 
     let BUILD_REQUESTS_CACHE = [];
 
+    // Task 5 ambient corner readout (bottom-left): a combined "N pending"
+    // count. Judgment call, documented per the brief: this combines the
+    // existing unread-notifications computation (loadProactiveNotifications,
+    // data.notifications.filter(n => !n.read).length) with awaiting_consult
+    // build-requests (loadBuildRequests, the same pendingCount-style pattern
+    // used by #command-pending-badge/#mcp-servers-badge) rather than falling
+    // back to unread-notifications alone. Reusing both was clean given the
+    // real code shape — each source already computes the number it needs for
+    // its own badge, so this just taps those two existing computations
+    // in-place (no second poller). One real caveat, worth being explicit
+    // about: loadProactiveNotifications() POSTs /api/notifications/mark_read
+    // immediately after processing unread notifications, so
+    // pendingNotificationsCount is a point-in-time snapshot that naturally
+    // decays back to 0 within the same poll — the combined number will show
+    // brief bumps when new proactive notifications land, settling to mostly
+    // reflect pendingConsultCount (a genuinely persistent "needs your input"
+    // count) between polls. That's real data either way, not a placeholder.
+    let pendingNotificationsCount = 0;
+    let pendingConsultCount = 0;
+    function updateAmbientPendingReadout() {
+        const el = document.getElementById('ambient-pending');
+        if (el) el.textContent = `${pendingNotificationsCount + pendingConsultCount} pending`;
+    }
+
+    // Task 5 ambient corner readout (top-left): a simple local-time clock,
+    // updated every second per the brief, formatted as zero-padded HH:MM.
+    function updateAmbientClock() {
+        const el = document.getElementById('ambient-clock');
+        if (!el) return;
+        const d = new Date();
+        el.textContent = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
     async function loadBuildRequests() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to poll for
         try {
@@ -2507,6 +2898,11 @@
 
             const activeCount = requests.filter(r => !BUILD_REQUEST_TERMINAL_STATUSES.includes(r.status)).length;
             document.getElementById('build-requests-count-badge').textContent = `${activeCount} ACTIVE`;
+
+            // Task 5 ambient pending-count readout: reuses this same real
+            // computation (no second poller) — see updateAmbientPendingReadout().
+            pendingConsultCount = requests.filter(r => r.status === 'awaiting_consult').length;
+            updateAmbientPendingReadout();
 
             const list = document.getElementById('build-requests-list');
             if (requests.length === 0) {
@@ -2932,6 +3328,15 @@
             if (!res.ok) return;
             const data = await res.json();
             const unread = (data.notifications || []).filter(n => !n.read);
+
+            // Task 5 ambient pending-count readout: captured here, before the
+            // mark_read call below flips these back to read — see
+            // updateAmbientPendingReadout()'s doc comment for why this value
+            // is inherently a point-in-time snapshot rather than a stable
+            // "inbox" count.
+            pendingNotificationsCount = unread.length;
+            updateAmbientPendingReadout();
+
             if (unread.length === 0) return;
 
             for (const n of unread) {
@@ -3419,11 +3824,135 @@
         chatScroller.scrollTop = chatScroller.scrollHeight;
     }
 
+    // Task 4: ephemeral #orb-convo-card — the ambient default view of "the
+    // current exchange," replacing the old always-visible transcript.
+    const orbConvoCard = document.getElementById('orb-convo-card');
+    const orbConvoUserEl = document.getElementById('orb-convo-user');
+    const orbConvoReplyEl = document.getElementById('orb-convo-reply');
+    let convoCardFadeTimer = null;
+    // ~4-6s after Jarvis's spoken reply finishes (or after the same delay
+    // with TTS off, per the brief) — see scheduleConvoCardDissolve below.
+    // Review fix round 1: used uniformly for both cases (a single constant
+    // sitting inside the "ends" case's 4-6s range, and ~1s under the
+    // "TTS-off" case's ~6s suggestion) — flagged in review as a negligible
+    // deviation not worth a dedicated pass, left as-is.
+    const CONVO_CARD_FADE_DELAY_MS = 5000;
+
+    // Review fix round 1 — exchange-identity token. Fixes a real bug: the
+    // card is a single shared DOM slot with no per-request identity check,
+    // so sending message 2 before message 1's reply streams back (an
+    // ordinary "quick follow-up" scenario, not a rare race) let message 1's
+    // late-arriving reply silently overwrite message 2's card content —
+    // "Operator: msg2 / Jarvis: reply-to-msg1". showConvoCard() now mints a
+    // fresh token per real send and returns it; callers thread it through
+    // to updateConvoCardReply()/scheduleConvoCardDissolve(), which drop
+    // their effect if the token no longer matches the current exchange
+    // (a newer send has since started). Starts at 0 so callers that never
+    // went through showConvoCard() (fire-and-forget speakText() calls
+    // elsewhere in this file, e.g. "Vocalization matrix enabled.") default
+    // to token 0/undefined, which can never match a real exchange (ids are
+    // minted starting at 1) — so they safely no-op against the card instead
+    // of stealing its dissolve timer, which was itself a latent bug in the
+    // original implementation (every speakText() call's onended handler
+    // called scheduleConvoCardDissolve() unconditionally). This also
+    // resolves the original report's flagged "preset turn overwrites a
+    // still-visible real card" nuance — same root cause, one fix.
+    let convoCardExchangeId = 0;
+
+    function cancelConvoCardDissolve() {
+        if (convoCardFadeTimer) { clearTimeout(convoCardFadeTimer); convoCardFadeTimer = null; }
+    }
+
+    function scheduleConvoCardDissolve(exchangeId) {
+        if (exchangeId !== convoCardExchangeId) return; // stale — a newer exchange has since started
+        cancelConvoCardDissolve();
+        cancelConvoCardBackstop();
+        convoCardFadeTimer = setTimeout(() => {
+            orbConvoCard.classList.remove('orb-convo-card-visible');
+            convoCardFadeTimer = null;
+        }, CONVO_CARD_FADE_DELAY_MS);
+    }
+
+    // Final-review fix (I1): speakText()/playAudioBase64() both call
+    // currentAudioEl.pause() on any PREVIOUSLY-playing audio before starting
+    // new playback (e.g. a proactive-notification speakText() call firing
+    // off the 20s unread-notifications poll, interrupting a reply that's
+    // still mid-sentence) — and pause() fires neither 'ended' nor 'error',
+    // so the interrupted reply's scheduleConvoCardDissolve() (armed only
+    // from onended/onerror) never runs, and its card can be stranded
+    // on-screen forever. Rather than trying to perfectly cover every
+    // audio-interruption edge case via pause/abort handlers, this is an
+    // unconditional backstop: as soon as a reply's real text arrives
+    // (updateConvoCardReply, below), arm a generous "dissolve no later than
+    // this" timer independent of audio state. The precise onended-driven
+    // scheduleConvoCardDissolve() above still fires in the normal case and
+    // cancels this backstop when it does (it's just the faster, more
+    // precise path); if that precise path never fires because the audio
+    // was interrupted, this backstop still clears the card. The exchange
+    // token guard makes this safe to double-arm with the precise path.
+    const CONVO_CARD_BACKSTOP_DELAY_MS = 45000;
+    let convoCardBackstopTimer = null;
+
+    function cancelConvoCardBackstop() {
+        if (convoCardBackstopTimer) { clearTimeout(convoCardBackstopTimer); convoCardBackstopTimer = null; }
+    }
+
+    function scheduleConvoCardBackstop(exchangeId) {
+        cancelConvoCardBackstop();
+        convoCardBackstopTimer = setTimeout(() => {
+            convoCardBackstopTimer = null;
+            if (exchangeId !== convoCardExchangeId) return; // stale — a newer exchange has since started
+            orbConvoCard.classList.remove('orb-convo-card-visible');
+            cancelConvoCardDissolve();
+        }, CONVO_CARD_BACKSTOP_DELAY_MS);
+    }
+
+    // Called on a real, user-initiated message send (never for
+    // system-triggered preset turns like the camera-presence hint — those
+    // never got a "fake" transcript bubble either, see appendChatMessage's
+    // isPreset guard below, and the same judgment applies here). Starting a
+    // new message before a pending fade-out completes cancels it and
+    // immediately shows the new exchange, per the brief. Returns the new
+    // exchange's token — callers must thread it through to
+    // updateConvoCardReply()/scheduleConvoCardDissolve() so late-arriving
+    // effects from a now-superseded exchange are dropped instead of
+    // clobbering the card.
+    function showConvoCard(userText) {
+        if (!orbConvoCard) return 0;
+        convoCardExchangeId += 1;
+        cancelConvoCardDissolve();
+        cancelConvoCardBackstop();
+        orbConvoUserEl.textContent = userText;
+        orbConvoReplyEl.textContent = '...';
+        orbConvoCard.classList.add('orb-convo-card-visible');
+        return convoCardExchangeId;
+    }
+
+    // Called whenever a reply's real text is available — including the
+    // request_screen recursive re-call, which continues the same exchange
+    // a showConvoCard() call already made visible (see triggerChatDialogue).
+    // Silently dropped if exchangeId is stale (a newer send has since
+    // reused the card) or if the card was never shown for this turn (e.g. a
+    // fully preset turn, exchangeId 0/undefined, never matches a real id).
+    function updateConvoCardReply(text, exchangeId) {
+        if (exchangeId !== convoCardExchangeId) return;
+        if (orbConvoReplyEl) orbConvoReplyEl.textContent = text;
+    }
+
     // presetMessage: used for system-triggered turns (e.g. the camera coming
     // on) that should reach the model exactly like a real message — genuine
     // vision context, streamed reply, spoken aloud — but without a fake
     // "user" bubble/toast for something the user didn't actually type.
-    async function triggerChatDialogue(presetMessage, screenshotOverride) {
+    //
+    // convoExchangeIdOverride (review fix round 1): the Task 4 convo-card
+    // exchange token for THIS call. Only ever passed by this function's own
+    // request_screen recursive re-call below, so the continuation keeps
+    // updating the SAME card exchange the original send opened — never
+    // passed by any external caller, which is correct: every other caller
+    // either wants a fresh exchange (a real user send, handled by
+    // showConvoCard() below) or isn't tied to the card at all (preset
+    // callers stay at the default 0, which never matches a real id).
+    async function triggerChatDialogue(presetMessage, screenshotOverride, convoExchangeIdOverride) {
         const isPreset = typeof presetMessage === "string";
         const text = (isPreset ? presetMessage : chatInput.value).trim();
         if (!text) return;
@@ -3433,9 +3962,16 @@
             chatScroller.innerHTML = '';
         }
 
+        // This exchange's convo-card token. A real send mints a fresh one
+        // via showConvoCard(); everything else (preset turns, and the
+        // request_screen recursive continuation of an already-shown real
+        // exchange) keeps whatever was passed in.
+        let convoExchangeId = convoExchangeIdOverride || 0;
+
         if (!isPreset) {
             appendChatMessage(text, 'user');
             addNotification("Broadcasting query vector...");
+            convoExchangeId = showConvoCard(text);
         }
 
         const frame = screenshotOverride || captureCameraFrame();
@@ -3446,6 +3982,7 @@
             addNotification("Visual snapshot attached — Jarvis can see this turn.", "info");
         }
 
+        NeuralOrb.setState(focalOrbScene, 'thinking');
         try {
             const res = await fetch('/api/chat', {
                 method: 'POST',
@@ -3481,15 +4018,21 @@
                         if (dataStr === "request_screen") {
                             if (!window.jarvisDesktop?.captureScreen) {
                                 appendChatMessage("Screen viewing is only available in the desktop app.", "assistant");
+                                updateSensorStatusLabel();
+                                updateConvoCardReply("Screen viewing is only available in the desktop app.", convoExchangeId);
+                                scheduleConvoCardDissolve(convoExchangeId);
                                 return;
                             }
                             const screenshot = await window.jarvisDesktop.captureScreen();
                             if (!screenshot) {
                                 appendChatMessage("I couldn't capture your screen just now.", "assistant");
+                                updateSensorStatusLabel();
+                                updateConvoCardReply("I couldn't capture your screen just now.", convoExchangeId);
+                                scheduleConvoCardDissolve(convoExchangeId);
                                 return;
                             }
                             addNotification("Looking at your screen...", "info");
-                            return triggerChatDialogue(text, screenshot);
+                            return triggerChatDialogue(text, screenshot, convoExchangeId);
                         }
 
                         if (dataStr === "[DONE]") break;
@@ -3539,7 +4082,27 @@
                     }
                 }
             }
-            speakText(fullText);
+            updateSensorStatusLabel();
+            // Real reply text has arrived — update the ephemeral card now.
+            // Dissolve timing then depends on whether TTS actually speaks it:
+            // speakText() resolves `true` once real playback has started (its
+            // currentAudioEl.onended/onerror — the real completion signal —
+            // then calls scheduleConvoCardDissolve() itself, see speakText
+            // below), or `false` if TTS is off/unavailable/failed, in which
+            // case there's no "speaking ended" signal to wait for, so the
+            // dissolve timer starts right away instead (~6s of visible
+            // text-only reply, per the brief).
+            //
+            // Final-review fix (I1): also arm the unconditional backstop
+            // timer right here, the moment real text is available — covers
+            // the case where speakText()'s playback gets interrupted by a
+            // LATER speakText()/playAudioBase64() call (e.g. a proactive
+            // notification firing mid-reply) before onended/onerror ever
+            // fires, which would otherwise leave scheduleConvoCardDissolve()
+            // never called and this card stranded on-screen indefinitely.
+            updateConvoCardReply(fullText, convoExchangeId);
+            scheduleConvoCardBackstop(convoExchangeId);
+            speakText(fullText, convoExchangeId).then(spoke => { if (!spoke) scheduleConvoCardDissolve(convoExchangeId); });
             loadMindKernelData();
             loadLiveSystemData();
             // Self-reflection extraction runs fire-and-forget server-side after
@@ -3547,7 +4110,14 @@
             setTimeout(loadIdentityStream, 2500);
             setTimeout(loadBuildRequests, 500);
         } catch {
+            updateSensorStatusLabel();
             addNotification("Dialogue transmission failure.", "danger");
+            // Review fix round 1, minor item 1: give the card a real textual
+            // indication of failure instead of silently sitting on "..." for
+            // the full dissolve delay with no explanation (the toast above
+            // is easy to miss if attention is on the orb, not the corner).
+            updateConvoCardReply("Dialogue transmission failure.", convoExchangeId);
+            scheduleConvoCardDissolve(convoExchangeId);
         }
     }
 
@@ -3620,6 +4190,15 @@
     let offlineModeActive = false;
     function updateOfflineUIState(isOffline) {
         offlineModeActive = isOffline;
+
+        // Task 5 ambient corner readout (top-right): mirrors this same real
+        // state — the single funnel point every call site (loadLiveSystemData's
+        // /api/status poll, toggleOfflineMode()'s two response branches) already
+        // goes through, so no second parallel poller is needed for the ambient
+        // copy.
+        const ambientConn = document.getElementById('ambient-connection');
+        if (ambientConn) ambientConn.textContent = offlineModeActive ? 'OFFLINE_MODE' : 'ONLINE';
+
         const btn = document.getElementById('btn-offline-toggle');
         const dot = document.getElementById('offline-dot');
         const text = document.getElementById('offline-text');
@@ -3914,6 +4493,10 @@
             if (expandBtn) expandBtn.classList.add('hidden');
             localStorage.removeItem('sidebar-collapsed');
         }
+        // I2 fix: keep #app-header's --sidebar-width inset in sync with the
+        // sidebar's real current width, so a collapsed sidebar never leaves
+        // a hardcoded-256px empty band under the header.
+        document.documentElement.style.setProperty('--sidebar-width', sidebarCollapsed ? '0px' : '16rem');
         
         // Trigger a cytoscape layout redraw since the container size changed
         if (typeof cy !== 'undefined' && cy) {
@@ -3922,6 +4505,17 @@
                 cy.fit();
             }, 300);
         }
+    }
+
+    // Task 4: full conversation history is off by default now that the
+    // ephemeral #orb-convo-card is the ambient default view — reveal it via
+    // the "History" button in #app-header (itself behind Task 3's
+    // reveal-nav). Only lives on the Home view, so switch there first if
+    // some other tab is active.
+    function toggleConversationHistory() {
+        switchTab('home');
+        const panel = document.getElementById('conversation-history-panel');
+        if (panel) panel.classList.toggle('hidden');
     }
 
     let traceSidebarCollapsed = true; // matches the trace sidebar's hidden-by-default markup on Home
@@ -4239,6 +4833,13 @@
                 sidebar.style.borderRightWidth = '0px';
             }
             if (expandBtn) expandBtn.classList.remove('hidden');
+            // I2 fix: a pre-existing collapsed-sidebar preference restored
+            // on load must also collapse #app-header's --sidebar-width
+            // inset, or the header stays hardcoded 256px in over a
+            // 0-width sidebar — a permanent empty band with nothing behind
+            // it. The (already-existing) expand button revealed above
+            // remains the way back to a full-width sidebar.
+            document.documentElement.style.setProperty('--sidebar-width', '0px');
         }
 
         // Restore trace sidebar state if collapsed
@@ -4254,6 +4855,8 @@
 
         switchTab('home');
         registerServiceWorker();
+        updateAmbientClock();
+        setInterval(updateAmbientClock, 1000);
         loadLiveSystemData();
         loadMindKernelData();
         loadSystemSettings();

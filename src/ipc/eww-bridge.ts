@@ -63,19 +63,26 @@ async function refreshStatus(): Promise<void> {
       signal: controller.signal,
     });
     if (!res.ok) {
-      ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify("HUD endpoint returned an error."), jarvis_task: JSON.stringify("Unknown"), jarvis_notes: JSON.stringify("") });
+      console.error(`[eww-bridge] HUD endpoint returned ${res.status}`);
+      ewwUpdate({ jarvis_badge: "error" });
       return;
     }
     const data = await res.json();
-    ewwUpdate({
-      jarvis_badge: data.badge || "idle",
-      jarvis_status: JSON.stringify(data.statusLabel || ""),
-      jarvis_thought: JSON.stringify((data.thoughtLines || []).join("\n")),
-      jarvis_task: JSON.stringify(data.activeTask || "None"),
-      jarvis_notes: JSON.stringify((data.recentNotes || []).map((n: any) => n.title).join("\n") || "None yet"),
-    });
+    // Only jarvis_badge is pushed: it's the only defvar eww.yuck's
+    // orb-only widget actually renders (badge-class drives which
+    // orb-state class is applied). statusLabel/thoughtLines/activeTask/
+    // recentNotes used to be pushed here too (jarvis_status/
+    // jarvis_thought/jarvis_task/jarvis_notes), back when the HUD had a
+    // text panel — Task 7 confirmed nothing in the current yuck reads
+    // them anymore and trimmed the pushes; see eww.yuck's own comment
+    // for the matching defvar removal. Failure detail that used to be
+    // pushed into jarvis_thought for on-HUD display now just goes to
+    // stderr (journalctl --user -u jarvis-hud.service) since there's no
+    // longer a text surface to show it on.
+    ewwUpdate({ jarvis_badge: data.badge || "idle" });
   } catch (err: any) {
-    ewwUpdate({ jarvis_badge: "error", jarvis_status: JSON.stringify("Unreachable"), jarvis_thought: JSON.stringify(`Cannot reach Jarvis: ${err.message}`), jarvis_task: JSON.stringify("Unknown"), jarvis_notes: JSON.stringify("") });
+    console.error(`[eww-bridge] refreshStatus failed: ${err.message}`);
+    ewwUpdate({ jarvis_badge: "error" });
   } finally {
     clearTimeout(timeoutId);
   }
