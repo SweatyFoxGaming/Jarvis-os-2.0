@@ -13,7 +13,7 @@ import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/
 import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
-import { pushNotification, getNotifications, markAllRead, registerJob } from "../src/kernel/scheduler.js";
+import { pushNotification, getNotifications, markAllRead, registerJob, startSelfHealthCheckJob } from "../src/kernel/scheduler.js";
 import { buildIdentityContext, generateProactiveThought, extractSelfReflection, buildPersonalityPromptFragment } from "../src/self/identity.js";
 import { extractAndStore, queryKnowledge } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/adaptation/reflection.js";
@@ -736,6 +736,54 @@ registerTest("Scheduler", "registerJob ticks on an interval and survives a throw
 
   if (ticks < 2) {
     throw new Error(`Scheduler: expected registerJob to tick at least twice, got ${ticks}`);
+  }
+});
+
+registerTest("Scheduler", "startSelfHealthCheckJob suppresses repeat notifications for the same problem set within the cooldown, but still notifies for a genuinely new problem set", async () => {
+  const before = getNotifications("admin").length;
+  let callCount = 0;
+  const problemSetA = ["Postgres is unreachable."];
+  const problemSetB = ["Voice daemon is unreachable at /tmp/jarvis-voice/voice.sock."];
+
+  // Fake runAssessment (startSelfHealthCheckJob's injectable second param —
+  // mirrors assessSystemHealth's own deps-injection pattern) so this test
+  // exercises the cooldown-gating logic in the job's closure without
+  // depending on real Postgres/voice-daemon/llama-cpp reachability: first
+  // two ticks report the SAME degraded problem set (should notify once,
+  // then be suppressed by the cooldown), the third reports a genuinely
+  // DIFFERENT problem set (should notify again despite still being well
+  // inside the 1-hour cooldown window).
+  const handle = startSelfHealthCheckJob(20, async () => {
+    callCount++;
+    return { ok: false, problems: callCount <= 2 ? problemSetA : problemSetB };
+  });
+
+  try {
+    const deadline = Date.now() + 2000;
+    while (callCount < 3 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    // Give the 3rd tick's notification a moment to land before reading state.
+    await new Promise(resolve => setTimeout(resolve, 40));
+
+    if (callCount < 3) {
+      throw new Error(`Scheduler: expected startSelfHealthCheckJob to tick at least 3 times within 2s, got ${callCount}`);
+    }
+
+    const newNotifications = getNotifications("admin").slice(before);
+    if (newNotifications.length !== 2) {
+      throw new Error(
+        `Scheduler: expected exactly 2 new "admin" notifications (1 for the initial problem set, 1 for the later distinct one), got ${newNotifications.length}: ${JSON.stringify(newNotifications.map(n => n.message))}`
+      );
+    }
+    if (!newNotifications[0].message.includes("Postgres is unreachable.")) {
+      throw new Error(`Scheduler: expected the first notification to report the initial problem set, got: ${newNotifications[0].message}`);
+    }
+    if (!newNotifications[1].message.includes("Voice daemon is unreachable")) {
+      throw new Error(`Scheduler: expected the second notification to report the new, distinct problem set, got: ${newNotifications[1].message}`);
+    }
+  } finally {
+    clearInterval(handle);
   }
 });
 

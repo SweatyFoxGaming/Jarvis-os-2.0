@@ -17,6 +17,7 @@ import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
 import * as evolutionRepo from "./state/evolution-repo.js";
 import * as wellbeing from "../self/wellbeing.js";
 import * as wellbeingRepo from "./state/wellbeing-repo.js";
+import { assessSystemHealth } from "../self/health-watchdog.js";
 import { positiveIntegerEnv } from "./env.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -274,6 +275,62 @@ export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Time
         consecutiveFailures.delete(server.id);
       }
     }
+  });
+}
+
+/**
+ * Self-health watchdog — periodically calls assessSystemHealth() (see
+ * self/health-watchdog.ts: real reachability checks for Postgres, the voice
+ * daemon, llama-cpp, and ObservationPlatform, never throwing) and notifies a
+ * human when something's wrong. This checks Jarvis's own operational state
+ * on behalf of the whole deployment, not any one registered user — same
+ * "admin" convention startBriefingJob and startEmailWatchJob already use for
+ * system-level (not per-user) notifications.
+ *
+ * Cooldown-gated the same way startBriefingJob gates novelty: without it, a
+ * persistent outage (e.g. Postgres down for hours) would renotify on every
+ * single tick forever. Unlike startBriefingJob's per-item novelty tracking,
+ * this only needs "is this the exact same still-open problem set I already
+ * notified about, and are we still within an hour of that notification?" —
+ * an exact-match comparison plus a time-based cooldown, not a diffing
+ * algorithm. A genuinely NEW problem (one not in the last-notified set)
+ * still notifies immediately even mid-cooldown, since that's new information
+ * a human hasn't seen yet. Recovery (ok: true) resets the tracked state so a
+ * later recurrence of the same problem after a real recovery notifies again
+ * rather than staying suppressed forever.
+ *
+ * runAssessment defaults to the real assessSystemHealth, mirroring
+ * assessSystemHealth's own dependency-injection pattern — tests inject a
+ * fake here instead of trying to mock real Postgres/voice-daemon/llama-cpp
+ * reachability, exactly as health-watchdog.ts's own tests inject fake
+ * HealthWatchdogDeps rather than hitting real infrastructure.
+ */
+export function startSelfHealthCheckJob(
+  intervalMs = 10 * 60 * 1000,
+  runAssessment: () => Promise<{ ok: boolean; problems: string[] }> = assessSystemHealth
+): NodeJS.Timeout {
+  let lastNotifiedProblems: string[] = [];
+  let lastNotifiedAt = 0;
+  const NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
+
+  return registerJob("self-health-check", intervalMs, async () => {
+    const { ok, problems } = await runAssessment();
+    if (ok) {
+      lastNotifiedProblems = [];
+      return;
+    }
+
+    const sameAsLastNotified =
+      problems.length === lastNotifiedProblems.length &&
+      problems.every(p => lastNotifiedProblems.includes(p));
+    const withinCooldown = Date.now() - lastNotifiedAt < NOTIFY_COOLDOWN_MS;
+
+    if (sameAsLastNotified && withinCooldown) return;
+
+    const message = `Self-health check found ${problems.length} problem(s):\n${problems.map(p => `- ${p}`).join("\n")}`;
+    pushNotification("admin", message, "warning");
+    lastNotifiedProblems = problems;
+    lastNotifiedAt = Date.now();
   });
 }
 

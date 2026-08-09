@@ -1501,6 +1501,7 @@ initDatabase().then(async (ready) => {
   scheduler.startSelfReflectionJob(cognitionRouter);
   scheduler.startWellbeingCheckJob();
   scheduler.startMcpHealthCheckJob();
+  scheduler.startSelfHealthCheckJob();
   scheduler.startVaultSyncJob();
   scheduler.startDataRetentionJob();
 });
