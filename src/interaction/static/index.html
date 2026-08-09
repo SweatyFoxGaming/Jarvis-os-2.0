@@ -251,9 +251,68 @@
             background: rgba(56, 189, 248, 0.35);
             transition: height 0.05s linear;
         }
+
+        /* ---- Ambient nav: #left-sidebar and #app-header are hidden by
+           default and revealed only by hovering the top edge of the window.
+           Both are pulled out of normal flow via position:fixed (not just
+           translated) so the main content fills the full viewport while
+           they're hidden, rather than leaving a blank sidebar/header-shaped
+           gap — transform alone does NOT remove an element from flow, it only
+           moves its painted box, which would otherwise leave that space
+           reserved and empty in the flex layout below.
+           #nav-trigger-strip is a slim 8px invisible band pinned to the very
+           top of the window. Hovering it, OR the sidebar, OR the header
+           (once either has slid into view), all satisfy the same :has()
+           condition below, so moving the mouse from the trigger strip into
+           the revealed nav doesn't flicker it closed — and tabbing a
+           focusable element inside either (:focus-within) reveals them too,
+           so keyboard users aren't left focusing invisible off-screen
+           controls. No JS needed: the existing flex layout (#app as a row of
+           [sidebar, main-column], header stacked above <main> in that
+           column) turns out to compose cleanly with position:fixed, so a
+           pure-CSS reveal was possible without restructuring the DOM. */
+        #nav-trigger-strip {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 8px;
+            z-index: 25;
+            background: transparent;
+            pointer-events: auto;
+        }
+        #left-sidebar {
+            position: fixed;
+            top: 0; left: 0; bottom: 0;
+            transform: translateX(-100%);
+            /* Explicit property list (not transition-all) so this coexists with
+               the pre-existing manual collapse toggle (toggleSidebar() in the
+               inline script below, driven by the sidebar's own collapse
+               button), which animates width/padding/border-right-width via
+               inline styles — a plain "transition: transform ..." shorthand
+               here would silently drop that animation by resetting
+               transition-property to just "transform". */
+            transition-property: transform, width, padding, border-right-width;
+            transition-duration: 0.28s;
+            transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        #app-header {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            transform: translateY(-100%);
+            transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        html:has(#nav-trigger-strip:hover, #left-sidebar:hover, #app-header:hover, #left-sidebar:focus-within, #app-header:focus-within) #left-sidebar {
+            transform: translateX(0);
+        }
+        html:has(#nav-trigger-strip:hover, #left-sidebar:hover, #app-header:hover, #left-sidebar:focus-within, #app-header:focus-within) #app-header {
+            transform: translateY(0);
+        }
     </style>
 </head>
 <body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
+<!-- Ambient nav reveal trigger: hovering this thin strip (or #left-sidebar /
+     #app-header themselves once revealed) slides the sidebar/header into
+     view. See the #nav-trigger-strip rules in <head> for the mechanics. -->
+<div id="nav-trigger-strip" aria-hidden="true"></div>
 <canvas id="neural-bg-canvas" class="fixed inset-0 w-full h-full" style="z-index: 0; pointer-events: none;"></canvas>
 
 <div id="app" class="h-full w-full flex relative z-10">
@@ -342,7 +401,7 @@
     <!-- 2. MAIN DISPLAY SYSTEM -->
     <div class="flex-1 flex flex-col h-full overflow-hidden bg-bg relative">
         <!-- Top Bar -->
-        <header class="h-14 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0">
+        <header id="app-header" class="h-14 border-b border-white/5 px-8 flex justify-between items-center z-10 flex-shrink-0">
             <div class="flex items-center gap-3">
                 <button id="sidebar-expand-btn" onclick="toggleSidebar()" class="p-1.5 hover:bg-white/5 border border-white/10 rounded-lg text-secondary hover:text-white transition-all hidden" title="Expand Sidebar">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
