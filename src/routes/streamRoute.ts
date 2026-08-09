@@ -1,4 +1,15 @@
 // src/routes/streamRoute.ts
+//
+// Deliberately bypasses CognitionRouter: this route needs real
+// token-by-token SSE streaming (ai.models.generateContentStream /
+// groq.chat.completions.create({stream: true})), which
+// CognitionRouter.generateWithFallback doesn't support today (it returns
+// one complete response, matching the tool-calling/JSON-response shape
+// every other call site in this codebase needs). A documented exception,
+// same pattern as /api/voice-input staying on the direct Gemini SDK for
+// its own reason — not an oversight. No multi-key rotation or fair-share
+// throttling applies to this route as a result; it uses the first
+// configured Groq key only.
 import { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import Groq from 'groq-sdk';
@@ -7,7 +18,12 @@ import { executeRAGPipeline } from '../kernel/state/ragEngine.js';
 import { formatRAGContext } from '../kernel/state/contextFormatter.js';
 
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
-const groqApiKey = process.env.GROQ_API_KEY || '';
+// GROQ_API_KEY (singular) no longer exists in .env.example as of the
+// CognitionRouter migration -- GROQ_API_KEYS (plural, comma-separated) is
+// the real source of truth now. Take the first configured key; see the
+// file-level comment above for why this route can't use the router's own
+// multi-key rotation.
+const groqApiKey = (process.env.GROQ_API_KEYS || '').split(',')[0]?.trim() || '';
 
 const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 const groq = new Groq({ apiKey: groqApiKey });

@@ -12,7 +12,13 @@ const observation = ObservationPlatform.getInstance();
 
 import { Request, Response, NextFunction } from 'express';
 
-const ADMIN_API_KEY = process.env.ADMIN_API_KEY 
+// Exported so other modules (e.g. server.ts's /ws/events direct-API-key
+// auth path) resolve the admin key the same way this module does, instead
+// of re-deriving it from process.env.INTERNAL_API_KEY alone — that alone
+// would miss a deployment that sets ADMIN_API_KEY and (per .env.example's
+// default) leaves INTERNAL_API_KEY empty. Guaranteed truthy by the
+// fail-fast check right below — any importer gets a real, non-empty key.
+export const ADMIN_API_KEY = process.env.ADMIN_API_KEY
   || process.env.INTERNAL_API_KEY;
 
 if (!ADMIN_API_KEY) {
@@ -54,7 +60,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 // comparison short-circuits on the first mismatched byte). Compares
 // equal-length buffers either way so the time taken doesn't leak how many
 // leading characters of a guess were correct.
-function safeCompare(a: string, b: string): boolean {
+export function safeCompare(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) {

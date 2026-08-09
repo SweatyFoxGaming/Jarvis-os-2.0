@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Jarvis OS · The Living Mind",
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx --env-file=.env src/server.ts",
@@ -17,6 +20,7 @@
     "@google/genai": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "bcryptjs": "^2.4.3",
+    "chokidar": "^5.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

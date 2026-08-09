@@ -1,4 +1,4 @@
-import type Groq from "groq-sdk";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "./observation.js";
 import * as emailIntegration from "../capabilities/providers/email.js";
 import * as briefing from "../world/briefing.js";
@@ -15,6 +15,8 @@ import * as vaultRepo from "./state/vault-repo.js";
 import * as sessionRepo from "./state/session-repo.js";
 import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
 import * as evolutionRepo from "./state/evolution-repo.js";
+import * as wellbeing from "../self/wellbeing.js";
+import * as wellbeingRepo from "./state/wellbeing-repo.js";
 import { positiveIntegerEnv } from "./env.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -139,9 +141,9 @@ export function startEmailWatchJob(intervalMs = 5 * 60 * 1000): NodeJS.Timeout |
  */
 let seenBriefingItemIds = new Set<string>();
 
-export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
+export function startBriefingJob(router: CognitionRouter | null, intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-briefing", intervalMs, async () => {
-    const result = await briefing.generateBriefing(groq, "admin");
+    const result = await briefing.generateBriefing(router, "admin");
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
       obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {
@@ -158,7 +160,7 @@ export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000)
     seenBriefingItemIds = new Set(result.items.map(i => i.id));
 
     if (freshItems.length > 0) {
-      const freshText = await briefing.synthesizeBriefing(groq, freshItems, []);
+      const freshText = await briefing.synthesizeBriefing(router, freshItems, [], "admin");
       pushNotification("admin", freshText, freshItems.some(i => i.urgency === "high") ? "warning" : "info");
     }
 
@@ -192,13 +194,13 @@ export function startBriefingJob(groq: Groq | null, intervalMs = 60 * 60 * 1000)
  * happened to be picked. One user's slow/failed generation can't block
  * another's — each iteration is independent and already-caught.
  */
-export function startSelfReflectionJob(groq: Groq | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
+export function startSelfReflectionJob(router: CognitionRouter | null, intervalMs = 6 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("proactive-self-reflection", intervalMs, async () => {
-    if (!groq) return;
+    if (!router) return;
     const usernames = await usersRepo.listUsernames();
     for (const username of usernames) {
       try {
-        const result = await identity.generateProactiveThought(username, groq);
+        const result = await identity.generateProactiveThought(username, router);
         if (!result) continue;
         await identityRepo.saveProactiveThought(username, result.content, result.basedOnCount);
         obsidian.appendReflectionEntry("proactive-thought", result.content).catch((err: any) => {
@@ -207,6 +209,39 @@ export function startSelfReflectionJob(groq: Groq | null, intervalMs = 6 * 60 * 
         pushNotification(username, result.content, "info");
       } catch (err: any) {
         observation.logTelemetry("warn", "Identity", `Failed to generate/persist proactive thought for "${username}": ${err.message}`);
+      }
+    }
+  });
+}
+
+/**
+ * Proactive wellbeing check-ins — periodically asks self/wellbeing.ts
+ * whether this user's real recorded signals (late-hour messaging ratio,
+ * stress language in recent rapport signals) warrant a gentle, honestly
+ * grounded check-in, and pushes one if so. Mirrors
+ * startSelfReflectionJob's per-user isolation exactly: one user's failed
+ * assessment or check-in write can't block or skip another's, and a run
+ * with nothing to say (assessWellbeingSignal returns null) is a genuine,
+ * expected no-op rather than an error.
+ *
+ * The check-in is only recorded (wellbeingRepo.recordCheckin) once a
+ * message has actually been pushed — assessWellbeingSignal's own
+ * MIN_DAYS_BETWEEN_CHECKINS cooldown is keyed off that same timestamp, so
+ * recording it any earlier (e.g. on every tick regardless of outcome)
+ * would silently suppress a real future signal without ever having told
+ * the user anything.
+ */
+export function startWellbeingCheckJob(intervalMs = 24 * 60 * 60 * 1000): NodeJS.Timeout {
+  return registerJob("wellbeing-check", intervalMs, async () => {
+    const usernames = await usersRepo.listUsernames();
+    for (const username of usernames) {
+      try {
+        const message = await wellbeing.assessWellbeingSignal(username);
+        if (!message) continue;
+        pushNotification(username, message, "info");
+        await wellbeingRepo.recordCheckin(username);
+      } catch (err: any) {
+        observation.logTelemetry("warn", "Wellbeing", `Failed to assess/checkin for "${username}": ${err.message}`);
       }
     }
   });

@@ -23,6 +23,8 @@ import * as mcpRegistry from "./mcp-registry.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
 import * as obsidian from "./providers/obsidian.js";
 import * as builderClient from "../kernel/builder-client.js";
+import { listConstraints } from "../self/constraints.js";
+import * as rapport from "../self/rapport.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -43,10 +45,15 @@ export interface ToolCallResult {
   // /api/chat, the same way displayDirective is. Without this, the audio
   // synthesizeSpeech() actually produced was computed and then discarded:
   // the tool reported {synthesized: true} back to the model as if the user
-  // had heard something, but the bytes never left the server. Not used by
-  // the live-voice path (live-voice.ts) — Gemini's Live API already speaks
-  // directly there, so a speak_text call in that context has no client
-  // channel to deliver a second, separate audio clip through.
+  // had heard something, but the bytes never left the server. Not read on
+  // the local voice-daemon pipeline (src/interaction/voice-session.ts) —
+  // its tool loop only consumes result.ok/output/error, and that path's
+  // TTS happens once, over the daemon's socket, on the final assistant
+  // text (see audio-client.ts's voice:reply subscriber), not per
+  // speak_text call mid-turn. (Formerly worded around the removed
+  // live-voice.ts/Gemini-Live path, which had the same non-consumption for
+  // a different reason — no client channel at all, since Gemini's Live API
+  // spoke directly.)
   audioDirective?: { mimeType: string; base64: string };
 }
 
@@ -444,6 +451,22 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       properties: {},
     },
   },
+  {
+    name: "list_constraints",
+    description: "List Jarvis's explicit, auditable safety constraints — the hard limits on what autonomous actions Jarvis will take without human approval, and where each is enforced in the codebase.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "get_rapport_summary",
+    description: "Get an honest summary of how this user has been coming across in recent conversations — their real, observed communication tone and formality, not a fabricated first impression. Use this when the user asks how they've seemed lately, whether Jarvis has noticed anything about their mood, or similar self-reflective questions about the relationship.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 // Static declarations plus whatever MCP servers are currently approved and
@@ -471,7 +494,16 @@ export async function executeTool(
   // private beyond what the conversation already contains, so it's the one
   // tool deliberately left out of PERMISSION_BY_TOOL/ALL_CAPABILITIES rather
   // than gated behind a grant every user would need to be given anyway.
-  const UNGATED_TOOLS = new Set(["display_content"]);
+  // list_constraints is ungated for a different reason: per this codebase's
+  // safety-constraint registry (src/self/constraints.ts), any authenticated
+  // user must be able to ask what Jarvis's hard limits are — gating that
+  // behind a capability grant would mean a user could be denied visibility
+  // into the very boundaries meant to protect them.
+  // get_rapport_summary is ungated for the same kind of reason: it only
+  // ever reflects the calling user's own recorded tone signals back to
+  // them (src/self/rapport.ts) — there's no other user's data reachable
+  // and nothing gated would meaningfully protect anyone by requiring a grant.
+  const UNGATED_TOOLS = new Set(["display_content", "list_constraints", "get_rapport_summary"]);
   const requiredGrant = PERMISSION_BY_TOOL[name];
 
   // Not a static tool — check whether it's a currently-cached MCP tool
@@ -687,6 +719,12 @@ export async function executeTool(
         output = `Displayed ${args.type} "${args.title}" in the display panel.`;
         break;
       }
+      case "list_constraints":
+        output = { constraints: listConstraints() };
+        break;
+      case "get_rapport_summary":
+        output = { summary: await rapport.buildRapportContext(username) };
+        break;
       default:
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
@@ -730,6 +768,8 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   get_vault_note: ["read my note", "open my note", "what does my note say"],
   get_vault_backlinks: ["what links to", "backlinks for", "what references"],
   write_vault_note: ["add this to my vault", "save this to my vault", "create a vault note"],
+  list_constraints: ["what are your limits", "what won't you do", "what will you not do", "what are your safety constraints", "what are your hard limits"],
+  get_rapport_summary: ["how have i been coming across", "how have i seemed", "noticed anything about my mood", "how do i seem lately", "what have you noticed about me"],
 };
 
 /**

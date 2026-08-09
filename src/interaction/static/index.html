@@ -84,8 +84,122 @@
             border-color: rgba(255, 120, 220, 0.75);
         }
 
+        /* AR ring + corner-bracket frame around the presence orb — appears
+           only while cameraStream is live (real sight-mode), toggled by
+           updateSensorStatusLabel(). Lives as a sibling of #quantum-eye
+           (inside .hologram-float) rather than inside it, because
+           #quantum-eye has overflow-hidden for its circular mask, which
+           would clip these corner-positioned elements. */
+        .orb-ar-frame {
+            position: absolute;
+            inset: -22px;
+            border-radius: 50%;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        #quantum-eye-container.orb-frame-active .orb-ar-frame {
+            opacity: 1;
+        }
+        .orb-ar-ring {
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            border: 1px dashed rgba(80, 200, 255, 0.22);
+            animation: orb-ring-spin 60s linear infinite;
+        }
+        .orb-ar-arc {
+            position: absolute;
+            inset: 8px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            border-top-color: rgba(80, 200, 255, 0.75);
+            border-right-color: rgba(80, 200, 255, 0.75);
+            animation: orb-ring-spin 6s linear infinite;
+        }
+        @keyframes orb-ring-spin { to { transform: rotate(360deg); } }
+        .orb-corner {
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(80, 200, 255, 0.85);
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        #quantum-eye-container.orb-frame-active .orb-corner { opacity: 1; }
+        .orb-corner.tl { top: -8px; left: -8px; border-right: none; border-bottom: none; border-radius: 4px 0 0 0; }
+        .orb-corner.tr { top: -8px; right: -8px; border-left: none; border-bottom: none; border-radius: 0 4px 0 0; }
+        .orb-corner.bl { bottom: -8px; left: -8px; border-right: none; border-top: none; border-radius: 0 0 0 4px; }
+        .orb-corner.br { bottom: -8px; right: -8px; border-left: none; border-top: none; border-radius: 0 0 4px 0; }
+        @media (prefers-reduced-motion: reduce) {
+            .orb-ar-ring, .orb-ar-arc { animation: none; }
+        }
+
         #mind-graph {
             width: 100%; height: 100%; position: absolute; inset: 0; z-index: 1;
+        }
+
+        /* LCARS-derived per-module accent coloring for the sidebar nav.
+           switchTab() (see inline script) toggles the Tailwind utility
+           classes bg-primary/10 + text-white + border-primary/20 on the
+           active nav-btn — no semantic ".active" class exists, so the
+           selector below targets that escaped utility class directly
+           rather than replacing switchTab's own state handling. */
+        :root {
+            --mod-core: #50c8ff;
+            --mod-ops: #ffb454;
+            --mod-knowledge: #b98cff;
+            --mod-vault: #5ee6b0;
+            --mod-calendar: #ff8a8a;
+        }
+        .nav-btn[data-module] {
+            position: relative;
+        }
+        .nav-btn[data-module].bg-primary\/10::before,
+        .nav-btn[data-module]:hover::before {
+            content: "";
+            position: absolute;
+            /* left: -8px (outside the button) gets silently clipped: the
+               parent <nav> has overflow-y:auto, and per the CSS overflow
+               spec a non-"visible" overflow-y forces overflow-x to compute
+               as "auto" too (even if set to "visible" explicitly) — so
+               anything positioned outside the nav's own box is cut off.
+               Keeping the accent inside the button's box (left: 1px, inside
+               its px-3 padding) avoids that clipping entirely. */
+            left: 1px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 60%;
+            border-radius: 2px;
+            background: var(--mod-color, var(--mod-core));
+        }
+        .nav-btn[data-module="projects"] { --mod-color: var(--mod-core); }
+        .nav-btn[data-module="vault"] { --mod-color: var(--mod-vault); }
+        .nav-btn[data-module="calendar"] { --mod-color: var(--mod-calendar); }
+        .nav-btn[data-module="knowledge"] { --mod-color: var(--mod-knowledge); }
+        .nav-btn[data-module="operations"] { --mod-color: var(--mod-ops); }
+
+        /* Bars for the KITT-derived audio-reactive waveform scanner.
+           animateWaveform() (inline script, runs every rAF frame) already
+           queries document.querySelectorAll('.wave-bar') and sets
+           height/backgroundColor per frame from real mic levels
+           (analyser/dataArray) when active, or an idle sine-wave otherwise
+           — it just had zero matching elements until now. Only
+           width/border-radius/layout live here; height and color are
+           driven per-frame by that existing function. */
+        .wave-bar-row {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            height: 24px;
+        }
+        .wave-bar {
+            width: 3px;
+            min-height: 2px;
+            border-radius: 2px;
+            background: rgba(56, 189, 248, 0.35);
+            transition: height 0.05s linear;
         }
     </style>
 </head>
@@ -111,42 +225,42 @@
 
         <!-- Navigation -->
         <nav class="flex flex-col gap-1 flex-1 w-full overflow-y-auto pr-1">
-            <button onclick="switchTab('home')" id="nav-home" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('home')" id="nav-home" data-module="home" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7m-9-2v10a1 1 0 001 1h3m6-11l2 2m-8-9v3m0 0h3m-3 0h-3" />
                 </svg>
                 <span class="text-sm font-medium">Home</span>
             </button>
 
-            <button onclick="switchTab('projects')" id="nav-projects" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('projects')" id="nav-projects" data-module="projects" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
                 </svg>
                 <span class="text-sm font-medium">Projects</span>
             </button>
 
-            <button onclick="switchTab('vault')" id="nav-vault" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('vault')" id="nav-vault" data-module="vault" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s4.332.477 5.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                 </svg>
                 <span class="text-sm font-medium">Vault</span>
             </button>
 
-            <button onclick="switchTab('calendar')" id="nav-calendar" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('calendar')" id="nav-calendar" data-module="calendar" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
                 <span class="text-sm font-medium">Calendar</span>
             </button>
 
-            <button onclick="switchTab('knowledge')" id="nav-knowledge" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('knowledge')" id="nav-knowledge" data-module="knowledge" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.969 7.969 0 0014.5 4c-1.669 0-3.218.51-4.5 1.385A7.962 7.962 0 009 4.804z" />
                 </svg>
                 <span class="text-sm font-medium">Knowledge</span>
             </button>
 
-            <button onclick="switchTab('operations')" id="nav-operations" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('operations')" id="nav-operations" data-module="operations" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
@@ -155,7 +269,7 @@
 
             <div class="h-px bg-white/5 my-2"></div>
 
-            <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
+            <button onclick="switchTab('settings')" id="nav-settings" data-module="settings" class="nav-btn group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-secondary hover:text-white hover:bg-white/5 border border-transparent">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                     <circle cx="12" cy="12" r="3" stroke-width="1.5" />
@@ -219,6 +333,19 @@
                             <div id="quantum-eye" class="jarvis-orb relative w-full h-full flex items-center justify-center overflow-hidden cursor-pointer">
                                 <canvas id="quantum-eye-canvas" class="absolute inset-0 w-full h-full"></canvas>
                             </div>
+                            <!-- AR ring + corner-bracket frame, gated on real camera state
+                                 (see updateSensorStatusLabel's orb-frame-active toggle). A
+                                 sibling of #quantum-eye, NOT a child of it — that div's
+                                 circular overflow-hidden mask would invisibly clip these
+                                 corner-positioned elements. -->
+                            <div class="orb-ar-frame">
+                                <div class="orb-ar-ring"></div>
+                                <div class="orb-ar-arc"></div>
+                                <div class="orb-corner tl"></div>
+                                <div class="orb-corner tr"></div>
+                                <div class="orb-corner bl"></div>
+                                <div class="orb-corner br"></div>
+                            </div>
                             <!-- Small picture-in-picture bubble, not the old full-orb-covering
                                  video — the orb (and its vault-note points) stays fully visible
                                  around it. Sits outside #quantum-eye on purpose: that div's
@@ -279,6 +406,14 @@
                             </svg>
                             <span id="mic-pulse-dot" class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary animate-ping hidden"></span>
                         </button>
+                        <!-- Audio-reactive scanner bars driven by the existing
+                             animateWaveform() (see inline script) — real mic
+                             levels via analyser/dataArray when the mic is on,
+                             idle sine-wave animation otherwise. -->
+                        <div class="wave-bar-row" aria-hidden="true">
+                            <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+                            <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+                        </div>
                         <button id="btn-chat-send" onclick="triggerChatDialogue()" title="Send" class="p-2.5 rounded-full bg-white/10 hover:bg-white/15 text-white transition-all">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
@@ -771,6 +906,48 @@
                     </div>
                 </div>
 
+                <!-- Column 3: Personality dials — persisted via the same
+                     /api/settings POST as the LLM sync matrix above (see
+                     saveSystemSettings), consumed by identity.ts's
+                     buildPersonalityPromptFragment to steer the real system
+                     prompt (see server.ts). -->
+                <div class="bg-surface/50 border border-white/5 p-6 rounded-3xl space-y-5 relative">
+                    <div class="absolute top-0 left-0 w-8 h-8 border-t border-l border-primary/20 rounded-tl-3xl"></div>
+                    <div class="absolute bottom-0 right-0 w-8 h-8 border-b border-r border-primary/20 rounded-br-3xl"></div>
+
+                    <div class="flex justify-between items-center border-b border-white/5 pb-3">
+                        <div>
+                            <h3 class="font-display font-bold text-xs tracking-widest uppercase">PERSONALITY MATRIX</h3>
+                            <p class="text-[9px] text-secondary/50 font-mono">SYSTEM_PROMPT_TONE_DIALS</p>
+                        </div>
+                        <span class="text-[10px] font-mono text-primary bg-primary/5 px-2 py-0.5 border border-primary/10 rounded">IDENTITY</span>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-mono text-secondary tracking-wider flex justify-between items-center">
+                                <span>FORMALITY</span>
+                                <span id="personality-formality-value" class="text-primary">50</span>
+                            </label>
+                            <input type="range" min="0" max="100" id="personality-formality-slider" class="w-full accent-primary" oninput="document.getElementById('personality-formality-value').textContent = this.value">
+                        </div>
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-mono text-secondary tracking-wider flex justify-between items-center">
+                                <span>HUMOR</span>
+                                <span id="personality-humor-value" class="text-primary">30</span>
+                            </label>
+                            <input type="range" min="0" max="100" id="personality-humor-slider" class="w-full accent-primary" oninput="document.getElementById('personality-humor-value').textContent = this.value">
+                        </div>
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-mono text-secondary tracking-wider flex justify-between items-center">
+                                <span>VERBOSITY</span>
+                                <span id="personality-verbosity-value" class="text-primary">50</span>
+                            </label>
+                            <input type="range" min="0" max="100" id="personality-verbosity-slider" class="w-full accent-primary" oninput="document.getElementById('personality-verbosity-value').textContent = this.value">
+                        </div>
+                    </div>
+                </div>
+
                 <div class="holo-panel rounded-2xl p-5 w-full">
                     <h3 class="font-display font-semibold text-sm text-white mb-1">Notifications</h3>
                     <p class="text-sm text-secondary mb-4 max-w-xl">Install Jarvis as an app on this device and enable push notifications so proactive updates (briefings, security findings, reflections) reach you here even when this tab isn't open — including on your phone, once installed there too.</p>
@@ -1152,63 +1329,31 @@
     let motionCanvas = null;
     let motionCtx = null;
     let cameraTrackerActive = false;
-    // Ambient-awareness state derived from the same motion-diff data above —
-    // a cheap proxy for "activity resumed after stillness" (32x32 pixel diff
-    // can't reliably tell "someone left" vs "someone is just sitting still",
-    // so this only claims the more honest half: noticing renewed activity).
-    let motionActiveStreak = 0;
-    let motionIdleStreak = 0;
-    let ambientPresenceState = 'idle';
-    let lastAmbientNudgeAt = 0;
-    const AMBIENT_NUDGE_COOLDOWN_MS = 120000;
-
-    // Always-on live voice+vision (Gemini Live API bridge) — see
-    // src/cognition/live-voice.ts. This is the default sensory experience:
-    // continuous mic + camera, not a click-to-talk/click-to-see toggle. Falls
-    // back to the browser-STT + per-message-snapshot pipeline further below
-    // only when this can't run (no GEMINI_API_KEY, or the socket fails).
-    const LIVE_INPUT_SAMPLE_RATE = 16000;
-    const LIVE_OUTPUT_SAMPLE_RATE = 24000;
-    const LIVE_VIDEO_FRAME_INTERVAL_MS = 1000;
-    let liveVoiceWs = null;
-    let liveVoiceActive = false;
-    let liveVoiceMuted = false;
-    let liveInputAudioCtx = null;
-    let liveOutputAudioCtx = null;
-    let liveScriptProcessor = null;
-    let liveNextPlayTime = 0;
-    // Sources already handed to source.start() keep playing to completion
-    // regardless of liveNextPlayTime — that variable only affects where the
-    // *next* chunk gets scheduled. Tracked here so an 'interrupted' message
-    // (the user actually talking over Jarvis) can call .stop() on whatever
-    // is currently mid-playback instead of just silently letting it finish.
-    let liveScheduledSources = [];
-    let liveVideoFrameInterval = null;
-    let liveMicStream = null;
-
-    // Wake-word gating — without this, every word spoken near the mic gets
-    // sent to Gemini and treated as addressed to Jarvis. A separate,
-    // continuous local speech-recognition instance (not the raw PCM stream
-    // above, which keeps flowing to Gemini regardless) watches only for the
-    // trigger phrase; actual audio only forwards into the live session once
-    // "armed", and stays armed for a grace window so a real back-and-forth
-    // doesn't need the wake word repeated every sentence.
-    const WAKE_WORD = 'jarvis';
-    const WAKE_WORD_DISARM_MS = 12000;
-    const WAKE_WORD_MAX_CONSECUTIVE_ERRORS = 3;
-    const WAKE_WORD_POLL_INTERVAL_MS = 3000;
-    let wakeWordPollActive = false;
-    let wakeWordMediaRecorder = null;
-    let wakeWordStoppedIntentionally = false;
-    let wakeWordConsecutiveErrors = 0;
-    let liveArmed = false;
-    let liveDisarmTimer = null;
+    // NOTE: this used to also track "ambient-awareness" state (nudging the
+    // user via a live spoken acknowledgment after renewed camera motion) and
+    // an always-on live voice+vision bridge to the Gemini Live API
+    // (src/interaction/live-voice.ts) with its own wake-word gating, over a
+    // dedicated /ws/voice WebSocket authenticated by a short-lived ticket
+    // from POST /api/voice-ticket. That whole pipeline was removed
+    // server-side (voice input is now handled entirely by the local voice
+    // daemon over a Unix socket on the same machine — see
+    // daemon/voice_engine.py, src/core/audio-client.ts,
+    // src/interaction/voice-session.ts — with no browser-facing WebSocket
+    // for voice audio at all), so the matching browser-mic-capture,
+    // PCM-streaming, and wake-word JS that called those two removed
+    // endpoints was deleted here rather than left calling a 404/closed
+    // connection. Voice OUTPUT (typed or click-to-talk replies) still comes
+    // back through the existing /api/integrations/tts/speak endpoint via
+    // speakText() below; there is no browser voice INPUT path anymore other
+    // than the click-to-talk mic button, which posts a recorded clip to
+    // /api/voice-input (untouched by this change).
 
     function updateSensorStatusLabel() {
         const label = document.getElementById('sensor-status-label');
         const orb = document.getElementById('quantum-eye');
         let active = [];
         if (cameraStream) active.push("sight");
+        document.getElementById('quantum-eye-container')?.classList.toggle('orb-frame-active', !!cameraStream);
         if (micEnabled) active.push("hearing");
         if (speechEnabled) active.push("voice");
 
@@ -1274,17 +1419,14 @@
                 // a present assistant would notice you rather than requiring
                 // you to type first. A short delay lets the video element
                 // actually have a decoded frame ready for captureCameraFrame().
-                // Routed through whichever channel is actually live — the
-                // live voice WS if it's already up (so it comes as speech,
-                // not a redundant second text reply), the old text-chat
-                // trigger otherwise.
+                // Used to route through a live voice WebSocket when one was
+                // up (so it came out as speech, not a redundant text reply);
+                // that channel no longer exists (removed live-voice bridge —
+                // see the comment near the top of this script section), so
+                // this always goes through the ordinary text-chat trigger now.
                 setTimeout(() => {
                     const hint = "[The camera just came on and you can now see the user. Acknowledge their presence naturally and briefly, the way you would if someone just walked into the room — don't announce that you're doing this or mention the camera itself.]";
-                    if (liveVoiceActive && liveVoiceWs?.readyState === WebSocket.OPEN) {
-                        liveVoiceWs.send(JSON.stringify({ type: 'ambient', hint }));
-                    } else {
-                        triggerChatDialogue(hint);
-                    }
+                    triggerChatDialogue(hint);
                 }, 800);
             } catch (err) {
                 console.error("Camera access failed", err);
@@ -1314,16 +1456,18 @@
         requestAnimationFrame(trackMotionFrame);
     }
 
-    // Entry point for "always on" — camera and live voice both start
-    // themselves instead of waiting for a manual toggle click. Called once
-    // on load (if already logged in) and once a valid API key is first
-    // entered. The toggle buttons still work afterward as mute/off controls.
+    // Entry point for "always on" — the camera starts itself instead of
+    // waiting for a manual toggle click. Called once on load (if already
+    // logged in) and once a valid API key is first entered. The toggle
+    // button still works afterward as an on/off control. Used to also
+    // auto-start the live voice+vision bridge here; that pipeline is gone
+    // (see the comment near the top of this script section) — voice input
+    // is the click-to-talk mic button only, which stays manual.
     let sensorsAutoStarted = false;
     async function initAlwaysOnSensors() {
         if (sensorsAutoStarted || !CURRENT_API_KEY) return;
         sensorsAutoStarted = true;
         if (!cameraStream) await toggleCameraSensor();
-        await startLiveVoiceSession();
     }
 
     function stopCameraMotionTracking() {
@@ -1354,443 +1498,15 @@
         }
     }
 
-    // ---------- Always-on live voice + vision (Gemini Live API bridge) ----------
-
-    // Naive linear-interpolation resampler — audio quality isn't the point
-    // here, getting real speech recognized reliably is.
-    function downsampleTo16k(float32Samples, inputSampleRate) {
-        if (inputSampleRate === LIVE_INPUT_SAMPLE_RATE) return float32Samples;
-        const ratio = inputSampleRate / LIVE_INPUT_SAMPLE_RATE;
-        const outLength = Math.floor(float32Samples.length / ratio);
-        const result = new Float32Array(outLength);
-        for (let i = 0; i < outLength; i++) result[i] = float32Samples[Math.floor(i * ratio)];
-        return result;
-    }
-
-    function floatTo16BitPCM(float32Samples) {
-        const buffer = new ArrayBuffer(float32Samples.length * 2);
-        const view = new DataView(buffer);
-        for (let i = 0; i < float32Samples.length; i++) {
-            const s = Math.max(-1, Math.min(1, float32Samples[i]));
-            view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-        }
-        return buffer;
-    }
-
-    // Schedules each incoming chunk back-to-back on the output AudioContext's
-    // timeline so playback stays gapless despite irregular network arrival.
-    function playLiveAudioChunk(arrayBuffer) {
-        const int16 = new Int16Array(arrayBuffer);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-
-        const audioBuffer = liveOutputAudioCtx.createBuffer(1, float32.length, LIVE_OUTPUT_SAMPLE_RATE);
-        audioBuffer.copyToChannel(float32, 0);
-
-        const source = liveOutputAudioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(liveOutputAudioCtx.destination);
-
-        const now = liveOutputAudioCtx.currentTime;
-        const startAt = Math.max(now, liveNextPlayTime);
-        source.onended = () => { liveScheduledSources = liveScheduledSources.filter(s => s !== source); };
-        liveScheduledSources.push(source);
-        source.start(startAt);
-        liveNextPlayTime = startAt + audioBuffer.duration;
-    }
-
-    // Actually silences whatever's mid-playback (the user talking over
-    // Jarvis) instead of only resetting the scheduling clock for future
-    // chunks — see the comment on liveScheduledSources above.
-    function stopLiveAudioPlayback() {
-        liveScheduledSources.forEach(source => { try { source.stop(); } catch {} });
-        liveScheduledSources = [];
-        liveNextPlayTime = 0;
-    }
-
-    // True while Jarvis's own voice is coming out of the speakers — either
-    // the plain TTS playback speakText() uses for notifications/text-chat
-    // replies, or the live Gemini audio scheduled above. Without this, the
-    // always-on mic picks up Jarvis's own speech: the wake-word listener can
-    // mishear "jarvis" inside Jarvis's own notification audio and re-trigger
-    // itself, and an armed session would forward Jarvis's own voice back to
-    // Gemini as if it were the user talking. echoCancellation on the
-    // getUserMedia constraints above helps but isn't a substitute — it only
-    // filters what our own live-audio pipeline hears, not the wake-word
-    // listener's separate capture, and isn't guaranteed complete anyway.
-    function isJarvisSpeaking() {
-        if (isSpeakingNow) return true;
-        if (liveOutputAudioCtx && liveNextPlayTime > liveOutputAudioCtx.currentTime) return true;
-        return false;
-    }
-
-    // The real "always on" experience: a continuous bidirectional stream to
-    // Gemini's Live API — mic audio in, spoken audio back, plus the live
-    // camera feed (via captureCameraFrame(), the same one typed chat uses),
-    // instead of a click-to-talk record/transcribe/reply round trip. Falls
-    // back to the legacy browser-STT toggle (further below) if this can't
-    // run at all — e.g. no GEMINI_API_KEY configured server-side.
-    async function startLiveVoiceSession() {
-        if (liveVoiceActive || !CURRENT_API_KEY) return;
-
-        try {
-            // echoCancellation/noiseSuppression help the browser filter out
-            // Jarvis's own speaker output from what it captures — a partial
-            // mitigation on its own (imperfect, and does nothing for the
-            // wake-word listener's separate capture below), which is why
-            // isJarvisSpeaking() gates both pipelines explicitly further down.
-            liveMicStream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: true }
-            });
-        } catch (err) {
-            console.warn("Microphone access denied, live voice can't start: ", err);
-            addNotification(`Microphone access failed (${err.name || "unknown error"}: ${err.message || err}) — falling back to click-to-talk.`, "warning");
-            toggleMicrophoneSensor();
-            return;
-        }
-
-        liveInputAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        liveOutputAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        liveNextPlayTime = 0;
-
-        // A WebSocket handshake can't carry a custom header, so the permanent
-        // API key never rides in this URL — a short-lived, single-use ticket
-        // (fetched over a normal authenticated request) does instead.
-        let voiceTicket;
-        try {
-            const ticketRes = await authFetch('/api/voice-ticket', {
-                method: 'POST',
-                headers: { 'X-API-Key': CURRENT_API_KEY }
-            });
-            if (!ticketRes.ok) throw new Error(`ticket request failed (${ticketRes.status})`);
-            voiceTicket = (await ticketRes.json()).ticket;
-        } catch (err) {
-            console.warn("Could not obtain a voice ticket, live voice can't start: ", err);
-            addNotification("Live voice couldn't authenticate — falling back to click-to-talk.", "warning");
-            toggleMicrophoneSensor();
-            return;
-        }
-
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        liveVoiceWs = new WebSocket(`${protocol}//${location.host}/ws/voice?ticket=${encodeURIComponent(voiceTicket)}`);
-        liveVoiceWs.binaryType = 'arraybuffer';
-
-        let everConnected = false;
-
-        liveVoiceWs.onopen = () => {
-            everConnected = true;
-            liveVoiceActive = true;
-            liveVoiceMuted = false;
-
-            const source = liveInputAudioCtx.createMediaStreamSource(liveMicStream);
-            liveScriptProcessor = liveInputAudioCtx.createScriptProcessor(4096, 1, 1);
-            source.connect(liveScriptProcessor);
-            liveScriptProcessor.connect(liveInputAudioCtx.destination);
-            liveScriptProcessor.onaudioprocess = (event) => {
-                if (!liveVoiceActive || liveVoiceMuted || !liveArmed || isJarvisSpeaking() || liveVoiceWs.readyState !== WebSocket.OPEN) return;
-                const inputData = event.inputBuffer.getChannelData(0);
-                const downsampled = downsampleTo16k(inputData, liveInputAudioCtx.sampleRate);
-                liveVoiceWs.send(floatTo16BitPCM(downsampled));
-            };
-
-            liveVideoFrameInterval = setInterval(() => {
-                if (!liveVoiceActive || liveVoiceWs.readyState !== WebSocket.OPEN) return;
-                const frame = captureCameraFrame();
-                if (frame) liveVoiceWs.send(JSON.stringify({ type: 'video', data: frame }));
-            }, LIVE_VIDEO_FRAME_INTERVAL_MS);
-
-            micEnabled = true;
-            startWakeWordListener();
-            updateMicButtonVisual();
-            addNotification(`Live voice link established. Say "${WAKE_WORD}" to talk.`, "success");
-            updateSensorStatusLabel();
-        };
-
-        liveVoiceWs.onmessage = (event) => {
-            if (event.data instanceof ArrayBuffer) {
-                playLiveAudioChunk(event.data);
-                return;
-            }
-            try {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'transcript' && msg.text) {
-                    if (chatScroller.textContent.includes('Nothing yet — ask Jarvis anything above.')) {
-                        chatScroller.innerHTML = '';
-                    }
-                    appendChatMessage(msg.text, msg.role === 'user' ? 'user' : 'assistant');
-                    if (msg.role === 'assistant') {
-                        loadMindKernelData();
-                        loadLiveSystemData();
-                        setTimeout(loadIdentityStream, 2500);
-                    }
-                    resetLiveDisarmTimer(); // active exchange — keep the window open
-                } else if (msg.type === 'turnComplete') {
-                    resetLiveDisarmTimer();
-                } else if (msg.type === 'interrupted') {
-                    stopLiveAudioPlayback();
-                } else if (msg.type === 'error') {
-                    if (!everConnected) {
-                        // Never got a working session at all (e.g. no
-                        // GEMINI_API_KEY) — fall back to the legacy pipeline
-                        // rather than leaving "ears" silently off.
-                        addNotification(`Live voice unavailable (${msg.message}). Falling back to click-to-talk.`, "warning");
-                        stopLiveVoiceSession();
-                        toggleMicrophoneSensor();
-                    } else {
-                        addNotification(`Live voice error: ${msg.message}`, "danger");
-                    }
-                }
-            } catch {}
-        };
-
-        liveVoiceWs.onerror = () => {
-            if (!everConnected) {
-                addNotification("Live voice connection failed — falling back to click-to-talk.", "warning");
-                stopLiveVoiceSession();
-                toggleMicrophoneSensor();
-            }
-        };
-
-        liveVoiceWs.onclose = () => {
-            if (liveVoiceActive) stopLiveVoiceSession();
-        };
-    }
-
-    function stopLiveVoiceSession() {
-        liveVoiceActive = false;
-        stopWakeWordListener();
-        disarmLiveVoice();
-        if (liveVideoFrameInterval) { clearInterval(liveVideoFrameInterval); liveVideoFrameInterval = null; }
-        if (liveVoiceWs) {
-            if (liveVoiceWs.readyState === WebSocket.OPEN) {
-                try { liveVoiceWs.send(JSON.stringify({ type: 'end' })); } catch {}
-            }
-            liveVoiceWs.close();
-            liveVoiceWs = null;
-        }
-        if (liveScriptProcessor) { liveScriptProcessor.disconnect(); liveScriptProcessor = null; }
-        if (liveMicStream) { liveMicStream.getTracks().forEach(t => t.stop()); liveMicStream = null; }
-        if (liveInputAudioCtx) { liveInputAudioCtx.close(); liveInputAudioCtx = null; }
-        if (liveOutputAudioCtx) { liveOutputAudioCtx.close(); liveOutputAudioCtx = null; }
-        liveScheduledSources = [];
-
-        micEnabled = false;
-        const pulseDot = document.getElementById('mic-pulse-dot');
-        const btn = document.getElementById('btn-mic-toggle');
-        if (pulseDot) pulseDot.classList.add('hidden');
-        if (btn) btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
-        updateSensorStatusLabel();
-    }
-
-    // ---------- Wake-word gating ----------
-
-    function updateMicButtonVisual() {
-        const pulseDot = document.getElementById('mic-pulse-dot');
-        const btn = document.getElementById('btn-mic-toggle');
-        if (!btn) return;
-        if (liveVoiceMuted) {
-            if (pulseDot) pulseDot.classList.add('hidden');
-            btn.className = "p-2.5 rounded-full bg-white/5 border border-white/10 hover:border-accent/40 text-secondary hover:text-accent transition-all duration-300 relative";
-        } else if (liveArmed) {
-            if (pulseDot) pulseDot.classList.remove('hidden');
-            btn.className = "p-2.5 rounded-full bg-accent/20 border border-accent/40 text-accent hover:text-accent transition-all duration-300 relative";
-        } else {
-            // Standing by for the wake word — visibly different from "actively
-            // conversing" so it's clear Jarvis isn't currently engaged, without
-            // looking fully off/muted either.
-            if (pulseDot) pulseDot.classList.add('hidden');
-            btn.className = "p-2.5 rounded-full bg-accent/5 border border-accent/20 text-accent/60 hover:text-accent transition-all duration-300 relative";
-        }
-    }
-
-    function resetLiveDisarmTimer() {
-        if (liveDisarmTimer) clearTimeout(liveDisarmTimer);
-        liveDisarmTimer = setTimeout(disarmLiveVoice, WAKE_WORD_DISARM_MS);
-    }
-
-    function armLiveVoice() {
-        if (!liveArmed) {
-            addNotification("Listening.", "success");
-        }
-        liveArmed = true;
-        updateMicButtonVisual();
-        resetLiveDisarmTimer();
-    }
-
-    function disarmLiveVoice() {
-        if (liveDisarmTimer) { clearTimeout(liveDisarmTimer); liveDisarmTimer = null; }
-        if (liveArmed) {
-            liveArmed = false;
-            updateMicButtonVisual();
-        }
-    }
-
-    // Used only when wake-word detection itself isn't available (no
-    // SpeechRecognition support, or it silently fails to produce events) —
-    // arms without a disarm timer, since there'd be no way to re-arm
-    // afterward. Falls back to today's "responds to everything" behavior
-    // rather than leaving live voice permanently, silently unreachable.
-    function armLiveVoicePermanently() {
-        if (liveDisarmTimer) { clearTimeout(liveDisarmTimer); liveDisarmTimer = null; }
-        liveArmed = true;
-        updateMicButtonVisual();
-    }
-
-    // Wake-word spotting via the app's own local transcription pipeline
-    // (/api/voice-input, forceOffline: true -> whisper-cpp) instead of the
-    // browser's built-in SpeechRecognition — that depends on Chromium's
-    // bundled cloud speech backend, which is unreachable in Electron/many
-    // Linux builds (live-observed: both this listener and the legacy STT
-    // fallback below failed identically with a "network" error, never a
-    // one-off). Records a short clip from the same liveMicStream already
-    // captured for live voice, transcribes it locally, and checks for the
-    // wake word — repeating every WAKE_WORD_POLL_INTERVAL_MS for as long as
-    // live voice is on, unmuted, and not already armed (once armed, actual
-    // conversation flows through the live Gemini audio pipe directly, so
-    // there's nothing useful to transcribe here until it disarms again).
-    function blobToBase64(blob) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result.split(',')[1]);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-        });
-    }
-
-    function startWakeWordListener() {
-        wakeWordStoppedIntentionally = false;
-        wakeWordConsecutiveErrors = 0;
-        wakeWordPollActive = true;
-        scheduleWakeWordCycle();
-    }
-
-    function scheduleWakeWordCycle(delayMs) {
-        if (!wakeWordPollActive || wakeWordStoppedIntentionally || !liveVoiceActive || liveVoiceMuted) return;
-        setTimeout(() => {
-            if (!wakeWordPollActive || wakeWordStoppedIntentionally || !liveVoiceActive || liveVoiceMuted) return;
-            if (liveArmed || isJarvisSpeaking()) {
-                // Already in a live exchange, or Jarvis is talking — nothing
-                // useful to transcribe right now. Check back shortly rather
-                // than recording (and burning a transcription call on) audio
-                // that's either already handled live or is Jarvis's own voice.
-                scheduleWakeWordCycle(1000);
-                return;
-            }
-            recordWakeWordClip();
-        }, delayMs || 0);
-    }
-
-    function recordWakeWordClip() {
-        if (!liveMicStream) { scheduleWakeWordCycle(WAKE_WORD_POLL_INTERVAL_MS); return; }
-
-        let options = { mimeType: 'audio/webm;codecs=opus' };
-        if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'audio/webm' };
-        if (!MediaRecorder.isTypeSupported(options.mimeType)) options = {};
-
-        let recorder;
-        try {
-            recorder = new MediaRecorder(liveMicStream, options);
-        } catch (e) {
-            console.warn("Wake word: failed to create local recorder: ", e);
-            scheduleWakeWordCycle(WAKE_WORD_POLL_INTERVAL_MS);
-            return;
-        }
-
-        const chunks = [];
-        wakeWordMediaRecorder = recorder;
-        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-
-        recorder.onstop = async () => {
-            wakeWordMediaRecorder = null;
-            if (!wakeWordPollActive || wakeWordStoppedIntentionally) return;
-
-            try {
-                const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-                const base64 = await blobToBase64(blob);
-                const res = await authFetch('/api/voice-input', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
-                    body: JSON.stringify({ audio: base64, mimeType: blob.type, forceOffline: true })
-                });
-                if (res.ok) {
-                    wakeWordConsecutiveErrors = 0; // a real response proves the pipeline works
-                    const data = await res.json();
-                    const transcript = (data.transcription || '').toLowerCase();
-                    if (transcript.includes(WAKE_WORD) && !isJarvisSpeaking()) armLiveVoice();
-                } else {
-                    wakeWordConsecutiveErrors++;
-                }
-            } catch (e) {
-                wakeWordConsecutiveErrors++;
-                console.warn(`Wake word transcription failed (${wakeWordConsecutiveErrors}/${WAKE_WORD_MAX_CONSECUTIVE_ERRORS}): `, e);
-            }
-
-            if (wakeWordConsecutiveErrors >= WAKE_WORD_MAX_CONSECUTIVE_ERRORS) {
-                // Real, repeated failures (server unreachable, whisper-cpp
-                // down) — stop polling and fail open rather than retrying
-                // forever, same principle as the old SpeechRecognition path.
-                console.warn("Wake word local transcription failed repeatedly — disabling wake-word gating for this session.");
-                addNotification("Wake word detection isn't working here — live voice will respond to everything said near it.", "warning");
-                wakeWordPollActive = false;
-                armLiveVoicePermanently();
-                return;
-            }
-
-            scheduleWakeWordCycle();
-        };
-
-        recorder.start();
-        setTimeout(() => {
-            if (recorder.state !== 'inactive') recorder.stop();
-        }, WAKE_WORD_POLL_INTERVAL_MS);
-    }
-
-    function stopWakeWordListener() {
-        wakeWordStoppedIntentionally = true;
-        wakeWordPollActive = false;
-        if (wakeWordMediaRecorder && wakeWordMediaRecorder.state !== 'inactive') {
-            try { wakeWordMediaRecorder.stop(); } catch {}
-        }
-        wakeWordMediaRecorder = null;
-    }
-
-    // A cheap, honest proxy for "someone's presence just became active
-    // again after a stretch of stillness" — a 32x32 pixel diff can't tell
-    // "left the room" from "sitting still", so this only claims the more
-    // reliable half. Sends a silent synthetic prompt through the live
-    // session rather than a separate notification, so Jarvis can react in
-    // the same natural, in-conversation way a present assistant would.
-    function maybeSendAmbientNudge(motionCount) {
-        const ACTIVE_THRESHOLD = 8;
-        const IDLE_STREAK_TO_ARM = 100;   // ~5s of stillness at 20fps before re-arming
-        const ACTIVE_STREAK_TO_FIRE = 15; // ~0.75s of sustained motion to trigger
-
-        if (motionCount > ACTIVE_THRESHOLD) {
-            motionActiveStreak++;
-            motionIdleStreak = 0;
-        } else {
-            motionIdleStreak++;
-            motionActiveStreak = 0;
-        }
-
-        if (motionIdleStreak >= IDLE_STREAK_TO_ARM) {
-            ambientPresenceState = 'idle';
-        }
-
-        if (ambientPresenceState === 'idle' && motionActiveStreak >= ACTIVE_STREAK_TO_FIRE) {
-            ambientPresenceState = 'active';
-            const now = Date.now();
-            if (liveVoiceActive && !liveVoiceMuted && !isJarvisSpeaking() && liveVoiceWs?.readyState === WebSocket.OPEN
-                && now - lastAmbientNudgeAt > AMBIENT_NUDGE_COOLDOWN_MS) {
-                lastAmbientNudgeAt = now;
-                liveVoiceWs.send(JSON.stringify({
-                    type: 'ambient',
-                    hint: "[There's been renewed movement in view after a quiet stretch — if it's genuinely worth a brief, natural acknowledgment, say something short; otherwise stay silent.]"
-                }));
-            }
-        }
-    }
-
+    // Camera motion tracking (below) used to feed maybeSendAmbientNudge(),
+    // which sent a silent synthetic prompt through the live voice
+    // WebSocket when renewed motion followed a quiet stretch, so Jarvis
+    // could react the way a present assistant would notice someone
+    // returning. That whole live voice+vision bridge (Gemini Live API,
+    // wake-word gating, /api/voice-ticket + /ws/voice) was removed —
+    // there's no browser-facing channel left to send a silent ambient nudge
+    // through, so that function and its call site were removed too. The
+    // motion-diff computation below is otherwise unchanged.
     function trackMotionFrame() {
         if (!cameraTrackerActive || !cameraStream) return;
 
@@ -1821,7 +1537,10 @@
                         }
                     }
 
-                    maybeSendAmbientNudge(count);
+                    // count (and the discarded sumX/sumY average) used to
+                    // drive maybeSendAmbientNudge(), removed along with the
+                    // live voice bridge it depended on — see the comment
+                    // above this function.
                 }
                 prevFrameData = data;
             } catch (e) {
@@ -1880,27 +1599,13 @@
     let micStoppedIntentionally = false;
 
     async function toggleMicrophoneSensor() {
-        // When the live voice bridge is running, this button mutes/unmutes
-        // it rather than starting the separate legacy STT pipeline — "ears"
-        // are always on by default, this is just a privacy pause. Muting
-        // stops the wake-word listener too (a genuine pause, not just
-        // "Gemini forwarding paused while a different Google speech service
-        // keeps listening") and unmuting returns to standby — the wake word
-        // still needs to be said again, same as after the disarm timeout.
-        if (liveVoiceActive) {
-            liveVoiceMuted = !liveVoiceMuted;
-            if (liveVoiceMuted) {
-                disarmLiveVoice();
-                stopWakeWordListener();
-                addNotification("Live voice muted.", "warning");
-            } else {
-                startWakeWordListener();
-                addNotification(`Live voice unmuted. Say "${WAKE_WORD}" to talk.`, "success");
-            }
-            updateMicButtonVisual();
-            return;
-        }
-
+        // This used to first check whether the always-on live voice bridge
+        // (Gemini Live API over /ws/voice) was running and, if so, just
+        // mute/unmute it instead of starting the click-to-talk pipeline
+        // below. That bridge is gone — voice input now arrives at the local
+        // voice daemon's Unix socket directly, not through the browser — so
+        // this button is unconditionally click-to-talk: press to start
+        // listening, press again to stop and transcribe.
         if (micEnabled) {
             await stopMicrophoneSensor();
             return;
@@ -1921,11 +1626,12 @@
                 // fallback below can't catch that silence, so a startup
                 // timeout does: if onstart hasn't fired shortly after
                 // start(), this API is non-functional here and we fall back
-                // to the real local pipeline (whisper-cpp via /api/voice-input).
+                // to the real local pipeline (the local voice daemon, via
+                // /api/voice-input -- see daemon/voice_engine.py).
                 let sttDidStart = false;
                 const sttStartTimeout = setTimeout(() => {
                     if (sttDidStart) return;
-                    console.warn("Browser speech recognition produced no events — falling back to local whisper-cpp pipeline.");
+                    console.warn("Browser speech recognition produced no events — falling back to the local voice-daemon pipeline.");
                     addNotification("Cloud speech service unreachable. Using local transcription instead...", "warning");
                     try { localSpeechRecognition.abort(); } catch (e) {}
                     localSpeechRecognition = null;
@@ -4074,6 +3780,19 @@
                 localKeyInput.value = "";
                 localKeyInput.placeholder = data.localApiKeySet ? "•••••••• (configured — leave blank to keep)" : "No local API key configured";
                 updateOfflineUIState(data.offline);
+
+                // Personality dials — fall back to kernel.ts's own defaults
+                // (see src/self/kernel.ts) when the field is absent so a
+                // fresh install shows the same values the backend would.
+                const formality = data.personalityFormality ?? 50;
+                const humor = data.personalityHumor ?? 30;
+                const verbosity = data.personalityVerbosity ?? 50;
+                document.getElementById('personality-formality-slider').value = formality;
+                document.getElementById('personality-formality-value').textContent = formality;
+                document.getElementById('personality-humor-slider').value = humor;
+                document.getElementById('personality-humor-value').textContent = humor;
+                document.getElementById('personality-verbosity-slider').value = verbosity;
+                document.getElementById('personality-verbosity-value').textContent = verbosity;
             }
         } catch (err) {
             console.error("Failed to load settings:", err);
@@ -4102,7 +3821,10 @@
             llmMode: document.getElementById('llm-mode-select').value,
             localLlmEndpoint: document.getElementById('local-endpoint-input').value.trim(),
             localModelName: document.getElementById('local-model-input').value.trim(),
-            ...(localApiKeyInput ? { localApiKey: localApiKeyInput } : {})
+            ...(localApiKeyInput ? { localApiKey: localApiKeyInput } : {}),
+            personalityFormality: parseInt(document.getElementById('personality-formality-slider').value, 10),
+            personalityHumor: parseInt(document.getElementById('personality-humor-slider').value, 10),
+            personalityVerbosity: parseInt(document.getElementById('personality-verbosity-slider').value, 10)
         };
 
         try {

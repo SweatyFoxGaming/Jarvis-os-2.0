@@ -35,17 +35,50 @@ services:
       # so they still correctly no-op even though a mount now technically
       # exists pointing at this placeholder folder.
       - ${OBSIDIAN_VAULT_DIR:-./obsidian-vault-unconfigured}:/obsidian-vault
+      # Shared with voice-daemon below so audio-client.ts's Unix-socket
+      # connection (VOICE_DAEMON_SOCKET, defaulting to
+      # /tmp/jarvis-voice/voice.sock in src/server.ts) actually reaches the
+      # daemon process -- both containers must mount the same named volume
+      # at the same path for the socket file to be visible to both sides.
+      - voice-socket:/tmp/jarvis-voice
     # Lets the container reach services on the host (e.g. a local Ollama instance
     # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # The long (mapping) form is used for every entry, even though only
+    # start-order (the default condition) is needed for any of them now --
+    # keeps the block uniform rather than mixing the short `- service` list
+    # form with the mapping form for no real benefit.
     depends_on:
-      - postgres
-      - tts
-      - llama-cpp
-      - whisper-cpp
-      - jarvis-builder
+      postgres:
+        condition: service_started
+      llama-cpp:
+        condition: service_started
+      jarvis-builder:
+        condition: service_started
+      # Deliberately `service_started`, NOT `service_healthy`, even though
+      # voice-daemon has a healthcheck (see its own definition below).
+      # `service_started` still guarantees container START ORDER -- the
+      # daemon's process begins before api attempts to connect -- which is
+      # all api actually needs, since audio-client.ts has its own
+      # reconnect-with-backoff loop (I5) that tolerates a daemon socket
+      # that isn't listening yet. An earlier version of this used
+      # `condition: service_healthy`, which made api's own ability to
+      # start depend on voice-daemon's healthcheck passing -- a real
+      # availability regression: if voice-daemon never becomes healthy for
+      # ANY reason (OOM on a small box, a corrupt image layer, a crash
+      # loop), `docker compose up` would abort the ENTIRE api service with
+      # "dependency failed to start", taking down the whole Jarvis API
+      # over an optional voice subsystem. `service_started` avoids that
+      # failure mode entirely while still giving audio-client.ts's
+      # reconnect loop a real head start on a normal boot. The healthcheck
+      # itself stays on voice-daemon below -- it's still useful for
+      # `docker compose ps` visibility and restart-policy/orchestration
+      # tooling that reads container health -- it's just no longer wired
+      # into api's own startup gate.
+      voice-daemon:
+        condition: service_started
 
   # Offline-first local inference: serves a GGUF model you already have on
   # disk over an OpenAI-compatible API, entirely inside the Docker network —
@@ -59,18 +92,52 @@ services:
     command: ["-m", "/models/${LOCAL_MODEL_FILE}", "--host", "0.0.0.0", "--port", "8080", "-c", "4096"]
     restart: unless-stopped
 
-  # Offline-first speech-to-text, mirroring the llama-cpp pattern above: a
-  # real ggml model (a genuine ~142MB whisper-base.en, not a stub) is already
-  # baked into this image, so no extra host download/volume is needed the way
-  # the LLM model requires. --convert uses the image's bundled ffmpeg to
-  # accept whatever format the browser's MediaRecorder sends (webm/opus)
-  # instead of requiring pre-converted WAV.
-  whisper-cpp:
-    image: ghcr.io/ggml-org/whisper.cpp:main
-    container_name: jarvis-whisper-cpp
-    entrypoint: ["/app/build/bin/whisper-server"]
-    command: ["--host", "0.0.0.0", "--port", "8081", "-m", "/app/models/ggml-base.en.bin", "--convert"]
+  # Local Unix-socket STT/TTS service (see daemon/) that replaced the
+  # whisper-cpp + openai-edge-tts services below -- one Python process
+  # doing faster-whisper transcription and Kokoro synthesis over a shared
+  # socket instead of two separate HTTP services. jarvis-os-api reaches it
+  # via the voice-socket volume mounted into both containers at
+  # /tmp/jarvis-voice (see api's volumes: above and audio-client.ts).
+  voice-daemon:
+    build:
+      context: ./daemon
+    container_name: jarvis-voice-daemon
     restart: unless-stopped
+    volumes:
+      - voice-socket:/tmp/jarvis-voice
+      # Persists faster-whisper/Kokoro-82M model weights (downloaded from
+      # Hugging Face into ~/.cache/huggingface on first real use -- this
+      # daemon runs as root per daemon/Dockerfile, so that's
+      # /root/.cache/huggingface) across restarts and rebuilds. Without
+      # this, the weights live only in the container's ephemeral
+      # filesystem layer and re-download on every `docker compose up
+      # --force-recreate`/image rebuild, which defeats the "offline-
+      # capable" claim on anything but a container that's never been
+      # recreated. Named-volume, matching this file's existing convention
+      # for shared state (voice-socket above) rather than a host bind
+      # mount, since (unlike llama-cpp's model dir) there's no existing
+      # host-side model directory a user is expected to already have for
+      # these weights -- they're fetched automatically on first use.
+      - voice-model-cache:/root/.cache/huggingface
+    # Unix-socket service, so there's no HTTP endpoint to probe -- checks
+    # that the socket file the daemon creates at startup (see
+    # voice_engine.py's main()) actually exists and is a real socket. Note
+    # this is a weak signal: it only proves the daemon's process is up and
+    # listening, not that STT/TTS actually work -- daemon/models.py
+    # lazy-loads the real faster-whisper/Kokoro/torch weights on first
+    # real transcribe/synthesize call, not at daemon startup, so there's
+    # no heavy-import window gating socket creation to wait out here.
+    # start_period is still generous to comfortably cover slow container
+    # scheduling/boot on a loaded CPU-only box, not model loading.
+    healthcheck:
+      # CMD-SHELL (not CMD) because `test` is used as a shell builtin here,
+      # not relied on as a standalone /usr/bin/test binary that may or may
+      # not exist in daemon/Dockerfile's python:3.11-slim base.
+      test: ["CMD-SHELL", "test -S /tmp/jarvis-voice/voice.sock || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 90s
+      retries: 5
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -81,15 +148,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
     volumes:
       - /mnt/jarvis_home/postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-
-  tts:
-    image: travisvn/openai-edge-tts:latest
-    container_name: jarvis-tts
-    environment:
-      - API_KEY=${TTS_API_KEY}
-    ports:
-      - "5051:5050"
     restart: unless-stopped
 
   # The only service in this stack with access to the host's Docker
@@ -115,3 +173,13 @@ services:
     # No ports: — never published to the host or reachable outside this
     # compose network. api reaches it at http://jarvis-builder:4100.
     restart: unless-stopped
+
+# Shared between api and voice-daemon so both containers see the same
+# voice.sock file at /tmp/jarvis-voice (see api's and voice-daemon's
+# volumes: above). postgres uses a host bind mount instead of a named
+# volume, so this is the first entry in this section.
+volumes:
+  voice-socket:
+  # Persistent faster-whisper/Kokoro-82M model-weight cache -- see
+  # voice-daemon's volumes: above for the full rationale.
+  voice-model-cache:

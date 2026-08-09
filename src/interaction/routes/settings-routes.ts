@@ -60,13 +60,36 @@ settingsRouter.get("/api/settings", validateApiKey, requireCapability("settings.
     // endpoint. A boolean is all a settings UI actually needs to render
     // "configured" vs "not configured".
     localApiKeySet: !!kernel.localApiKey,
-    llmMode: kernel.llmMode
+    llmMode: kernel.llmMode,
+    personalityFormality: kernel.personalityFormality,
+    personalityHumor: kernel.personalityHumor,
+    personalityVerbosity: kernel.personalityVerbosity
   });
 });
 
+// Each of these directly steers real LLM calls via identity.ts's
+// buildPersonalityPromptFragment — an out-of-range value isn't just a
+// display glitch, it's a value that function has no defined phrasing band
+// for, so it gets checked explicitly here rather than relying on the
+// COALESCE-based repo layer (which has no range precedent to follow; the
+// existing 5 fields are strings/booleans with nothing to range-check).
+function isValidPersonalityDial(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100;
+}
+
 settingsRouter.post("/api/settings", validateApiKey, requireCapability("settings.write"), async (req: any, res: any) => {
-  const { offline, localLlmEndpoint, localModelName, localApiKey, llmMode } = req.body;
+  const { offline, localLlmEndpoint, localModelName, localApiKey, llmMode, personalityFormality, personalityHumor, personalityVerbosity } = req.body;
   const kernel = MindKernel.getInstance();
+
+  for (const [name, value] of [
+    ["personalityFormality", personalityFormality],
+    ["personalityHumor", personalityHumor],
+    ["personalityVerbosity", personalityVerbosity],
+  ] as const) {
+    if (value !== undefined && !isValidPersonalityDial(value)) {
+      return res.status(400).json({ error: `${name} must be an integer between 0 and 100` });
+    }
+  }
 
   // Only the fields THIS request actually sent go into the partial update —
   // see persistSettings' own comment. Building `changed` alongside the
@@ -78,13 +101,16 @@ settingsRouter.post("/api/settings", validateApiKey, requireCapability("settings
   if (localModelName !== undefined) { kernel.localModelName = localModelName; changed.localModelName = localModelName; }
   if (localApiKey !== undefined) { kernel.localApiKey = localApiKey; changed.localApiKey = localApiKey; }
   if (llmMode !== undefined) { kernel.llmMode = llmMode; changed.llmMode = llmMode; }
+  if (personalityFormality !== undefined) { kernel.personalityFormality = personalityFormality; changed.personalityFormality = personalityFormality; }
+  if (personalityHumor !== undefined) { kernel.personalityHumor = personalityHumor; changed.personalityHumor = personalityHumor; }
+  if (personalityVerbosity !== undefined) { kernel.personalityVerbosity = personalityVerbosity; changed.personalityVerbosity = personalityVerbosity; }
 
   const persisted = await kernel.persistSettings(req.username, changed);
 
   observation.logTelemetry(
     "info",
     "System",
-    `System settings updated: offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}`
+    `System settings updated: offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}, personality(formality=${kernel.personalityFormality}, humor=${kernel.personalityHumor}, verbosity=${kernel.personalityVerbosity})`
   );
   // Doesn't echo localApiKey's value (see the redaction note on GET above) —
   // "the key changed" is still worth an auditable record, just not what it
@@ -93,7 +119,7 @@ settingsRouter.post("/api/settings", validateApiKey, requireCapability("settings
     req.username,
     "update_settings",
     persisted ? "success" : "failed",
-    `offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}, localApiKeyChanged=${localApiKey !== undefined}` +
+    `offline=${kernel.offlineMode}, mode=${kernel.llmMode}, localEndpoint=${kernel.localLlmEndpoint}, localModel=${kernel.localModelName}, localApiKeyChanged=${localApiKey !== undefined}, personality(formality=${kernel.personalityFormality}, humor=${kernel.personalityHumor}, verbosity=${kernel.personalityVerbosity})` +
       (persisted ? "" : " (in effect for this session — persistence failed, will revert on restart)")
   );
 
@@ -104,7 +130,10 @@ settingsRouter.post("/api/settings", validateApiKey, requireCapability("settings
     localLlmEndpoint: kernel.localLlmEndpoint,
     localModelName: kernel.localModelName,
     localApiKeySet: !!kernel.localApiKey,
-    llmMode: kernel.llmMode
+    llmMode: kernel.llmMode,
+    personalityFormality: kernel.personalityFormality,
+    personalityHumor: kernel.personalityHumor,
+    personalityVerbosity: kernel.personalityVerbosity
   });
 });
 
