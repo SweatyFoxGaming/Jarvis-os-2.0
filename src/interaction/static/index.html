@@ -2076,9 +2076,13 @@
     // (false) — used by triggerChatDialogue (Task 4) to know whether to wait
     // for the real "speaking ended" signal below before fading the ephemeral
     // conversation card, or to start that fade timer immediately because
-    // there's no speech to wait for. Existing fire-and-forget callers
-    // elsewhere in this file ignore the return value, unaffected.
-    async function speakText(text) {
+    // there's no speech to wait for. `exchangeId` is Task 4's convo-card
+    // exchange token (review fix round 1) — only triggerChatDialogue's main
+    // reply passes one; every other fire-and-forget caller in this file
+    // (e.g. "Vocalization matrix enabled.") omits it, so it's `undefined`
+    // here, which scheduleConvoCardDissolve's `exchangeId !== convoCardExchangeId`
+    // check always treats as stale — those calls safely never touch the card.
+    async function speakText(text, exchangeId) {
         if (!speechEnabled || !CURRENT_API_KEY) return false;
         try {
             if (currentAudioEl) { currentAudioEl.pause(); URL.revokeObjectURL(currentAudioEl.src); }
@@ -2105,8 +2109,8 @@
             // The real "speaking ended" signal (Task 1) — also the real
             // signal Task 4's ephemeral card waits on before it starts its
             // fade-out timer (see scheduleConvoCardDissolve).
-            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); scheduleConvoCardDissolve(); };
-            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); scheduleConvoCardDissolve(); };
+            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); scheduleConvoCardDissolve(exchangeId); };
+            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); scheduleConvoCardDissolve(exchangeId); };
             await currentAudioEl.play();
             return true;
         } catch { return false; }
@@ -3668,13 +3672,39 @@
     let convoCardFadeTimer = null;
     // ~4-6s after Jarvis's spoken reply finishes (or after the same delay
     // with TTS off, per the brief) — see scheduleConvoCardDissolve below.
+    // Review fix round 1: used uniformly for both cases (a single constant
+    // sitting inside the "ends" case's 4-6s range, and ~1s under the
+    // "TTS-off" case's ~6s suggestion) — flagged in review as a negligible
+    // deviation not worth a dedicated pass, left as-is.
     const CONVO_CARD_FADE_DELAY_MS = 5000;
+
+    // Review fix round 1 — exchange-identity token. Fixes a real bug: the
+    // card is a single shared DOM slot with no per-request identity check,
+    // so sending message 2 before message 1's reply streams back (an
+    // ordinary "quick follow-up" scenario, not a rare race) let message 1's
+    // late-arriving reply silently overwrite message 2's card content —
+    // "Operator: msg2 / Jarvis: reply-to-msg1". showConvoCard() now mints a
+    // fresh token per real send and returns it; callers thread it through
+    // to updateConvoCardReply()/scheduleConvoCardDissolve(), which drop
+    // their effect if the token no longer matches the current exchange
+    // (a newer send has since started). Starts at 0 so callers that never
+    // went through showConvoCard() (fire-and-forget speakText() calls
+    // elsewhere in this file, e.g. "Vocalization matrix enabled.") default
+    // to token 0/undefined, which can never match a real exchange (ids are
+    // minted starting at 1) — so they safely no-op against the card instead
+    // of stealing its dissolve timer, which was itself a latent bug in the
+    // original implementation (every speakText() call's onended handler
+    // called scheduleConvoCardDissolve() unconditionally). This also
+    // resolves the original report's flagged "preset turn overwrites a
+    // still-visible real card" nuance — same root cause, one fix.
+    let convoCardExchangeId = 0;
 
     function cancelConvoCardDissolve() {
         if (convoCardFadeTimer) { clearTimeout(convoCardFadeTimer); convoCardFadeTimer = null; }
     }
 
-    function scheduleConvoCardDissolve() {
+    function scheduleConvoCardDissolve(exchangeId) {
+        if (exchangeId !== convoCardExchangeId) return; // stale — a newer exchange has since started
         cancelConvoCardDissolve();
         convoCardFadeTimer = setTimeout(() => {
             orbConvoCard.classList.remove('orb-convo-card-visible');
@@ -3687,21 +3717,29 @@
     // never got a "fake" transcript bubble either, see appendChatMessage's
     // isPreset guard below, and the same judgment applies here). Starting a
     // new message before a pending fade-out completes cancels it and
-    // immediately shows the new exchange, per the brief.
+    // immediately shows the new exchange, per the brief. Returns the new
+    // exchange's token — callers must thread it through to
+    // updateConvoCardReply()/scheduleConvoCardDissolve() so late-arriving
+    // effects from a now-superseded exchange are dropped instead of
+    // clobbering the card.
     function showConvoCard(userText) {
-        if (!orbConvoCard) return;
+        if (!orbConvoCard) return 0;
+        convoCardExchangeId += 1;
         cancelConvoCardDissolve();
         orbConvoUserEl.textContent = userText;
         orbConvoReplyEl.textContent = '...';
         orbConvoCard.classList.add('orb-convo-card-visible');
+        return convoCardExchangeId;
     }
 
     // Called whenever a reply's real text is available — including the
     // request_screen recursive re-call, which continues the same exchange
     // a showConvoCard() call already made visible (see triggerChatDialogue).
-    // Harmless no-op if the card isn't currently shown (e.g. a fully preset
-    // turn with no prior showConvoCard() call).
-    function updateConvoCardReply(text) {
+    // Silently dropped if exchangeId is stale (a newer send has since
+    // reused the card) or if the card was never shown for this turn (e.g. a
+    // fully preset turn, exchangeId 0/undefined, never matches a real id).
+    function updateConvoCardReply(text, exchangeId) {
+        if (exchangeId !== convoCardExchangeId) return;
         if (orbConvoReplyEl) orbConvoReplyEl.textContent = text;
     }
 
@@ -3709,7 +3747,16 @@
     // on) that should reach the model exactly like a real message — genuine
     // vision context, streamed reply, spoken aloud — but without a fake
     // "user" bubble/toast for something the user didn't actually type.
-    async function triggerChatDialogue(presetMessage, screenshotOverride) {
+    //
+    // convoExchangeIdOverride (review fix round 1): the Task 4 convo-card
+    // exchange token for THIS call. Only ever passed by this function's own
+    // request_screen recursive re-call below, so the continuation keeps
+    // updating the SAME card exchange the original send opened — never
+    // passed by any external caller, which is correct: every other caller
+    // either wants a fresh exchange (a real user send, handled by
+    // showConvoCard() below) or isn't tied to the card at all (preset
+    // callers stay at the default 0, which never matches a real id).
+    async function triggerChatDialogue(presetMessage, screenshotOverride, convoExchangeIdOverride) {
         const isPreset = typeof presetMessage === "string";
         const text = (isPreset ? presetMessage : chatInput.value).trim();
         if (!text) return;
@@ -3719,10 +3766,16 @@
             chatScroller.innerHTML = '';
         }
 
+        // This exchange's convo-card token. A real send mints a fresh one
+        // via showConvoCard(); everything else (preset turns, and the
+        // request_screen recursive continuation of an already-shown real
+        // exchange) keeps whatever was passed in.
+        let convoExchangeId = convoExchangeIdOverride || 0;
+
         if (!isPreset) {
             appendChatMessage(text, 'user');
             addNotification("Broadcasting query vector...");
-            showConvoCard(text);
+            convoExchangeId = showConvoCard(text);
         }
 
         const frame = screenshotOverride || captureCameraFrame();
@@ -3770,20 +3823,20 @@
                             if (!window.jarvisDesktop?.captureScreen) {
                                 appendChatMessage("Screen viewing is only available in the desktop app.", "assistant");
                                 updateSensorStatusLabel();
-                                updateConvoCardReply("Screen viewing is only available in the desktop app.");
-                                scheduleConvoCardDissolve();
+                                updateConvoCardReply("Screen viewing is only available in the desktop app.", convoExchangeId);
+                                scheduleConvoCardDissolve(convoExchangeId);
                                 return;
                             }
                             const screenshot = await window.jarvisDesktop.captureScreen();
                             if (!screenshot) {
                                 appendChatMessage("I couldn't capture your screen just now.", "assistant");
                                 updateSensorStatusLabel();
-                                updateConvoCardReply("I couldn't capture your screen just now.");
-                                scheduleConvoCardDissolve();
+                                updateConvoCardReply("I couldn't capture your screen just now.", convoExchangeId);
+                                scheduleConvoCardDissolve(convoExchangeId);
                                 return;
                             }
                             addNotification("Looking at your screen...", "info");
-                            return triggerChatDialogue(text, screenshot);
+                            return triggerChatDialogue(text, screenshot, convoExchangeId);
                         }
 
                         if (dataStr === "[DONE]") break;
@@ -3843,8 +3896,8 @@
             // case there's no "speaking ended" signal to wait for, so the
             // dissolve timer starts right away instead (~6s of visible
             // text-only reply, per the brief).
-            updateConvoCardReply(fullText);
-            speakText(fullText).then(spoke => { if (!spoke) scheduleConvoCardDissolve(); });
+            updateConvoCardReply(fullText, convoExchangeId);
+            speakText(fullText, convoExchangeId).then(spoke => { if (!spoke) scheduleConvoCardDissolve(convoExchangeId); });
             loadMindKernelData();
             loadLiveSystemData();
             // Self-reflection extraction runs fire-and-forget server-side after
@@ -3854,7 +3907,12 @@
         } catch {
             updateSensorStatusLabel();
             addNotification("Dialogue transmission failure.", "danger");
-            scheduleConvoCardDissolve();
+            // Review fix round 1, minor item 1: give the card a real textual
+            // indication of failure instead of silently sitting on "..." for
+            // the full dissolve delay with no explanation (the toast above
+            // is easy to miss if attention is on the orb, not the corner).
+            updateConvoCardReply("Dialogue transmission failure.", convoExchangeId);
+            scheduleConvoCardDissolve(convoExchangeId);
         }
     }
 
