@@ -284,12 +284,40 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         log.info(f"connection closed: {peer}")
 
 
-async def main() -> None:
+def _remove_stale_socket() -> None:
+    """Ensure SOCKET_PATH's parent directory exists and delete any
+    pre-existing file left there by a previous run, before this run does
+    anything else. Split out of main() and called from the
+    `__main__` guard below, before asyncio.run(main()) even spins up an
+    event loop, so the stale file is gone from the very first instant this
+    process starts -- not just "before we bind the new socket" a few
+    lines into an async function.
+
+    Why this matters: docker-compose.yml's voice-daemon healthcheck only
+    checks whether a file exists at SOCKET_PATH -- it can't tell a live
+    socket from a leftover one. On the very first-ever start there's no
+    stale file, so that's not a problem. On a RESTART, though, if the old
+    file were still sitting on the persistent voice-socket volume for any
+    stretch of this run's startup, the healthcheck would report healthy
+    off the previous run's leftovers while this run isn't actually
+    listening yet -- the exact race the healthcheck exists to catch, just
+    moved from "first start" to "restart". Removing it here, first, closes
+    that off. In practice the window this guards is already small: unlike
+    what an earlier revision of this comment assumed, daemon/models.py
+    lazy-loads the real faster-whisper/Kokoro/torch weights only on the
+    first real transcribe/synthesize call (see its docstring), never at
+    daemon startup, so there's no multi-tens-of-seconds import gate
+    between process start and socket bind on either a first start or a
+    restart. Doing this first is defense-in-depth, not a fix for a large
+    observed window.
+    """
     socket_dir = os.path.dirname(SOCKET_PATH)
     os.makedirs(socket_dir, exist_ok=True)
     if os.path.exists(SOCKET_PATH):
         os.remove(SOCKET_PATH)
 
+
+async def main() -> None:
     server = await asyncio.start_unix_server(handle_connection, path=SOCKET_PATH)
     # daemon/Dockerfile has no USER directive, so this process runs as root
     # and start_unix_server() creates the socket file with a default mode
@@ -308,6 +336,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    _remove_stale_socket()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

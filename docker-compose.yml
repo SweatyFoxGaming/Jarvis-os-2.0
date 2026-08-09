@@ -46,11 +46,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    # The long (mapping) form is required here, not the short `- service`
-    # list form, because voice-daemon needs `condition: service_healthy`
-    # (see below) -- Compose's depends_on doesn't allow mixing the two
-    # forms in one block, so every entry uses the mapping form even though
-    # postgres/llama-cpp/jarvis-builder only need plain start-order.
+    # The long (mapping) form is used for every entry, even though only
+    # start-order (the default condition) is needed for any of them now --
+    # keeps the block uniform rather than mixing the short `- service` list
+    # form with the mapping form for no real benefit.
     depends_on:
       postgres:
         condition: service_started
@@ -58,22 +57,28 @@ services:
         condition: service_started
       jarvis-builder:
         condition: service_started
-      # depends_on's plain start-order form only controls container START
-      # ORDER, not readiness -- the daemon takes many seconds to import
-      # torch/faster-whisper/kokoro after its process starts, and
-      # audio-client.ts previously connected exactly once at api's own
-      # startup with no retry, so a plain start-order dependency here
-      # meant the very first connection attempt would very likely hit
-      # ECONNREFUSED/ENOENT before the daemon's socket even existed, and
-      # (pre-fix) never try again for the life of the process. Using
-      # `condition: service_healthy` makes Docker actually wait for
-      # voice-daemon's healthcheck (see its own definition below) to pass
-      # before starting api. audio-client.ts also independently gained its
-      # own reconnect-with-backoff loop as defense in depth (I5) -- this
-      # healthcheck reduces how often that loop is needed on a normal
-      # boot, it doesn't replace it.
+      # Deliberately `service_started`, NOT `service_healthy`, even though
+      # voice-daemon has a healthcheck (see its own definition below).
+      # `service_started` still guarantees container START ORDER -- the
+      # daemon's process begins before api attempts to connect -- which is
+      # all api actually needs, since audio-client.ts has its own
+      # reconnect-with-backoff loop (I5) that tolerates a daemon socket
+      # that isn't listening yet. An earlier version of this used
+      # `condition: service_healthy`, which made api's own ability to
+      # start depend on voice-daemon's healthcheck passing -- a real
+      # availability regression: if voice-daemon never becomes healthy for
+      # ANY reason (OOM on a small box, a corrupt image layer, a crash
+      # loop), `docker compose up` would abort the ENTIRE api service with
+      # "dependency failed to start", taking down the whole Jarvis API
+      # over an optional voice subsystem. `service_started` avoids that
+      # failure mode entirely while still giving audio-client.ts's
+      # reconnect loop a real head start on a normal boot. The healthcheck
+      # itself stays on voice-daemon below -- it's still useful for
+      # `docker compose ps` visibility and restart-policy/orchestration
+      # tooling that reads container health -- it's just no longer wired
+      # into api's own startup gate.
       voice-daemon:
-        condition: service_healthy
+        condition: service_started
 
   # Offline-first local inference: serves a GGUF model you already have on
   # disk over an OpenAI-compatible API, entirely inside the Docker network —
@@ -116,11 +121,14 @@ services:
       - voice-model-cache:/root/.cache/huggingface
     # Unix-socket service, so there's no HTTP endpoint to probe -- checks
     # that the socket file the daemon creates at startup (see
-    # voice_engine.py's main()) actually exists and is a real socket.
-    # start_period is generous because faster-whisper/Kokoro/torch import
-    # alone (before the socket is even created) has been observed to take
-    # tens of seconds on this CPU-only box, on top of any first-run model
-    # download.
+    # voice_engine.py's main()) actually exists and is a real socket. Note
+    # this is a weak signal: it only proves the daemon's process is up and
+    # listening, not that STT/TTS actually work -- daemon/models.py
+    # lazy-loads the real faster-whisper/Kokoro/torch weights on first
+    # real transcribe/synthesize call, not at daemon startup, so there's
+    # no heavy-import window gating socket creation to wait out here.
+    # start_period is still generous to comfortably cover slow container
+    # scheduling/boot on a loaded CPU-only box, not model loading.
     healthcheck:
       # CMD-SHELL (not CMD) because `test` is used as a shell builtin here,
       # not relied on as a standalone /usr/bin/test binary that may or may

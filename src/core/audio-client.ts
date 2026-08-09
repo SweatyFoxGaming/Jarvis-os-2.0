@@ -77,6 +77,11 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
       reconnectTimer = null;
       connect();
     }, delay);
+    // unref() so this timer alone never keeps the Node process alive --
+    // correct for the real long-running server process (which always has
+    // other reasons to stay up), and means a test/script that forgets to
+    // call stop() hangs on nothing rather than hanging the process itself.
+    reconnectTimer.unref();
   };
 
   const connect = () => {
