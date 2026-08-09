@@ -339,6 +339,28 @@
            the strip's y:0-8px band; only the sleep button's top ~1.5px of a
            42px-tall hit target overlaps it. Left as a known, harmless
            trade-off rather than risk the flicker. */
+
+        /* ---- Ephemeral conversation card (Task 4): replaces the old
+           always-visible "Conversation" transcript on Home. Hidden by
+           default (opacity/pointer-events, not `hidden`, so it can fade)
+           — shown by showConvoCard() on message send, updated by
+           updateConvoCardReply() once the real reply text arrives, and
+           faded back out by scheduleConvoCardDissolve() a few seconds
+           after Jarvis's spoken reply finishes (or after being visible on
+           its own for a few seconds if TTS is off). See the inline script
+           near triggerChatDialogue()/speakText(). Reuses .holo-panel for
+           the glass treatment — no new panel surface invented here. */
+        #orb-convo-card {
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(8px);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+        #orb-convo-card.orb-convo-card-visible {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateY(0);
+        }
     </style>
 </head>
 <body class="bg-bg text-text font-sans h-screen w-screen overflow-hidden select-none relative">
@@ -452,6 +474,11 @@
                 <span title="Memory"><span id="health-ram">0.0 GB</span></span>
                 <span title="Latency"><span id="health-latency">0ms</span></span>
                 <div class="h-4 w-px bg-white/10"></div>
+                <button onclick="toggleConversationHistory()" id="btn-history-toggle" class="p-1.5 hover:bg-white/5 rounded-lg text-secondary hover:text-white transition-all" title="Conversation history">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </button>
                 <button onclick="triggerLocalSleep()" id="btn-sleep-toggle" class="p-1.5 hover:bg-white/5 rounded-lg text-secondary hover:text-white transition-all" title="Sleep">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
@@ -579,10 +606,37 @@
                     </div>
                 </div>
 
-                <!-- Conversation transcript — appears below the hero once a conversation
-                     is underway. Kept in the same view rather than a separate tab, so
-                     "ask anything" and "see the reply" are one continuous surface. -->
-                <div class="w-full max-w-3xl mx-auto mt-8 flex-1 flex flex-col min-h-0">
+                <!-- Ephemeral conversation card (Task 4) — the ambient, orb-centric
+                     replacement for the old always-visible transcript below. Hidden
+                     by default; showConvoCard()/updateConvoCardReply()/
+                     scheduleConvoCardDissolve() (inline script, near
+                     triggerChatDialogue()) drive it: shown with the user's message
+                     + a "..." placeholder on send, updated with the real reply text
+                     once it arrives, then faded back out a few seconds after
+                     Jarvis's spoken reply finishes (or after ~6s visible if TTS is
+                     off). The full scrollable history below (now off by default)
+                     still receives every message in real time via the unchanged
+                     appendChatMessage()/chat-scroller — reopen it via the "History"
+                     button in the top header (hover the top edge to reveal it, per
+                     Task 3's reveal-nav). -->
+                <div id="orb-convo-card" class="w-full max-w-xl mx-auto mt-8 holo-panel rounded-2xl p-5" aria-live="polite">
+                    <div class="flex items-center gap-2 text-[10px] text-primary font-bold uppercase tracking-widest mb-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-primary"></span> Operator
+                    </div>
+                    <p id="orb-convo-user" class="text-white text-sm leading-snug mb-3"></p>
+                    <div class="flex items-center gap-2 text-[10px] text-accent font-bold uppercase tracking-widest mb-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-accent"></span> Jarvis
+                    </div>
+                    <p id="orb-convo-reply" class="text-secondary text-sm leading-snug"></p>
+                </div>
+
+                <!-- Full conversation history — the pre-Task-4 transcript panel,
+                     preserved in full (same #chat-scroller, same Decision trace
+                     sidebar, same #display-panel) but hidden by default now that
+                     the ephemeral card above is the default ambient view. Reachable
+                     via the "History" toggle button in #app-header (behind Task
+                     3's reveal-nav) — see toggleConversationHistory(). -->
+                <div id="conversation-history-panel" class="hidden w-full max-w-3xl mx-auto mt-8 flex-1 flex flex-col min-h-0">
                     <div class="flex items-center justify-between px-1 mb-2">
                         <span class="text-[11px] text-secondary/60 uppercase tracking-wider">Conversation</span>
                         <button onclick="toggleTraceSidebar()" class="text-[11px] text-secondary/60 hover:text-white transition-all" title="Toggle decision trace">Decision trace</button>
@@ -2018,8 +2072,14 @@
         updateSensorStatusLabel();
     }
 
+    // Returns whether speech actually started (true) or was skipped/failed
+    // (false) — used by triggerChatDialogue (Task 4) to know whether to wait
+    // for the real "speaking ended" signal below before fading the ephemeral
+    // conversation card, or to start that fade timer immediately because
+    // there's no speech to wait for. Existing fire-and-forget callers
+    // elsewhere in this file ignore the return value, unaffected.
     async function speakText(text) {
-        if (!speechEnabled || !CURRENT_API_KEY) return;
+        if (!speechEnabled || !CURRENT_API_KEY) return false;
         try {
             if (currentAudioEl) { currentAudioEl.pause(); URL.revokeObjectURL(currentAudioEl.src); }
 
@@ -2028,24 +2088,28 @@
                 .replace(/\[[^\]]*\]/g, '')
                 .replace(/uuid:[a-f0-9-]+/gi, 'node')
                 .slice(0, 500);
-            if (!cleanText.trim()) return;
+            if (!cleanText.trim()) return false;
 
             const res = await authFetch('/api/integrations/tts/speak', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
                 body: JSON.stringify({ text: cleanText })
             });
-            if (!res.ok) return; // TTS is optional polish — degrade silently, same as before
+            if (!res.ok) return false; // TTS is optional polish — degrade silently, same as before
 
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
             currentAudioEl = new Audio(url);
             isSpeakingNow = true;
             updateSensorStatusLabel();
-            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); };
-            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); };
+            // The real "speaking ended" signal (Task 1) — also the real
+            // signal Task 4's ephemeral card waits on before it starts its
+            // fade-out timer (see scheduleConvoCardDissolve).
+            currentAudioEl.onended = () => { isSpeakingNow = false; URL.revokeObjectURL(url); updateSensorStatusLabel(); scheduleConvoCardDissolve(); };
+            currentAudioEl.onerror = () => { isSpeakingNow = false; updateSensorStatusLabel(); scheduleConvoCardDissolve(); };
             await currentAudioEl.play();
-        } catch {}
+            return true;
+        } catch { return false; }
     }
 
     // Plays audio the server already synthesized (the speak_text tool call,
@@ -3596,6 +3660,51 @@
         chatScroller.scrollTop = chatScroller.scrollHeight;
     }
 
+    // Task 4: ephemeral #orb-convo-card — the ambient default view of "the
+    // current exchange," replacing the old always-visible transcript.
+    const orbConvoCard = document.getElementById('orb-convo-card');
+    const orbConvoUserEl = document.getElementById('orb-convo-user');
+    const orbConvoReplyEl = document.getElementById('orb-convo-reply');
+    let convoCardFadeTimer = null;
+    // ~4-6s after Jarvis's spoken reply finishes (or after the same delay
+    // with TTS off, per the brief) — see scheduleConvoCardDissolve below.
+    const CONVO_CARD_FADE_DELAY_MS = 5000;
+
+    function cancelConvoCardDissolve() {
+        if (convoCardFadeTimer) { clearTimeout(convoCardFadeTimer); convoCardFadeTimer = null; }
+    }
+
+    function scheduleConvoCardDissolve() {
+        cancelConvoCardDissolve();
+        convoCardFadeTimer = setTimeout(() => {
+            orbConvoCard.classList.remove('orb-convo-card-visible');
+            convoCardFadeTimer = null;
+        }, CONVO_CARD_FADE_DELAY_MS);
+    }
+
+    // Called on a real, user-initiated message send (never for
+    // system-triggered preset turns like the camera-presence hint — those
+    // never got a "fake" transcript bubble either, see appendChatMessage's
+    // isPreset guard below, and the same judgment applies here). Starting a
+    // new message before a pending fade-out completes cancels it and
+    // immediately shows the new exchange, per the brief.
+    function showConvoCard(userText) {
+        if (!orbConvoCard) return;
+        cancelConvoCardDissolve();
+        orbConvoUserEl.textContent = userText;
+        orbConvoReplyEl.textContent = '...';
+        orbConvoCard.classList.add('orb-convo-card-visible');
+    }
+
+    // Called whenever a reply's real text is available — including the
+    // request_screen recursive re-call, which continues the same exchange
+    // a showConvoCard() call already made visible (see triggerChatDialogue).
+    // Harmless no-op if the card isn't currently shown (e.g. a fully preset
+    // turn with no prior showConvoCard() call).
+    function updateConvoCardReply(text) {
+        if (orbConvoReplyEl) orbConvoReplyEl.textContent = text;
+    }
+
     // presetMessage: used for system-triggered turns (e.g. the camera coming
     // on) that should reach the model exactly like a real message — genuine
     // vision context, streamed reply, spoken aloud — but without a fake
@@ -3613,6 +3722,7 @@
         if (!isPreset) {
             appendChatMessage(text, 'user');
             addNotification("Broadcasting query vector...");
+            showConvoCard(text);
         }
 
         const frame = screenshotOverride || captureCameraFrame();
@@ -3660,12 +3770,16 @@
                             if (!window.jarvisDesktop?.captureScreen) {
                                 appendChatMessage("Screen viewing is only available in the desktop app.", "assistant");
                                 updateSensorStatusLabel();
+                                updateConvoCardReply("Screen viewing is only available in the desktop app.");
+                                scheduleConvoCardDissolve();
                                 return;
                             }
                             const screenshot = await window.jarvisDesktop.captureScreen();
                             if (!screenshot) {
                                 appendChatMessage("I couldn't capture your screen just now.", "assistant");
                                 updateSensorStatusLabel();
+                                updateConvoCardReply("I couldn't capture your screen just now.");
+                                scheduleConvoCardDissolve();
                                 return;
                             }
                             addNotification("Looking at your screen...", "info");
@@ -3720,7 +3834,17 @@
                 }
             }
             updateSensorStatusLabel();
-            speakText(fullText);
+            // Real reply text has arrived — update the ephemeral card now.
+            // Dissolve timing then depends on whether TTS actually speaks it:
+            // speakText() resolves `true` once real playback has started (its
+            // currentAudioEl.onended/onerror — the real completion signal —
+            // then calls scheduleConvoCardDissolve() itself, see speakText
+            // below), or `false` if TTS is off/unavailable/failed, in which
+            // case there's no "speaking ended" signal to wait for, so the
+            // dissolve timer starts right away instead (~6s of visible
+            // text-only reply, per the brief).
+            updateConvoCardReply(fullText);
+            speakText(fullText).then(spoke => { if (!spoke) scheduleConvoCardDissolve(); });
             loadMindKernelData();
             loadLiveSystemData();
             // Self-reflection extraction runs fire-and-forget server-side after
@@ -3730,6 +3854,7 @@
         } catch {
             updateSensorStatusLabel();
             addNotification("Dialogue transmission failure.", "danger");
+            scheduleConvoCardDissolve();
         }
     }
 
@@ -4104,6 +4229,17 @@
                 cy.fit();
             }, 300);
         }
+    }
+
+    // Task 4: full conversation history is off by default now that the
+    // ephemeral #orb-convo-card is the ambient default view — reveal it via
+    // the "History" button in #app-header (itself behind Task 3's
+    // reveal-nav). Only lives on the Home view, so switch there first if
+    // some other tab is active.
+    function toggleConversationHistory() {
+        switchTab('home');
+        const panel = document.getElementById('conversation-history-panel');
+        if (panel) panel.classList.toggle('hidden');
     }
 
     let traceSidebarCollapsed = true; // matches the trace sidebar's hidden-by-default markup on Home
