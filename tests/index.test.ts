@@ -4486,6 +4486,91 @@ registerTest("VoiceSession", "a pipeline failure still logs the user's message b
   }
 });
 
+// ---------- HealthWatchdog Tests ----------
+registerTest("HealthWatchdog", "assessSystemHealth reports ok when every dependency is reachable", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => true,
+    getHealth: () => ({ status: "green" } as any),
+    checkSocketReachable: async () => true,
+    checkHttpReachable: async () => true,
+  };
+  const result = await assessSystemHealth(deps);
+  if (!result.ok || result.problems.length !== 0) {
+    throw new Error(`HealthWatchdog: expected ok with no problems, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem when Postgres is unreachable", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => false,
+    getHealth: () => ({ status: "green" } as any),
+    checkSocketReachable: async () => true,
+    checkHttpReachable: async () => true,
+  };
+  const result = await assessSystemHealth(deps);
+  if (result.ok || !result.problems.some(p => /postgres/i.test(p))) {
+    throw new Error(`HealthWatchdog: expected a specific Postgres problem, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem when the voice daemon is unreachable", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => true,
+    getHealth: () => ({ status: "green" } as any),
+    checkSocketReachable: async () => false,
+    checkHttpReachable: async () => true,
+  };
+  const result = await assessSystemHealth(deps);
+  if (result.ok || !result.problems.some(p => /voice.daemon/i.test(p))) {
+    throw new Error(`HealthWatchdog: expected a specific voice-daemon problem, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem when llama-cpp is unreachable", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => true,
+    getHealth: () => ({ status: "green" } as any),
+    checkSocketReachable: async () => true,
+    checkHttpReachable: async () => false,
+  };
+  const result = await assessSystemHealth(deps);
+  if (result.ok || !result.problems.some(p => /llama/i.test(p))) {
+    throw new Error(`HealthWatchdog: expected a specific llama-cpp problem, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "assessSystemHealth reports multiple problems together, not just the first", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => false,
+    getHealth: () => ({ status: "green" } as any),
+    checkSocketReachable: async () => false,
+    checkHttpReachable: async () => true,
+  };
+  const result = await assessSystemHealth(deps);
+  if (result.ok || result.problems.length < 2) {
+    throw new Error(`HealthWatchdog: expected multiple distinct problems, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "assessSystemHealth never throws — a dependency check that itself throws degrades to a reported problem", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => { throw new Error("simulated failure"); },
+    getHealth: () => ({ status: "green" } as any),
+    checkSocketReachable: async () => true,
+    checkHttpReachable: async () => true,
+  };
+  const result = await assessSystemHealth(deps);
+  if (result.ok || result.problems.length === 0) {
+    throw new Error("HealthWatchdog: expected a reported problem from a throwing dependency check, not a thrown exception escaping assessSystemHealth");
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
