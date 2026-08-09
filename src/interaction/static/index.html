@@ -1048,10 +1048,24 @@
             return [cx + X * R, cy + Y * R, (Z + 1.6) / 3.2];
         }
 
+        // Simple linear RGB interpolation toward a violet target, used by the
+        // "thinking" state's hueShift config field to tint the core/glow
+        // gradients without a full HSL conversion pipeline. hueShift is a
+        // 0-100-ish magnitude (40 == blend 40% of the way to violet); states
+        // without a hueShift field pass undefined here and get the original
+        // color back unchanged (no-op for idle/active/speaking).
+        function blendTowardViolet(r, gCh, b, hueShift) {
+            if (!hueShift) return [r, gCh, b];
+            const t = Math.min(1, hueShift / 100);
+            return [r + (170 - r) * t, gCh + (110 - gCh) * t, b + (255 - b) * t];
+        }
+
         const STATE_CONFIG = {
             idle: { speed: 0.2, pinkMix: 0.35, brightness: 1 },
             active: { speed: 0.32, pinkMix: 0.55, brightness: 1.25 },
             speaking: { speed: 0.5, pinkMix: 0.85, brightness: 1.6 },
+            listening: { speed: 0.4, pinkMix: 0.4, brightness: 1.35 },
+            thinking: { speed: 0.55, pinkMix: 0.7, brightness: 1.2, hueShift: 40 },
         };
 
         const scenes = [];
@@ -1080,8 +1094,9 @@
             bg.addColorStop(0, "#020714"); bg.addColorStop(0.45, "#071328"); bg.addColorStop(1, "#01040c");
             g.fillStyle = bg; g.fillRect(0, 0, W, H);
 
+            const [glowR, glowG, glowB] = blendTowardViolet(30, 100, 220, cfg.hueShift);
             const glow = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.7);
-            glow.addColorStop(0.4, `rgba(30,100,220,${0.22 * dim})`); glow.addColorStop(1, "rgba(0,0,0,0)");
+            glow.addColorStop(0.4, `rgba(${glowR},${glowG},${glowB},${0.22 * dim})`); glow.addColorStop(1, "rgba(0,0,0,0)");
             g.fillStyle = glow; g.beginPath(); g.arc(cx, cy, R * 1.7, 0, 6.29); g.fill();
 
             g.strokeStyle = `rgba(90,190,255,${0.2 * dim})`; g.lineWidth = 1;
@@ -1097,8 +1112,9 @@
             }
 
             const corePink = 0.3 + cfg.pinkMix * 0.5;
+            const [coreR, coreG, coreB] = blendTowardViolet(255, 120, 220, cfg.hueShift);
             const core = g.createRadialGradient(cx, cy - R * 0.06, 0, cx, cy - R * 0.06, R * 0.5);
-            core.addColorStop(0, `rgba(255,120,220,${corePink * dim})`); core.addColorStop(1, "rgba(0,0,0,0)");
+            core.addColorStop(0, `rgba(${coreR},${coreG},${coreB},${corePink * dim})`); core.addColorStop(1, "rgba(0,0,0,0)");
             g.fillStyle = core; g.beginPath(); g.arc(cx, cy - R * 0.06, R * 0.5, 0, 6.29); g.fill();
 
             scene.projected = [];
@@ -1661,6 +1677,7 @@
                     
                     addNotification("Neural speech recognition active. Speak now.", "success");
                     updateSensorStatusLabel();
+                    NeuralOrb.setState(focalOrbScene, 'listening');
                 };
                 
                 localSpeechRecognition.onresult = (event) => {
@@ -1805,6 +1822,7 @@
             
             addNotification("Neural listening active. Click again to transmit.", "success");
             updateSensorStatusLabel();
+            NeuralOrb.setState(focalOrbScene, 'listening');
 
         } catch (e) {
             console.error("Microphone access failed: ", e);
@@ -3446,6 +3464,7 @@
             addNotification("Visual snapshot attached — Jarvis can see this turn.", "info");
         }
 
+        NeuralOrb.setState(focalOrbScene, 'thinking');
         try {
             const res = await fetch('/api/chat', {
                 method: 'POST',
@@ -3481,11 +3500,13 @@
                         if (dataStr === "request_screen") {
                             if (!window.jarvisDesktop?.captureScreen) {
                                 appendChatMessage("Screen viewing is only available in the desktop app.", "assistant");
+                                updateSensorStatusLabel();
                                 return;
                             }
                             const screenshot = await window.jarvisDesktop.captureScreen();
                             if (!screenshot) {
                                 appendChatMessage("I couldn't capture your screen just now.", "assistant");
+                                updateSensorStatusLabel();
                                 return;
                             }
                             addNotification("Looking at your screen...", "info");
@@ -3539,6 +3560,7 @@
                     }
                 }
             }
+            updateSensorStatusLabel();
             speakText(fullText);
             loadMindKernelData();
             loadLiveSystemData();
@@ -3547,6 +3569,7 @@
             setTimeout(loadIdentityStream, 2500);
             setTimeout(loadBuildRequests, 500);
         } catch {
+            updateSensorStatusLabel();
             addNotification("Dialogue transmission failure.", "danger");
         }
     }
