@@ -4981,14 +4981,13 @@ registerTest("HealthWatchdog", "checkCompanionStaleness: repo HEAD moving again 
 });
 
 // ---------- Fix-wave regression test: packed-refs exact-field match ----------
-registerTest("HealthWatchdog", "findPackedRefSha matches the ref field exactly, not by line suffix", async () => {
+registerTest("HealthWatchdog", "findPackedRefSha matches the ref field exactly, ignoring lines with a similar path suffix", async () => {
   const { findPackedRefSha } = await import("../src/self/health-watchdog.js");
   const decoySha = "1".repeat(40);
   const realSha = "2".repeat(40);
-  // The decoy line ENDS WITH " ...refs/heads/main" only if compared as a
-  // suffix of the whole line — the old `.endsWith(" " + ref)` logic would
-  // have returned the decoy's SHA for refs/heads/main. Exact-field matching
-  // must skip it and find the real one further down.
+  // The decoy's ref name shares a trailing path segment with the real ref
+  // ("refs/heads/main") but is a distinct, differently-named ref. Explicit
+  // whitespace-delimited field parsing must not conflate the two.
   const content = [
     "# pack-refs with: peeled fully-peeled sorted ",
     `${decoySha} refs/heads/old/refs/heads/main`,

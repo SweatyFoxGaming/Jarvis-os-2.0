@@ -126,12 +126,12 @@ function resolveGitDirs(repoRoot: string): { gitDir: string; commonDir: string }
 // dependency on PATH or an installed git binary, in dev or in production.
 // packed-refs lines are "<sha> <full-ref-name>", one pair per line, plus
 // "#"-prefixed comment/header lines and (for annotated tags) "^"-prefixed
-// peeled-object lines. The ref field is compared EXACTLY rather than with a
-// suffix match: a suffix match on " refs/heads/main" would also match a
-// line for a differently-named ref that merely ends the same way (e.g. a
-// ref literally named "refs/heads/old/refs/heads/main", or any ref whose
-// trailing path segments coincide), and would then return that other ref's
-// SHA as if it were HEAD's.
+// peeled-object lines. The ref field is parsed as an explicit whitespace-
+// delimited field and compared EXACTLY, rather than relying on a suffix/
+// endsWith check against " " + ref -- git ref names can't contain spaces,
+// so that would happen to be equivalent for well-formed input, but exact
+// field parsing is more explicit about the actual line format and doesn't
+// depend on that invariant holding.
 export function findPackedRefSha(packedRefsContent: string, ref: string): string | null {
   for (const rawLine of packedRefsContent.split("\n")) {
     const line = rawLine.trim();
