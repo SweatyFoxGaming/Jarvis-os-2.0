@@ -471,6 +471,37 @@ registerTest("Permissions", "Default-deny grants with admin pre-seeded", async (
   }
 });
 
+// Fix-round regression test (code review flagged the original
+// POST /api/hud/report-version as reusing "hud.read" — documented in
+// security.ts as read-only, "no write action" — to gate a real write. That
+// would let any principal holding the harmless hud.read grant spoof or
+// suppress the companion-staleness health signal. hud.report_version is the
+// dedicated write capability introduced to fix that, mirroring the
+// vault.read/vault.write and evolution.read/evolution.manage split already
+// used elsewhere in ALL_CAPABILITIES. This locks in that the two grants are
+// genuinely independent, not aliases of each other.
+registerTest("Permissions", "hud.report_version is a distinct write capability from hud.read — holding one does not imply the other", async () => {
+  await grantCapability("hud_read_only_test_user", "hud.read", "test-harness");
+  if (!hasGrant("hud_read_only_test_user", "hud.read")) {
+    throw new Error("Permissions: grantCapability(hud.read) did not take effect");
+  }
+  if (hasGrant("hud_read_only_test_user", "hud.report_version")) {
+    throw new Error("Permissions: a user granted only hud.read must NOT be treated as holding hud.report_version — that's exactly the privilege escalation the fix-round review flagged");
+  }
+
+  await grantCapability("hud_report_version_test_user", "hud.report_version", "test-harness");
+  if (!hasGrant("hud_report_version_test_user", "hud.report_version")) {
+    throw new Error("Permissions: grantCapability(hud.report_version) did not take effect");
+  }
+  if (hasGrant("hud_report_version_test_user", "hud.read")) {
+    throw new Error("Permissions: a user granted only hud.report_version must not incidentally gain hud.read");
+  }
+
+  if (!hasGrant("admin", "hud.read") || !hasGrant("admin", "hud.report_version")) {
+    throw new Error("Permissions: admin should hold both hud.read and hud.report_version by default (ALL_CAPABILITIES)");
+  }
+});
+
 // "admin" is the literal username auth-middleware.ts assigns to whoever holds
 // INTERNAL_API_KEY, and the one security.ts/permissions-routes.ts trust as
 // having every capability. Before this fix, nothing stopped a normal
@@ -1876,6 +1907,59 @@ registerTest("HTTP Boundary", "briefing/evolution/feature-request routes are aut
     });
     if (badStatus.status !== 400) {
       throw new Error(`HTTP Boundary: expected 400 for an invalid feature-request status, got ${badStatus.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// Fix-round regression test: confirms POST /api/hud/report-version is
+// actually wired behind requireCapability("hud.report_version") against a
+// real running server, not just in the Permissions unit test above. Can't
+// fully exercise the "authenticated but only holds hud.read" 403 case here
+// without a live Postgres to register a real low-privilege user against
+// (same documented constraint as the "newly capability-gated routes" test
+// above) — that exact case is covered by the Permissions-category test
+// proving hasGrant("hud.read") never implies hasGrant("hud.report_version").
+// What this test adds: proof against the real server that the route rejects
+// unauthenticated requests, rejects a malformed sha, and admits a caller
+// that genuinely holds hud.report_version (admin, who has every capability).
+registerTest("HTTP Boundary", "POST /api/hud/report-version is capability-gated and validates its body", async () => {
+  const port = 3021;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/hud/report-version`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sha: "a".repeat(40) }),
+    });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/hud/report-version, got ${noKey.status}`);
+    }
+
+    const adminHeaders = { "X-API-Key": TEST_ADMIN_API_KEY, "Content-Type": "application/json" };
+
+    const badSha = await fetch(`http://127.0.0.1:${port}/api/hud/report-version`, {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ sha: "not-a-real-sha" }),
+    });
+    if (badSha.status !== 400) {
+      throw new Error(`HTTP Boundary: expected 400 for a malformed sha, got ${badSha.status}`);
+    }
+
+    const validReport = await fetch(`http://127.0.0.1:${port}/api/hud/report-version`, {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ sha: "b".repeat(40) }),
+    });
+    if (validReport.status !== 200) {
+      throw new Error(`HTTP Boundary: admin (holds hud.report_version via ALL_CAPABILITIES) should not be denied, got ${validReport.status}`);
+    }
+    const validBody = await validReport.json();
+    if (validBody.ok !== true) {
+      throw new Error(`HTTP Boundary: expected { ok: true } from a valid report, got ${JSON.stringify(validBody)}`);
     }
   } finally {
     await stopTestServer(child);

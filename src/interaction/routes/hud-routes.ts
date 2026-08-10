@@ -75,13 +75,18 @@ hudRouter.get("/api/hud/status", validateApiKey, requireCapability("hud.read"), 
 
 // Self-reported by the EWW HUD bridge (src/ipc/eww-bridge.ts) on its own
 // startup, and again on a slow periodic re-report -- see health-watchdog.ts's
-// own comment on why this is stored in-memory only. Gated the same way
-// /api/hud/status already is (validateApiKey + hud.read): the deploy
-// script's own env-file comment already requires the bridge's configured
-// JARVIS_API_KEY to be the real admin key (not merely a hud.read-scoped user
-// key) for its /ws/events connection to be accepted at all, so reusing that
-// same requirement here doesn't add any new operational burden.
-hudRouter.post("/api/hud/report-version", validateApiKey, requireCapability("hud.read"), (req: any, res: any) => {
+// own comment on why this is stored in-memory only. Gated by the dedicated
+// hud.report_version capability, NOT hud.read (see security.ts's own comment
+// on why: hud.read is documented read-only, and this route performs a real
+// write -- recording a value the self-health-check job trusts as evidence of
+// what code is actually running -- so reusing hud.read would let any
+// principal holding that "harmless" read grant spoof or suppress the
+// companion-staleness signal). The deploy script's own env-file comment
+// already requires the bridge's configured JARVIS_API_KEY to be the real
+// admin key (which holds every capability, including this one) for its
+// /ws/events connection to be accepted at all, so this doesn't add any new
+// operational burden for the one real caller (the bridge itself).
+hudRouter.post("/api/hud/report-version", validateApiKey, requireCapability("hud.report_version"), (req: any, res: any) => {
   const sha = req.body?.sha;
   if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha)) {
     return res.status(400).json({ error: "Body must be { sha: <40-character git SHA> }." });
