@@ -17,7 +17,7 @@ import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
 import * as evolutionRepo from "./state/evolution-repo.js";
 import * as wellbeing from "../self/wellbeing.js";
 import * as wellbeingRepo from "./state/wellbeing-repo.js";
-import { assessSystemHealth } from "../self/health-watchdog.js";
+import { assessSystemHealth, type HealthAssessment } from "../self/health-watchdog.js";
 import { positiveIntegerEnv } from "./env.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -299,6 +299,15 @@ export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Time
  * later recurrence of the same problem after a real recovery notifies again
  * rather than staying suppressed forever.
  *
+ * "The exact same problem set" is compared by each problem's stable `key`
+ * (one fixed identifier per check — "postgres", "companion-staleness", …),
+ * NEVER by its rendered message. Messages deliberately embed volatile
+ * specifics (the companion-staleness one interpolates the two short SHAs),
+ * so comparing message strings meant the identical unresolved problem looked
+ * brand-new every time repo HEAD moved, and the cooldown never suppressed
+ * anything. The messages are still what gets sent to the human — only the
+ * dedup identity changed.
+ *
  * runAssessment defaults to the real assessSystemHealth, mirroring
  * assessSystemHealth's own dependency-injection pattern — tests inject a
  * fake here instead of trying to mock real Postgres/voice-daemon/llama-cpp
@@ -307,29 +316,30 @@ export function startMcpHealthCheckJob(intervalMs = 30 * 60 * 1000): NodeJS.Time
  */
 export function startSelfHealthCheckJob(
   intervalMs = 10 * 60 * 1000,
-  runAssessment: () => Promise<{ ok: boolean; problems: string[] }> = assessSystemHealth
+  runAssessment: () => Promise<HealthAssessment> = assessSystemHealth
 ): NodeJS.Timeout {
-  let lastNotifiedProblems: string[] = [];
+  let lastNotifiedKeys: string[] = [];
   let lastNotifiedAt = 0;
   const NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
 
   return registerJob("self-health-check", intervalMs, async () => {
     const { ok, problems } = await runAssessment();
     if (ok) {
-      lastNotifiedProblems = [];
+      lastNotifiedKeys = [];
       return;
     }
 
+    const keys = [...new Set(problems.map(p => p.key))];
     const sameAsLastNotified =
-      problems.length === lastNotifiedProblems.length &&
-      problems.every(p => lastNotifiedProblems.includes(p));
+      keys.length === lastNotifiedKeys.length &&
+      keys.every(k => lastNotifiedKeys.includes(k));
     const withinCooldown = Date.now() - lastNotifiedAt < NOTIFY_COOLDOWN_MS;
 
     if (sameAsLastNotified && withinCooldown) return;
 
-    const message = `Self-health check found ${problems.length} problem(s):\n${problems.map(p => `- ${p}`).join("\n")}`;
+    const message = `Self-health check found ${problems.length} problem(s):\n${problems.map(p => `- ${p.message}`).join("\n")}`;
     pushNotification("admin", message, "warning");
-    lastNotifiedProblems = problems;
+    lastNotifiedKeys = keys;
     lastNotifiedAt = Date.now();
   });
 }

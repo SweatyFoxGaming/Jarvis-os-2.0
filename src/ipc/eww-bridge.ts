@@ -47,7 +47,17 @@ const API_KEY = process.env.JARVIS_API_KEY || "";
 // restarted api process (which loses its in-memory last-reported version --
 // see health-watchdog.ts's own comment on why that's in-memory only) gets
 // repopulated within a bounded time, without requiring a fresh deploy.
-const VERSION_REPORT_INTERVAL_MS = 60 * 60 * 1000;
+//
+// This interval MUST stay well under health-watchdog.ts's
+// STALE_GRACE_PERIOD_MS (30 minutes), which is how long the server waits
+// before concluding a bridge that has stopped reporting "may have stopped
+// running". It was previously 60 minutes -- LONGER than the grace period --
+// which meant a perfectly healthy bridge was flagged as possibly-dead for
+// roughly the second half of every single hour, forever. 5 minutes leaves a
+// 6x margin: six consecutive reports have to fail before the server draws
+// any conclusion, and the real journal shows individual reports genuinely
+// do fail transiently (ECONNREFUSED while the api container restarts).
+const VERSION_REPORT_INTERVAL_MS = 5 * 60 * 1000;
 
 // Read once at this process's own startup: deploy-hud.sh always restarts
 // jarvis-hud.service after writing a fresh VERSION file (systemctl --user
@@ -160,6 +170,17 @@ function connect(): void {
   ws.on("open", () => {
     console.error("[eww-bridge] connected to /ws/events");
     refreshStatus(); // hydrate immediately on connect, don't wait for the first event
+    // Re-report the version on EVERY successful connection, not just once at
+    // process startup. A connection opening is the strongest available
+    // signal that the api server is up and reachable again -- which is
+    // exactly when an earlier report that failed with ECONNREFUSED/404
+    // (observed for real in the journal) can finally succeed. Without this,
+    // a failed report just sat there until the next periodic timer fired,
+    // and the server-side staleness check reported a false "may not be
+    // running" in the meantime. Also covers the api-restart case: the api
+    // loses its in-memory last-reported version on restart, and the same
+    // restart drops this WebSocket, so reconnect repopulates it immediately.
+    reportVersion();
   });
 
   ws.on("message", (data: any) => {

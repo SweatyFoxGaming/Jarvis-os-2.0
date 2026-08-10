@@ -773,8 +773,8 @@ registerTest("Scheduler", "registerJob ticks on an interval and survives a throw
 registerTest("Scheduler", "startSelfHealthCheckJob suppresses repeat notifications for the same problem set within the cooldown, but still notifies for a genuinely new problem set", async () => {
   const before = getNotifications("admin").length;
   let callCount = 0;
-  const problemSetA = ["Postgres is unreachable."];
-  const problemSetB = ["Voice daemon is unreachable at /tmp/jarvis-voice/voice.sock."];
+  const problemSetA = [{ key: "postgres" as const, message: "Postgres is unreachable." }];
+  const problemSetB = [{ key: "voice-daemon" as const, message: "Voice daemon is unreachable at /tmp/jarvis-voice/voice.sock." }];
 
   // Fake runAssessment (startSelfHealthCheckJob's injectable second param —
   // mirrors assessSystemHealth's own deps-injection pattern) so this test
@@ -812,6 +812,63 @@ registerTest("Scheduler", "startSelfHealthCheckJob suppresses repeat notificatio
     }
     if (!newNotifications[1].message.includes("Voice daemon is unreachable")) {
       throw new Error(`Scheduler: expected the second notification to report the new, distinct problem set, got: ${newNotifications[1].message}`);
+    }
+  } finally {
+    clearInterval(handle);
+  }
+});
+
+// Fix-wave regression test. The whole-plan review found the cooldown
+// compared RENDERED MESSAGE STRINGS, and the companion-staleness message
+// interpolates short SHAs — so every time repo HEAD moved, the identical
+// unresolved problem ("the HUD is stale") produced a different string, the
+// cooldown treated it as brand new, and it re-notified on every single
+// 10-minute tick forever. The dedup identity is now each problem's stable
+// `key`, which never varies with the failure detail.
+registerTest("Scheduler", "startSelfHealthCheckJob dedups by stable problem key, so the same check failing with different message detail stays suppressed within the cooldown", async () => {
+  const before = getNotifications("admin").length;
+  let callCount = 0;
+
+  // Same check (same key), DIFFERENT message text each tick — exactly what
+  // the companion-staleness check produces as repo HEAD advances. Ticks 1-2
+  // must produce exactly one notification; tick 3+ adds a genuinely
+  // different check (a new key), which must notify immediately even though
+  // we're still deep inside the 1-hour cooldown.
+  const handle = startSelfHealthCheckJob(20, async () => {
+    callCount++;
+    const staleness = {
+      key: "companion-staleness" as const,
+      message: `EWW HUD bridge is running commit abc1234, but the current repo is at ${callCount === 1 ? "def5678" : "9999999"}.`,
+    };
+    if (callCount <= 2) return { ok: false, problems: [staleness] };
+    return {
+      ok: false,
+      problems: [staleness, { key: "postgres" as const, message: "Postgres is unreachable." }],
+    };
+  });
+
+  try {
+    const deadline = Date.now() + 2000;
+    while (callCount < 4 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await new Promise(resolve => setTimeout(resolve, 40));
+
+    if (callCount < 4) {
+      throw new Error(`Scheduler: expected startSelfHealthCheckJob to tick at least 4 times within 2s, got ${callCount}`);
+    }
+
+    const newNotifications = getNotifications("admin").slice(before);
+    if (newNotifications.length !== 2) {
+      throw new Error(
+        `Scheduler: expected exactly 2 new "admin" notifications (1 for the first staleness report, 1 when a genuinely new check started failing) — a 3rd would mean the changed SHA in the message defeated the cooldown again. Got ${newNotifications.length}: ${JSON.stringify(newNotifications.map(n => n.message))}`
+      );
+    }
+    if (!newNotifications[0].message.includes("def5678")) {
+      throw new Error(`Scheduler: expected the first notification to carry the specific (first) staleness detail, got: ${newNotifications[0].message}`);
+    }
+    if (!newNotifications[1].message.includes("Postgres is unreachable.")) {
+      throw new Error(`Scheduler: expected the second notification to be triggered by the genuinely new check, got: ${newNotifications[1].message}`);
     }
   } finally {
     clearInterval(handle);
@@ -4646,7 +4703,7 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
-  if (result.ok || !result.problems.some(p => /postgres/i.test(p))) {
+  if (result.ok || !result.problems.some(p => /postgres/i.test(p.message))) {
     throw new Error(`HealthWatchdog: expected a specific Postgres problem, got: ${JSON.stringify(result)}`);
   }
 });
@@ -4662,7 +4719,7 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
-  if (result.ok || !result.problems.some(p => /degraded/i.test(p))) {
+  if (result.ok || !result.problems.some(p => /degraded/i.test(p.message))) {
     throw new Error(`HealthWatchdog: expected a specific degraded-status problem, got: ${JSON.stringify(result)}`);
   }
 });
@@ -4678,7 +4735,7 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
-  if (result.ok || !result.problems.some(p => /voice.daemon/i.test(p))) {
+  if (result.ok || !result.problems.some(p => /voice.daemon/i.test(p.message))) {
     throw new Error(`HealthWatchdog: expected a specific voice-daemon problem, got: ${JSON.stringify(result)}`);
   }
 });
@@ -4694,7 +4751,7 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
-  if (result.ok || !result.problems.some(p => /llama/i.test(p))) {
+  if (result.ok || !result.problems.some(p => /llama/i.test(p.message))) {
     throw new Error(`HealthWatchdog: expected a specific llama-cpp problem, got: ${JSON.stringify(result)}`);
   }
 });
@@ -4752,12 +4809,19 @@ registerTest("HealthWatchdog", "checkCompanionStaleness: matching SHA reported r
   }
 });
 
-registerTest("HealthWatchdog", "checkCompanionStaleness: mismatched SHA is stale with a specific message naming both SHAs", async () => {
-  const { checkCompanionStaleness } = await import("../src/self/health-watchdog.js");
+registerTest("HealthWatchdog", "checkCompanionStaleness: a mismatched SHA that has persisted past the grace period is stale with a specific message naming both SHAs", async () => {
+  const { checkCompanionStaleness, createCompanionMismatchTracker, MISMATCH_GRACE_PERIOD_MS } = await import("../src/self/health-watchdog.js");
   const reported = "a".repeat(40);
   const real = "b".repeat(40);
   const now = Date.now();
-  const result = checkCompanionStaleness(reported, now, real, now);
+  // Seeded as if this exact mismatch was first observed just over the grace
+  // period ago — i.e. the deploy has had its chance and never landed.
+  const tracker = createCompanionMismatchTracker({
+    reportedSha: reported,
+    realSha: real,
+    firstObservedAt: now - MISMATCH_GRACE_PERIOD_MS - 1000,
+  });
+  const result = checkCompanionStaleness(reported, now, real, now, tracker);
   if (!result.stale || !result.reason) {
     throw new Error(`HealthWatchdog: expected stale for a mismatched SHA, got: ${JSON.stringify(result)}`);
   }
@@ -4797,24 +4861,186 @@ registerTest("HealthWatchdog", "checkCompanionStaleness: a matching SHA reported
 });
 
 registerTest("HealthWatchdog", "assessSystemHealth reports a companion-staleness problem alongside a genuine dependency-reachability problem", async () => {
-  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const { assessSystemHealth, createCompanionMismatchTracker, MISMATCH_GRACE_PERIOD_MS } = await import("../src/self/health-watchdog.js");
+  const now = Date.now();
   const deps = {
     pingDatabase: async () => false, // a real, independent problem
     getHealth: () => ({ status: "green" } as any),
     checkSocketReachable: async () => true,
     checkHttpReachable: async () => true,
-    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: now }),
     getRealHeadSha: () => "b".repeat(40), // mismatched -- the bridge is stale
+    now: () => now,
+    // Already-persisted mismatch: assessSystemHealth only reports staleness
+    // once a mismatch has outlived the deploy-in-progress grace period.
+    companionMismatchTracker: createCompanionMismatchTracker({
+      reportedSha: "a".repeat(40),
+      realSha: "b".repeat(40),
+      firstObservedAt: now - MISMATCH_GRACE_PERIOD_MS - 1000,
+    }),
   };
   const result = await assessSystemHealth(deps);
   if (result.ok || result.problems.length < 2) {
     throw new Error(`HealthWatchdog: expected both a Postgres problem and a companion-staleness problem, got: ${JSON.stringify(result)}`);
   }
-  if (!result.problems.some(p => /postgres/i.test(p))) {
+  if (!result.problems.some(p => /postgres/i.test(p.message))) {
     throw new Error(`HealthWatchdog: expected the pre-existing Postgres problem to still be reported, got: ${JSON.stringify(result)}`);
   }
-  if (!result.problems.some(p => /eww hud bridge/i.test(p) && /commit/i.test(p))) {
+  if (!result.problems.some(p => p.key === "companion-staleness" && /eww hud bridge/i.test(p.message) && /commit/i.test(p.message))) {
     throw new Error(`HealthWatchdog: expected a companion-staleness problem naming the mismatched commits, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- Fix-wave regression tests: mismatch grace period ----------
+// The whole-plan review found checkCompanionStaleness flagged a SHA
+// mismatch the INSTANT it appeared, with zero tolerance — so every commit
+// to the deployment checkout reported the HUD as stale before the bridge
+// had any chance to redeploy, contradicting the design spec's explicit
+// requirement that "a mismatch persisting past a grace period (to avoid
+// false-positives during a deploy in progress) is a real, actionable
+// staleness signal". These three lock in the persistence requirement.
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: a mismatch that has NOT yet persisted past the grace period is not flagged stale (deploy in progress)", async () => {
+  const { checkCompanionStaleness, createCompanionMismatchTracker } = await import("../src/self/health-watchdog.js");
+  const reported = "a".repeat(40);
+  const real = "b".repeat(40);
+  const tracker = createCompanionMismatchTracker();
+  const t0 = Date.now();
+  // First observation of the mismatch: never stale, no matter what.
+  const first = checkCompanionStaleness(reported, t0, real, t0, tracker);
+  if (first.stale) {
+    throw new Error(`HealthWatchdog: expected a freshly-observed mismatch NOT to be flagged stale, got: ${JSON.stringify(first)}`);
+  }
+  // Still inside the grace period a few ticks later.
+  const t1 = t0 + 20 * 60 * 1000;
+  const second = checkCompanionStaleness(reported, t1, real, t1, tracker);
+  if (second.stale) {
+    throw new Error(`HealthWatchdog: expected a mismatch still inside the grace period NOT to be flagged stale, got: ${JSON.stringify(second)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: the SAME mismatch, once it has persisted past the grace period, IS flagged stale", async () => {
+  const { checkCompanionStaleness, createCompanionMismatchTracker } = await import("../src/self/health-watchdog.js");
+  const reported = "a".repeat(40);
+  const real = "b".repeat(40);
+  const tracker = createCompanionMismatchTracker();
+  const t0 = Date.now();
+  checkCompanionStaleness(reported, t0, real, t0, tracker); // first observation
+  const t1 = t0 + 31 * 60 * 1000; // simulated 31 minutes later, past the 30-minute grace period
+  const result = checkCompanionStaleness(reported, t1, real, t1, tracker);
+  if (!result.stale || !result.reason || !result.reason.includes(reported.slice(0, 7))) {
+    throw new Error(`HealthWatchdog: expected a mismatch persisting past the grace period to be flagged stale with both SHAs, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: a mismatch that resolves before the grace period elapses is never flagged, and its timer resets", async () => {
+  const { checkCompanionStaleness, createCompanionMismatchTracker } = await import("../src/self/health-watchdog.js");
+  const oldSha = "a".repeat(40);
+  const newSha = "b".repeat(40);
+  const tracker = createCompanionMismatchTracker();
+  const t0 = Date.now();
+  checkCompanionStaleness(oldSha, t0, newSha, t0, tracker); // mismatch first observed
+
+  // The deploy lands 10 minutes later: the bridge now reports the real SHA.
+  const t1 = t0 + 10 * 60 * 1000;
+  const resolved = checkCompanionStaleness(newSha, t1, newSha, t1, tracker);
+  if (resolved.stale) {
+    throw new Error(`HealthWatchdog: expected a resolved mismatch not to be stale, got: ${JSON.stringify(resolved)}`);
+  }
+  if (tracker.get() !== null) {
+    throw new Error(`HealthWatchdog: expected a resolved mismatch to clear the tracked first-observed state, got: ${JSON.stringify(tracker.get())}`);
+  }
+
+  // A brand-new mismatch appearing later must start its OWN grace period,
+  // not inherit the resolved one's — 25 minutes past t0 but only moments
+  // into this mismatch, so it must not be flagged.
+  const t2 = t0 + 25 * 60 * 1000;
+  const fresh = checkCompanionStaleness(newSha, t2, "c".repeat(40), t2, tracker);
+  if (fresh.stale) {
+    throw new Error(`HealthWatchdog: expected a brand-new mismatch to start a fresh grace period, got: ${JSON.stringify(fresh)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: repo HEAD moving again while the bridge stays behind does NOT restart the grace period", async () => {
+  const { checkCompanionStaleness, createCompanionMismatchTracker } = await import("../src/self/health-watchdog.js");
+  // Deliberate behavior (documented in health-watchdog.ts): the bridge is
+  // still behind — in fact further behind — so it is the same unresolved
+  // problem. Restarting the timer here would mean a repo committed to more
+  // often than once per grace period could never flag staleness at all.
+  const reported = "a".repeat(40);
+  const tracker = createCompanionMismatchTracker();
+  const t0 = Date.now();
+  checkCompanionStaleness(reported, t0, "b".repeat(40), t0, tracker);
+  const t1 = t0 + 20 * 60 * 1000;
+  checkCompanionStaleness(reported, t1, "c".repeat(40), t1, tracker); // HEAD moved again
+  const t2 = t0 + 31 * 60 * 1000;
+  const result = checkCompanionStaleness(reported, t2, "d".repeat(40), t2, tracker);
+  if (!result.stale) {
+    throw new Error(`HealthWatchdog: expected staleness measured from the FIRST mismatch observation, not reset by repo HEAD moving, got: ${JSON.stringify(result)}`);
+  }
+});
+
+// ---------- Fix-wave regression test: packed-refs exact-field match ----------
+registerTest("HealthWatchdog", "findPackedRefSha matches the ref field exactly, not by line suffix", async () => {
+  const { findPackedRefSha } = await import("../src/self/health-watchdog.js");
+  const decoySha = "1".repeat(40);
+  const realSha = "2".repeat(40);
+  // The decoy line ENDS WITH " ...refs/heads/main" only if compared as a
+  // suffix of the whole line — the old `.endsWith(" " + ref)` logic would
+  // have returned the decoy's SHA for refs/heads/main. Exact-field matching
+  // must skip it and find the real one further down.
+  const content = [
+    "# pack-refs with: peeled fully-peeled sorted ",
+    `${decoySha} refs/heads/old/refs/heads/main`,
+    `${realSha} refs/heads/main`,
+    "^" + "3".repeat(40),
+  ].join("\n");
+
+  const found = findPackedRefSha(content, "refs/heads/main");
+  if (found !== realSha) {
+    throw new Error(`HealthWatchdog: expected the exactly-named ref's SHA (${realSha}), got: ${found}`);
+  }
+  if (findPackedRefSha(content, "refs/heads/nope") !== null) {
+    throw new Error("HealthWatchdog: expected null for a ref that isn't in packed-refs at all");
+  }
+});
+
+// ---------- Fix-wave regression test: heartbeat vs. staleness ordering ----------
+// eww-bridge.ts runs on the bare host and calls connect() at import time
+// (it opens a real WebSocket and spawns `eww` subprocesses), so it can't be
+// imported into this suite the way health-watchdog.ts can. Its two
+// fix-wave-critical properties are still worth locking in, so they're
+// asserted against the real source text: the version-report interval used
+// to be 60 minutes — LONGER than the server's 30-minute staleness grace
+// period — which guaranteed every healthy bridge was flagged as
+// possibly-dead for roughly the second half of every hour, forever.
+registerTest("HealthWatchdog", "eww-bridge's version-report interval stays well under the server's staleness grace period, and re-reports on every (re)connect", async () => {
+  const fsMod = await import("fs");
+  const pathMod = await import("path");
+  const { STALE_GRACE_PERIOD_MS } = await import("../src/self/health-watchdog.js");
+  const source = fsMod.readFileSync(pathMod.join(process.cwd(), "src/ipc/eww-bridge.ts"), "utf8");
+
+  const intervalMatch = source.match(/const VERSION_REPORT_INTERVAL_MS = ([^;]+);/);
+  if (!intervalMatch) {
+    throw new Error("HealthWatchdog: could not find VERSION_REPORT_INTERVAL_MS in src/ipc/eww-bridge.ts");
+  }
+  // Only ever a plain arithmetic literal expression in this file.
+  const intervalMs = Number(new Function(`return (${intervalMatch[1]});`)());
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error(`HealthWatchdog: unparseable VERSION_REPORT_INTERVAL_MS: ${intervalMatch[1]}`);
+  }
+  if (intervalMs * 2 > STALE_GRACE_PERIOD_MS) {
+    throw new Error(
+      `HealthWatchdog: VERSION_REPORT_INTERVAL_MS (${intervalMs}ms) must be well under STALE_GRACE_PERIOD_MS (${STALE_GRACE_PERIOD_MS}ms) — otherwise a healthy bridge is flagged as possibly-dead between heartbeats`
+    );
+  }
+
+  const openHandler = source.match(/ws\.on\("open",[\s\S]*?\n  \}\);/);
+  if (!openHandler) {
+    throw new Error("HealthWatchdog: could not find the ws.on(\"open\") handler in src/ipc/eww-bridge.ts");
+  }
+  if (!/reportVersion\(\)/.test(openHandler[0])) {
+    throw new Error("HealthWatchdog: expected the ws.on(\"open\") handler to call reportVersion() so a reconnect re-reports immediately instead of waiting for the next periodic timer");
   }
 });
 

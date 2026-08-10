@@ -71,9 +71,12 @@ export async function checkHttpReachable(url: string): Promise<boolean> {
 // null/null. checkCompanionStaleness correctly treats that the same as "the
 // bridge hasn't reported yet" (a real, reportable problem) -- but it's
 // self-healing, not a permanent gap: the bridge re-reports its version
-// hourly on its own (see eww-bridge.ts), independent of any server-side
-// event, so a restart only ever leaves this blind for at most that long. Not
-// worth Postgres persistence for a value that repairs itself within an hour.
+// every 5 minutes on its own AND on every WebSocket (re)connect (see
+// eww-bridge.ts), independent of any server-side event, so a restart only
+// ever leaves this blind for a few minutes -- well inside
+// STALE_GRACE_PERIOD_MS below, so a restart alone can't produce a false
+// "may have stopped running". Not worth Postgres persistence for a value
+// that repairs itself that fast.
 let companionReportedSha: string | null = null;
 let companionReportedAt: number | null = null;
 
@@ -121,6 +124,24 @@ function resolveGitDirs(repoRoot: string): { gitDir: string; commonDir: string }
 // "companion staleness check itself failed" problem forever -- exactly the
 // kind of noisy, useless check this plan exists to avoid. This has no
 // dependency on PATH or an installed git binary, in dev or in production.
+// packed-refs lines are "<sha> <full-ref-name>", one pair per line, plus
+// "#"-prefixed comment/header lines and (for annotated tags) "^"-prefixed
+// peeled-object lines. The ref field is compared EXACTLY rather than with a
+// suffix match: a suffix match on " refs/heads/main" would also match a
+// line for a differently-named ref that merely ends the same way (e.g. a
+// ref literally named "refs/heads/old/refs/heads/main", or any ref whose
+// trailing path segments coincide), and would then return that other ref's
+// SHA as if it were HEAD's.
+export function findPackedRefSha(packedRefsContent: string, ref: string): string | null {
+  for (const rawLine of packedRefsContent.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith("^")) continue;
+    const [sha, name] = line.split(/\s+/);
+    if (name === ref && sha) return sha;
+  }
+  return null;
+}
+
 export function readRepoHeadSha(repoRoot: string = process.cwd()): string {
   const { gitDir, commonDir } = resolveGitDirs(repoRoot);
   const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
@@ -134,32 +155,133 @@ export function readRepoHeadSha(repoRoot: string = process.cwd()): string {
   }
   const packedRefsPath = path.join(commonDir, "packed-refs");
   if (fs.existsSync(packedRefsPath)) {
-    const line = fs
-      .readFileSync(packedRefsPath, "utf8")
-      .split("\n")
-      .find(l => l.trim().endsWith(` ${ref}`));
-    if (line) return line.trim().split(/\s+/)[0];
+    const sha = findPackedRefSha(fs.readFileSync(packedRefsPath, "utf8"), ref);
+    if (sha) return sha;
   }
   throw new Error(`Could not resolve ref "${ref}" to a commit SHA under ${commonDir}.`);
+}
+
+// Two distinct 30-minute windows, deliberately the same length but NOT the
+// same concept:
+//   - STALE_GRACE_PERIOD_MS: how old the bridge's last heartbeat may get
+//     before "it may have stopped running" is a fair conclusion. The bridge
+//     re-reports every 5 minutes (VERSION_REPORT_INTERVAL_MS in
+//     eww-bridge.ts) and additionally on every WebSocket (re)connect, so a
+//     healthy bridge stays ~6 heartbeats inside this window; only a genuine
+//     multi-attempt failure can cross it.
+//   - MISMATCH_GRACE_PERIOD_MS: how long a reported-SHA-vs-real-HEAD
+//     mismatch must PERSIST before it's a real staleness signal rather than
+//     a deploy that's simply still in flight. Required by the design spec:
+//     "A mismatch persisting past a grace period (to avoid false-positives
+//     during a deploy in progress) is a real, actionable staleness signal."
+//     Without it, every single commit to the deployment checkout instantly
+//     flagged the HUD as stale before the bridge had any chance to redeploy.
+// They're separate constants (not one shared one) because they answer
+// different questions and could reasonably diverge later.
+export const STALE_GRACE_PERIOD_MS = 30 * 60 * 1000;
+export const MISMATCH_GRACE_PERIOD_MS = 30 * 60 * 1000;
+
+// Cross-tick state for the mismatch grace period. checkCompanionStaleness
+// is called once per 10-minute watchdog tick and has to remember when a
+// mismatch was FIRST seen, so it needs state that outlives a single call --
+// same in-memory, self-healing shape (and same rationale) as
+// recordCompanionVersionReport's store above: an api restart just resets the
+// clock, costing at most one extra grace period before a real mismatch is
+// flagged. Exposed as an injectable tracker rather than read/written
+// directly so tests can simulate "30 minutes have passed" without waiting
+// and without leaking state between tests, matching this file's existing
+// HealthWatchdogDeps injection pattern.
+export interface CompanionMismatchState {
+  reportedSha: string;
+  realSha: string;
+  firstObservedAt: number;
+}
+
+export interface CompanionMismatchTracker {
+  get(): CompanionMismatchState | null;
+  set(state: CompanionMismatchState | null): void;
+}
+
+let companionMismatch: CompanionMismatchState | null = null;
+
+export const defaultCompanionMismatchTracker: CompanionMismatchTracker = {
+  get: () => companionMismatch,
+  set: (state) => { companionMismatch = state; },
+};
+
+export function createCompanionMismatchTracker(
+  initial: CompanionMismatchState | null = null
+): CompanionMismatchTracker {
+  let state = initial;
+  return { get: () => state, set: (next) => { state = next; } };
 }
 
 export function checkCompanionStaleness(
   reportedSha: string | null,
   reportedAt: number | null,
   realSha: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  mismatchTracker: CompanionMismatchTracker = defaultCompanionMismatchTracker
 ): { stale: boolean; reason: string | null } {
-  const STALE_GRACE_PERIOD_MS = 30 * 60 * 1000; // don't flag during a deploy in progress
   if (reportedSha === null || reportedAt === null) {
+    mismatchTracker.set(null);
     return { stale: true, reason: "EWW HUD bridge has not reported a version recently -- it may not be running." };
   }
   if (now - reportedAt > STALE_GRACE_PERIOD_MS) {
+    mismatchTracker.set(null);
     return { stale: true, reason: "EWW HUD bridge's last version report is too old -- it may have stopped running." };
   }
   if (reportedSha !== realSha) {
+    const tracked = mismatchTracker.get();
+    // The timer restarts when the BRIDGE's reported SHA changes (a fresh
+    // deploy genuinely just happened, so it has earned a fresh grace
+    // window), but NOT when the repo's real HEAD moves while the bridge
+    // stays put. That second case is the same unresolved problem -- the
+    // bridge is still behind, in fact further behind -- and resetting on it
+    // would mean a repo committed to more often than once per grace period
+    // could never flag staleness at all, which is exactly the incident this
+    // check exists to catch.
+    const firstObservedAt =
+      tracked && tracked.reportedSha === reportedSha ? tracked.firstObservedAt : now;
+    mismatchTracker.set({ reportedSha, realSha, firstObservedAt });
+    if (now - firstObservedAt < MISMATCH_GRACE_PERIOD_MS) {
+      // Still inside the deploy-in-progress tolerance window: real, but not
+      // yet actionable, so not reported.
+      return { stale: false, reason: null };
+    }
     return { stale: true, reason: `EWW HUD bridge is running commit ${reportedSha.slice(0, 7)}, but the current repo is at ${realSha.slice(0, 7)}.` };
   }
+  // Mismatch resolved (the bridge caught up): drop the tracking so a later,
+  // unrelated mismatch starts its own fresh grace period rather than
+  // inheriting a stale "first observed" timestamp.
+  mismatchTracker.set(null);
   return { stale: false, reason: null };
+}
+
+// A problem carries a STABLE per-check identity (`key`) alongside its
+// human-readable `message`. The key never varies with the specific failure
+// detail; the message always names the specific thing that's wrong (a
+// Global Constraint of this plan). Callers that need to recognise "this is
+// the same problem I already reported" -- notably scheduler.ts's
+// cooldown-gating -- compare keys, never messages: the companion-staleness
+// message interpolates short SHAs, so the identical underlying problem
+// ("the HUD is stale") produced a brand-new string every time repo HEAD
+// moved, which defeated the cooldown entirely and re-notified on every tick.
+export type HealthCheckKey =
+  | "postgres"
+  | "observation-platform"
+  | "voice-daemon"
+  | "llama-cpp"
+  | "companion-staleness";
+
+export interface HealthProblem {
+  key: HealthCheckKey;
+  message: string;
+}
+
+export interface HealthAssessment {
+  ok: boolean;
+  problems: HealthProblem[];
 }
 
 export interface HealthWatchdogDeps {
@@ -169,6 +291,11 @@ export interface HealthWatchdogDeps {
   checkHttpReachable: typeof checkHttpReachable;
   getCompanionReport: () => { sha: string | null; reportedAt: number | null };
   getRealHeadSha: () => string;
+  // Optional, injected only by tests: real callers want the real clock and
+  // the real process-wide mismatch tracker (the grace period is meaningless
+  // if every tick gets a fresh tracker).
+  now?: () => number;
+  companionMismatchTracker?: CompanionMismatchTracker;
 }
 
 const defaultDeps: HealthWatchdogDeps = {
@@ -182,14 +309,14 @@ const defaultDeps: HealthWatchdogDeps = {
 
 export async function assessSystemHealth(
   deps: HealthWatchdogDeps = defaultDeps
-): Promise<{ ok: boolean; problems: string[] }> {
-  const problems: string[] = [];
+): Promise<HealthAssessment> {
+  const problems: HealthProblem[] = [];
 
   try {
     const dbOk = await deps.pingDatabase();
-    if (!dbOk) problems.push("Postgres is unreachable.");
+    if (!dbOk) problems.push({ key: "postgres", message: "Postgres is unreachable." });
   } catch (err: any) {
-    problems.push(`Postgres health check itself failed: ${err.message}`);
+    problems.push({ key: "postgres", message: `Postgres health check itself failed: ${err.message}` });
   }
 
   try {
@@ -200,18 +327,18 @@ export async function assessSystemHealth(
     // "green" is a real, reportable problem, not just informational.
     const health = deps.getHealth();
     if (health.status !== "green") {
-      problems.push(`ObservationPlatform reports degraded status: ${health.status}.`);
+      problems.push({ key: "observation-platform", message: `ObservationPlatform reports degraded status: ${health.status}.` });
     }
   } catch (err: any) {
-    problems.push(`ObservationPlatform health check itself failed: ${err.message}`);
+    problems.push({ key: "observation-platform", message: `ObservationPlatform health check itself failed: ${err.message}` });
   }
 
   try {
     const voiceSocketPath = process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock";
     const voiceOk = await deps.checkSocketReachable(voiceSocketPath);
-    if (!voiceOk) problems.push(`Voice daemon is unreachable at ${voiceSocketPath}.`);
+    if (!voiceOk) problems.push({ key: "voice-daemon", message: `Voice daemon is unreachable at ${voiceSocketPath}.` });
   } catch (err: any) {
-    problems.push(`Voice daemon health check itself failed: ${err.message}`);
+    problems.push({ key: "voice-daemon", message: `Voice daemon health check itself failed: ${err.message}` });
   }
 
   try {
@@ -226,19 +353,25 @@ export async function assessSystemHealth(
     const llamaEndpoint = MindKernel.getInstance().localLlmEndpoint;
     if (llamaEndpoint) {
       const llamaOk = await deps.checkHttpReachable(llamaEndpoint);
-      if (!llamaOk) problems.push(`llama-cpp is unreachable at ${llamaEndpoint}.`);
+      if (!llamaOk) problems.push({ key: "llama-cpp", message: `llama-cpp is unreachable at ${llamaEndpoint}.` });
     }
   } catch (err: any) {
-    problems.push(`llama-cpp health check itself failed: ${err.message}`);
+    problems.push({ key: "llama-cpp", message: `llama-cpp health check itself failed: ${err.message}` });
   }
 
   try {
     const { sha: reportedSha, reportedAt } = deps.getCompanionReport();
     const realSha = deps.getRealHeadSha();
-    const { stale, reason } = checkCompanionStaleness(reportedSha, reportedAt, realSha);
-    if (stale && reason) problems.push(reason);
+    const { stale, reason } = checkCompanionStaleness(
+      reportedSha,
+      reportedAt,
+      realSha,
+      (deps.now ?? Date.now)(),
+      deps.companionMismatchTracker ?? defaultCompanionMismatchTracker
+    );
+    if (stale && reason) problems.push({ key: "companion-staleness", message: reason });
   } catch (err: any) {
-    problems.push(`EWW HUD bridge staleness check itself failed: ${err.message}`);
+    problems.push({ key: "companion-staleness", message: `EWW HUD bridge staleness check itself failed: ${err.message}` });
   }
 
   return { ok: problems.length === 0, problems };
