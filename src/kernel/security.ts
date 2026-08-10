@@ -75,6 +75,15 @@ export const ALL_CAPABILITIES = [
   "reward.read",
   // Read-only: the desktop HUD's own status summary, no write action.
   "hud.read",
+  // Deliberately separate from hud.read (same read/write split as
+  // vault.read/vault.write and evolution.read/evolution.manage above): this
+  // is the write side, letting the EWW HUD bridge (src/ipc/eww-bridge.ts,
+  // via POST /api/hud/report-version) record its own self-reported version.
+  // hud.read's own doc comment says "no write action" -- reusing it to gate
+  // a write route would silently contradict that and let any principal
+  // holding the harmless read grant spoof or suppress the companion-
+  // staleness health signal (see self/health-watchdog.ts).
+  "hud.report_version",
   // Triggers the daily adaptation engine — reads/analyzes/proposes, never writes code or registers tools unattended.
   "adaptation.run",
 ] as const;

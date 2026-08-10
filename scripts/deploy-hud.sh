@@ -25,6 +25,14 @@ mkdir -p "$DEST_DIR"
 (cd "$REPO_DIR" && npx tsc --ignoreConfig --module nodenext --target es2022 --moduleResolution nodenext --types node \
   "$REPO_DIR/src/ipc/eww-bridge.ts" --outDir "$DEST_DIR")
 
+# Stamps the deployed commit next to the compiled bridge -- eww-bridge.ts
+# reads this once at its own startup and self-reports it to the api server
+# (POST /api/hud/report-version), so health-watchdog.ts's companion-
+# staleness check has real evidence of whether the running bridge actually
+# matches the current repo, instead of silently running stale code
+# indefinitely (the exact real incident that motivated this check).
+git -C "$REPO_DIR" rev-parse HEAD > "$DEST_DIR/VERSION"
+
 # The one dependency the compiled output can't do without: a real
 # WebSocket client. "ws" itself ships with zero required dependencies of
 # its own (verified against its package.json — only optional native
