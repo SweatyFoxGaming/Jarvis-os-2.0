@@ -23,11 +23,46 @@
 // it.
 
 import { execFile } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+import { fileURLToPath } from "url";
 import WebSocket from "ws";
+
+// This file compiles to ESM (repo package.json has "type": "module", and
+// tsc --module nodenext follows that for a plain .ts source) -- __dirname
+// isn't available for free the way it would be under CommonJS, so it's
+// derived from import.meta.url instead, same as any other ESM module that
+// needs to locate a file next to its own compiled output.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const EVENTS_WS_URL = process.env.JARVIS_EVENTS_WS_URL || "ws://localhost:3000/ws/events";
 const STATUS_URL = process.env.JARVIS_HUD_URL || "http://localhost:3000/api/hud/status";
+// A dedicated URL (not derived from STATUS_URL) so either can be overridden
+// independently, same as EVENTS_WS_URL/STATUS_URL already are.
+const REPORT_VERSION_URL = process.env.JARVIS_HUD_REPORT_VERSION_URL || "http://localhost:3000/api/hud/report-version";
 const API_KEY = process.env.JARVIS_API_KEY || "";
+// Re-report periodically (not just once at connect) so a long-running
+// bridge process keeps confirming it's genuinely still alive, and so a
+// restarted api process (which loses its in-memory last-reported version --
+// see health-watchdog.ts's own comment on why that's in-memory only) gets
+// repopulated within a bounded time, without requiring a fresh deploy.
+const VERSION_REPORT_INTERVAL_MS = 60 * 60 * 1000;
+
+// Read once at this process's own startup: deploy-hud.sh always restarts
+// jarvis-hud.service after writing a fresh VERSION file (systemctl --user
+// restart), so a running bridge process's own compiled-in SHA never changes
+// out from under it -- rereading on every periodic report would just be
+// extra I/O for a value that's already pinned for this process's lifetime.
+// A missing file (an older, pre-this-change deployment) reports null rather
+// than throwing.
+const OWN_VERSION_SHA: string | null = (() => {
+  try {
+    return fs.readFileSync(path.join(__dirname, "VERSION"), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+})();
 // A safety-net refresh independent of any bus event, in case a relevant
 // mutation ever happens without a corresponding filesystem:changed /
 // system:anomaly publish reaching this bridge (e.g. a gap in what
@@ -88,6 +123,37 @@ async function refreshStatus(): Promise<void> {
   }
 }
 
+// Self-reports this process's own compiled-in VERSION SHA to the api server
+// so health-watchdog.ts's companion-staleness check has something real to
+// compare against the repo's actual current HEAD. Deliberately skips the
+// call entirely (rather than posting a null sha) when OWN_VERSION_SHA is
+// null -- an old, pre-this-change deployment with no VERSION file is
+// indistinguishable from "not reporting", which is exactly the honest,
+// correctly-flagged state for it to land in server-side.
+async function reportVersion(): Promise<void> {
+  if (!OWN_VERSION_SHA) return;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(REPORT_VERSION_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
+      },
+      body: JSON.stringify({ sha: OWN_VERSION_SHA }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.error(`[eww-bridge] report-version endpoint returned ${res.status}`);
+    }
+  } catch (err: any) {
+    console.error(`[eww-bridge] reportVersion failed: ${err.message}`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function connect(): void {
   const ws = new WebSocket(EVENTS_WS_URL, { headers: API_KEY ? { "X-API-Key": API_KEY } : {} });
 
@@ -125,6 +191,8 @@ function connect(): void {
 
 connect();
 setInterval(refreshStatus, FALLBACK_REFRESH_MS);
+reportVersion();
+setInterval(reportVersion, VERSION_REPORT_INTERVAL_MS);
 
 function shutdown(signal: string): void {
   console.error(`[eww-bridge] received ${signal}, stopping.`);

@@ -6,6 +6,7 @@ import { ObservationPlatform } from "../../kernel/observation.js";
 import * as vaultRepo from "../../kernel/state/vault-repo.js";
 import * as buildRequestsRepo from "../../kernel/state/build-requests-repo.js";
 import { deriveHudBadge } from "../hud-badge.js";
+import { recordCompanionVersionReport } from "../../self/health-watchdog.js";
 
 export { deriveHudBadge };
 
@@ -70,4 +71,21 @@ hudRouter.get("/api/hud/status", validateApiKey, requireCapability("hud.read"), 
   } catch (err: any) {
     res.status(500).json({ badge: "error", statusLabel: "Unavailable", thoughtLines: [], recentNotes: [], activeTask: null, error: "Failed to load HUD status." });
   }
+});
+
+// Self-reported by the EWW HUD bridge (src/ipc/eww-bridge.ts) on its own
+// startup, and again on a slow periodic re-report -- see health-watchdog.ts's
+// own comment on why this is stored in-memory only. Gated the same way
+// /api/hud/status already is (validateApiKey + hud.read): the deploy
+// script's own env-file comment already requires the bridge's configured
+// JARVIS_API_KEY to be the real admin key (not merely a hud.read-scoped user
+// key) for its /ws/events connection to be accepted at all, so reusing that
+// same requirement here doesn't add any new operational burden.
+hudRouter.post("/api/hud/report-version", validateApiKey, requireCapability("hud.read"), (req: any, res: any) => {
+  const sha = req.body?.sha;
+  if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha)) {
+    return res.status(400).json({ error: "Body must be { sha: <40-character git SHA> }." });
+  }
+  recordCompanionVersionReport(sha);
+  res.json({ ok: true });
 });

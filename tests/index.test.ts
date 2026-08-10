@@ -4542,6 +4542,8 @@ registerTest("HealthWatchdog", "assessSystemHealth reports ok when every depende
     getHealth: () => ({ status: "green" } as any),
     checkSocketReachable: async () => true,
     checkHttpReachable: async () => true,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
   if (!result.ok || result.problems.length !== 0) {
@@ -4556,6 +4558,8 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getHealth: () => ({ status: "green" } as any),
     checkSocketReachable: async () => true,
     checkHttpReachable: async () => true,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
   if (result.ok || !result.problems.some(p => /postgres/i.test(p))) {
@@ -4570,6 +4574,8 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getHealth: () => ({ status: "yellow" } as any),
     checkSocketReachable: async () => true,
     checkHttpReachable: async () => true,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
   if (result.ok || !result.problems.some(p => /degraded/i.test(p))) {
@@ -4584,6 +4590,8 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getHealth: () => ({ status: "green" } as any),
     checkSocketReachable: async () => false,
     checkHttpReachable: async () => true,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
   if (result.ok || !result.problems.some(p => /voice.daemon/i.test(p))) {
@@ -4598,6 +4606,8 @@ registerTest("HealthWatchdog", "assessSystemHealth reports the specific problem 
     getHealth: () => ({ status: "green" } as any),
     checkSocketReachable: async () => true,
     checkHttpReachable: async () => false,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
   if (result.ok || !result.problems.some(p => /llama/i.test(p))) {
@@ -4612,6 +4622,8 @@ registerTest("HealthWatchdog", "assessSystemHealth reports multiple problems tog
     getHealth: () => ({ status: "green" } as any),
     checkSocketReachable: async () => false,
     checkHttpReachable: async () => true,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
   if (result.ok || result.problems.length < 2) {
@@ -4626,10 +4638,112 @@ registerTest("HealthWatchdog", "assessSystemHealth never throws — a dependency
     getHealth: () => ({ status: "green" } as any),
     checkSocketReachable: async () => true,
     checkHttpReachable: async () => true,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "a".repeat(40),
   };
   const result = await assessSystemHealth(deps);
   if (result.ok || result.problems.length === 0) {
     throw new Error("HealthWatchdog: expected a reported problem from a throwing dependency check, not a thrown exception escaping assessSystemHealth");
+  }
+});
+
+// ---------- Companion (EWW HUD bridge) staleness detection ----------
+// This is the second real health signal from the design spec, and the exact
+// incident class that motivated this whole watchdog: the HUD bridge
+// silently ran weeks-old compiled JS earlier this session until a human
+// happened to check. checkCompanionStaleness is a pure function (no fakes
+// needed); assessSystemHealth's own tests above already prove the companion
+// check degrades to a reported problem like every other check when the deps
+// themselves throw (see "never throws" test), so this section focuses on
+// checkCompanionStaleness's own four real cases plus one integration test
+// confirming it shows up in assessSystemHealth's problems array alongside
+// the pre-existing dependency-reachability ones.
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: matching SHA reported recently is not stale", async () => {
+  const { checkCompanionStaleness } = await import("../src/self/health-watchdog.js");
+  const sha = "a".repeat(40);
+  const result = checkCompanionStaleness(sha, Date.now(), sha, Date.now());
+  if (result.stale || result.reason !== null) {
+    throw new Error(`HealthWatchdog: expected not stale for a matching, freshly-reported SHA, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: mismatched SHA is stale with a specific message naming both SHAs", async () => {
+  const { checkCompanionStaleness } = await import("../src/self/health-watchdog.js");
+  const reported = "a".repeat(40);
+  const real = "b".repeat(40);
+  const now = Date.now();
+  const result = checkCompanionStaleness(reported, now, real, now);
+  if (!result.stale || !result.reason) {
+    throw new Error(`HealthWatchdog: expected stale for a mismatched SHA, got: ${JSON.stringify(result)}`);
+  }
+  if (!result.reason.includes(reported.slice(0, 7)) || !result.reason.includes(real.slice(0, 7))) {
+    throw new Error(`HealthWatchdog: expected the reason to name both the reported and real short SHAs, got: ${result.reason}`);
+  }
+});
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: never-reported (null sha/timestamp) is stale with a 'may not be running' message", async () => {
+  const { checkCompanionStaleness } = await import("../src/self/health-watchdog.js");
+  const result = checkCompanionStaleness(null, null, "a".repeat(40), Date.now());
+  if (!result.stale || !result.reason || !/has not reported/i.test(result.reason)) {
+    throw new Error(`HealthWatchdog: expected a stale "has not reported" result for a never-reported bridge, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: a matching SHA reported long ago (beyond the grace period) is stale by age", async () => {
+  const { checkCompanionStaleness } = await import("../src/self/health-watchdog.js");
+  const sha = "a".repeat(40);
+  const now = Date.now();
+  const reportedAt = now - 31 * 60 * 1000; // 31 minutes ago, past the 30-minute grace period
+  const result = checkCompanionStaleness(sha, reportedAt, sha, now);
+  if (!result.stale || !result.reason || !/too old/i.test(result.reason)) {
+    throw new Error(`HealthWatchdog: expected a stale "too old" result for a report past the grace period, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "checkCompanionStaleness: a matching SHA reported within the grace period is not stale (deploy-in-progress tolerance)", async () => {
+  const { checkCompanionStaleness } = await import("../src/self/health-watchdog.js");
+  const sha = "a".repeat(40);
+  const now = Date.now();
+  const reportedAt = now - 29 * 60 * 1000; // 29 minutes ago, just inside the 30-minute grace period
+  const result = checkCompanionStaleness(sha, reportedAt, sha, now);
+  if (result.stale) {
+    throw new Error(`HealthWatchdog: expected not stale for a report still inside the grace period, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "assessSystemHealth reports a companion-staleness problem alongside a genuine dependency-reachability problem", async () => {
+  const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
+  const deps = {
+    pingDatabase: async () => false, // a real, independent problem
+    getHealth: () => ({ status: "green" } as any),
+    checkSocketReachable: async () => true,
+    checkHttpReachable: async () => true,
+    getCompanionReport: () => ({ sha: "a".repeat(40), reportedAt: Date.now() }),
+    getRealHeadSha: () => "b".repeat(40), // mismatched -- the bridge is stale
+  };
+  const result = await assessSystemHealth(deps);
+  if (result.ok || result.problems.length < 2) {
+    throw new Error(`HealthWatchdog: expected both a Postgres problem and a companion-staleness problem, got: ${JSON.stringify(result)}`);
+  }
+  if (!result.problems.some(p => /postgres/i.test(p))) {
+    throw new Error(`HealthWatchdog: expected the pre-existing Postgres problem to still be reported, got: ${JSON.stringify(result)}`);
+  }
+  if (!result.problems.some(p => /eww hud bridge/i.test(p) && /commit/i.test(p))) {
+    throw new Error(`HealthWatchdog: expected a companion-staleness problem naming the mismatched commits, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("HealthWatchdog", "readRepoHeadSha reads the real repo HEAD, matching `git rev-parse HEAD`", async () => {
+  const { readRepoHeadSha } = await import("../src/self/health-watchdog.js");
+  const { execFileSync } = await import("child_process");
+  const expected = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd() }).toString().trim();
+  const actual = readRepoHeadSha(process.cwd());
+  if (actual !== expected) {
+    throw new Error(`HealthWatchdog: expected readRepoHeadSha() to match \`git rev-parse HEAD\` (${expected}), got: ${actual}`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(actual)) {
+    throw new Error(`HealthWatchdog: expected a 40-character hex SHA, got: ${actual}`);
   }
 });
 
