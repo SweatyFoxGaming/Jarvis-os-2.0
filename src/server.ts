@@ -163,8 +163,8 @@ const aiLimiter = rateLimit({
   message: { error: "Too many requests — please slow down." },
 });
 
-app.post('/api/chat/stream', handleChatStream);
-app.get('/api/chat/stream', handleChatStream);
+app.post('/api/chat/stream', validateApiKey, aiLimiter, handleChatStream);
+app.get('/api/chat/stream', validateApiKey, aiLimiter, handleChatStream);
 
 const REQUIRED_ENV_VARS = [
   "POSTGRES_HOST",

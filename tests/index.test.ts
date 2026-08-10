@@ -2023,6 +2023,34 @@ registerTest("HTTP Boundary", "POST /api/hud/report-version is capability-gated 
   }
 });
 
+// /api/chat/stream (src/routes/streamRoute.ts) called real, billed Gemini/
+// Groq APIs directly with no auth and no rate limit at all — anyone who
+// could reach the host got an unmetered LLM proxy. This locks in that a
+// request with no API key is rejected before handleChatStream ever runs a
+// real (billed) provider call.
+registerTest("HTTP Boundary", "POST /api/chat/stream requires an API key", async () => {
+  const port = 3022;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "hello" }),
+    });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/chat/stream, got ${noKey.status}`);
+    }
+
+    const noKeyGet = await fetch(`http://127.0.0.1:${port}/api/chat/stream?prompt=hello`);
+    if (noKeyGet.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on GET /api/chat/stream, got ${noKeyGet.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // Locks in the fix for a reflected-XSS bug CodeRabbit found in review: the
 // calendar OAuth callback used to interpolate the untrusted `error` query
 // param straight into an HTML response with no escaping, so a crafted link
