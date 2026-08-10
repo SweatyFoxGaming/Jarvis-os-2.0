@@ -43,6 +43,22 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jarvis-gateway")
 
+# No literal fallback here on purpose — mirrors src/kernel/auth-middleware.ts's
+# ADMIN_API_KEY fail-fast (that file's own comment explains why: a missing
+# key must fail loudly at boot, not silently grant proxy access via a
+# guessable/shared default). This constant replaces the hardcoded legacy key
+# literal that used to live inline in make_proxy_request/proxy_streaming_request
+# below whenever INTERNAL_API_KEY was unset in the environment.
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+if not INTERNAL_API_KEY:
+    logger.error(
+        "[Gateway] FATAL: INTERNAL_API_KEY is not set. Refusing to start with no way "
+        "to authenticate proxy calls to the Express backend — set INTERNAL_API_KEY to "
+        "a long random string in .env (it must match the value Express itself reads "
+        "via src/kernel/auth-middleware.ts's ADMIN_API_KEY fallback)."
+    )
+    sys.exit(1)
+
 NODE_PORT = 3000
 NODE_URL = f"http://127.0.0.1:{NODE_PORT}"
 
@@ -241,17 +257,7 @@ def make_proxy_request(path: str, method: str, headers: Dict[str, str], body: by
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
     
-    # Add INTERNAL_API_KEY to proxy headers, falling back to a hardcoded
-    # legacy key if INTERNAL_API_KEY is unset in the environment. This ensures
-    # internal background tasks and proxy calls consistently send a valid key.
-    internal_api_key = os.environ.get("INTERNAL_API_KEY")
-    legacy_api_key_fallback = "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" # Mirrors the constant in src/kernel/auth-middleware.ts
-    
-    if internal_api_key:
-        proxy_headers["x-api-key"] = internal_api_key
-    else:
-        proxy_headers["x-api-key"] = legacy_api_key_fallback
-        logger.info("[Gateway] INTERNAL_API_KEY is not set. Proxying with hardcoded legacy API key.")
+    proxy_headers["x-api-key"] = INTERNAL_API_KEY
 
     req = urllib.request.Request(
         url=target_url,
@@ -298,17 +304,7 @@ async def proxy_streaming_request(path: str, method: str, headers: Dict[str, str
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
     
-    # Add INTERNAL_API_KEY to proxy headers, falling back to a hardcoded
-    # legacy key if INTERNAL_API_KEY is unset in the environment. This ensures
-    # internal background tasks and proxy calls consistently send a valid key.
-    internal_api_key = os.environ.get("INTERNAL_API_KEY")
-    legacy_api_key_fallback = "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" # Mirrors the constant in src/kernel/auth-middleware.ts
-
-    if internal_api_key:
-        proxy_headers["x-api-key"] = internal_api_key
-    else:
-        proxy_headers["x-api-key"] = legacy_api_key_fallback
-        logger.info("[Gateway] INTERNAL_API_KEY is not set. Proxying with hardcoded legacy API key.")
+    proxy_headers["x-api-key"] = INTERNAL_API_KEY
 
     req = urllib.request.Request(
         url=target_url,
