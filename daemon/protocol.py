@@ -1,12 +1,8 @@
-"""
-Pure, model-free protocol layer for the voice daemon -- newline-delimited
-JSON control messages plus base64-encoded PCM audio chunks over a Unix
-socket. Deliberately has zero dependency on faster-whisper/kokoro so this
-whole module (and its tests) never needs real model weights loaded.
-"""
 import base64
 import binascii
 import json
+
+MAX_AUDIO_CHUNK_BYTES = 5 * 1024 * 1024  # 5 MB limit per audio chunk
 
 
 class ProtocolError(Exception):
@@ -25,6 +21,8 @@ def parse_control_message(line: str) -> dict:
         raise ProtocolError(f"malformed JSON control message: {e}") from e
     if not isinstance(result, dict):
         raise ProtocolError(f"control message must be a JSON object, got {type(result).__name__}")
+    if "type" not in result:
+        raise ProtocolError("control message missing required 'type' field")
     return result
 
 
@@ -32,7 +30,9 @@ def encode_audio_chunk(pcm_bytes: bytes) -> str:
     return base64.b64encode(pcm_bytes).decode("ascii")
 
 
-def decode_audio_chunk(b64: str) -> bytes:
+def decode_audio_chunk(b64: str, max_bytes: int = MAX_AUDIO_CHUNK_BYTES) -> bytes:
+    if len(b64) > (max_bytes * 4 // 3) + 4:
+        raise ProtocolError(f"audio payload exceeds maximum size limit of {max_bytes} bytes")
     try:
         return base64.b64decode(b64, validate=True)
     except (binascii.Error, ValueError) as e:
@@ -41,12 +41,9 @@ def decode_audio_chunk(b64: str) -> bytes:
 
 class UtteranceEndDetector:
     """Pure silence-duration logic, no audio analysis of its own -- the
-    caller (the real STT loop, wired to an actual VAD/energy check against
-    real audio frames) decides is_speech per frame and feeds it in here.
-    Fires exactly once per utterance, the instant sustained silence
-    following real speech crosses the threshold. Silence before any speech
-    has occurred is never treated as an utterance ending, since there was
-    no utterance to end."""
+    caller decides is_speech per frame and feeds it in here. Fires exactly
+    once per utterance, the instant sustained silence following real speech
+    crosses the threshold."""
 
     def __init__(self, silence_frames_threshold: int = 15):
         self.silence_frames_threshold = silence_frames_threshold
@@ -62,19 +59,11 @@ class UtteranceEndDetector:
             return False
         self._consecutive_silence += 1
         if self._consecutive_silence >= self.silence_frames_threshold:
-            # Reset so the SAME detector instance can be reused for the
-            # next utterance in the same connection, rather than requiring
-            # the caller to construct a fresh one every time.
             self.reset()
             return True
         return False
 
     def reset(self) -> None:
-        """Clears any in-progress utterance state. Used when the buffer
-        this detector was watching gets consumed by something other than
-        the detector's own silence trigger -- e.g. an explicit one-shot
-        "transcribe" request (see voice_engine.py's _handle_transcribe) --
-        so stale "has seen speech"/silence-count state doesn't leak into
-        whatever comes next on the same connection."""
+        """Clears any in-progress utterance state."""
         self._has_seen_speech = False
         self._consecutive_silence = 0

@@ -24,10 +24,10 @@ export class KeyPool {
     const now = Date.now();
     for (let i = 0; i < keys.length; i++) {
       const idx = (this.cursor[provider] + i) % keys.length;
-      if (keys[idx].cooldownUntil <= now) {
-        this.cursor[provider] = (idx + 1) % keys.length;
-        return keys[idx].key;
-      }
+      const currentKey = keys[idx];
+      if (currentKey && currentKey.cooldownUntil <= now) {
+      return currentKey.key;
+      } 
     }
     return null;
   }

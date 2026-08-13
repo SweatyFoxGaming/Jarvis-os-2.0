@@ -10,12 +10,18 @@
 // its own reason — not an oversight. No multi-key rotation or fair-share
 // throttling applies to this route as a result; it uses the first
 // configured Groq key only.
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import Groq from 'groq-sdk';
 import { generateEmbedding } from '../services/embeddings.js';
 import { executeRAGPipeline } from '../kernel/state/ragEngine.js';
 import { formatRAGContext } from '../kernel/state/contextFormatter.js';
+import { Router } from 'express';
+
+export const streamRouter: Router = Router();
+
+streamRouter.post('/', handleChatStream);
+streamRouter.get('/', handleChatStream);
 
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
 // GROQ_API_KEY (singular) no longer exists in .env.example as of the

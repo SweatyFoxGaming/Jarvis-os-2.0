@@ -14,7 +14,8 @@ export class StreamBuffer {
   }
 
   public push(event: Omit<StreamEvent, 'id'>): StreamEvent {
-    const id = this.buffer.length > 0 ? this.buffer[this.buffer.length - 1].id + 1 : 1;
+   const lastItem = this.buffer[this.buffer.length - 1];
+    const id = lastItem ? lastItem.id + 1 : 1; 
     const fullEvent = { ...event, id };
     this.buffer.push(fullEvent);
     if (this.buffer.length > this.maxCapacity) {

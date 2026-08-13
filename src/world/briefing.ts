@@ -86,12 +86,12 @@ export function prioritizeSignals(signals: RawSignals): PrioritizedItem[] {
     const ageHours = email.date ? (Date.now() - new Date(email.date).getTime()) / 3.6e6 : undefined;
     const stale = ageHours !== undefined && ageHours > 24;
     items.push({
-      id: `email:${email.uid}`,
-      source: "email",
-      urgency: stale ? "high" : "medium",
-      summary: `"${email.subject || "(no subject)"}" from ${email.from?.[0] || "unknown"}${stale ? ` — unread ${Math.round(ageHours)}h` : ""}`,
-      ageHours,
-    });
+  id: `email:${email.uid}`,
+  source: "email",
+  urgency: "high",
+  summary,
+  ...(ageHours !== undefined ? { ageHours } : {}),
+});
   }
 
   for (const n of signals.githubNotifications) {

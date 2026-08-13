@@ -1,5 +1,5 @@
 import { EventBus } from "../core/event-bus.js";
-import { analyzeArchitecture, analyzeQuality, analyzeSecurity, AnalysisResult } from "./analyzer.js";
+import { analyzeArchitecture, analyzeQuality, analyzeSecurity, type AnalysisResult } from "./analyzer.js";
 
 /**
  * Debounced filesystem:changed -> adaptation:analysis bridge. Re-runs the

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
@@ -15,7 +15,7 @@ import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const buildRequestsRouter = Router();
+export const buildRequestsRouter: Router = Router();
 
 buildRequestsRouter.get("/api/system/build-requests", validateApiKey, async (req: any, res: any) => {
   if (!permissions.hasGrant(req.username, "github.pulls.create")) {
@@ -244,32 +244,21 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
 
         await rewardEventsRepo.recordRewardEvent(updated.id, "terminal_outcome", updated.coding_model_used, updated.task_category || "general", 2);
 
-        obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
-          directionNotes: updated.direction_notes || undefined,
-          codeSummary: updated.code_summary || undefined,
-          files: files.map((f: any) => f.path),
-          prUrl: updated.pr_url || undefined,
-          qaSummary,
-          status: "qa_complete",
-        }).catch((err: any) => {
-          observation.logTelemetry("warn", "Interaction", `Failed to write coding vault note: ${err.message}`);
-        });
+obsidian.writeOrUpdateCodingNote(updated.id, updated.objective, {
+      status: "qa_complete",
+      qaSummary,
+      files,
+      ...(updated.direction_notes ? { directionNotes: updated.direction_notes } : {}),
+      ...(updated.code_summary ? { codeSummary: updated.code_summary } : {}),
+      ...(updated.pr_url ? { prUrl: updated.pr_url } : {}),
+    }).catch((err: any) => {
+      logger.error("Failed to update obsidian note", { error: err });
+    });
 
-        scheduler.pushNotification(
-          req.username,
-          `Opened the pull request for build request #${updated.id}, sir: ${pr.html_url}. QA review: ${qaSummary.slice(0, 300)}${qaSummary.length > 300 ? "..." : ""} Check GitHub for CI status.`,
-          "info"
-        );
-
-        res.json({ ...updated, qa_summary: qaSummary });
-      } finally {
-        await builderClient.destroyWorkspace(buildRequest.id).catch(() => {});
-      }
-    } finally {
-      inFlightBuildRequestApprovals.delete(buildRequest.id);
-    }
+    res.json({ ok: true, request: updated });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logger.error("Build request route error", { error: err });
+    res.status(500).json({ error: err?.message || "Internal server error" });
   }
 });
 

@@ -1,10 +1,10 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
 import * as rewardEventsRepo from "../../kernel/state/reward-events-repo.js";
 import { DEFAULT_MODELS } from "../../runtime/groq-agent-client.js";
 
-export const rewardRouter = Router();
+export const rewardRouter: Router = Router();
 
 // Aliased rather than referenced directly so it reads alongside
 // KNOWN_CATEGORIES below, while still being the one source of truth — the

@@ -103,7 +103,7 @@ export async function searchMemory(embedding: number[], limit = 5) {
     
     const result = await db.query(
       `SELECT id, content, 1 - (embedding <=> $1) AS similarity 
-       FROM vector_memories 
+       FROM memory_embeddings 
        ORDER BY embedding <=> $1 
        LIMIT $2;`,
       [formattedVector, limit]

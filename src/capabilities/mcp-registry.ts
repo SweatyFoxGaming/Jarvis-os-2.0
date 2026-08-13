@@ -87,7 +87,7 @@ async function connectAndListTools(url: string): Promise<{ ok: true; tools: any[
   const client = new Client({ name: "jarvis-os", version: "1.0.0" });
   try {
     const transport = new StreamableHTTPClientTransport(safeUrl);
-    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, "MCP connect()");
+    await withTimeout(client.connect(transport as any), CONNECT_TIMEOUT_MS, "MCP connect()");
     const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, "MCP listTools()");
     return { ok: true, tools };
   } catch (err: any) {
@@ -247,7 +247,7 @@ export async function callMcpTool(
   const client = new Client({ name: "jarvis-os", version: "1.0.0" });
   try {
     const transport = new StreamableHTTPClientTransport(assertSafeEgressUrl(server.url));
-    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, "MCP connect()");
+    await withTimeout(client.connect(transport as any), CONNECT_TIMEOUT_MS, "MCP connect()");
     const result = await client.callTool({ name: toolName, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
     if ((result as any).isError) {
       return { ok: false, error: `Tool "${toolName}" on server "${server.name}" reported an error: ${JSON.stringify((result as any).content)}` };

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { MindKernel } from "../../self/kernel.js";
 import { getActiveSessionCount } from "../../cognition/session.js";
@@ -9,7 +9,7 @@ import type { SystemSettingsUpdate } from "../../kernel/state/system-settings-re
 
 const observation = ObservationPlatform.getInstance();
 
-export const settingsRouter = Router();
+export const settingsRouter: Router = Router();
 
 // Status & Diagnostics
 settingsRouter.get("/api/status", validateApiKey, (req: any, res: any) => {

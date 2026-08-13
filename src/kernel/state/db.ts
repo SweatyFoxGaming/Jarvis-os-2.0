@@ -82,26 +82,38 @@ export async function pingDatabase(): Promise<boolean> {
   }
 }
 
+let poolPromise: Promise<pg.Pool> | null = null;
+
 export function getPool(): pg.Pool {
   if (!pool) {
-    pool = new pg.Pool({
-      host: process.env.POSTGRES_HOST || "postgres",
-      port: Number(process.env.POSTGRES_PORT) || 5432,
-      user: process.env.POSTGRES_USER,
-      password: process.env.POSTGRES_PASSWORD,
-      database: process.env.POSTGRES_DB,
-      connectionString: process.env.DATABASE_URL,
-      max: 10,
-      idleTimeoutMillis: 30_000,     // Close idle connections after 30s
-      connectionTimeoutMillis: 5_000, // Return error after 5s if pool full
-      statement_timeout: 10_000,
-    });
-    // Prevent idle client errors from crashing Node process
-    pool.on("error", (err) => {
-      console.error("[Database Pool Error] Idle client exception:", err.message);
-    });
+    if (!poolPromise) {
+      poolPromise = new Promise<pg.Pool>((resolve, reject) => {
+        try {
+          const p = new pg.Pool({
+            host: process.env.POSTGRES_HOST || "postgres",
+            port: Number(process.env.POSTGRES_PORT) || 5432,
+            user: process.env.POSTGRES_USER,
+            password: process.env.POSTGRES_PASSWORD,
+            database: process.env.POSTGRES_DB,
+            connectionString: process.env.DATABASE_URL,
+            max: 10,
+            idleTimeoutMillis: 30_000,
+            connectionTimeoutMillis: 5_000,
+            statement_timeout: 10_000,
+          });
+          p.on("error", (err) => {
+            console.error("[Database Pool Error] Idle client exception:", err.message);
+          });
+          pool = p;
+          resolve(p);
+        } catch (err: any) {
+          reject(err);
+        }
+      });
+    }
+    poolPromise.then(p => { pool = p; }).catch(() => { poolPromise = null; });
   }
-  return pool;
+  return pool!;
 }
 
 // FROZEN BASELINE — every fresh install and every existing deployment

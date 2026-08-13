@@ -90,3 +90,17 @@ def test_parse_control_message_array_raises_protocol_error():
 def test_parse_control_message_null_raises_protocol_error():
     with pytest.raises(ProtocolError):
         parse_control_message('null')
+
+def test_parse_control_message_missing_type_raises_protocol_error():
+    with pytest.raises(ProtocolError, match="missing required 'type' field"):
+        parse_control_message('{"action": "start"}')
+
+def test_decode_audio_chunk_exceeds_max_size_raises_protocol_error():
+    oversized_b64 = "A" * (6 * 1024 * 1024)
+    with pytest.raises(ProtocolError, match="exceeds maximum size limit"):
+        decode_audio_chunk(oversized_b64)
+
+def test_decode_audio_chunk_exceeds_max_size_raises_protocol_error():
+    oversized_b64 = "A" * (8 * 1024 * 1024)
+    with pytest.raises(ProtocolError, match="exceeds maximum size limit"):
+        decode_audio_chunk(oversized_b64)

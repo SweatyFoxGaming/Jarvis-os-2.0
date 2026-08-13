@@ -205,10 +205,9 @@ export function parseNote(raw: string, fallbackTitle: string): ParsedNote {
   const fmMatch = content.match(FRONTMATTER_RE);
   if (fmMatch) {
     try {
-      const loaded = loadYaml(fmMatch[1]);
-      if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
-        frontmatter = loaded as Record<string, any>;
-      }
+    if (fmMatch?.[1]) {
+  const loaded = loadYaml(fmMatch[1]);
+} 
     } catch {
       // Malformed frontmatter — treat the note as having none, rather than
       // failing the whole parse over one bad YAML block.
@@ -224,10 +223,10 @@ export function parseNote(raw: string, fallbackTitle: string): ParsedNote {
   }
 
   const tags = new Set<string>();
-  if (Array.isArray(frontmatter.tags)) {
-    for (const t of frontmatter.tags) {
-      if (typeof t === "string") tags.add(t);
-    }
+  if (match?.[1]) {
+  links.push(match[1].trim() + (match[2] || ""));
+  tags.add(match[1]);
+}
   }
   TAG_RE.lastIndex = 0;
   while ((match = TAG_RE.exec(content)) !== null) {
@@ -239,8 +238,7 @@ export function parseNote(raw: string, fallbackTitle: string): ParsedNote {
     : fallbackTitle;
 
   return { title, frontmatter, tags: [...tags], links };
-}
-
+  
 export async function createNote(
   relativePath: string,
   content: string,

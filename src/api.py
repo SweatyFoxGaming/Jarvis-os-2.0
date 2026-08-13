@@ -56,6 +56,17 @@ GATEWAY_START_TIME = time.time()
 STARTUP_GRACE_SECONDS = 30  # Node normally binds its port within a few seconds
 MAX_CONSECUTIVE_BOOT_FAILURES = 5
 
+REQUIRED_ENV_VARS = ["GROQ_API_KEY", "DATABASE_URL"]
+
+def validate_environment():
+    missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+    if missing:
+        print(f"[FATAL] Missing required environment variables: {', '.join(missing)}")
+        sys.exit(1)
+
+# Run at startup
+validate_environment()
+
 def is_node_running() -> bool:
     """Check if the Node.js server is already running on port 3000."""
     try:
@@ -396,6 +407,12 @@ def get_simulated_workspace():
         "goals": [],
         "tasks": []
     }
+
+# BEFORE (Blocks the whole process loop):
+# result = heavy_synchronous_processing(data)
+
+# AFTER (Offloads execution to a worker thread):
+result = await asyncio.to_thread(heavy_synchronous_processing, data)
 
 @app.get("/health")
 async def health_check(request: Request):

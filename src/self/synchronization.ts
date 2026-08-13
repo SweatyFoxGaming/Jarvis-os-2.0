@@ -1,6 +1,6 @@
 import { CognitiveWorkspace } from "../cognition/workspace.js";
 import { ObservationPlatform } from "../kernel/observation.js";
-import { MindState } from "./state.js";
+import type { MindState } from "./state.js";
 
 export class SynchronizationEngine {
   public synchronize(
