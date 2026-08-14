@@ -1,5 +1,8 @@
 // src/kernel/state/hybridRetrieval.ts
 import { getPool } from './db.js';
+import { ObservationPlatform } from '../observation.js';
+
+const observation = ObservationPlatform.getInstance();
 
 export interface HybridSearchResult {
   id: string;
@@ -56,13 +59,23 @@ export async function searchHybridMemory(
     LIMIT $4;
   `;
 
-  const { rows } = await pool.query(query, [embeddingString, queryText, k, limit, sessionId || null]);
+  // Degrades to "no RAG context" rather than failing the whole chat request
+  // -- matches every other Postgres-backed repo function in this codebase.
+  // Reachable in practice: applyHybridSearchSchema() (server.ts's boot
+  // sequence) itself degrades cleanly on a Postgres outage, which means
+  // memory_chunks may genuinely not exist yet on a given boot.
+  try {
+    const { rows } = await pool.query(query, [embeddingString, queryText, k, limit, sessionId || null]);
 
-  return rows.map((row) => ({
-    id: row.id,
-    content: row.content,
-    rrfScore: parseFloat(row.rrf_score),
-    vectorRank: row.vector_rank ? parseInt(row.vector_rank, 10) : null,
-    textRank: row.text_rank ? parseInt(row.text_rank, 10) : null
-  }));
+    return rows.map((row) => ({
+      id: row.id,
+      content: row.content,
+      rrfScore: parseFloat(row.rrf_score),
+      vectorRank: row.vector_rank ? parseInt(row.vector_rank, 10) : null,
+      textRank: row.text_rank ? parseInt(row.text_rank, 10) : null
+    }));
+  } catch (err: any) {
+    observation.logTelemetry("warn", "HybridRetrieval", `searchHybridMemory failed: ${err.message}`);
+    return [];
+  }
 }
