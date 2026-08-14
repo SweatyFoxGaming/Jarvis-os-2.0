@@ -259,7 +259,7 @@ export class CognitionRouter {
       // KeyPool's own cooldown-driven termination.
       const maxKeyAttempts = this.deps.keyPool.keyCount(provider);
       for (let attempt = 0; attempt < maxKeyAttempts; attempt++) {
-        const key = this.deps.keyPool.getAvailableKey(provider);
+        const key = await this.deps.keyPool.getAvailableKey(provider);
         if (key === null) {
           observation.logTelemetry("info", "Cognition", `No available ${provider} key (pool cooling down/exhausted); skipping model "${model}".`);
           break;
@@ -272,7 +272,7 @@ export class CognitionRouter {
           this.deps.keyPool.reportSuccess(provider, key);
         } catch (err: any) {
           const retryAfterSeconds = parseRetryAfterSeconds(err);
-          this.deps.keyPool.reportFailure(provider, key, retryAfterSeconds);
+          await this.deps.keyPool.reportFailure(provider, key, retryAfterSeconds);
           observation.logTelemetry(
             "warn",
             "Cognition",

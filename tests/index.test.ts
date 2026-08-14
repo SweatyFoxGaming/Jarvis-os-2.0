@@ -3747,39 +3747,39 @@ registerTest("OpenAiCompatibleClient", "generateWithFallback sends the API key a
 });
 
 // ---------- KeyPool Tests ----------
-registerTest("KeyPool", "getAvailableKey rotates round-robin among configured keys", () => {
+registerTest("KeyPool", "getAvailableKey rotates round-robin among configured keys", async () => {
   const pool = new KeyPool({ groq: ["k1", "k2"], gemini: [] });
-  const first = pool.getAvailableKey("groq");
-  const second = pool.getAvailableKey("groq");
+  const first = await pool.getAvailableKey("groq");
+  const second = await pool.getAvailableKey("groq");
   if (first === second) throw new Error(`expected rotation, got the same key twice: ${first}`);
   if (![first, second].every((k) => ["k1", "k2"].includes(k as string))) {
     throw new Error("returned a key not in the configured pool");
   }
 });
 
-registerTest("KeyPool", "getAvailableKey returns null for a provider with no configured keys", () => {
+registerTest("KeyPool", "getAvailableKey returns null for a provider with no configured keys", async () => {
   const pool = new KeyPool({ groq: [], gemini: [] });
-  if (pool.getAvailableKey("gemini") !== null) throw new Error("expected null for an empty pool");
+  if ((await pool.getAvailableKey("gemini")) !== null) throw new Error("expected null for an empty pool");
 });
 
-registerTest("KeyPool", "reportFailure puts a key on cooldown and it's skipped until it elapses", () => {
+registerTest("KeyPool", "reportFailure puts a key on cooldown and it's skipped until it elapses", async () => {
   const pool = new KeyPool({ groq: ["only-key"], gemini: [] });
-  pool.reportFailure("groq", "only-key", 0.05); // 50ms cooldown for a fast test
-  if (pool.getAvailableKey("groq") !== null) throw new Error("expected the sole key to be on cooldown");
+  await pool.reportFailure("groq", "only-key", 0.05); // 50ms cooldown for a fast test
+  if ((await pool.getAvailableKey("groq")) !== null) throw new Error("expected the sole key to be on cooldown");
 });
 
 registerTest("KeyPool", "a key becomes available again after its cooldown elapses", async () => {
   const pool = new KeyPool({ groq: ["only-key"], gemini: [] });
-  pool.reportFailure("groq", "only-key", 0.05);
+  await pool.reportFailure("groq", "only-key", 0.05);
   await new Promise((resolve) => setTimeout(resolve, 80));
-  if (pool.getAvailableKey("groq") !== "only-key") throw new Error("expected the key to recover after cooldown");
+  if ((await pool.getAvailableKey("groq")) !== "only-key") throw new Error("expected the key to recover after cooldown");
 });
 
-registerTest("KeyPool", "all keys on cooldown for a provider returns null, not throw", () => {
+registerTest("KeyPool", "all keys on cooldown for a provider returns null, not throw", async () => {
   const pool = new KeyPool({ groq: ["k1", "k2"], gemini: [] });
-  pool.reportFailure("groq", "k1", 60);
-  pool.reportFailure("groq", "k2", 60);
-  if (pool.getAvailableKey("groq") !== null) throw new Error("expected null when every key is on cooldown");
+  await pool.reportFailure("groq", "k1", 60);
+  await pool.reportFailure("groq", "k2", 60);
+  if ((await pool.getAvailableKey("groq")) !== null) throw new Error("expected null when every key is on cooldown");
 });
 
 registerTest("KeyPool", "keyCount reports the number of configured keys per provider, independent of cooldown state", () => {
@@ -3788,6 +3788,41 @@ registerTest("KeyPool", "keyCount reports the number of configured keys per prov
   if (pool.keyCount("gemini") !== 0) throw new Error(`expected keyCount("gemini") === 0, got ${pool.keyCount("gemini")}`);
   pool.reportFailure("groq", "k1", 60);
   if (pool.keyCount("groq") !== 3) throw new Error("keyCount must reflect total configured keys, not just currently-available ones");
+});
+
+registerTest("KeyPool", "reportFailure's cooldown is visible to a second KeyPool instance via Redis when configured", async () => {
+  // Two separate KeyPool instances (simulating two process instances)
+  // sharing one Redis -- reportFailure on pool A's key must make
+  // getAvailableKey on pool B skip that same key, not just pool A's own.
+  // Skipped entirely (not a failure) if this test environment has no real
+  // Redis reachable -- this is exercising cross-instance behavior, which
+  // by this plan's own Global Constraints must be fully optional.
+  const { getRedisClient, isRedisConfigured } = await import("../src/kernel/redis-client.js");
+  if (!isRedisConfigured()) {
+    console.log("  (skipped: REDIS_URL not set in this environment)");
+    return;
+  }
+  const redis = getRedisClient();
+  if (!redis) {
+    console.log("  (skipped: Redis client unavailable)");
+    return;
+  }
+
+  const testKey = `test-key-${Date.now()}`;
+  const poolA = new KeyPool({ groq: [testKey], gemini: [] });
+  const poolB = new KeyPool({ groq: [testKey], gemini: [] });
+
+  const beforeFailure = await poolB.getAvailableKey("groq");
+  if (beforeFailure !== testKey) {
+    throw new Error(`KeyPool: expected pool B to see the key available before any failure, got ${beforeFailure}`);
+  }
+
+  await poolA.reportFailure("groq", testKey, 30);
+
+  const afterFailure = await poolB.getAvailableKey("groq");
+  if (afterFailure !== null) {
+    throw new Error(`KeyPool: expected pool B to see the key on cooldown after pool A's reportFailure, got ${afterFailure}`);
+  }
 });
 
 // ---------- CognitionRouter Tests ----------
@@ -3836,8 +3871,8 @@ registerTest("CognitionRouter", "an over-share user under a strained pool is del
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
   const keyPool = new KeyPool({ groq: ["gk1", "gk2", "gk3"], gemini: [] });
   // Strain the pool: 2 of 3 configured keys on cooldown -> strainRatio = 2/3 > 0.5.
-  keyPool.reportFailure("groq", "gk1", 60);
-  keyPool.reportFailure("groq", "gk2", 60);
+  await keyPool.reportFailure("groq", "gk1", 60);
+  await keyPool.reportFailure("groq", "gk2", 60);
 
   let delayMs: number | null = null;
   const router = new CognitionRouter({
@@ -3898,7 +3933,7 @@ registerTest("CognitionRouter", "a 429-shaped failure triggers cooldown and retr
   if (transportCalls.join(",") !== "gk1,gk2") {
     throw new Error(`CognitionRouter: expected gk1 tried first then gk2, got: ${transportCalls.join(",")}`);
   }
-  const nextKey = keyPool.getAvailableKey("groq");
+  const nextKey = await keyPool.getAvailableKey("groq");
   if (nextKey === "gk1") {
     throw new Error("CognitionRouter: expected the failed key to be on cooldown, not offered again immediately");
   }
@@ -4107,7 +4142,7 @@ registerTest("CognitionRouter", "a successful cloud call is still returned even 
   if (result?.choices?.[0]?.message?.content !== "cloud reply") {
     throw new Error(`CognitionRouter: expected the successful cloud response even though recordUsage threw, got: ${JSON.stringify(result)}`);
   }
-  if (keyPool.getAvailableKey("groq") !== "gk1") {
+  if ((await keyPool.getAvailableKey("groq")) !== "gk1") {
     throw new Error("CognitionRouter: expected the key that actually succeeded to remain available (not wrongly cooled down by a recordUsage failure)");
   }
 });
