@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { getRedisClient, isRedisConfigured } from "../kernel/redis-client.js";
 import type { Redis } from "ioredis";
@@ -7,6 +8,15 @@ const observation = ObservationPlatform.getInstance();
 type Handler<T = any> = (payload: T) => void;
 
 const REDIS_CHANNEL_PREFIX = "jarvis:events:";
+
+// Stamped into every relayed envelope so a message this process just
+// published can be told apart from one a genuinely different instance
+// relayed. Without this, this process's own relay subscriber would receive
+// its own publish back from Redis and re-deliver it locally a second time
+// (see startCrossInstanceRelay's message handler below) -- correct only for
+// OTHER instances, not the originator, which already delivered it once via
+// publish()'s own synchronous local-handler loop.
+const PROCESS_ORIGIN_ID = crypto.randomUUID();
 
 /**
  * Pure in-process pub/sub — no I/O of its own. Subsystems publish to named
@@ -20,17 +30,24 @@ const REDIS_CHANNEL_PREFIX = "jarvis:events:";
  * whatever just published an event.
  *
  * Cross-instance relay (startCrossInstanceRelay, opt-in, Redis-backed) is
- * ADDITIVE: local delivery via publish() stays exactly as synchronous as it
- * always was, for every existing call site. When configured, publish() also
- * fire-and-forget relays to a Redis channel; a subscriber picks up messages
- * relayed by OTHER instances and re-publishes them locally with
- * { fromRelay: true }, which suppresses re-relaying (loop prevention).
+ * ADDITIVE and PER-TOPIC: local delivery via publish() stays exactly as
+ * synchronous as it always was, for every existing call site. Only topics
+ * passed to startCrossInstanceRelay(topics) are ever relayed -- every other
+ * topic (including high-frequency/large-payload ones like
+ * voice:audio-chunk) stays local-only even once Redis is configured. When a
+ * relayed topic is published, publish() also fire-and-forget relays to a
+ * Redis channel, stamped with this process's PROCESS_ORIGIN_ID; a
+ * subscriber picks up messages relayed by OTHER instances (origin mismatch)
+ * and re-publishes them locally with { fromRelay: true }, which suppresses
+ * both re-relaying (loop prevention) and delivering this process's own
+ * publish back to itself a second time.
  */
 export class EventBus {
   private static instance: EventBus | null = null;
   private handlers = new Map<string, Set<Handler>>();
   private relaySubscriber: Redis | null = null;
   private relayStarted = false;
+  private relayTopics = new Set<string>();
 
   public static getInstance(): EventBus {
     if (!this.instance) {
@@ -63,11 +80,30 @@ export class EventBus {
 
     // Loop prevention: a message this instance just received FROM the relay
     // must never be relayed straight back out, or every instance would echo
-    // it forever. Only a genuinely locally-originated publish() relays.
-    if (opts.fromRelay || !isRedisConfigured()) return;
+    // it forever. Only a genuinely locally-originated publish() relays --
+    // and only for a topic startCrossInstanceRelay was actually told to
+    // relay (relayTopics), never every topic this bus ever sees. Without
+    // this check, every publish() call in the whole app -- including
+    // high-frequency/large-payload topics like voice:audio-chunk -- would
+    // get serialized and PUBLISHed to Redis the moment Redis is configured
+    // at all, contradicting this class's own "additive, opt-in, per-topic"
+    // docstring above.
+    if (opts.fromRelay || !isRedisConfigured() || !this.relayTopics.has(topic)) return;
     const redis = getRedisClient();
     if (!redis) return;
-    redis.publish(`${REDIS_CHANNEL_PREFIX}${topic}`, JSON.stringify(payload)).catch((err: any) => {
+    let message: string;
+    try {
+      // A circular/non-serializable payload throws synchronously from
+      // JSON.stringify itself -- caught here, not left to escape into the
+      // publisher's own call stack (redis.publish's .catch() below only
+      // handles the Promise it returns, not a throw that happens before
+      // it's ever called).
+      message = JSON.stringify({ origin: PROCESS_ORIGIN_ID, payload });
+    } catch (err: any) {
+      observation.logTelemetry("warn", "EventBus", `Cannot relay topic "${topic}" (payload not JSON-serializable): ${err.message}`);
+      return;
+    }
+    redis.publish(`${REDIS_CHANNEL_PREFIX}${topic}`, message).catch((err: any) => {
       observation.logTelemetry("warn", "EventBus", `Cross-instance relay publish failed for topic "${topic}": ${err.message}`);
     });
   }
@@ -88,6 +124,7 @@ export class EventBus {
     const base = getRedisClient();
     if (!base) return;
     this.relayStarted = true;
+    this.relayTopics = new Set(topics);
     // Override enableOfflineQueue back to true for this one connection
     // only. The base client (and every other Redis-backed caller in this
     // codebase -- KeyPool, EventBus.publish's relay) fails fast with
@@ -123,8 +160,14 @@ export class EventBus {
         // boundary, not an oversight: adding a topic whose subscribers take
         // real *actions* (rather than just rendering data) would require
         // payload schema validation here first.
-        const payload = JSON.parse(message);
-        this.publish(topic, payload, { fromRelay: true });
+        const envelope = JSON.parse(message);
+        // A message this same process published moments ago, echoed back
+        // by Redis to this process's own subscriber -- already delivered
+        // once via publish()'s synchronous local-handler loop, so it must
+        // not be delivered again here. Only a genuinely different origin
+        // (another instance) re-publishes locally.
+        if (envelope?.origin === PROCESS_ORIGIN_ID) return;
+        this.publish(topic, envelope?.payload, { fromRelay: true });
       } catch (err: any) {
         observation.logTelemetry("warn", "EventBus", `Malformed cross-instance message on "${channel}": ${err.message}`);
       }

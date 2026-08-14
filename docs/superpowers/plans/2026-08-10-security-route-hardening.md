@@ -143,7 +143,7 @@ In `src/api.py`, replace (lines 244-254):
     # legacy key if INTERNAL_API_KEY is unset in the environment. This ensures
     # internal background tasks and proxy calls consistently send a valid key.
     internal_api_key = os.environ.get("INTERNAL_API_KEY")
-    legacy_api_key_fallback = "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" # Mirrors the constant in src/kernel/auth-middleware.ts
+    legacy_api_key_fallback = "<REDACTED-legacy-key-see-git-history-pre-b8f3984>" # Mirrors the constant in src/kernel/auth-middleware.ts
     
     if internal_api_key:
         proxy_headers["x-api-key"] = internal_api_key

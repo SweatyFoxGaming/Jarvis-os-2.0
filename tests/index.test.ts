@@ -147,24 +147,69 @@ registerTest("Platform", "EventBus relays a published event to Redis, and re-pub
 
   try {
     bus.publish(topic, { hello: "world" });
-    // The relay round-trips through real Redis pub/sub (publish -> Redis ->
-    // this same process's own subscriber -> re-publish locally) -- not
-    // instantaneous, so poll briefly rather than asserting immediately.
+    // publish()'s own synchronous local-handler loop delivers this
+    // immediately. It also relays to Redis (this topic is in
+    // allRelayTestTopics), and this same process's own relay subscriber
+    // WILL receive that relayed copy back -- but PROCESS_ORIGIN_ID dedup
+    // (event-bus.ts) means it must be dropped, not delivered a second
+    // time, since only the direct local delivery above is real. Wait a
+    // beat to give a (incorrect, regression-guarded-against) round-trip
+    // delivery a chance to arrive before asserting the count is stable.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (received.length !== 1) {
+      throw new Error(`EventBus: expected exactly 1 local delivery (direct only -- the relay round-trip back to this same process's own origin must be deduped, not delivered again), got ${received.length}: ${JSON.stringify(received)}`);
+    }
+    if (received[0].hello !== "world") {
+      throw new Error(`EventBus: delivered payload mismatch: ${JSON.stringify(received[0])}`);
+    }
+  } finally {
+    unsubscribe();
+  }
+});
+
+registerTest("Platform", "EventBus's cross-instance relay delivers a message from a genuinely different origin", async () => {
+  // The test above proves THIS process's own publish doesn't double-deliver
+  // to itself. This test proves the relay still actually works for a
+  // foreign origin -- simulating a second Jarvis instance by publishing
+  // directly via the raw redis client (bypassing EventBus.publish, which
+  // would stamp this process's own PROCESS_ORIGIN_ID) with a fabricated
+  // different origin in the envelope.
+  const { getRedisClient, isRedisConfigured } = await import("../src/kernel/redis-client.js");
+  if (!isRedisConfigured()) {
+    console.log("  (skipped: REDIS_URL not set in this environment)");
+    return;
+  }
+  const redis = getRedisClient();
+  if (!redis) {
+    console.log("  (skipped: Redis client unavailable)");
+    return;
+  }
+
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const bus = EventBus.getInstance();
+  const topic = relayTestTopic;
+
+  bus.startCrossInstanceRelay(allRelayTestTopics);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const received: any[] = [];
+  const unsubscribe = bus.subscribe(topic, (payload) => received.push(payload));
+
+  try {
+    await redis.publish(
+      `jarvis:events:${topic}`,
+      JSON.stringify({ origin: "simulated-other-instance", payload: { hello: "from another instance" } })
+    );
+
     const deadline = Date.now() + 3000;
-    while (received.length < 2 && Date.now() < deadline) {
+    while (received.length < 1 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    // Exactly 2: the bus's own synchronous local delivery (immediate) plus
-    // the relay round-trip's local re-publish (fromRelay: true) -- never 1
-    // (relay didn't fire) and never 3+ (a relay loop re-publishing its own
-    // relayed message back out to Redis again).
-    if (received.length !== 2) {
-      throw new Error(`EventBus: expected exactly 2 local deliveries (direct + relay round-trip), got ${received.length}: ${JSON.stringify(received)}`);
+    if (received.length !== 1) {
+      throw new Error(`EventBus: expected exactly 1 local delivery for a foreign-origin relayed message, got ${received.length}: ${JSON.stringify(received)}`);
     }
-    for (const payload of received) {
-      if (payload.hello !== "world") {
-        throw new Error(`EventBus: relayed payload mismatch: ${JSON.stringify(payload)}`);
-      }
+    if (received[0].hello !== "from another instance") {
+      throw new Error(`EventBus: relayed payload mismatch: ${JSON.stringify(received[0])}`);
     }
   } finally {
     unsubscribe();

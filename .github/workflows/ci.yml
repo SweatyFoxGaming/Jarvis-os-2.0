@@ -16,6 +16,14 @@ jobs:
       POSTGRES_USER: jarvis_ci_placeholder
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No later step in this job needs authenticated git operations
+          # (no push, no fetch beyond the initial checkout) -- persisting
+          # the GITHUB_TOKEN in local git config for the rest of the job
+          # would be an unused credential sitting around for every
+          # dependency-install/test step (npm install, pip install, pytest)
+          # to potentially read.
+          persist-credentials: false
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

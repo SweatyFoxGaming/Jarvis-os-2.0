@@ -31,6 +31,14 @@ export function createRedisClient(url: string): Redis {
     maxRetriesPerRequest: 3,
     enableOfflineQueue: false, // fail fast when down; callers already fall back
     connectTimeout: 2000,
+    // connectTimeout/enableOfflineQueue only bound getting a connection
+    // established in the first place -- they don't bound a command sent on
+    // an already-open-but-unresponsive connection (e.g. Redis wedged, not
+    // down). commandTimeout closes that gap: a GET/SET/PUBLISH that doesn't
+    // get a reply within this window rejects instead of hanging, so every
+    // caller's existing try/catch-and-fall-back-to-local (KeyPool,
+    // EventBus's relay) still fires instead of blocking the request.
+    commandTimeout: 3000,
     retryStrategy: (times: number) => Math.min(times * 500, 5000),
   });
   client.on("error", (err: Error) => {

@@ -412,6 +412,7 @@ def test_second_concurrent_transcription_gets_a_queued_message_with_its_position
         voice_engine._inference_queue = voice_engine.InferenceQueue()
         voice_engine._inference_queue.start()
         server = await asyncio.start_unix_server(voice_engine.handle_connection, path=sock_path)
+        writer1 = writer2 = None
         try:
             async with server:
                 asyncio.ensure_future(server.serve_forever())
@@ -422,56 +423,65 @@ def test_second_concurrent_transcription_gets_a_queued_message_with_its_position
                 monkeypatch.setattr(voice_engine._stt, "transcribe", slow_transcribe)
                 reader1, writer1 = await asyncio.open_unix_connection(sock_path)
                 speech_chunk = _make_pcm(2000)
-                writer1.write((json.dumps({
-                    "type": "audio_data",
-                    "data": base64.b64encode(speech_chunk).decode(),
-                }) + "\n").encode())
-                writer1.write((json.dumps({"type": "transcribe"}) + "\n").encode())
-                await writer1.drain()
+                try:
+                    writer1.write((json.dumps({
+                        "type": "audio_data",
+                        "data": base64.b64encode(speech_chunk).decode(),
+                    }) + "\n").encode())
+                    writer1.write((json.dumps({"type": "transcribe"}) + "\n").encode())
+                    await writer1.drain()
 
-                # Give the first call a moment to actually start (and grab
-                # the queue) before the second connection submits.
-                deadline = asyncio.get_event_loop().time() + 5
-                while "first-call-started" not in call_order and asyncio.get_event_loop().time() < deadline:
-                    await asyncio.sleep(0.05)
-                assert "first-call-started" in call_order, "first transcribe() never started"
+                    # Give the first call a moment to actually start (and grab
+                    # the queue) before the second connection submits.
+                    deadline = asyncio.get_event_loop().time() + 5
+                    while "first-call-started" not in call_order and asyncio.get_event_loop().time() < deadline:
+                        await asyncio.sleep(0.05)
+                    assert "first-call-started" in call_order, "first transcribe() never started"
 
-                # Second connection: submitted while the first is still
-                # in flight -- must get a "queued" message with position 1
-                # immediately, well before release_first_call is ever set.
-                monkeypatch.setattr(voice_engine._stt, "transcribe", fast_transcribe)
-                reader2, writer2 = await asyncio.open_unix_connection(sock_path)
-                writer2.write((json.dumps({
-                    "type": "audio_data",
-                    "data": base64.b64encode(speech_chunk).decode(),
-                }) + "\n").encode())
-                writer2.write((json.dumps({"type": "transcribe"}) + "\n").encode())
-                await writer2.drain()
+                    # Second connection: submitted while the first is still
+                    # in flight -- must get a "queued" message with position 1
+                    # immediately, well before release_first_call is ever set.
+                    monkeypatch.setattr(voice_engine._stt, "transcribe", fast_transcribe)
+                    reader2, writer2 = await asyncio.open_unix_connection(sock_path)
+                    writer2.write((json.dumps({
+                        "type": "audio_data",
+                        "data": base64.b64encode(speech_chunk).decode(),
+                    }) + "\n").encode())
+                    writer2.write((json.dumps({"type": "transcribe"}) + "\n").encode())
+                    await writer2.drain()
 
-                queued_line = await asyncio.wait_for(reader2.readline(), timeout=5)
-                queued_msg = json.loads(queued_line.decode())
-                assert queued_msg == {"type": "queued", "position": 1}, (
-                    f"expected an immediate queued/position-1 message on the second "
-                    f"connection, got: {queued_msg!r}"
-                )
-                # The second call must not have started yet -- proves the queue
-                # actually serialized it behind the first, not just reported a
-                # position while running both concurrently.
-                assert "second-call-started" not in call_order
+                    queued_line = await asyncio.wait_for(reader2.readline(), timeout=5)
+                    queued_msg = json.loads(queued_line.decode())
+                    assert queued_msg == {"type": "queued", "position": 1}, (
+                        f"expected an immediate queued/position-1 message on the second "
+                        f"connection, got: {queued_msg!r}"
+                    )
+                    # The second call must not have started yet -- proves the queue
+                    # actually serialized it behind the first, not just reported a
+                    # position while running both concurrently.
+                    assert "second-call-started" not in call_order
 
-                release_first_call.set()
+                    release_first_call.set()
 
-                line1 = await asyncio.wait_for(reader1.readline(), timeout=5)
-                assert json.loads(line1.decode()) == {"type": "transcript", "text": "first-transcript"}
+                    line1 = await asyncio.wait_for(reader1.readline(), timeout=5)
+                    assert json.loads(line1.decode()) == {"type": "transcript", "text": "first-transcript"}
 
-                line2 = await asyncio.wait_for(reader2.readline(), timeout=5)
-                assert json.loads(line2.decode()) == {"type": "transcript", "text": "second-transcript"}
+                    line2 = await asyncio.wait_for(reader2.readline(), timeout=5)
+                    assert json.loads(line2.decode()) == {"type": "transcript", "text": "second-transcript"}
 
-                assert call_order == ["first-call-started", "second-call-started"]
-
-                writer1.close()
-                writer2.close()
+                    assert call_order == ["first-call-started", "second-call-started"]
+                finally:
+                    # A failed assertion above must not leave either writer
+                    # open for the rest of this test process's lifetime --
+                    # matches the single-writer scenarios' own try/finally
+                    # pattern elsewhere in this file.
+                    if writer1 is not None:
+                        writer1.close()
+                    if writer2 is not None:
+                        writer2.close()
         finally:
             server.close()
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
 
     _run(scenario())
