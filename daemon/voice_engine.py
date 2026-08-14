@@ -95,22 +95,73 @@ class InferenceQueue:
     def start(self) -> None:
         """Must be called once, from inside a running event loop (main(),
         below) -- asyncio.create_task requires one, unlike the Queue/lock
-        constructors above, which don't."""
+        constructors above, which don't.
+
+        Idempotent: a second call is a no-op rather than spinning up a
+        second concurrent _worker() task. Nothing calls start() twice
+        today, but if it ever did, two workers would violate this class's
+        own core invariant (one inference call in flight at a time, system
+        -wide -- see the class docstring)."""
+        if self._worker_task is not None:
+            return
         self._worker_task = asyncio.create_task(self._worker())
+        self._worker_task.add_done_callback(self._on_worker_done)
+
+    def _on_worker_done(self, task: asyncio.Task) -> None:
+        """Registered on self._worker_task so a worker crash is never just
+        an "unretrieved task exception" warning logged at some arbitrary
+        future GC time. If _worker() ever exits -- which should never
+        happen in normal operation -- every submit() after that point still
+        succeeds silently (the queue has no size limit) and every `await
+        future` on those jobs hangs forever (futures have no timeout), with
+        no other visible symptom. This is the loud alarm for that."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.critical(
+                f"InferenceQueue worker died unexpectedly: {exc!r} -- all "
+                "subsequent STT/TTS requests will hang forever until the "
+                "daemon is restarted",
+                exc_info=exc,
+            )
 
     async def _worker(self) -> None:
-        while True:
-            fn, args, future = await self._queue.get()
-            try:
-                result = await asyncio.to_thread(fn, *args)
-                if not future.cancelled():
-                    future.set_result(result)
-            except Exception as exc:  # noqa: BLE001 -- propagated to the caller via the future, not swallowed
-                if not future.cancelled():
-                    future.set_exception(exc)
-            finally:
-                self._pending -= 1
-                self._queue.task_done()
+        try:
+            while True:
+                fn, args, future = await self._queue.get()
+                try:
+                    result = await asyncio.to_thread(fn, *args)
+                    if not future.cancelled():
+                        future.set_result(result)
+                except asyncio.CancelledError:
+                    # Deliberate cancellation of this worker task (e.g.
+                    # during shutdown) -- must propagate normally, not be
+                    # treated as a job failure.
+                    raise
+                except BaseException as exc:  # noqa: BLE001 -- propagated to the caller via the future, not swallowed. Catching BaseException (not just Exception) so a non-Exception failure surfaced through asyncio.to_thread can never silently kill this worker task -- see class docstring and Plan 2 final review finding 1.
+                    if not future.cancelled():
+                        future.set_exception(exc)
+                finally:
+                    self._pending -= 1
+                    self._queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            # This should be unreachable: every per-job failure above is
+            # caught inside the inner try/except and never escapes the
+            # loop. If something still gets here, it's a genuine bug in
+            # this method itself -- log loudly (in addition to the
+            # done_callback registered in start()) before letting it
+            # propagate and kill the task.
+            log.critical(
+                "InferenceQueue worker loop is exiting unexpectedly -- this "
+                "should never happen in normal operation; all subsequent "
+                "STT/TTS requests will hang forever until the daemon is "
+                "restarted",
+                exc_info=True,
+            )
+            raise
 
     async def submit(self, fn, *args) -> tuple[asyncio.Future, int]:
         """Returns (future, position). position is 0 if this job starts

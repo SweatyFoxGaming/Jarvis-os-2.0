@@ -376,7 +376,7 @@ def test_transcribe_with_no_preceding_audio_returns_empty_transcript_without_cra
     _run(scenario())
 
 
-def test_second_concurrent_transcription_gets_a_queued_message_with_its_position():
+def test_second_concurrent_transcription_gets_a_queued_message_with_its_position(monkeypatch):
     # Regression test for the fix replacing _inference_lock (a plain
     # semaphore -- silent waiting, no feedback) with InferenceQueue: a
     # second connection's transcribe request, submitted while the first is
@@ -419,7 +419,7 @@ def test_second_concurrent_transcription_gets_a_queued_message_with_its_position
                 # First connection: sends audio_data + transcribe, but its
                 # transcribe() call blocks on release_first_call until this
                 # test explicitly frees it below.
-                voice_engine._stt.transcribe = slow_transcribe
+                monkeypatch.setattr(voice_engine._stt, "transcribe", slow_transcribe)
                 reader1, writer1 = await asyncio.open_unix_connection(sock_path)
                 speech_chunk = _make_pcm(2000)
                 writer1.write((json.dumps({
@@ -439,7 +439,7 @@ def test_second_concurrent_transcription_gets_a_queued_message_with_its_position
                 # Second connection: submitted while the first is still
                 # in flight -- must get a "queued" message with position 1
                 # immediately, well before release_first_call is ever set.
-                voice_engine._stt.transcribe = fast_transcribe
+                monkeypatch.setattr(voice_engine._stt, "transcribe", fast_transcribe)
                 reader2, writer2 = await asyncio.open_unix_connection(sock_path)
                 writer2.write((json.dumps({
                     "type": "audio_data",

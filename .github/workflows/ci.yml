@@ -18,6 +18,14 @@ jobs:
         run: npx tsc --noEmit
       - name: Run test suite
         run: npm test
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Python gateway tests
+        run: |
+          pip install -r requirements.txt
+          pytest tests/test_api_gateway.py daemon/tests/test_protocol.py -v
       - name: Check README/docs accuracy
         run: bash scripts/check-docs-accuracy.sh
       - name: Install jarvis-builder dependencies
