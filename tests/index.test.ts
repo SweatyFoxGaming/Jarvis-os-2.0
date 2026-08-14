@@ -3782,11 +3782,11 @@ registerTest("KeyPool", "all keys on cooldown for a provider returns null, not t
   if ((await pool.getAvailableKey("groq")) !== null) throw new Error("expected null when every key is on cooldown");
 });
 
-registerTest("KeyPool", "keyCount reports the number of configured keys per provider, independent of cooldown state", () => {
+registerTest("KeyPool", "keyCount reports the number of configured keys per provider, independent of cooldown state", async () => {
   const pool = new KeyPool({ groq: ["k1", "k2", "k3"], gemini: [] });
   if (pool.keyCount("groq") !== 3) throw new Error(`expected keyCount("groq") === 3, got ${pool.keyCount("groq")}`);
   if (pool.keyCount("gemini") !== 0) throw new Error(`expected keyCount("gemini") === 0, got ${pool.keyCount("gemini")}`);
-  pool.reportFailure("groq", "k1", 60);
+  await pool.reportFailure("groq", "k1", 60);
   if (pool.keyCount("groq") !== 3) throw new Error("keyCount must reflect total configured keys, not just currently-available ones");
 });
 
@@ -3826,6 +3826,14 @@ registerTest("KeyPool", "reportFailure's cooldown is visible to a second KeyPool
 });
 
 // ---------- CognitionRouter Tests ----------
+// NOTE: several tests below reuse literal key strings (e.g. "gk1") across
+// unrelated test cases. That's safe with Redis unconfigured (the default,
+// and what CI runs with) since KeyPool's cooldown state is then purely
+// per-instance/local. If REDIS_URL is ever set while running this suite,
+// KeyPool.reportFailure's cross-instance cooldown write (see
+// src/runtime/key-pool.ts) will make cooldown state bleed across these
+// tests via the shared Redis store, since they don't use unique keys per
+// test the way the KeyPool-category Redis test above does.
 registerTest("CognitionRouter", "a normal-capacity request is not throttled and returns the cloud response", async () => {
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
   const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
