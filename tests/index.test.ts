@@ -153,10 +153,15 @@ registerTest("Platform", "a Redis client pointed at an unreachable address logs 
 
   try {
     // If createRedisClient's "error" handler (src/kernel/redis-client.ts)
-    // were missing, this unhandled "error" event would throw here and take
-    // the whole test process down with it -- the actual thing this test
-    // guards against. Reaching the assertions below at all is already
-    // half the proof.
+    // were missing, this connection failure would still not crash the
+    // process -- ioredis's own silentEmit() already no-ops an unhandled
+    // "error" event when there are zero listeners, falling back to a bare
+    // console.error. What the handler actually guards against is losing
+    // observability of that failure: without it, this Redis-down event
+    // would be invisible to ObservationPlatform, and the assertion below
+    // (a "warn" telemetry event under subsystem "Redis") would never see
+    // it. Verified directly: temporarily removing the handler makes this
+    // assertion fail (no warning logged), not the process crash.
     const deadline = Date.now() + 3000;
     let sawWarning = false;
     while (Date.now() < deadline) {

@@ -13,11 +13,17 @@ let singletonAttempted = false;
  * touching process.env or this module's singleton. Every Redis-backed
  * caller in this codebase (KeyPool, EventBus's cross-instance relay) MUST
  * treat a connection failure as non-fatal: retryStrategy caps backoff
- * rather than retrying forever, and the "error" handler only logs -- an
- * unhandled "error" event on a Node EventEmitter throws and crashes the
- * process, so this handler existing at all is what keeps a down/unreachable
- * Redis from taking down Jarvis over what must stay an optional subsystem
- * (see this plan's Global Constraints).
+ * rather than retrying forever, and the "error" handler logs a structured
+ * warning -- verified (see tests/index.test.ts's disconnect regression
+ * test) that ioredis itself already no-ops an unhandled "error" event
+ * (silentEmit falls back to a bare console.error when there are zero
+ * listeners) rather than letting it crash the process, so this handler
+ * isn't what stands between a down Redis and a crashed Jarvis. Its real
+ * job is observability: without it, a down/unreachable Redis fails
+ * *silently* (a console.error only), invisible to ObservationPlatform and
+ * anything watching it -- this handler is what keeps that failure visible
+ * over what must stay an optional subsystem (see this plan's Global
+ * Constraints).
  */
 export function createRedisClient(url: string): Redis {
   const client = new Redis(url, {
