@@ -79,6 +79,8 @@ services:
       # into api's own startup gate.
       voice-daemon:
         condition: service_started
+      redis:
+        condition: service_started
 
   # Offline-first local inference: serves a GGUF model you already have on
   # disk over an OpenAI-compatible API, entirely inside the Docker network —
@@ -148,6 +150,20 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
     volumes:
       - /mnt/jarvis_home/postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # Optional cross-instance coordination for KeyPool cooldown state and
+  # EventBus's cross-instance relay (see docs/superpowers/plans/
+  # 2026-08-10-shared-state-multi-tenant-infra.md) -- every deployment
+  # without REDIS_URL set in .env runs exactly as it did before this
+  # service existed, in-memory-only, same as api's own depends_on below
+  # (service_started, not service_healthy: an unreachable/down Redis must
+  # never block the gateway from starting, matching voice-daemon's own
+  # documented reasoning above for why an optional subsystem gets
+  # service_started, not service_healthy).
+  redis:
+    image: redis:7-alpine
+    container_name: jarvis-redis
     restart: unless-stopped
 
   # The only service in this stack with access to the host's Docker
