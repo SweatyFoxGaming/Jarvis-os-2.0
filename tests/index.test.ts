@@ -3338,6 +3338,31 @@ registerTest("Database", "queryWithRetry does not retry a non-pool-exhaustion er
   }
 });
 
+registerTest("Database", "queryWithRetry exhausts its budget and re-throws the original pool-exhaustion error", async () => {
+  // A fake that fails on every call -- unlike the "eventual success" test
+  // above, this drives queryWithRetry all the way through its retry budget
+  // to confirm the boundary itself: exactly maxRetries + 1 total attempts
+  // (the first try plus maxRetries retries), and the error that escapes is
+  // the original pool-exhaustion error, not a wrapped/generic one.
+  let attempts = 0;
+  const alwaysFailingQueryFn = async () => {
+    attempts++;
+    throw new Error("timeout exceeded when trying to connect");
+  };
+  let caught: any = null;
+  try {
+    await queryWithRetry("SELECT 1", [], { maxRetries: 2, baseDelayMs: 5, queryFn: alwaysFailingQueryFn });
+  } catch (err: any) {
+    caught = err;
+  }
+  if (attempts !== 3) {
+    throw new Error(`Database: expected exactly 3 total attempts (1 + maxRetries=2) on full exhaustion, got ${attempts}`);
+  }
+  if (!caught || caught.message !== "timeout exceeded when trying to connect") {
+    throw new Error(`Database: expected the original pool-exhaustion error to propagate on exhaustion, got: ${caught?.message}`);
+  }
+});
+
 // ---------- Obsidian Parser Tests (pure functions, no I/O) ----------
 
 registerTest("ObsidianParser", "parseNote extracts a plain wikilink", () => {
