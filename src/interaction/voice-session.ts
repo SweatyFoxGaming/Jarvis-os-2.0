@@ -157,6 +157,11 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
           "VoiceSession",
           `Unexpected voice-session failure outside the normal error handling, publishing an honest error reply: ${err?.message || err}`
         );
+        // Matches publishReply's own append-then-publish pattern (below,
+        // inside handleTranscript) so this truly-last-resort path doesn't
+        // leave conversation history missing the reply the user actually
+        // heard/saw -- every other reply path already does this.
+        deps.appendMessage(deps.username ?? DEFAULT_USERNAME, "assistant", HONEST_PIPELINE_ERROR_REPLY).catch(() => {});
         bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY });
       });
   });
