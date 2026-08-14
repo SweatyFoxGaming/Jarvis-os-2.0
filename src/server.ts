@@ -1243,12 +1243,6 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
   }
 });
 
-// Shutdown Hook
-app.post("/api/shutdown", validateApiKey, (req, res) => {
-  observation.logTelemetry("warn", "System", "Server shutdown API invoked");
-  res.json({ status: "shutdown initiated" });
-});
-
 // Notifications + Web Push endpoints — see
 // src/interaction/routes/notifications-routes.ts, mounted below.
 app.use(notificationsRouter);

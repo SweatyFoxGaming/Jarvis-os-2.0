@@ -130,29 +130,41 @@ const defaultInjectableDeps: Pick<
  * answer on failure — every failure path below publishes an honest,
  * clearly-spoken error/decline instead.
  */
-let activeTurnPromise: Promise<void> = Promise.resolve();
-
 export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { stop: () => void } {
   const deps: VoiceSessionDeps = { ...defaultInjectableDeps, ...overrides };
   const bus = EventBus.getInstance();
 
+  // Per-call, not module-level: startVoiceSession() returns an independent
+  // { stop } handle, so each call (e.g. a fresh instance in tests, or a
+  // future multi-session scenario) must get its own turn queue rather than
+  // sharing one across every call this process ever makes.
+  let activeTurnPromise: Promise<void> = Promise.resolve();
+
   const unsubscribe = bus.subscribe<{ text?: string }>("voice:transcript", (payload) => {
     const text = typeof payload?.text === "string" ? payload.text.trim() : "";
-    if (!text) return;
+    if (!text) return; // empty/no-op transcript: do nothing, never publish
 
-    // Queue turns sequentially so tool loops never race
+    // Queue turns sequentially so tool loops never race.
     activeTurnPromise = activeTurnPromise
       .then(() => handleTranscript(text, deps, bus))
-      .catch((err) => {
-        observation.logTelemetry("error", "VoiceSession", `Turn failure: ${err?.message || err}`);
+      .catch((err: any) => {
+        // handleTranscript already catches every failure internally and
+        // always publishes an honest reply rather than throwing — this is
+        // only a last-resort net so a truly unexpected bug in this handler
+        // itself can never silently leave the user with no reply at all.
+        observation.logTelemetry(
+          "error",
+          "VoiceSession",
+          `Unexpected voice-session failure outside the normal error handling, publishing an honest error reply: ${err?.message || err}`
+        );
         bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY });
       });
   });
 
   return {
-	 stop: () => {
-		unsubscribe();
-	},
+    stop: () => {
+      unsubscribe();
+    },
   };
 }
 
