@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from "express";
-import { handleChatStream } from './routes/streamRoute.js';
 import helmet from "helmet";
 import cors from "cors";
 import path from "path";
@@ -9,7 +8,7 @@ import { applyHybridSearchSchema } from './kernel/state/hybridSearchMigration.js
 import { getPool } from "./kernel/state/db.js";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
-import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
+import { GoogleGenAI, type Content, type FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
@@ -32,7 +31,9 @@ import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "./kernel/egress.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
 import { reflectAndLearn } from "./adaptation/reflection.js";
+import http from "node:http";
 import { WebSocketServer } from "ws";
+import { handleChatStream } from "./routes/streamRoute.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
 import * as briefing from "./world/briefing.js";
@@ -67,6 +68,15 @@ import { startAudioClient } from "./core/audio-client.js";
 import { startLiveAnalysis } from "./adaptation/live-analysis.js";
 import { startShadowVerifier } from "./executive/shadow-verifier.js";
 import { startVoiceSession } from "./interaction/voice-session.js";
+import type { Request, Response, NextFunction } from 'express';
+
+let httpServer: http.Server | undefined;
+let eventsWss: WebSocketServer | undefined;
+let audioClient: any;
+let voiceSession: any;
+let liveAnalysis: any;
+let shadowVerifier: any;
+let fsWatcher: any;
 
 dotenv.config();
 
@@ -1338,6 +1348,25 @@ app.post("/api/events-ticket", validateApiKey, requireCapability("hud.read"), (r
 process.env.POSTGRES_HOST = process.env.POSTGRES_HOST || "127.0.0.1";
 process.env.POSTGRES_PORT = process.env.POSTGRES_PORT || "5432";
 
+export const asyncHandler = (fn: Function) => 
+  (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+
+// 2. Global Express Error Handler (Must be attached before starting server)
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error(`[Unhandled Error] ${req.method} ${req.path}:`, err.stack || err.message || err);
+  
+  if (res.headersSent) {
+    return next(err);
+  }
+  
+  res.status(err.status || 500).json({
+    error: err.message || "Internal Server Error"
+  });
+});
+
+// 3. Database initialization and server bootstrap
 initDatabase().then(async (ready) => {
   if (ready) {
     try {
@@ -1351,29 +1380,17 @@ initDatabase().then(async (ready) => {
       observation.logTelemetry("warn", "Database", `Failed to load capability grants: ${err.message}`);
     }
     try {
-      // After migrations (part of initDatabase() above) so system_settings
-      // is guaranteed to exist by the time this queries it. A failure here
-      // just leaves MindKernel's hardcoded defaults in place — see its own
-      // hydrateFromDb() doc comment.
       await MindKernel.getInstance().hydrateFromDb();
     } catch (err: any) {
       observation.logTelemetry("warn", "Database", `Failed to hydrate system settings: ${err.message}`);
     }
   }
-  const httpServer = app.listen(PORT, "0.0.0.0", () => {
+
+  httpServer = app.listen(PORT, "0.0.0.0", () => {
     observation.logTelemetry("info", "System", `🚀 Jarvis OS Server running on http://localhost:${PORT}`);
   });
 
-  // A generic event stream: every EventBus publish, regardless of topic,
-  // gets forwarded to every connected client. Two auth paths, since the two
-  // kinds of client can't authenticate the same way: a browser page (the
-  // Electron window's frontend) can't set a custom header on a WebSocket
-  // handshake, so it authenticates via a single-use ticket obtained through
-  // a normal authenticated POST (see /api/events-ticket above); a Node.js
-  // client (eww-bridge.ts, a real host process, not a browser) CAN set a
-  // header, so it authenticates via the permanent X-API-Key directly,
-  // matching how eww-adapter.ts already authenticates its HTTP polling today.
-  const eventsWss = new WebSocketServer({ noServer: true });
+  eventsWss = new WebSocketServer({ noServer: true });
   eventsWss.on("connection", (ws, req) => {
     const url = new URL(req.url || "", `http://${req.headers.host}`);
     const ticket = url.searchParams.get("ticket");
@@ -1384,17 +1401,6 @@ initDatabase().then(async (ready) => {
       username = consumeEventsTicket(ticket);
     } else if (
       typeof apiKeyHeader === "string" &&
-      // ADMIN_API_KEY (exported from auth-middleware.ts) resolves the same
-      // way validateApiKey's admin bootstrap key does: ADMIN_API_KEY falling
-      // back to INTERNAL_API_KEY. Checking process.env.INTERNAL_API_KEY
-      // directly here was a real bug — a deployment that sets ADMIN_API_KEY
-      // and leaves INTERNAL_API_KEY empty (.env.example's shipped default)
-      // would have let a bare, empty X-API-Key header authenticate as
-      // admin, since safeCompare("", "") is true. The explicit length check
-      // below is defense-in-depth on top of auth-middleware.ts's own
-      // fail-fast (which already guarantees ADMIN_API_KEY is non-empty) —
-      // an empty configured key must never be treated as "compare succeeds
-      // against an empty header".
       typeof ADMIN_API_KEY === "string" &&
       ADMIN_API_KEY.length > 0 &&
       safeCompare(apiKeyHeader, ADMIN_API_KEY)
@@ -1409,14 +1415,10 @@ initDatabase().then(async (ready) => {
     }
 
     observation.logTelemetry("info", "EventsWs", `/ws/events connection opened for "${username}".`);
-    // Abrupt peer disconnects (ECONNRESET etc., e.g. a reconnecting
-    // eww-bridge.ts client) surface as an 'error' event on the socket — with
-    // no listener, ws lets that become an uncaught exception on a routine
-    // disconnect. Matches the log-and-continue pattern used elsewhere in
-    // this codebase for WS error handling.
     ws.on("error", (err: any) => {
       observation.logTelemetry("warn", "EventsWs", `/ws/events socket error for "${username}": ${err.message || err}`);
     });
+
     const bus = EventBus.getInstance();
     const unsubscribers: Array<() => void> = [];
     const forward = (topic: string) => (payload: any) => {
@@ -1438,27 +1440,7 @@ initDatabase().then(async (ready) => {
     });
   });
 
-  // ws's `{ server, path }` shortcut only works correctly for a single
-  // WebSocketServer per HTTP server: internally, each instance created that
-  // way registers its own 'upgrade' listener on httpServer, and the first
-  // one whose path doesn't match the incoming request immediately aborts
-  // the handshake with a 400 — it never lets a later listener (a second
-  // WebSocketServer for a different path) get a chance to handle it. This
-  // silently broke /ws/events entirely once it was added alongside the
-  // now-removed /ws/voice route (live-caught in earlier verification: a
-  // real WS client connecting to /ws/events with a valid ticket/API key
-  // still got HTTP 400 pre-upgrade). Per ws's own documented pattern for
-  // "Multiple servers sharing a single HTTP/S server", eventsWss above uses
-  // noServer:true and this dispatcher does the routing — kept even now that
-  // it's the only WebSocketServer, so a future second one doesn't
-  // reintroduce the same silent-400 bug.
   httpServer.on("upgrade", (req, socket, head) => {
-    // `new URL()` throws for an empty or malformed Host header (verified:
-    // "", "a b", "[bad" all throw a TypeError) — inside an 'upgrade'
-    // listener that throw becomes an uncaught exception that never reaches
-    // socket.destroy(), leaking the socket on every malformed request. ws's
-    // own internal shouldHandle() used a non-throwing check and would have
-    // cleanly 400'd instead; restore that behavior explicitly here.
     let pathname: string;
     try {
       ({ pathname } = new URL(req.url || "", `http://${req.headers.host}`));
@@ -1466,45 +1448,27 @@ initDatabase().then(async (ready) => {
       socket.destroy();
       return;
     }
-    if (pathname === "/ws/events") {
-      eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit("connection", ws, req));
+
+    if (pathname === "/ws/events" && eventsWss) {
+      const wss = eventsWss;
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
     } else {
       socket.destroy();
     }
   });
 
-  // Publishes filesystem:changed onto the event bus for anything watching
-  // via /ws/events — replaces cron-style polling for filesystem-driven
-  // reactions. Scoped to JARVIS_FILES_DIR (the same directory
-  // src/capabilities/providers/files.ts already treats as the one safe,
-  // scoped root) rather than the whole repo or filesystem.
   if (process.env.JARVIS_FILES_DIR) {
-    startFilesystemWatcher([process.env.JARVIS_FILES_DIR]);
+    fsWatcher = startFilesystemWatcher([process.env.JARVIS_FILES_DIR]);
   } else {
     observation.logTelemetry("warn", "FilesystemWatcher", "JARVIS_FILES_DIR not set — filesystem watching disabled.");
   }
 
-  // Subscribes to the bus itself and simply does nothing if
-  // filesystem:changed never fires (e.g. JARVIS_FILES_DIR unset above) — no
-  // env-var gate needed, unlike the watcher itself.
-  const liveAnalysis = startLiveAnalysis();
-
-  // Same unconditional-start reasoning as liveAnalysis above — it does
-  // nothing until a real high-severity adaptation:analysis event arrives.
-  const shadowVerifier = startShadowVerifier();
-
-  // Local, offline-capable voice pipeline, replacing the old browser-facing
-  // /ws/voice route straight to the Gemini Live API (see git history for
-  // src/interaction/live-voice.ts, removed in this task). startAudioClient
-  // bridges the voice daemon's Unix socket (STT/TTS only — see
-  // daemon/voice_engine.py) onto the EventBus (voice:transcript /
-  // voice:reply / voice:audio-chunk / voice:error); startVoiceSession
-  // subscribes to voice:transcript and runs each turn through the same
-  // local tool-calling pipeline /api/chat's Groq/CognitionRouter branch
-  // uses, publishing voice:reply. Neither needs an HTTP/WebSocket route —
-  // the daemon connection is host-local via a Unix socket, not a browser.
-  const audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
-  const voiceSession = startVoiceSession();
+  liveAnalysis = startLiveAnalysis();
+  shadowVerifier = startShadowVerifier();
+  audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
+  voiceSession = startVoiceSession();
 
   // Opt-in, no-ops if REDIS_URL is unset (every deployment today) -- see
   // docs/superpowers/plans/2026-08-10-shared-state-multi-tenant-infra.md.
@@ -1523,48 +1487,74 @@ initDatabase().then(async (ready) => {
   scheduler.startDataRetentionJob();
 });
 
-// Evict idle per-user session state (working memory, not persisted data) so
-// long-running deployments don't accumulate one SessionState per visitor forever.
+// Periodic session cleanup
 setInterval(() => {
   const pruned = pruneIdleSessions();
   if (pruned > 0) {
     observation.logTelemetry("info", "System", `Pruned ${pruned} idle session(s). ${getActiveSessionCount()} active.`);
   }
 }, 30 * 60 * 1000);
-import { Request, Response, NextFunction } from 'express';
 
-// 1. Helper wrapper to catch unhandled async errors in routes
-export const asyncHandler = (fn: Function) => 
-  (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-
-// -------------------------------------------------------------
-// [Place your Express app definition and route handlers here]
-// Example usage for async routes:
-// app.get('/api/example', asyncHandler(async (req: Request, res: Response) => { ... }));
-// app.post('/api/chat/stream', handleChatStream);
-// app.get('/api/chat/stream', handleChatStream); // Supports SSE GET fallback
-// -------------------------------------------------------------
-
-// 2. Global Express Error Handler (Place AFTER all app.get/app.post routes)
-app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  console.error(`[Unhandled Error] ${req.method} ${req.path}:`, err.stack || err.message || err);
-  
-  if (res.headersSent) {
-    return next(err);
-  }
-  
-  res.status(err.status || 500).json({
-    error: err.message || "Internal Server Error"
-  });
-});
-
-// 3. Process-level crash prevention (Place at the bottom of src/server.ts)
+// 4. Global process crash & signal handling
 process.on("uncaughtException", (err: Error) => {
   console.error("[Fatal System Error] Uncaught Exception:", err.stack || err);
 });
 
 process.on("unhandledRejection", (reason: unknown) => {
   console.error("[Fatal System Error] Unhandled Rejection:", reason);
+});
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`\n[Server] Received ${signal}. Initiating graceful shutdown...`);
+
+  try {
+    audioClient?.stop?.();
+    fsWatcher?.stop?.();
+    liveAnalysis?.stop?.();
+    shadowVerifier?.stop?.();
+    voiceSession?.stop?.();
+    console.log("[Server] Stopped background workers.");
+  } catch (err) {
+    console.error("[Server] Error stopping background workers:", err);
+  }
+
+  try {
+    if (eventsWss) {
+      eventsWss.clients.forEach((client: any) => {
+        client.close(1001, "Server shutting down");
+      });
+      eventsWss.close();
+      console.log("[Server] Closed WebSocket connections.");
+    }
+  } catch (err) {
+    console.error("[Server] Error closing WebSockets:", err);
+  }
+
+  if (httpServer) {
+    httpServer.close(() => {
+      console.log("[Server] HTTP server closed cleanly.");
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      console.warn("[Server] Forceful shutdown triggered after timeout.");
+      process.exit(1);
+    }, 5000).unref();
+  } else {
+    process.exit(0);
+  }
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
+app.post("/api/shutdown", validateApiKey, (req, res) => {
+  observation.logTelemetry("warn", "System", "Server shutdown API invoked via HTTP");
+  res.json({ status: "shutdown initiated" });
+  gracefulShutdown("HTTP_API");
 });

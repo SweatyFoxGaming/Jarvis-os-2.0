@@ -1,8 +1,8 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
 
-export const permissionsRouter = Router();
+export const permissionsRouter: Router = Router();
 
 // ---------- Capability grants (permission model) ----------
 // Default-deny: a capability (github.issues.create, email.send, ...) only

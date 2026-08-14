@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -7,7 +7,7 @@ import { getSession } from "../../cognition/session.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const observationRouter = Router();
+export const observationRouter: Router = Router();
 
 // ---------- Pass 5, 6 & 7: Observation Platform Exposes API ----------
 

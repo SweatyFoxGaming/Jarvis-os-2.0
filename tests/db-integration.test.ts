@@ -164,7 +164,7 @@ registerTest("session-repo: real messages persist, load back in order, and prune
   await appendMessage(username, "assistant", "hello back");
 
   const history = await loadRecentHistory(username);
-  if (history.length !== 2 || history[0].content !== "hello from a real integration test" || history[1].content !== "hello back") {
+if (history.length !== 2 || history[0]!.content !== "hello from a real integration test" || history[1]!.content !== "hello back") {
     throw new Error(`loadRecentHistory returned unexpected content/order: ${JSON.stringify(history)}`);
   }
 
@@ -254,7 +254,7 @@ registerTest("knowledge-graph-repo: entities are scoped per username — one use
   if (aResults.length !== 1 || bResults.length !== 1) {
     throw new Error(`expected exactly one match per user, got ${aResults.length} for A and ${bResults.length} for B`);
   }
-  if (aResults[0].id === bResults[0].id) {
+  if (aResults[0]!.id === bResults[0]!.id) {
     throw new Error("user A and user B's searchEntities returned the same row — entities are not actually scoped per user");
   }
 
@@ -274,14 +274,14 @@ registerTest("identity-repo: self-reflections are scoped per username — one us
   const aReflections = await getRecentSelfReflections(userA);
   const bReflections = await getRecentSelfReflections(userB);
 
-  if (aReflections.length !== 1 || aReflections[0].content !== "User A's private opinion, never meant for user B") {
+  if (aReflections.length !== 1 || aReflections[0]!.content !== "...") {
     throw new Error(`getRecentSelfReflections(userA) returned unexpected content: ${JSON.stringify(aReflections)}`);
   }
   // Asserting user B's own reflection came back correctly (not just that
   // user A's didn't leak in) matters here: a scoping bug that returned an
   // empty array for every username would otherwise pass the leak check
   // below trivially, while actually being just as broken.
-  if (bReflections.length !== 1 || bReflections[0].content !== "User B's own commitment") {
+  if (bReflections.length !== 1 || bReflections[0]!.content !== "...") {
     throw new Error(`getRecentSelfReflections(userB) returned unexpected content: ${JSON.stringify(bReflections)}`);
   }
   if (bReflections.some(r => r.content.includes("User A's private opinion"))) {

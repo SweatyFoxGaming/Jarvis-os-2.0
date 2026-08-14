@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -10,7 +10,7 @@ import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const briefingMemoryRouter = Router();
+export const briefingMemoryRouter: Router = Router();
 
 // No dedicated capability exists for the memory-review queue or admin
 // consolidation controls (unlike briefing.read below) — these operate on

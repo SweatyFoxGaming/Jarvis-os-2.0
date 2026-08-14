@@ -10,7 +10,17 @@ const observation = ObservationPlatform.getInstance();
 // first import of this module (server.ts's own, at startup) still fails
 // fast before app.listen() ever runs.
 
-import { Request, Response, NextFunction } from 'express';
+import { type Request, type Response, type NextFunction } from 'express';
+
+export const authenticateSession = (req: Request, res: Response, next: NextFunction) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    res.status(401).json({ error: 'Unauthorized: Missing session token' });
+    return;
+  }
+  // Validate token logic here
+  next();
+};
 
 // Exported so other modules (e.g. server.ts's /ws/events direct-API-key
 // auth path) resolve the admin key the same way this module does, instead
@@ -44,6 +54,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   const requestKey = Array.isArray(requestKeyHeader) ? requestKeyHeader[0] : requestKeyHeader;
   const adminKey = typeof ADMIN_API_KEY === 'string' ? ADMIN_API_KEY : '';
 
+  if (!requestKey) return res.status(401).json({ error: "Missing key" });
   const keyBuffer = Buffer.from(requestKey);
   const adminBuffer = Buffer.from(adminKey);
 

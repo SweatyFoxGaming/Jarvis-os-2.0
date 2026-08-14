@@ -74,12 +74,12 @@ export class ObservationPlatform {
     metadata?: Record<string, any>
   ): void {
     const event: ITelemetryEvent = {
-      timestamp: new Date(),
-      level,
-      subsystem,
-      message,
-      metadata,
-    };
+  timestamp: new Date(),
+  level,
+  subsystem,
+  message,
+  ...(metadata ? { metadata } : {}),
+};
     this.telemetryBuffer.push(event);
     if (this.telemetryBuffer.length > 200) {
       this.telemetryBuffer.shift();
@@ -113,6 +113,7 @@ export class ObservationPlatform {
   private getCpuUsagePercent(): number {
     const load1 = os.loadavg()[0];
     const cpuCount = os.cpus().length || 1;
+    if (load1 === undefined) return 0;
     return Math.min(100, Math.round((load1 / cpuCount) * 1000) / 10);
   }
 
@@ -125,6 +126,7 @@ export class ObservationPlatform {
       const output = execSync("df -kP /", { encoding: "utf-8", timeout: 2000 });
       const lastLine = output.trim().split("\n").pop() || "";
       const capacityField = lastLine.trim().split(/\s+/)[4]; // e.g. "42%"
+      if (!capacityField) return 0;
       const percent = parseInt(capacityField, 10);
       return Number.isFinite(percent) ? percent : null;
     } catch {
@@ -165,7 +167,7 @@ export class ObservationPlatform {
   }
 
   public getLatestDecisionTrace(): IDecisionTrace | null {
-    return this.traceBuffer.length > 0 ? this.traceBuffer[this.traceBuffer.length - 1] : null;
+  return this.traceBuffer.length > 0 ? (this.traceBuffer[this.traceBuffer.length - 1] ?? null) : null;  
   }
 
   // ---------- 4. Diagnostics & 5. Health ----------

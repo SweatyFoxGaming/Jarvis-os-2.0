@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -11,7 +11,7 @@ import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const knowledgeRouter = Router();
+export const knowledgeRouter: Router = Router();
 
 // ---------- Structured Knowledge Graph ----------
 // The reliable complement to pgvector similarity recall — a real

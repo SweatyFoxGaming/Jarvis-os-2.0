@@ -1,5 +1,5 @@
 // src/kernel/state/reranker.ts
-import { HybridSearchResult } from './hybridRetrieval.js';
+import type { HybridSearchResult } from './hybridRetrieval.js';
 
 export interface RerankedResult extends HybridSearchResult {
   rerankScore: number;

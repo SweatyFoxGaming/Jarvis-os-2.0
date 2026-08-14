@@ -1,6 +1,6 @@
 // src/kernel/state/ragEngine.ts
-import { searchHybridMemory, HybridSearchResult } from './hybridRetrieval.js';
-import { rerankCandidates, RerankedResult } from './reranker.js';
+import { searchHybridMemory, type HybridSearchResult } from './hybridRetrieval.js';
+import { rerankCandidates, type RerankedResult } from './reranker.js';
 
 export interface RAGPipelineOptions {
   queryText: string;

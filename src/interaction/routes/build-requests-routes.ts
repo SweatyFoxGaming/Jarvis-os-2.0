@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
@@ -15,7 +15,7 @@ import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const buildRequestsRouter = Router();
+export const buildRequestsRouter: Router = Router();
 
 buildRequestsRouter.get("/api/system/build-requests", validateApiKey, async (req: any, res: any) => {
   if (!permissions.hasGrant(req.username, "github.pulls.create")) {

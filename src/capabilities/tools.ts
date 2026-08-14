@@ -729,13 +729,21 @@ export async function executeTool(
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
     observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
-    return { name, ok: true, output, displayDirective, audioDirective };
+  return {
+      name,
+      ok: true,
+      output,
+      ...(displayDirective ? { displayDirective } : {}),
+      ...(audioDirective ? { audioDirective } : {}),
+    };
   } catch (err: any) {
-    observation.logAuditEvent(username, "tool_call", "failed", `${name}(${JSON.stringify(args)}): ${err.message}`);
-    return { name, ok: false, error: err.message || String(err) };
+    return {
+      name,
+      ok: false,
+      output: `Tool execution failed: ${err?.message || String(err)}`,
+    };
   }
 }
-
 // Keyword triggers per tool, not a single flat list — makes it obvious which
 // tool a match implies. This is a hand-maintained list, deliberately not
 // derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,

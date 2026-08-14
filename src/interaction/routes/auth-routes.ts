@@ -1,7 +1,9 @@
-import { Router } from "express";
+import { Router } from 'express';
 import rateLimit from "express-rate-limit";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as usersRepo from "../../kernel/state/users-repo.js";
+
+export const authRouter: Router = Router();
 
 const observation = ObservationPlatform.getInstance();
 
@@ -36,8 +38,6 @@ const loginUsernameLimiter = rateLimit({
   keyGenerator: (req: any) => (typeof req.body?.username === "string" ? req.body.username.toLowerCase() : "unknown"),
   message: { error: "Too many attempts for this account, try again later" },
 });
-
-export const authRouter = Router();
 
 // Authentication Endpoints
 authRouter.post("/api/register", authLimiter, async (req, res) => {

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -12,7 +12,7 @@ import * as webSearch from "../../capabilities/providers/websearch.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const integrationsRouter = Router();
+export const integrationsRouter: Router = Router();
 
 // ---------- Integrations: GitHub / Email / TTS ----------
 
@@ -215,14 +215,15 @@ integrationsRouter.post("/api/integrations/calendar/events", validateApiKey, req
 // ---------- News ----------
 integrationsRouter.get("/api/integrations/news/headlines", validateApiKey, requireCapability("news.read"), async (req: any, res: any) => {
   try {
-    const articles = await news.getTopHeadlines({
-      country: req.query.country as string | undefined,
-      category: req.query.category as string | undefined,
-      limit: req.query.limit ? Number(req.query.limit) : undefined,
-    });
-    res.json({ articles });
-  } catch (err) {
-    handleIntegrationError(res, err);
+const params: Record<string, any> = {};
+    if (req.query.country) params.country = req.query.country as string;
+    if (req.query.category) params.category = req.query.category as string;
+    if (req.query.limit) params.limit = Number(req.query.limit);
+
+    const articles = await news.getTopHeadlines(params);
+    res.json({ ok: true, articles });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message || "Failed to fetch headlines" });
   }
 });
 

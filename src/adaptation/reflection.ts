@@ -2,7 +2,7 @@ import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
 import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "../kernel/observation.js";
-import { LongTermLearningEngine, ICodingStylePreference } from "./long_term_learning.js";
+import { LongTermLearningEngine, type ICodingStylePreference } from "./long_term_learning.js";
 import * as vaultRepo from "../kernel/state/vault-repo.js";
 
 const observation = ObservationPlatform.getInstance();

@@ -1,6 +1,6 @@
-import { KeyPool, Provider } from "./key-pool.js";
+import { KeyPool, type Provider } from "./key-pool.js";
 import { recordUsage, getRecentShare } from "../kernel/state/usage-repo.js";
-import { generateWithFallback as realGenerateWithFallback, OpenAiCompatibleConfig } from "./openai-compatible-client.js";
+import { generateWithFallback as realGenerateWithFallback, type OpenAiCompatibleConfig } from "./openai-compatible-client.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { CognitiveWorkspace } from "../cognition/workspace.js";
 import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "../kernel/egress.js";
