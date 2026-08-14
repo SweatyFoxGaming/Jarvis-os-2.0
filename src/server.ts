@@ -1418,7 +1418,7 @@ initDatabase().then(async (ready) => {
     // keeps the bus's interface to per-topic subscribe/publish only) — this
     // route explicitly stays subscribed to the known Phase-1 topic set,
     // extended as new publishers are added in later tasks/phases.
-    for (const topic of ["filesystem:changed", "system:anomaly"]) {
+    for (const topic of ["filesystem:changed", "system:anomaly", "voice:queued"]) {
       unsubscribers.push(bus.subscribe(topic, forward(topic)));
     }
 
