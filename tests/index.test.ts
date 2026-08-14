@@ -41,6 +41,7 @@ import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state
 import { recordUsage, getRecentShare } from "../src/kernel/state/usage-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { computePendingMigrations, ALL_MIGRATIONS, Migration } from "../src/kernel/state/migrations/index.js";
+import { queryWithRetry } from "../src/kernel/state/db.js";
 import { positiveIntegerEnv } from "../src/kernel/env.js";
 import { fetchWithRetry } from "../src/kernel/http-retry.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
@@ -3294,6 +3295,46 @@ registerTest("Migrations", "ALL_MIGRATIONS has unique, non-empty ids in the orde
     if (typeof m.up !== "function") {
       throw new Error(`Migrations: migration "${m.id}" has no up() function`);
     }
+  }
+});
+
+// ---------- Database Tests (queryWithRetry, no live Postgres needed) ----------
+
+registerTest("Database", "queryWithRetry retries a pool-exhaustion error with backoff, then returns the eventual success", async () => {
+  let attempts = 0;
+  const fakeQueryFn = async (_text: string, _params?: any[]) => {
+    attempts++;
+    if (attempts < 3) {
+      throw new Error("timeout exceeded when trying to connect");
+    }
+    return { rows: [{ ok: true }], rowCount: 1 } as any;
+  };
+  const result = await queryWithRetry("SELECT 1", [], { maxRetries: 3, baseDelayMs: 5, queryFn: fakeQueryFn });
+  if (attempts !== 3) {
+    throw new Error(`Database: expected exactly 3 attempts (2 pool-exhaustion failures + 1 success), got ${attempts}`);
+  }
+  if (!result.rows[0].ok) {
+    throw new Error("Database: expected the eventual successful result to be returned");
+  }
+});
+
+registerTest("Database", "queryWithRetry does not retry a non-pool-exhaustion error", async () => {
+  let attempts = 0;
+  const fakeQueryFn = async () => {
+    attempts++;
+    throw new Error('syntax error at or near "SELCT"');
+  };
+  let caught: any = null;
+  try {
+    await queryWithRetry("SELCT 1", [], { maxRetries: 3, baseDelayMs: 5, queryFn: fakeQueryFn });
+  } catch (err: any) {
+    caught = err;
+  }
+  if (!caught || !caught.message.includes("syntax error")) {
+    throw new Error(`Database: expected the original syntax error to propagate unretried, got: ${caught?.message}`);
+  }
+  if (attempts !== 1) {
+    throw new Error(`Database: expected exactly 1 attempt for a non-retryable error, got ${attempts}`);
   }
 });
 
