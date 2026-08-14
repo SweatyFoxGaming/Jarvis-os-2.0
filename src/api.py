@@ -49,13 +49,14 @@ logger = logging.getLogger("jarvis-gateway")
 # guessable/shared default). This constant replaces the hardcoded legacy key
 # literal that used to live inline in make_proxy_request/proxy_streaming_request
 # below whenever INTERNAL_API_KEY was unset in the environment.
-INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+INTERNAL_API_KEY = os.environ.get("ADMIN_API_KEY") or os.environ.get("INTERNAL_API_KEY")
 if not INTERNAL_API_KEY:
     logger.error(
-        "[Gateway] FATAL: INTERNAL_API_KEY is not set. Refusing to start with no way "
-        "to authenticate proxy calls to the Express backend — set INTERNAL_API_KEY to "
-        "a long random string in .env (it must match the value Express itself reads "
-        "via src/kernel/auth-middleware.ts's ADMIN_API_KEY fallback)."
+        "[Gateway] FATAL: Neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Refusing "
+        "to start with no way to authenticate proxy calls to the Express backend — set "
+        "ADMIN_API_KEY or INTERNAL_API_KEY to a long random string in .env (it must "
+        "match the value Express itself reads via src/kernel/auth-middleware.ts's own "
+        "ADMIN_API_KEY fallback chain)."
     )
     sys.exit(1)
 

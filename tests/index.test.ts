@@ -2084,6 +2084,28 @@ registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacke
   }
 });
 
+// ---------- Security regression tests (pure, no server) ----------
+
+// Locks in the fix for a finding from the whole-branch security review: the
+// retired hardcoded gateway key (formerly src/api.py's INTERNAL_API_KEY
+// fallback, then left behind as a JS fallback literal in two frontend
+// files) must never reappear anywhere under src/ — as a Python default, a
+// JS fallback, or anywhere else.
+registerTest("Security", "retired hardcoded fallback API key literal is not present anywhere in src/", async () => {
+  const { execSync } = await import("child_process");
+  let output = "";
+  try {
+    output = execSync('grep -rn "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" src/', { encoding: "utf-8" });
+  } catch (err: any) {
+    // grep exits 1 with no output when there are no matches — that's the pass case.
+    if (err.status === 1 && !err.stdout) {
+      return;
+    }
+    throw err;
+  }
+  throw new Error(`Security: retired hardcoded API key literal still present in src/:\n${output}`);
+});
+
 // ---------- ConfidenceModel Tests (pure, no DB) ----------
 
 registerTest("Confidence", "calculateOverallConfidence matches today's 5-input average when outcomeConfidence is omitted", () => {
