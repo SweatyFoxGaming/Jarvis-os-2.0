@@ -122,7 +122,7 @@ def test_make_proxy_request_passes_through_the_callers_own_api_key_unchanged():
         forwarded_key = captured_requests[0].get_header("X-api-key")
         assert forwarded_key == "some-non-admin-users-own-key", (
             f"expected the caller's own x-api-key to reach Express unchanged, "
-            f"got {forwarded_key!r} (INTERNAL_API_KEY is {api.INTERNAL_API_KEY!r})"
+            f"got {forwarded_key!r}, expected it to differ from INTERNAL_API_KEY"
         )
         assert forwarded_key != api.INTERNAL_API_KEY
 
@@ -167,7 +167,7 @@ def test_proxy_streaming_request_passes_through_the_callers_own_api_key_unchange
             forwarded_key = captured_requests[0].get_header("X-api-key")
             assert forwarded_key == "some-non-admin-users-own-key", (
                 f"expected the caller's own x-api-key to reach Express unchanged, "
-                f"got {forwarded_key!r} (INTERNAL_API_KEY is {api.INTERNAL_API_KEY!r})"
+                f"got {forwarded_key!r}, expected it to differ from INTERNAL_API_KEY"
             )
             assert forwarded_key != api.INTERNAL_API_KEY
 

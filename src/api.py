@@ -56,10 +56,10 @@ logger = logging.getLogger("jarvis-gateway")
 # shared container/environment, so a misconfiguration surfaces immediately
 # rather than only once the first real admin-authenticated request fails.
 INTERNAL_API_KEY = os.environ.get("ADMIN_API_KEY") or os.environ.get("INTERNAL_API_KEY")
-if not INTERNAL_API_KEY:
+if not INTERNAL_API_KEY or len(INTERNAL_API_KEY) < 16:
     logger.error(
-        "[Gateway] FATAL: Neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Express "
-        "requires one of these to be configured in this same environment — set "
+        "[Gateway] FATAL: ADMIN_API_KEY or INTERNAL_API_KEY must be set and at least "
+        "16 characters (matching .env.example's own documented minimum) — set "
         "ADMIN_API_KEY or INTERNAL_API_KEY to a long random string in .env (it must "
         "match the value Express itself reads via src/kernel/auth-middleware.ts's own "
         "ADMIN_API_KEY fallback chain)."

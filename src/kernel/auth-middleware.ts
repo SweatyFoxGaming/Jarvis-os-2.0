@@ -74,10 +74,17 @@ export function safeCompare(a: string, b: string): boolean {
 // Referer headers, so ?api_key=... is intentionally not accepted.
 export const validateApiKey = async (req: any, res: any, next: any) => {
   const apiKey = req.headers["x-api-key"];
+  // Redact the submitted key itself before it ever reaches telemetry/logs
+  // below -- the comment at the bottom of this function already explains
+  // why the key isn't logged directly; req.headers carries it too, and
+  // both the logTelemetry calls and the console.warn further down used to
+  // serialize the raw headers object, writing every guessed/malicious key
+  // straight into logs.
+  const redactedHeaders = { ...req.headers, "x-api-key": "[REDACTED]" };
   const requestInfo = {
     url: req.originalUrl,
     ip: req.ip,
-    headers: req.headers,
+    headers: redactedHeaders,
   };
 
   if (!apiKey) {
@@ -118,7 +125,7 @@ export const validateApiKey = async (req: any, res: any, next: any) => {
     // API key, silently breaking unrelated features like chat.
     console.warn(
       `[Security] Access denied: Invalid API Key for ${req.method} ${req.originalUrl} ` +
-      `from IP ${req.ip}. Headers: ${JSON.stringify(req.headers)}`
+      `from IP ${req.ip}. Headers: ${JSON.stringify(redactedHeaders)}`
     );
     observation.logTelemetry("warn", "Security", "Access denied: Invalid API Key", requestInfo);
     return res.status(401).json({ error: "Invalid API Key" });
