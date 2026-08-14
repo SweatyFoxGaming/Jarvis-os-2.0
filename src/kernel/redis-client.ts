@@ -8,8 +8,9 @@ let singletonAttempted = false;
 
 /**
  * Pure constructor -- no singleton state, no env var reads. Exists
- * separately from getRedisClient() below so tests (see redis-client.test.ts)
- * can point a real client at a deliberately-unreachable address without
+ * separately from getRedisClient() below so tests (see tests/index.test.ts's
+ * Redis-related Platform-category tests) can point a real client at a
+ * deliberately-unreachable address without
  * touching process.env or this module's singleton. Every Redis-backed
  * caller in this codebase (KeyPool, EventBus's cross-instance relay) MUST
  * treat a connection failure as non-fatal: retryStrategy caps backoff
@@ -28,6 +29,8 @@ let singletonAttempted = false;
 export function createRedisClient(url: string): Redis {
   const client = new Redis(url, {
     maxRetriesPerRequest: 3,
+    enableOfflineQueue: false, // fail fast when down; callers already fall back
+    connectTimeout: 2000,
     retryStrategy: (times: number) => Math.min(times * 500, 5000),
   });
   client.on("error", (err: Error) => {

@@ -86,7 +86,14 @@ export class KeyPool {
       const redis = getRedisClient();
       if (redis) {
         try {
-          await redis.set(cooldownRedisKey(provider, key), "1", "EX", seconds);
+          // Redis's EX option requires a positive integer -- a fractional
+          // seconds value (e.g. a provider's retry-after header parsing to
+          // 2.5) is rejected by Redis itself ("ERR value is not an integer
+          // or out of range"), which would silently skip the cross-instance
+          // cooldown write for exactly the real-world case this exists to
+          // handle. Round up (never down, so we never under-cooldown) and
+          // floor at 1 (Redis also rejects 0/negative EX values).
+          await redis.set(cooldownRedisKey(provider, key), "1", "EX", Math.max(1, Math.ceil(seconds)));
         } catch (err: any) {
           observation.logTelemetry("warn", "KeyPool", `Redis cooldown write failed for ${provider}: ${err.message}`);
         }

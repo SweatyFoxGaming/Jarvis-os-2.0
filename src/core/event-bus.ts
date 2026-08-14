@@ -88,7 +88,20 @@ export class EventBus {
     const base = getRedisClient();
     if (!base) return;
     this.relayStarted = true;
-    const subscriber = base.duplicate();
+    // Override enableOfflineQueue back to true for this one connection
+    // only. The base client (and every other Redis-backed caller in this
+    // codebase -- KeyPool, EventBus.publish's relay) fails fast with
+    // enableOfflineQueue: false so a down/unreachable Redis never blocks a
+    // request (see createRedisClient in redis-client.ts). This subscriber
+    // connection is different: it's a one-time, long-lived setup call made
+    // once at startup, not a per-request command -- duplicate() returns a
+    // brand-new connection that hasn't finished its handshake yet, so with
+    // offline queueing disabled the very first subscribe() call below would
+    // fail outright (rather than queue) any time this runs before that
+    // handshake completes, permanently disabling the relay for this
+    // process. Queueing here is safe and correct: it just means the
+    // subscription takes effect as soon as the connection comes up.
+    const subscriber = base.duplicate({ enableOfflineQueue: true });
     this.relaySubscriber = subscriber;
     subscriber.on("error", (err: Error) => {
       observation.logTelemetry("warn", "EventBus", `Cross-instance relay subscriber error: ${err.message}`);
@@ -101,6 +114,15 @@ export class EventBus {
     subscriber.on("message", (channel: string, message: string) => {
       const topic = channel.startsWith(REDIS_CHANNEL_PREFIX) ? channel.slice(REDIS_CHANNEL_PREFIX.length) : channel;
       try {
+        // Trust boundary: this validates JSON *syntax* only, not payload
+        // shape -- a relayed message is trusted exactly as much as Redis
+        // itself is trusted (subscribe, not psubscribe, so only the
+        // explicitly-listed topics passed to startCrossInstanceRelay are
+        // reachable at all; today that's "system:anomaly", a render-only
+        // topic nothing dispatches on). This is a deliberate scope
+        // boundary, not an oversight: adding a topic whose subscribers take
+        // real *actions* (rather than just rendering data) would require
+        // payload schema validation here first.
         const payload = JSON.parse(message);
         this.publish(topic, payload, { fromRelay: true });
       } catch (err: any) {

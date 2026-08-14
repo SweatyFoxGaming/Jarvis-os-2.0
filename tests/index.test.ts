@@ -74,6 +74,38 @@ function registerTest(category: string, name: string, fn: () => void | Promise<v
   tests.push({ category, name, fn });
 }
 
+// EventBus.startCrossInstanceRelay is a one-shot on the process-wide
+// EventBus singleton (see src/core/event-bus.ts: `if (this.relayStarted)
+// return;`) -- that guard is intentional in production (re-starting the
+// relay subscription on every call would be wrong), but it means only the
+// FIRST call any test makes actually takes effect; a second call from a
+// later test with a different topic silently no-ops and that test's own
+// topic is never subscribed. Rather than couple the two relay tests below
+// to running in a particular order, every topic either of them needs is
+// established once, here, and both tests pass the full list to
+// startCrossInstanceRelay -- whichever test runs first "wins" the real
+// subscription call, but it wins with every topic already included.
+const relayTestTopic = `test:relay:${Date.now()}`;
+const malformedRelayTestTopic = `test:malformed-relay:${Date.now()}`;
+const allRelayTestTopics = [relayTestTopic, malformedRelayTestTopic];
+
+let uniqueTestKeyCounter = 0;
+// Several KeyPool/CognitionRouter tests below construct KeyPool instances
+// with literal key strings (e.g. "gk1"). With Redis unconfigured (the
+// default) each KeyPool's cooldown state is purely local/per-instance, so
+// literal reuse across tests is invisible. With a real Redis configured,
+// KeyPool.reportFailure's cross-instance cooldown write means those literal
+// keys collide via the shared Redis store within the cooldown's TTL window
+// (up to DEFAULT_COOLDOWN_SECONDS, or up to 3600s for the retry-after
+// clamping tests) -- a real regression there would be indistinguishable
+// from this cross-test noise. Every test that constructs a KeyPool with a
+// literal key uses this helper instead, so its Redis key is unique both
+// within a single run and across repeated `npm test` invocations against
+// an already-warm Redis.
+function uniqueTestKey(base: string): string {
+  return `${base}-${Date.now()}-${uniqueTestKeyCounter++}`;
+}
+
 // ---------- 1. Platform Tests ----------
 registerTest("Platform", "Workspace separation of concerns", () => {
   const ws = new CognitiveWorkspace();
@@ -102,9 +134,9 @@ registerTest("Platform", "EventBus relays a published event to Redis, and re-pub
 
   const { EventBus } = await import("../src/core/event-bus.js");
   const bus = EventBus.getInstance();
-  const topic = `test:relay:${Date.now()}`;
+  const topic = relayTestTopic;
 
-  bus.startCrossInstanceRelay([topic]);
+  bus.startCrossInstanceRelay(allRelayTestTopics);
   // Relay subscription is async internally (ioredis's subscribe() returns
   // a Promise) -- give it a moment to actually register before publishing,
   // otherwise this test would be racing its own setup.
@@ -196,9 +228,9 @@ registerTest("Platform", "EventBus's cross-instance relay drops a malformed rela
   const { ObservationPlatform } = await import("../src/kernel/observation.js");
   const observation = ObservationPlatform.getInstance();
   const bus = EventBus.getInstance();
-  const topic = `test:malformed-relay:${Date.now()}`;
+  const topic = malformedRelayTestTopic;
 
-  bus.startCrossInstanceRelay([topic]);
+  bus.startCrossInstanceRelay(allRelayTestTopics);
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const received: any[] = [];
@@ -3959,11 +3991,13 @@ registerTest("OpenAiCompatibleClient", "generateWithFallback sends the API key a
 
 // ---------- KeyPool Tests ----------
 registerTest("KeyPool", "getAvailableKey rotates round-robin among configured keys", async () => {
-  const pool = new KeyPool({ groq: ["k1", "k2"], gemini: [] });
+  const k1 = uniqueTestKey("k1");
+  const k2 = uniqueTestKey("k2");
+  const pool = new KeyPool({ groq: [k1, k2], gemini: [] });
   const first = await pool.getAvailableKey("groq");
   const second = await pool.getAvailableKey("groq");
   if (first === second) throw new Error(`expected rotation, got the same key twice: ${first}`);
-  if (![first, second].every((k) => ["k1", "k2"].includes(k as string))) {
+  if (![first, second].every((k) => [k1, k2].includes(k as string))) {
     throw new Error("returned a key not in the configured pool");
   }
 });
@@ -3974,30 +4008,44 @@ registerTest("KeyPool", "getAvailableKey returns null for a provider with no con
 });
 
 registerTest("KeyPool", "reportFailure puts a key on cooldown and it's skipped until it elapses", async () => {
-  const pool = new KeyPool({ groq: ["only-key"], gemini: [] });
-  await pool.reportFailure("groq", "only-key", 0.05); // 50ms cooldown for a fast test
+  const onlyKey = uniqueTestKey("only-key");
+  const pool = new KeyPool({ groq: [onlyKey], gemini: [] });
+  await pool.reportFailure("groq", onlyKey, 0.05); // 50ms cooldown for a fast test
   if ((await pool.getAvailableKey("groq")) !== null) throw new Error("expected the sole key to be on cooldown");
 });
 
 registerTest("KeyPool", "a key becomes available again after its cooldown elapses", async () => {
-  const pool = new KeyPool({ groq: ["only-key"], gemini: [] });
-  await pool.reportFailure("groq", "only-key", 0.05);
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  if ((await pool.getAvailableKey("groq")) !== "only-key") throw new Error("expected the key to recover after cooldown");
+  const onlyKey = uniqueTestKey("only-key");
+  const pool = new KeyPool({ groq: [onlyKey], gemini: [] });
+  await pool.reportFailure("groq", onlyKey, 0.05);
+  // The local in-memory cooldown uses the exact fractional value (50ms)
+  // passed above, but when Redis is configured, KeyPool.reportFailure's
+  // cross-instance write floors at a full 1 second (Math.max(1,
+  // Math.ceil(seconds)) -- see key-pool.ts, and this task's Finding 5)
+  // since Redis's EX option rejects sub-second/fractional TTLs. Wait past
+  // that floor so this test's "cooldown fully elapsed" assertion holds
+  // whether or not REDIS_URL is configured in this environment.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  if ((await pool.getAvailableKey("groq")) !== onlyKey) throw new Error("expected the key to recover after cooldown");
 });
 
 registerTest("KeyPool", "all keys on cooldown for a provider returns null, not throw", async () => {
-  const pool = new KeyPool({ groq: ["k1", "k2"], gemini: [] });
-  await pool.reportFailure("groq", "k1", 60);
-  await pool.reportFailure("groq", "k2", 60);
+  const k1 = uniqueTestKey("k1");
+  const k2 = uniqueTestKey("k2");
+  const pool = new KeyPool({ groq: [k1, k2], gemini: [] });
+  await pool.reportFailure("groq", k1, 60);
+  await pool.reportFailure("groq", k2, 60);
   if ((await pool.getAvailableKey("groq")) !== null) throw new Error("expected null when every key is on cooldown");
 });
 
 registerTest("KeyPool", "keyCount reports the number of configured keys per provider, independent of cooldown state", async () => {
-  const pool = new KeyPool({ groq: ["k1", "k2", "k3"], gemini: [] });
+  const k1 = uniqueTestKey("k1");
+  const k2 = uniqueTestKey("k2");
+  const k3 = uniqueTestKey("k3");
+  const pool = new KeyPool({ groq: [k1, k2, k3], gemini: [] });
   if (pool.keyCount("groq") !== 3) throw new Error(`expected keyCount("groq") === 3, got ${pool.keyCount("groq")}`);
   if (pool.keyCount("gemini") !== 0) throw new Error(`expected keyCount("gemini") === 0, got ${pool.keyCount("gemini")}`);
-  await pool.reportFailure("groq", "k1", 60);
+  await pool.reportFailure("groq", k1, 60);
   if (pool.keyCount("groq") !== 3) throw new Error("keyCount must reflect total configured keys, not just currently-available ones");
 });
 
@@ -4037,17 +4085,10 @@ registerTest("KeyPool", "reportFailure's cooldown is visible to a second KeyPool
 });
 
 // ---------- CognitionRouter Tests ----------
-// NOTE: several tests below reuse literal key strings (e.g. "gk1") across
-// unrelated test cases. That's safe with Redis unconfigured (the default,
-// and what CI runs with) since KeyPool's cooldown state is then purely
-// per-instance/local. If REDIS_URL is ever set while running this suite,
-// KeyPool.reportFailure's cross-instance cooldown write (see
-// src/runtime/key-pool.ts) will make cooldown state bleed across these
-// tests via the shared Redis store, since they don't use unique keys per
-// test the way the KeyPool-category Redis test above does.
 registerTest("CognitionRouter", "a normal-capacity request is not throttled and returns the cloud response", async () => {
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
-  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+  const gk1 = uniqueTestKey("gk1");
+  const keyPool = new KeyPool({ groq: [gk1], gemini: [] });
   const transportCalls: any[] = [];
   const fakeResponse = { choices: [{ message: { content: "cloud reply" } }], usage: { total_tokens: 42 } };
   let recordedUsage: { username: string; tokens: number } | null = null;
@@ -4078,7 +4119,7 @@ registerTest("CognitionRouter", "a normal-capacity request is not throttled and 
   if (transportCalls.length !== 1 || transportCalls[0].models[0] !== "llama-3.3-70b-versatile") {
     throw new Error(`CognitionRouter: expected exactly one transport call for the real model name, got: ${JSON.stringify(transportCalls)}`);
   }
-  if (transportCalls[0].config.apiKey !== "gk1") {
+  if (transportCalls[0].config.apiKey !== gk1) {
     throw new Error(`CognitionRouter: expected the pool's key to be used, got: ${JSON.stringify(transportCalls[0].config)}`);
   }
   if (!recordedUsage || (recordedUsage as any).username !== "alice" || (recordedUsage as any).tokens !== 42) {
@@ -4088,10 +4129,13 @@ registerTest("CognitionRouter", "a normal-capacity request is not throttled and 
 
 registerTest("CognitionRouter", "an over-share user under a strained pool is delayed, not rejected", async () => {
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
-  const keyPool = new KeyPool({ groq: ["gk1", "gk2", "gk3"], gemini: [] });
+  const gk1 = uniqueTestKey("gk1");
+  const gk2 = uniqueTestKey("gk2");
+  const gk3 = uniqueTestKey("gk3");
+  const keyPool = new KeyPool({ groq: [gk1, gk2, gk3], gemini: [] });
   // Strain the pool: 2 of 3 configured keys on cooldown -> strainRatio = 2/3 > 0.5.
-  await keyPool.reportFailure("groq", "gk1", 60);
-  await keyPool.reportFailure("groq", "gk2", 60);
+  await keyPool.reportFailure("groq", gk1, 60);
+  await keyPool.reportFailure("groq", gk2, 60);
 
   let delayMs: number | null = null;
   const router = new CognitionRouter({
@@ -4125,7 +4169,9 @@ registerTest("CognitionRouter", "an over-share user under a strained pool is del
 
 registerTest("CognitionRouter", "a 429-shaped failure triggers cooldown and retries the next key", async () => {
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
-  const keyPool = new KeyPool({ groq: ["gk1", "gk2"], gemini: [] });
+  const gk1 = uniqueTestKey("gk1");
+  const gk2 = uniqueTestKey("gk2");
+  const keyPool = new KeyPool({ groq: [gk1, gk2], gemini: [] });
   const transportCalls: string[] = [];
 
   const router = new CognitionRouter({
@@ -4137,7 +4183,7 @@ registerTest("CognitionRouter", "a 429-shaped failure triggers cooldown and retr
     localEngine: { generateResponse: () => "should not be called" },
     transport: async (config: any) => {
       transportCalls.push(config.apiKey);
-      if (config.apiKey === "gk1") {
+      if (config.apiKey === gk1) {
         throw new Error("OpenAI-compatible endpoint returned 429: rate limited, retry-after: 30");
       }
       return { choices: [{ message: { content: "from gk2" } }] };
@@ -4149,11 +4195,11 @@ registerTest("CognitionRouter", "a 429-shaped failure triggers cooldown and retr
   if (result.choices[0].message.content !== "from gk2") {
     throw new Error(`CognitionRouter: expected the second key's successful response, got: ${JSON.stringify(result)}`);
   }
-  if (transportCalls.join(",") !== "gk1,gk2") {
+  if (transportCalls.join(",") !== [gk1, gk2].join(",")) {
     throw new Error(`CognitionRouter: expected gk1 tried first then gk2, got: ${transportCalls.join(",")}`);
   }
   const nextKey = await keyPool.getAvailableKey("groq");
-  if (nextKey === "gk1") {
+  if (nextKey === gk1) {
     throw new Error("CognitionRouter: expected the failed key to be on cooldown, not offered again immediately");
   }
 });
@@ -4250,7 +4296,9 @@ registerTest("CognitionRouter", "a single-model models array with 2 configured k
   // healthy key configured for the same provider. This reproduces exactly
   // that call pattern.
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
-  const keyPool = new KeyPool({ groq: ["gk1", "gk2"], gemini: [] });
+  const gk1 = uniqueTestKey("gk1");
+  const gk2 = uniqueTestKey("gk2");
+  const keyPool = new KeyPool({ groq: [gk1, gk2], gemini: [] });
   const transportCalls: string[] = [];
   let localTierCalled = false;
   let keywordEngineCalled = false;
@@ -4273,7 +4321,7 @@ registerTest("CognitionRouter", "a single-model models array with 2 configured k
         throw new Error("local tier should never be reached in this test");
       }
       transportCalls.push(config.apiKey);
-      if (config.apiKey === "gk1") {
+      if (config.apiKey === gk1) {
         throw new Error("OpenAI-compatible endpoint returned 429: rate limited");
       }
       return { choices: [{ message: { content: "from gk2" } }] };
@@ -4282,7 +4330,7 @@ registerTest("CognitionRouter", "a single-model models array with 2 configured k
 
   const result = await router.generateWithFallback("henry", { messages: [] }, ["groq:model-a"]);
 
-  if (transportCalls.join(",") !== "gk1,gk2") {
+  if (transportCalls.join(",") !== [gk1, gk2].join(",")) {
     throw new Error(`CognitionRouter: expected both configured keys to be tried for the single model entry, got: ${transportCalls.join(",")}`);
   }
   if (result.choices[0].message.content !== "from gk2") {
@@ -4342,7 +4390,8 @@ registerTest("CognitionRouter", "a successful cloud call is still returned even 
   // down a key that had actually just succeeded, and lost the real
   // response. recordUsage failing must never unwind a real success.
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
-  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+  const gk1 = uniqueTestKey("gk1");
+  const keyPool = new KeyPool({ groq: [gk1], gemini: [] });
 
   const router = new CognitionRouter({
     keyPool,
@@ -4361,7 +4410,7 @@ registerTest("CognitionRouter", "a successful cloud call is still returned even 
   if (result?.choices?.[0]?.message?.content !== "cloud reply") {
     throw new Error(`CognitionRouter: expected the successful cloud response even though recordUsage threw, got: ${JSON.stringify(result)}`);
   }
-  if ((await keyPool.getAvailableKey("groq")) !== "gk1") {
+  if ((await keyPool.getAvailableKey("groq")) !== gk1) {
     throw new Error("CognitionRouter: expected the key that actually succeeded to remain available (not wrongly cooled down by a recordUsage failure)");
   }
 });
@@ -4372,7 +4421,8 @@ registerTest("CognitionRouter", "an adversarial huge digit-string retry-after va
   // straight into KeyPool.reportFailure's retryAfterSeconds would
   // permanently disable a key for the rest of the process lifetime.
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
-  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+  const gk1 = uniqueTestKey("gk1");
+  const keyPool = new KeyPool({ groq: [gk1], gemini: [] });
   const capturedRetryAfterSeconds: Array<number | undefined> = [];
   const originalReportFailure = keyPool.reportFailure.bind(keyPool);
   (keyPool as any).reportFailure = (provider: any, key: any, retryAfterSeconds?: number) => {
@@ -4412,7 +4462,8 @@ registerTest("CognitionRouter", "a huge-but-finite retry-after value (hundreds o
   // otherwise produce a cooldown effectively permanent for this process
   // (cooldown until the year 2058+) without ever hitting Infinity/NaN.
   const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
-  const keyPool = new KeyPool({ groq: ["gk1"], gemini: [] });
+  const gk1 = uniqueTestKey("gk1");
+  const keyPool = new KeyPool({ groq: [gk1], gemini: [] });
   const capturedRetryAfterSeconds: Array<number | undefined> = [];
   const originalReportFailure = keyPool.reportFailure.bind(keyPool);
   (keyPool as any).reportFailure = (provider: any, key: any, retryAfterSeconds?: number) => {
