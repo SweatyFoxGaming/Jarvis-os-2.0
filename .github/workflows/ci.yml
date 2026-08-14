@@ -5,6 +5,15 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # HTTP Boundary tests spawn a real `tsx src/server.ts` child process,
+      # which exits immediately if these are unset (see server.ts's own
+      # REQUIRED_ENV_VARS fail-fast) -- no live Postgres is required for
+      # these to boot far enough to serve /health (applyHybridSearchSchema's
+      # own connection failure is caught and logged, not fatal).
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: jarvis_ci_placeholder
+      POSTGRES_USER: jarvis_ci_placeholder
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node
@@ -12,6 +21,8 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install dependencies
         run: npm install
       - name: Type check

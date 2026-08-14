@@ -179,7 +179,17 @@ if (missingEnvVars.length > 0) {
   console.error(`[Fatal Startup Error] Missing required environment variables: ${missingEnvVars.join(", ")}`);
   process.exit(1);
 }
- await applyHybridSearchSchema();
+try {
+  // A Postgres outage at boot must not take the whole gateway down with it --
+  // every DB-backed repo function elsewhere in this codebase already degrades
+  // cleanly when Postgres is unreachable (see the Vault/UsageEvents/
+  // WellbeingRepo etc. tests), so crashing here on the same failure would be
+  // the one place that doesn't. Hybrid search's schema just won't be applied
+  // until the next successful boot with Postgres reachable.
+  await applyHybridSearchSchema();
+} catch (err: any) {
+  console.error(`[Startup] applyHybridSearchSchema failed (Postgres unreachable?), continuing without it: ${err?.message || err}`);
+}
 
 // ---------- Platform Instances ----------
 // Per-user conversational state lives in SessionState (src/cognition/session.ts),
