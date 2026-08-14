@@ -1496,6 +1496,13 @@ initDatabase().then(async (ready) => {
   const audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
   const voiceSession = startVoiceSession();
 
+  // Opt-in, no-ops if REDIS_URL is unset (every deployment today) -- see
+  // docs/superpowers/plans/2026-08-10-shared-state-multi-tenant-infra.md.
+  // "system:anomaly" is the one topic genuinely useful across instances
+  // today (a real multi-instance deployment doesn't exist yet); extending
+  // this list is a deployment decision for whenever one does.
+  EventBus.getInstance().startCrossInstanceRelay(["system:anomaly"]);
+
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(cognitionRouter);
   scheduler.startSelfReflectionJob(cognitionRouter);

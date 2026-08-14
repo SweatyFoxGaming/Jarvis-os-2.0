@@ -87,6 +87,57 @@ registerTest("Platform", "Workspace separation of concerns", () => {
   }
 });
 
+registerTest("Platform", "EventBus relays a published event to Redis, and re-publishes locally what it receives back", async () => {
+  const { getRedisClient, isRedisConfigured } = await import("../src/kernel/redis-client.js");
+  if (!isRedisConfigured()) {
+    console.log("  (skipped: REDIS_URL not set in this environment)");
+    return;
+  }
+  const redis = getRedisClient();
+  if (!redis) {
+    console.log("  (skipped: Redis client unavailable)");
+    return;
+  }
+
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const bus = EventBus.getInstance();
+  const topic = `test:relay:${Date.now()}`;
+
+  bus.startCrossInstanceRelay([topic]);
+  // Relay subscription is async internally (ioredis's subscribe() returns
+  // a Promise) -- give it a moment to actually register before publishing,
+  // otherwise this test would be racing its own setup.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const received: any[] = [];
+  const unsubscribe = bus.subscribe(topic, (payload) => received.push(payload));
+
+  try {
+    bus.publish(topic, { hello: "world" });
+    // The relay round-trips through real Redis pub/sub (publish -> Redis ->
+    // this same process's own subscriber -> re-publish locally) -- not
+    // instantaneous, so poll briefly rather than asserting immediately.
+    const deadline = Date.now() + 3000;
+    while (received.length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    // Exactly 2: the bus's own synchronous local delivery (immediate) plus
+    // the relay round-trip's local re-publish (fromRelay: true) -- never 1
+    // (relay didn't fire) and never 3+ (a relay loop re-publishing its own
+    // relayed message back out to Redis again).
+    if (received.length !== 2) {
+      throw new Error(`EventBus: expected exactly 2 local deliveries (direct + relay round-trip), got ${received.length}: ${JSON.stringify(received)}`);
+    }
+    for (const payload of received) {
+      if (payload.hello !== "world") {
+        throw new Error(`EventBus: relayed payload mismatch: ${JSON.stringify(payload)}`);
+      }
+    }
+  } finally {
+    unsubscribe();
+  }
+});
+
 // ---------- 2. Cognitive Tests ----------
 registerTest("Cognitive", "Dynamic memory and preference caching", () => {
   const ws = new CognitiveWorkspace();
