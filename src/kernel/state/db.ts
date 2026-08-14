@@ -82,38 +82,79 @@ export async function pingDatabase(): Promise<boolean> {
   }
 }
 
-let poolPromise: Promise<pg.Pool> | null = null;
-
 export function getPool(): pg.Pool {
   if (!pool) {
-    if (!poolPromise) {
-      poolPromise = new Promise<pg.Pool>((resolve, reject) => {
-        try {
-          const p = new pg.Pool({
-            host: process.env.POSTGRES_HOST || "postgres",
-            port: Number(process.env.POSTGRES_PORT) || 5432,
-            user: process.env.POSTGRES_USER,
-            password: process.env.POSTGRES_PASSWORD,
-            database: process.env.POSTGRES_DB,
-            connectionString: process.env.DATABASE_URL,
-            max: 10,
-            idleTimeoutMillis: 30_000,
-            connectionTimeoutMillis: 5_000,
-            statement_timeout: 10_000,
-          });
-          p.on("error", (err) => {
-            console.error("[Database Pool Error] Idle client exception:", err.message);
-          });
-          pool = p;
-          resolve(p);
-        } catch (err: any) {
-          reject(err);
-        }
-      });
-    }
-    poolPromise.then(p => { pool = p; }).catch(() => { poolPromise = null; });
+    pool = new pg.Pool({
+      host: process.env.POSTGRES_HOST || "postgres",
+      port: Number(process.env.POSTGRES_PORT) || 5432,
+      user: process.env.POSTGRES_USER,
+      password: process.env.POSTGRES_PASSWORD,
+      database: process.env.POSTGRES_DB,
+      connectionString: process.env.DATABASE_URL,
+      max: 10,
+      idleTimeoutMillis: 30_000,     // Close idle connections after 30s
+      connectionTimeoutMillis: 5_000, // Return error after 5s if pool full
+      statement_timeout: 10_000,
+    });
+    // Prevent idle client errors from crashing Node process
+    pool.on("error", (err) => {
+      console.error("[Database Pool Error] Idle client exception:", err.message);
+    });
   }
-  return pool!;
+  return pool;
+}
+
+// The exact error pg-pool throws when connectionTimeoutMillis (getPool()'s
+// own 5s config above) is exceeded while waiting for an available client --
+// verified against this project's installed pg-pool version (see
+// node_modules/pg-pool/index.js's own `new Error('timeout exceeded when
+// trying to connect')`). Matched by substring, not by a dedicated error
+// class, because node-postgres doesn't expose one for this case.
+const POOL_EXHAUSTION_ERROR_MESSAGE = "timeout exceeded when trying to connect";
+
+/**
+ * Retries ONLY pool-exhaustion errors (a connection burst hitting getPool()'s
+ * max:10 cap) with exponential backoff, instead of failing on the first 5s
+ * timeout. Any other error (a real query error, a constraint violation,
+ * etc.) is never retried -- retrying those would be silently wrong (e.g. a
+ * duplicate-key insert retried blindly could mask a real bug). queryFn is
+ * injectable for tests (see tests/index.test.ts) that need to simulate
+ * pool exhaustion deterministically without a real burst of concurrent
+ * connections.
+ */
+export async function queryWithRetry<T extends pg.QueryResultRow = any>(
+  text: string,
+  params?: any[],
+  opts: {
+    maxRetries?: number;
+    baseDelayMs?: number;
+    queryFn?: (text: string, params?: any[]) => Promise<pg.QueryResult<T>>;
+  } = {}
+): Promise<pg.QueryResult<T>> {
+  const maxRetries = opts.maxRetries ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 200;
+  const run = opts.queryFn ?? ((queryText: string, queryParams?: any[]) => getPool().query<T>(queryText, queryParams));
+
+  let lastErr: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await run(text, params);
+    } catch (err: any) {
+      lastErr = err;
+      const isPoolExhaustion = typeof err?.message === "string" && err.message.includes(POOL_EXHAUSTION_ERROR_MESSAGE);
+      if (!isPoolExhaustion || attempt === maxRetries) {
+        throw err;
+      }
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      observation.logTelemetry(
+        "warn",
+        "Database",
+        `Connection pool exhausted (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms.`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastErr;
 }
 
 // FROZEN BASELINE — every fresh install and every existing deployment

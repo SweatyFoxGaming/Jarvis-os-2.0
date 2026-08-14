@@ -1309,10 +1309,10 @@
     // re-entering the key, breaking the "always on" experience it's
     // otherwise built around.
     //
-    // Fallback to the hardcoded key if localStorage has none. This ensures
-    // background polls (like /api/hud/status) always send a valid key,
-    // aligning with the server's auth-middleware.ts fallback logic.
-    let CURRENT_API_KEY = localStorage.getItem('admin_api_key') || "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918";
+    // No hardcoded fallback here on purpose — a missing key must fail
+    // requests loudly (401s) rather than silently authenticating background
+    // polls (like /api/hud/status) with a retired, guessable literal.
+    let CURRENT_API_KEY = localStorage.getItem('admin_api_key') || "";
     let CURRENT_TAB = "home";
     let cy;
 

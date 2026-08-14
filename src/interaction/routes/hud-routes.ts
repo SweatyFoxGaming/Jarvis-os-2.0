@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router } from "express";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
 import { getSession } from "../../cognition/session.js";
@@ -10,7 +10,7 @@ import { recordCompanionVersionReport } from "../../self/health-watchdog.js";
 
 export { deriveHudBadge };
 
-export const hudRouter: Router = Router();
+export const hudRouter = Router();
 
 const observation = ObservationPlatform.getInstance();
 const RECENT_FAILURE_WINDOW_MS = 60_000;
@@ -20,9 +20,14 @@ const RECENT_FAILURE_WINDOW_MS = 60_000;
 // rather than a new structured error-tracking mechanism, since this is the
 // only place that needs it.
 function hasRecentFailure(): boolean {
-  if (!line || !line.includes("Outcome: failed")) return false;
-  const match = line.match(/^\[([^\]]+)\]/);
-  if (match?.[1] && new Date(match[1]).getTime() >= cutoff) return true;
+  const logs = observation.getAuditLogs();
+  const cutoff = Date.now() - RECENT_FAILURE_WINDOW_MS;
+  for (let i = logs.length - 1; i >= 0 && i >= logs.length - 50; i--) {
+    const line = logs[i];
+    if (!line.includes("Outcome: failed")) continue;
+    const match = line.match(/^\[([^\]]+)\]/);
+    if (match && new Date(match[1]).getTime() >= cutoff) return true;
+  }
   return false;
 }
 

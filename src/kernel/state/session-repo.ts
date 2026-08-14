@@ -1,4 +1,4 @@
-import { getPool } from "./db.js";
+import { getPool, queryWithRetry } from "./db.js";
 import { ObservationPlatform } from "../observation.js";
 
 const observation = ObservationPlatform.getInstance();
@@ -13,9 +13,12 @@ export interface HistoryMessage {
 // point rehydrating more than the working buffer ever keeps anyway.
 const HISTORY_LIMIT = 50;
 
+// The highest-frequency write in this codebase (every chat turn, for every
+// user) -- the first real integration point for queryWithRetry's
+// pool-exhaustion backoff, so a burst of concurrent chat turns retries
+// instead of dropping a message on the first 5s pool timeout.
 export async function appendMessage(username: string, role: string, content: string): Promise<void> {
-  const db = getPool();
-  await db.query(
+  await queryWithRetry(
     "INSERT INTO conversation_history (username, role, content) VALUES ($1, $2, $3)",
     [username, role, content]
   );

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { ObservationPlatform } from "./observation.js";
 import * as usersRepo from "./state/users-repo.js";
+import { type Request, type Response, type NextFunction } from 'express';
 
 const observation = ObservationPlatform.getInstance();
 
@@ -9,18 +10,6 @@ const observation = ObservationPlatform.getInstance();
 // This runs at module load, same as when it lived inline in server.ts — the
 // first import of this module (server.ts's own, at startup) still fails
 // fast before app.listen() ever runs.
-
-import { type Request, type Response, type NextFunction } from 'express';
-
-export const authenticateSession = (req: Request, res: Response, next: NextFunction) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) {
-    res.status(401).json({ error: 'Unauthorized: Missing session token' });
-    return;
-  }
-  // Validate token logic here
-  next();
-};
 
 // Exported so other modules (e.g. server.ts's /ws/events direct-API-key
 // auth path) resolve the admin key the same way this module does, instead

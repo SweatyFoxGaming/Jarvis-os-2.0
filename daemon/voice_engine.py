@@ -27,10 +27,125 @@ MAX_UTTERANCE_BYTES = 2 * 60 * 32000
 
 _stt = SpeechToText()
 _tts = TextToSpeech()
-_inference_lock = asyncio.Lock()
 
 # Track active client writers so we can gracefully close them on shutdown
 _active_writers: Set[asyncio.StreamWriter] = set()
+
+
+class InferenceQueue:
+    """Single-worker job queue that replaces a plain asyncio.Semaphore(1)
+    around every real model-inference call (STT transcribe + TTS
+    synthesize). Preserves the exact same guarantee the semaphore gave --
+    one inference call in flight at a time, system-wide, across every
+    connection (see the removed _inference_lock's comment for why: neither
+    faster-whisper's WhisperModel nor Kokoro's KPipeline is verified safe
+    for concurrent calls, and this is a CPU-only box). What changes is
+    *how waiting is communicated*: a semaphore blocks a second caller
+    silently; this queue reports the caller's position the instant it's
+    submitted, before the earlier job(s) ahead of it finish.
+    """
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        # Jobs queued OR currently being run by the worker. NOT the same as
+        # self._queue.qsize(): asyncio.Queue.get() removes an item from the
+        # queue's internal deque the instant the worker claims it, well
+        # before that job's actual inference call (asyncio.to_thread(...))
+        # finishes -- so qsize() alone reads back down to 0 while a job is
+        # still in flight, and a second submit() during that window would
+        # wrongly compute position 0 instead of 1. This counter is
+        # incremented in submit() (before put()) and only decremented once
+        # the worker has fully finished a job (in _worker's finally), so it
+        # always reflects "how many jobs are ahead of a newly submitted one,
+        # whether still queued or actively running".
+        self._pending = 0
+
+    def start(self) -> None:
+        """Must be called once, from inside a running event loop (main(),
+        below) -- asyncio.create_task requires one, unlike the Queue/lock
+        constructors above, which don't.
+
+        Idempotent: a second call is a no-op rather than spinning up a
+        second concurrent _worker() task. Nothing calls start() twice
+        today, but if it ever did, two workers would violate this class's
+        own core invariant (one inference call in flight at a time, system
+        -wide -- see the class docstring)."""
+        if self._worker_task is not None:
+            return
+        self._worker_task = asyncio.create_task(self._worker())
+        self._worker_task.add_done_callback(self._on_worker_done)
+
+    def _on_worker_done(self, task: asyncio.Task) -> None:
+        """Registered on self._worker_task so a worker crash is never just
+        an "unretrieved task exception" warning logged at some arbitrary
+        future GC time. If _worker() ever exits -- which should never
+        happen in normal operation -- every submit() after that point still
+        succeeds silently (the queue has no size limit) and every `await
+        future` on those jobs hangs forever (futures have no timeout), with
+        no other visible symptom. This is the loud alarm for that."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.critical(
+                f"InferenceQueue worker died unexpectedly: {exc!r} -- all "
+                "subsequent STT/TTS requests will hang forever until the "
+                "daemon is restarted",
+                exc_info=exc,
+            )
+
+    async def _worker(self) -> None:
+        try:
+            while True:
+                fn, args, future = await self._queue.get()
+                try:
+                    result = await asyncio.to_thread(fn, *args)
+                    if not future.cancelled():
+                        future.set_result(result)
+                except asyncio.CancelledError:
+                    # Deliberate cancellation of this worker task (e.g.
+                    # during shutdown) -- must propagate normally, not be
+                    # treated as a job failure.
+                    raise
+                except BaseException as exc:  # noqa: BLE001 -- propagated to the caller via the future, not swallowed. Catching BaseException (not just Exception) so a non-Exception failure surfaced through asyncio.to_thread can never silently kill this worker task -- see class docstring and Plan 2 final review finding 1.
+                    if not future.cancelled():
+                        future.set_exception(exc)
+                finally:
+                    self._pending -= 1
+                    self._queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            # This should be unreachable: every per-job failure above is
+            # caught inside the inner try/except and never escapes the
+            # loop. If something still gets here, it's a genuine bug in
+            # this method itself -- log loudly (in addition to the
+            # done_callback registered in start()) before letting it
+            # propagate and kill the task.
+            log.critical(
+                "InferenceQueue worker loop is exiting unexpectedly -- this "
+                "should never happen in normal operation; all subsequent "
+                "STT/TTS requests will hang forever until the daemon is "
+                "restarted",
+                exc_info=True,
+            )
+            raise
+
+    async def submit(self, fn, *args) -> tuple[asyncio.Future, int]:
+        """Returns (future, position). position is 0 if this job starts
+        immediately (nothing else queued/running ahead of it), or the
+        number of jobs already queued/running ahead of it otherwise. Read
+        self._pending BEFORE incrementing/put() -- afterwards, this job
+        would count itself."""
+        position = self._pending
+        self._pending += 1
+        future = asyncio.get_running_loop().create_future()
+        await self._queue.put((fn, args, future))
+        return future, position
+
+
+_inference_queue = InferenceQueue()
 
 
 def _is_speech_frame(pcm_bytes: bytes) -> bool:
@@ -56,9 +171,18 @@ async def _run_transcription(writer: asyncio.StreamWriter, pcm_for_utterance: by
     if not pcm_for_utterance:
         await _write_message(writer, {"type": "transcript", "text": ""})
         return
+    # STT inference is slow (tens of seconds on CPU, per Task 2's live
+    # verification) and synchronous -- _inference_queue's worker runs it off
+    # the event loop via asyncio.to_thread, and serializes it against every
+    # other connection's STT/TTS calls (see InferenceQueue's own docstring).
+    # Unlike the plain semaphore this replaced, a caller behind an
+    # in-flight job is told its position immediately instead of just
+    # blocking silently.
+    future, position = await _inference_queue.submit(_stt.transcribe, pcm_for_utterance)
+    if position > 0:
+        await _write_message(writer, {"type": "queued", "position": position})
     try:
-        async with _inference_lock:
-            transcript = await asyncio.to_thread(_stt.transcribe, pcm_for_utterance)
+        transcript = await future
     except Exception:
         log.exception(f"STT transcription failed for {peer}")
         return
@@ -127,9 +251,15 @@ async def _handle_transcribe(
 
 async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
     text = msg.get("text", "")
+    # Same reasoning as the STT call in _run_transcription: TTS inference is
+    # slow and synchronous, so it must not run directly on the event loop,
+    # and _inference_queue serializes it against every other connection's
+    # STT/TTS calls.
+    future, position = await _inference_queue.submit(_tts.synthesize, text)
+    if position > 0:
+        await _write_message(writer, {"type": "queued", "position": position})
     try:
-        async with _inference_lock:
-            audio_bytes = await asyncio.to_thread(_tts.synthesize, text)
+        audio_bytes = await future
     except Exception:
         log.exception(f"TTS synthesis failed for {peer}")
         return
@@ -194,6 +324,11 @@ def _prepare_socket_dir() -> None:
 
 
 async def main() -> None:
+    # Must start from inside this running event loop -- InferenceQueue.start()
+    # calls asyncio.create_task, which requires one (unlike the plain
+    # Semaphore/Queue construction this replaced, which didn't).
+    _inference_queue.start()
+
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 

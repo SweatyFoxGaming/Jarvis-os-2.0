@@ -43,6 +43,23 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jarvis-gateway")
 
+# No literal fallback here on purpose — mirrors src/kernel/auth-middleware.ts's
+# ADMIN_API_KEY fail-fast (that file's own comment explains why: a missing
+# key must fail loudly at boot, not silently grant proxy access via a
+# guessable/shared default). This constant replaces the hardcoded legacy key
+# literal that used to live inline in make_proxy_request/proxy_streaming_request
+# below whenever INTERNAL_API_KEY was unset in the environment.
+INTERNAL_API_KEY = os.environ.get("ADMIN_API_KEY") or os.environ.get("INTERNAL_API_KEY")
+if not INTERNAL_API_KEY:
+    logger.error(
+        "[Gateway] FATAL: Neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Refusing "
+        "to start with no way to authenticate proxy calls to the Express backend — set "
+        "ADMIN_API_KEY or INTERNAL_API_KEY to a long random string in .env (it must "
+        "match the value Express itself reads via src/kernel/auth-middleware.ts's own "
+        "ADMIN_API_KEY fallback chain)."
+    )
+    sys.exit(1)
+
 NODE_PORT = 3000
 NODE_URL = f"http://127.0.0.1:{NODE_PORT}"
 
@@ -55,17 +72,6 @@ node_last_exit_code: int | None = None
 GATEWAY_START_TIME = time.time()
 STARTUP_GRACE_SECONDS = 30  # Node normally binds its port within a few seconds
 MAX_CONSECUTIVE_BOOT_FAILURES = 5
-
-REQUIRED_ENV_VARS = ["GROQ_API_KEY", "DATABASE_URL"]
-
-def validate_environment():
-    missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
-    if missing:
-        print(f"[FATAL] Missing required environment variables: {', '.join(missing)}")
-        sys.exit(1)
-
-# Run at startup
-validate_environment()
 
 def is_node_running() -> bool:
     """Check if the Node.js server is already running on port 3000."""
@@ -252,17 +258,7 @@ def make_proxy_request(path: str, method: str, headers: Dict[str, str], body: by
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
     
-    # Add INTERNAL_API_KEY to proxy headers, falling back to a hardcoded
-    # legacy key if INTERNAL_API_KEY is unset in the environment. This ensures
-    # internal background tasks and proxy calls consistently send a valid key.
-    internal_api_key = os.environ.get("INTERNAL_API_KEY")
-    legacy_api_key_fallback = "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" # Mirrors the constant in src/kernel/auth-middleware.ts
-    
-    if internal_api_key:
-        proxy_headers["x-api-key"] = internal_api_key
-    else:
-        proxy_headers["x-api-key"] = legacy_api_key_fallback
-        logger.info("[Gateway] INTERNAL_API_KEY is not set. Proxying with hardcoded legacy API key.")
+    proxy_headers["x-api-key"] = INTERNAL_API_KEY
 
     req = urllib.request.Request(
         url=target_url,
@@ -309,17 +305,7 @@ async def proxy_streaming_request(path: str, method: str, headers: Dict[str, str
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
     
-    # Add INTERNAL_API_KEY to proxy headers, falling back to a hardcoded
-    # legacy key if INTERNAL_API_KEY is unset in the environment. This ensures
-    # internal background tasks and proxy calls consistently send a valid key.
-    internal_api_key = os.environ.get("INTERNAL_API_KEY")
-    legacy_api_key_fallback = "c44dcd566e20d12f361464fb83c3734e02c60dbfd8b4f75e9a98f24d63c24918" # Mirrors the constant in src/kernel/auth-middleware.ts
-
-    if internal_api_key:
-        proxy_headers["x-api-key"] = internal_api_key
-    else:
-        proxy_headers["x-api-key"] = legacy_api_key_fallback
-        logger.info("[Gateway] INTERNAL_API_KEY is not set. Proxying with hardcoded legacy API key.")
+    proxy_headers["x-api-key"] = INTERNAL_API_KEY
 
     req = urllib.request.Request(
         url=target_url,
@@ -408,12 +394,6 @@ def get_simulated_workspace():
         "tasks": []
     }
 
-# BEFORE (Blocks the whole process loop):
-# result = heavy_synchronous_processing(data)
-
-# AFTER (Offloads execution to a worker thread):
-result = await asyncio.to_thread(heavy_synchronous_processing, data)
-
 @app.get("/health")
 async def health_check(request: Request):
     """
@@ -424,7 +404,13 @@ async def health_check(request: Request):
     dependency) was indistinguishable from a genuinely healthy one to
     anything checking this endpoint or `docker ps`/HEALTHCHECK.
     """
-    if is_node_running():
+    # is_node_running() itself is a blocking socket.connect_ex (up to a
+    # 0.5s timeout, see its definition above) — every async handler in this
+    # file calls it before deciding whether to proxy, so leaving it
+    # unwrapped would block the event loop on every single request through
+    # the gateway. asyncio.to_thread here matches how make_proxy_request's
+    # own blocking I/O is already handled just below.
+    if await asyncio.to_thread(is_node_running):
         try:
             # make_proxy_request is a blocking urllib call — run it in a
             # worker thread so a slow/hung Express response (e.g. a 100+s
@@ -470,7 +456,7 @@ async def health_check(request: Request):
 @app.get("/props")
 async def props_check(request: Request):
     """Props check proxy with automatic fallback."""
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             return await asyncio.to_thread(make_proxy_request, "/props", "GET", dict(request.headers))
         except Exception:
@@ -485,7 +471,7 @@ async def chat_proxy(request: Request):
     """
     body = await request.body()
 
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             forward_path = request.url.path
             if request.url.query:
@@ -525,7 +511,7 @@ async def wildcard_api_proxy(path_name: str, request: Request):
     body = await request.body()
 
     # Try proxying to Express server
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             forward_path = request.url.path
             if request.url.query:

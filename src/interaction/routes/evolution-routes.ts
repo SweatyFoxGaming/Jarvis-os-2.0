@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router } from "express";
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -7,7 +7,7 @@ import * as evolutionRepo from "../../kernel/state/evolution-repo.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const evolutionRouter: Router = Router();
+export const evolutionRouter = Router();
 
 // ---------- Evolution: real self-analysis ----------
 // Every analysis below is computed from something actually measured (a
@@ -50,10 +50,7 @@ function registerAnalysisRoute(type: string) {
     requireCapability("evolution.read"),
     async (req: any, res: any) => {
       try {
-       const analyzer = ANALYZERS[type];
-if (analyzer) {
-  const result = analyzer();
-}
+        const result = ANALYZERS[type]();
         const stored = await evolutionRepo.saveAnalysis(type, result.score, result.issues);
         res.json({ analysis_id: `${type}-${stored.id}`, score: result.score, issues: result.issues });
       } catch (err: any) {
@@ -140,7 +137,7 @@ evolutionRouter.get("/api/evolution/forecast", validateApiKey, requireCapability
       const ys = points.map(p => p.score);
       const meanX = xs.reduce((a, b) => a + b, 0) / n;
       const meanY = ys.reduce((a, b) => a + b, 0) / n;
-      const slope = xs.reduce((sum, x, i) => sum + (x - meanX) * ((ys[i] ?? 0) - meanY), 0) /
+      const slope = xs.reduce((sum, x, i) => sum + (x - meanX) * (ys[i] - meanY), 0) /
         Math.max(1e-9, xs.reduce((sum, x) => sum + (x - meanX) ** 2, 0));
       const intercept = meanY - slope * meanX;
       const nextScore = Math.max(0, Math.min(100, Math.round(intercept + slope * n)));
@@ -176,7 +173,8 @@ evolutionRouter.get("/api/evolution/goals", validateApiKey, requireCapability("e
       let currentValue: number | null = null;
       if (g.metric === "averageLatencyMs") currentValue = metrics.averageLatencyMs;
       else if (g.metric === "errorsLogged") currentValue = metrics.errorsLogged;
-     else if (g.metric in latestByType) currentValue = latestByType[g.metric] ?? null;
+      else if (g.metric in latestByType) currentValue = latestByType[g.metric];
+
       const met = currentValue === null ? null : g.comparator === "lte" ? currentValue <= g.target_value : currentValue >= g.target_value;
       return { ...g, currentValue, met };
     });

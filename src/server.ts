@@ -68,10 +68,7 @@ import { startAudioClient } from "./core/audio-client.js";
 import { startLiveAnalysis } from "./adaptation/live-analysis.js";
 import { startShadowVerifier } from "./executive/shadow-verifier.js";
 import { startVoiceSession } from "./interaction/voice-session.js";
-import { authenticateSession } from './kernel/auth-middleware.js';
-import { streamRouter } from './routes/streamRoute.js';
 import type { Request, Response, NextFunction } from 'express';
-import type { Server } from 'http';
 
 let httpServer: http.Server | undefined;
 let eventsWss: WebSocketServer | undefined;
@@ -113,7 +110,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000,h
 // The frontend (src/interaction/static/*.html) is a pre-existing single-file dashboard
 // built around inline <script> blocks and inline onclick= handlers — a
 // strict default-src/script-src CSP would break it outright. 'unsafe-inline'
-// here is a deliberaimport { streamRouter } from './routes/streamRoute.js';te, scoped tradeoff (splitting that inline JS into real
+// here is a deliberate, scoped tradeoff (splitting that inline JS into real
 // modules is a separate, larger frontend refactor, not part of this pass),
 // not an oversight — everything else (frame-ancestors, object-src, the
 // external-host allowlist) is still tightened to exactly what's actually used.
@@ -176,9 +173,8 @@ const aiLimiter = rateLimit({
   message: { error: "Too many requests — please slow down." },
 });
 
-app.use('/api/chat/stream', authenticateSession, rateLimit, streamRouter);
-app.post("/api/chat/stream", handleChatStream);
-app.get('/api/chat/stream', handleChatStream);
+app.post('/api/chat/stream', validateApiKey, aiLimiter, handleChatStream);
+app.get('/api/chat/stream', validateApiKey, aiLimiter, handleChatStream);
 
 const REQUIRED_ENV_VARS = [
   "POSTGRES_HOST",
@@ -193,14 +189,17 @@ if (missingEnvVars.length > 0) {
   console.error(`[Fatal Startup Error] Missing required environment variables: ${missingEnvVars.join(", ")}`);
   process.exit(1);
 }
- await applyHybridSearchSchema();
-
-// Capture handles for background services
-audioClient = startAudioClient("/tmp/jarvis-voice/voice.sock");
-fsWatcher = startFilesystemWatcher([process.cwd()]);
-liveAnalysis = startLiveAnalysis();
-shadowVerifier = startShadowVerifier();
-voiceSession = startVoiceSession();
+try {
+  // A Postgres outage at boot must not take the whole gateway down with it --
+  // every DB-backed repo function elsewhere in this codebase already degrades
+  // cleanly when Postgres is unreachable (see the Vault/UsageEvents/
+  // WellbeingRepo etc. tests), so crashing here on the same failure would be
+  // the one place that doesn't. Hybrid search's schema just won't be applied
+  // until the next successful boot with Postgres reachable.
+  await applyHybridSearchSchema();
+} catch (err: any) {
+  console.error(`[Startup] applyHybridSearchSchema failed (Postgres unreachable?), continuing without it: ${err?.message || err}`);
+}
 
 // ---------- Platform Instances ----------
 // Per-user conversational state lives in SessionState (src/cognition/session.ts),
@@ -1244,12 +1243,6 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
   }
 });
 
-// Shutdown Hook
-app.post("/api/shutdown", validateApiKey, (req, res) => {
-  observation.logTelemetry("warn", "System", "Server shutdown API invoked");
-  res.json({ status: "shutdown initiated" });
-});
-
 // Notifications + Web Push endpoints — see
 // src/interaction/routes/notifications-routes.ts, mounted below.
 app.use(notificationsRouter);
@@ -1427,8 +1420,11 @@ initDatabase().then(async (ready) => {
         ws.send(JSON.stringify({ type: "event", topic, payload }));
       }
     };
-
-    for (const topic of ["filesystem:changed", "system:anomaly"]) {
+    // There's no bus-level "subscribe to everything" API by design (Task 1
+    // keeps the bus's interface to per-topic subscribe/publish only) — this
+    // route explicitly stays subscribed to the known Phase-1 topic set,
+    // extended as new publishers are added in later tasks/phases.
+    for (const topic of ["filesystem:changed", "system:anomaly", "voice:queued"]) {
       unsubscribers.push(bus.subscribe(topic, forward(topic)));
     }
 
@@ -1467,6 +1463,13 @@ initDatabase().then(async (ready) => {
   shadowVerifier = startShadowVerifier();
   audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
   voiceSession = startVoiceSession();
+
+  // Opt-in, no-ops if REDIS_URL is unset (every deployment today) -- see
+  // docs/superpowers/plans/2026-08-10-shared-state-multi-tenant-infra.md.
+  // "system:anomaly" is the one topic genuinely useful across instances
+  // today (a real multi-instance deployment doesn't exist yet); extending
+  // this list is a deployment decision for whenever one does.
+  EventBus.getInstance().startCrossInstanceRelay(["system:anomaly"]);
 
   scheduler.startEmailWatchJob();
   scheduler.startBriefingJob(cognitionRouter);

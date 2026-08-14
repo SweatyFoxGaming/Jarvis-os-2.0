@@ -24,6 +24,15 @@ const observation = ObservationPlatform.getInstance();
  * LongTermLearningEngine (Jarvis's own learned style/skills — one intelligence,
  * not split per user), and ObservationPlatform (system-wide operational
  * telemetry for admins).
+ *
+ * NOT cross-instance: unlike KeyPool and EventBus, SessionState is held
+ * entirely in process memory and has no Redis-backed path. It was
+ * deliberately left out of the Redis migration because it holds 7
+ * non-serializable engine class instances (workspace, stateTracker, etc.)
+ * -- see docs/superpowers/plans/2026-08-10-shared-state-multi-tenant-infra.md
+ * for the reasoning. A deployment behind a load balancer must route a given
+ * user's requests to the same instance, or session state will appear to
+ * reset.
  */
 export class SessionState {
   public workspace = new CognitiveWorkspace();

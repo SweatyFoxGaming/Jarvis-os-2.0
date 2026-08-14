@@ -4,7 +4,7 @@ import { recordTranscriptEvent } from "../kernel/state/transcript-events-repo.js
 import * as codingPlanTasksRepo from "../kernel/state/coding-plan-tasks-repo.js";
 import type { PlannedTaskInput } from "../kernel/state/coding-plan-tasks-repo.js";
 import { incrementTokenUsage } from "../kernel/state/build-requests-repo.js";
-import { callGroqAgentChat, type AgentMessage, type AgentTool, DEFAULT_MODELS } from "../runtime/groq-agent-client.js";
+import { callGroqAgentChat, AgentMessage, AgentTool, DEFAULT_MODELS } from "../runtime/groq-agent-client.js";
 import * as departments from "./departments.js";
 import type { DraftedFile } from "../kernel/state/build-requests-repo.js";
 import { positiveIntegerEnv } from "../kernel/env.js";
@@ -532,11 +532,7 @@ async function proposePlan(
         }
       }
 
-      messages.push({
-      role: "assistant",
-      content,
-      ...(response.toolCalls ? { tool_calls: response.toolCalls } : {}),
-      });
+      messages.push({ role: "assistant", content: response.content, tool_calls: response.toolCalls || undefined });
       // Every tool_call in the assistant message above needs a matching
       // tool response, or the next request is a structurally invalid
       // conversation that an OpenAI-compatible endpoint will reject outright

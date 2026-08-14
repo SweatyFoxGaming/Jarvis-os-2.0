@@ -68,14 +68,16 @@ function resolveImport(fromFile: string, importPath: string): string | null {
 }
 
 export function buildDependencyGraph(): DependencyGraph {
-  const files = getSourceFiles();
-  const edges: DependencyEdge[] = [];
+  const files = listSourceFiles([".ts"]);
+  const nodes = files.map(f => path.relative(SRC_ROOT, f));
+  const edges: { from: string; to: string }[] = [];
 
   for (const file of files) {
-    const imports = extractImports(file);
-    for (const imp of imports) {
-      const resolved = resolveImport(file, imp);
-      
+    const content = fs.readFileSync(file, "utf-8");
+    let match;
+    RELATIVE_IMPORT_RE.lastIndex = 0;
+    while ((match = RELATIVE_IMPORT_RE.exec(content)) !== null) {
+      const resolved = resolveImport(file, match[1]);
       if (resolved) {
         edges.push({
           from: path.relative(SRC_ROOT, file),
@@ -85,7 +87,7 @@ export function buildDependencyGraph(): DependencyGraph {
     }
   }
 
-  return { files, edges };
+  return { nodes, edges };
 }
 
 function findCycles(graph: DependencyGraph): string[][] {

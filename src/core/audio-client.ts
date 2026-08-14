@@ -124,6 +124,8 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
         bus.publish("voice:transcript", { text: msg.text });
       } else if (msg.type === "audio_chunk") {
         bus.publish("voice:audio-chunk", { data: msg.data });
+      } else if (msg.type === "queued") {
+        bus.publish("voice:queued", { position: msg.position });
       }
     });
 

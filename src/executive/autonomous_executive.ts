@@ -301,10 +301,8 @@ export class AutonomousExecutive {
     const findings: string[] = [];
 
     for (let i = 0; i < steps.length; i++) {
-     const stepObj = steps[i];
-if (stepObj) {
-  const { step } = stepObj;
-}
+      const { step } = steps[i];
+      workspace.plan.currentStepIndex = i;
 
       session.updateState({
         attentionTarget: session.attentionEngine.determineAttention({ emergency: null, userRequest: step }),
