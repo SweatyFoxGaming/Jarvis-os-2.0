@@ -62,20 +62,70 @@ MAX_UTTERANCE_BYTES = 2 * 60 * 32000
 _stt = SpeechToText()
 _tts = TextToSpeech()
 
-# Serializes every real model-inference call (STT transcribe + TTS
-# synthesize) across ALL connections -- the long-lived streaming connection
-# from startAudioClient, plus any number of concurrent one-shot
-# transcribeOverSocket/synthesizeOverSocket connections, all share the same
-# _stt/_tts instances above. Each inference call runs via asyncio.to_thread,
-# so without this, multiple connections could genuinely run inference
-# concurrently on separate worker threads -- neither faster-whisper's
-# WhisperModel (default num_workers=1) nor Kokoro's KPipeline (which caches
-# internal per-voice state on first use) is verified safe for concurrent
-# calls, and this is a CPU-only box where concurrent inference would also
-# just oversubscribe the CPU and degrade latency for everyone. Acquired
-# right before the asyncio.to_thread(...) call and released immediately
-# after, never held across unrelated socket I/O.
-_inference_lock = asyncio.Semaphore(1)
+
+class InferenceQueue:
+    """Single-worker job queue that replaces a plain asyncio.Semaphore(1)
+    around every real model-inference call (STT transcribe + TTS
+    synthesize). Preserves the exact same guarantee the semaphore gave --
+    one inference call in flight at a time, system-wide, across every
+    connection (see the removed _inference_lock's comment for why: neither
+    faster-whisper's WhisperModel nor Kokoro's KPipeline is verified safe
+    for concurrent calls, and this is a CPU-only box). What changes is
+    *how waiting is communicated*: a semaphore blocks a second caller
+    silently; this queue reports the caller's position the instant it's
+    submitted, before the earlier job(s) ahead of it finish.
+    """
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        # Jobs queued OR currently being run by the worker. NOT the same as
+        # self._queue.qsize(): asyncio.Queue.get() removes an item from the
+        # queue's internal deque the instant the worker claims it, well
+        # before that job's actual inference call (asyncio.to_thread(...))
+        # finishes -- so qsize() alone reads back down to 0 while a job is
+        # still in flight, and a second submit() during that window would
+        # wrongly compute position 0 instead of 1. This counter is
+        # incremented in submit() (before put()) and only decremented once
+        # the worker has fully finished a job (in _worker's finally), so it
+        # always reflects "how many jobs are ahead of a newly submitted one,
+        # whether still queued or actively running".
+        self._pending = 0
+
+    def start(self) -> None:
+        """Must be called once, from inside a running event loop (main(),
+        below) -- asyncio.create_task requires one, unlike the Queue/lock
+        constructors above, which don't."""
+        self._worker_task = asyncio.create_task(self._worker())
+
+    async def _worker(self) -> None:
+        while True:
+            fn, args, future = await self._queue.get()
+            try:
+                result = await asyncio.to_thread(fn, *args)
+                if not future.cancelled():
+                    future.set_result(result)
+            except Exception as exc:  # noqa: BLE001 -- propagated to the caller via the future, not swallowed
+                if not future.cancelled():
+                    future.set_exception(exc)
+            finally:
+                self._pending -= 1
+                self._queue.task_done()
+
+    async def submit(self, fn, *args) -> tuple[asyncio.Future, int]:
+        """Returns (future, position). position is 0 if this job starts
+        immediately (nothing else queued/running ahead of it), or the
+        number of jobs already queued/running ahead of it otherwise. Read
+        self._pending BEFORE incrementing/put() -- afterwards, this job
+        would count itself."""
+        position = self._pending
+        self._pending += 1
+        future = asyncio.get_running_loop().create_future()
+        await self._queue.put((fn, args, future))
+        return future, position
+
+
+_inference_queue = InferenceQueue()
 
 
 def _is_speech_frame(pcm_bytes: bytes) -> bool:
@@ -104,16 +154,18 @@ async def _run_transcription(writer: asyncio.StreamWriter, pcm_for_utterance: by
         # than feeding faster-whisper an empty array.
         await _write_message(writer, {"type": "transcript", "text": ""})
         return
+    # STT inference is slow (tens of seconds on CPU, per Task 2's live
+    # verification) and synchronous -- _inference_queue's worker runs it off
+    # the event loop via asyncio.to_thread, and serializes it against every
+    # other connection's STT/TTS calls (see InferenceQueue's own docstring).
+    # Unlike the plain semaphore this replaced, a caller behind an
+    # in-flight job is told its position immediately instead of just
+    # blocking silently.
+    future, position = await _inference_queue.submit(_stt.transcribe, pcm_for_utterance)
+    if position > 0:
+        await _write_message(writer, {"type": "queued", "position": position})
     try:
-        # STT inference is slow (tens of seconds on CPU, per Task 2's live
-        # verification) and synchronous -- run it off the event loop so a
-        # single transcription doesn't block every other connection
-        # (including the accept loop for brand-new ones) for its duration.
-        # _inference_lock (see its definition above) serializes this against
-        # every other connection's STT/TTS calls -- held only around the
-        # actual inference call, not the socket I/O before/after it.
-        async with _inference_lock:
-            transcript = await asyncio.to_thread(_stt.transcribe, pcm_for_utterance)
+        transcript = await future
     except Exception:
         log.exception(f"STT transcription failed for {peer}")
         return
@@ -235,13 +287,15 @@ async def _handle_transcribe(
 
 async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
     text = msg.get("text", "")
+    # Same reasoning as the STT call in _run_transcription: TTS inference is
+    # slow and synchronous, so it must not run directly on the event loop,
+    # and _inference_queue serializes it against every other connection's
+    # STT/TTS calls.
+    future, position = await _inference_queue.submit(_tts.synthesize, text)
+    if position > 0:
+        await _write_message(writer, {"type": "queued", "position": position})
     try:
-        # Same reasoning as the STT call in _run_transcription: TTS
-        # inference is slow and synchronous, so it must not run directly
-        # on the event loop, and _inference_lock serializes it against
-        # every other connection's STT/TTS calls.
-        async with _inference_lock:
-            audio_bytes = await asyncio.to_thread(_tts.synthesize, text)
+        audio_bytes = await future
     except Exception:
         log.exception(f"TTS synthesis failed for {peer}")
         return
@@ -318,6 +372,10 @@ def _remove_stale_socket() -> None:
 
 
 async def main() -> None:
+    # Must start from inside this running event loop -- InferenceQueue.start()
+    # calls asyncio.create_task, which requires one (unlike the plain
+    # Semaphore/Queue construction this replaced, which didn't).
+    _inference_queue.start()
     server = await asyncio.start_unix_server(handle_connection, path=SOCKET_PATH)
     # daemon/Dockerfile has no USER directive, so this process runs as root
     # and start_unix_server() creates the socket file with a default mode
