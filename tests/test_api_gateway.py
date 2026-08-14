@@ -139,3 +139,47 @@ def test_make_proxy_request_passes_through_the_callers_own_api_key_unchanged():
             f"expected no x-api-key on a request whose caller sent none, "
             f"got {captured_requests[0].get_header('X-api-key')!r}"
         )
+
+
+def test_proxy_streaming_request_passes_through_the_callers_own_api_key_unchanged():
+    # Same bug, same fix, as the make_proxy_request test above, but for the
+    # /api/chat streaming path -- proxy_streaming_request had an identical
+    # unconditional x-api-key overwrite and is a separate function, so a
+    # regression here would slip past a fix/test that only covers
+    # make_proxy_request.
+    captured_requests = []
+
+    def fake_urlopen(req, timeout=None):
+        captured_requests.append(req)
+        raise urllib.error.URLError("test: not actually connecting anywhere")
+
+    async def scenario():
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            # proxy_streaming_request catches URLError internally and
+            # re-raises it as a FastAPI HTTPException (503) -- this test
+            # only needs the Request object urlopen was handed before that
+            # happens, so any exception here is expected and irrelevant.
+            try:
+                await api.proxy_streaming_request("/api/chat", "POST", {"x-api-key": "some-non-admin-users-own-key"}, b"{}")
+            except Exception:
+                pass
+            assert len(captured_requests) == 1
+            forwarded_key = captured_requests[0].get_header("X-api-key")
+            assert forwarded_key == "some-non-admin-users-own-key", (
+                f"expected the caller's own x-api-key to reach Express unchanged, "
+                f"got {forwarded_key!r} (INTERNAL_API_KEY is {api.INTERNAL_API_KEY!r})"
+            )
+            assert forwarded_key != api.INTERNAL_API_KEY
+
+            captured_requests.clear()
+            try:
+                await api.proxy_streaming_request("/api/chat", "POST", {}, b"{}")
+            except Exception:
+                pass
+            assert len(captured_requests) == 1
+            assert captured_requests[0].get_header("X-api-key") is None, (
+                f"expected no x-api-key on a request whose caller sent none, "
+                f"got {captured_requests[0].get_header('X-api-key')!r}"
+            )
+
+    _run(scenario())

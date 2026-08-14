@@ -45,15 +45,21 @@ logger = logging.getLogger("jarvis-gateway")
 
 # No literal fallback here on purpose — mirrors src/kernel/auth-middleware.ts's
 # ADMIN_API_KEY fail-fast (that file's own comment explains why: a missing
-# key must fail loudly at boot, not silently grant proxy access via a
-# guessable/shared default). This constant replaces the hardcoded legacy key
-# literal that used to live inline in make_proxy_request/proxy_streaming_request
-# below whenever INTERNAL_API_KEY was unset in the environment.
+# key must fail loudly at boot, not silently proceeding on a guessable/
+# shared default). This constant is no longer used to authenticate proxied
+# requests (make_proxy_request/proxy_streaming_request below pass each
+# caller's own x-api-key through unchanged now, letting Express's own
+# validateApiKey decide -- see their comments for why a pentest found the
+# opposite behavior a critical vulnerability). It's kept purely as a
+# boot-time assertion that the admin key Express itself requires
+# (auth-middleware.ts's own fail-fast) is actually configured in this
+# shared container/environment, so a misconfiguration surfaces immediately
+# rather than only once the first real admin-authenticated request fails.
 INTERNAL_API_KEY = os.environ.get("ADMIN_API_KEY") or os.environ.get("INTERNAL_API_KEY")
 if not INTERNAL_API_KEY:
     logger.error(
-        "[Gateway] FATAL: Neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Refusing "
-        "to start with no way to authenticate proxy calls to the Express backend — set "
+        "[Gateway] FATAL: Neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Express "
+        "requires one of these to be configured in this same environment — set "
         "ADMIN_API_KEY or INTERNAL_API_KEY to a long random string in .env (it must "
         "match the value Express itself reads via src/kernel/auth-middleware.ts's own "
         "ADMIN_API_KEY fallback chain)."
