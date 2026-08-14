@@ -139,6 +139,95 @@ registerTest("Platform", "EventBus relays a published event to Redis, and re-pub
   }
 });
 
+registerTest("Platform", "a Redis client pointed at an unreachable address logs a warning instead of crashing the process", async () => {
+  const { createRedisClient } = await import("../src/kernel/redis-client.js");
+  const { ObservationPlatform } = await import("../src/kernel/observation.js");
+  const observation = ObservationPlatform.getInstance();
+
+  const beforeCount = observation.getTelemetry().length;
+
+  // Port 1 is a real, always-unassigned low port on any normal host --
+  // connection fails fast (ECONNREFUSED) rather than timing out slowly,
+  // keeping this test's runtime short and deterministic without a mock.
+  const client = createRedisClient("redis://127.0.0.1:1");
+
+  try {
+    // If createRedisClient's "error" handler (src/kernel/redis-client.ts)
+    // were missing, this unhandled "error" event would throw here and take
+    // the whole test process down with it -- the actual thing this test
+    // guards against. Reaching the assertions below at all is already
+    // half the proof.
+    const deadline = Date.now() + 3000;
+    let sawWarning = false;
+    while (Date.now() < deadline) {
+      const recent = observation.getTelemetry().slice(beforeCount);
+      if (recent.some((e) => e.subsystem === "Redis" && e.level === "warn")) {
+        sawWarning = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!sawWarning) {
+      throw new Error("Platform: expected a Redis connection failure to log a 'warn' telemetry event under subsystem 'Redis'");
+    }
+  } finally {
+    client.disconnect();
+  }
+});
+
+registerTest("Platform", "EventBus's cross-instance relay drops a malformed relayed message with a warning instead of crashing or delivering garbage", async () => {
+  const { getRedisClient, isRedisConfigured } = await import("../src/kernel/redis-client.js");
+  if (!isRedisConfigured()) {
+    console.log("  (skipped: REDIS_URL not set in this environment)");
+    return;
+  }
+  const redis = getRedisClient();
+  if (!redis) {
+    console.log("  (skipped: Redis client unavailable)");
+    return;
+  }
+
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { ObservationPlatform } = await import("../src/kernel/observation.js");
+  const observation = ObservationPlatform.getInstance();
+  const bus = EventBus.getInstance();
+  const topic = `test:malformed-relay:${Date.now()}`;
+
+  bus.startCrossInstanceRelay([topic]);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const received: any[] = [];
+  const unsubscribe = bus.subscribe(topic, (payload) => received.push(payload));
+  const beforeCount = observation.getTelemetry().length;
+
+  try {
+    // Published directly via the raw redis client, bypassing EventBus.publish
+    // entirely -- simulates a malformed message arriving on the wire (e.g.
+    // a version-mismatched instance, or wire corruption), not something
+    // EventBus's own JSON.stringify could ever produce on its own.
+    await redis.publish(`jarvis:events:${topic}`, "{not valid json");
+
+    const deadline = Date.now() + 3000;
+    let sawWarning = false;
+    while (Date.now() < deadline) {
+      const recent = observation.getTelemetry().slice(beforeCount);
+      if (recent.some((e) => e.subsystem === "EventBus" && e.level === "warn")) {
+        sawWarning = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!sawWarning) {
+      throw new Error("EventBus: expected a malformed relayed message to log a 'warn' telemetry event under subsystem 'EventBus'");
+    }
+    if (received.length !== 0) {
+      throw new Error(`EventBus: a malformed relayed message must never reach local subscribers, got ${received.length} deliveries: ${JSON.stringify(received)}`);
+    }
+  } finally {
+    unsubscribe();
+  }
+});
+
 // ---------- 2. Cognitive Tests ----------
 registerTest("Cognitive", "Dynamic memory and preference caching", () => {
   const ws = new CognitiveWorkspace();
