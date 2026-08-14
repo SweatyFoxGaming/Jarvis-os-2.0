@@ -404,7 +404,13 @@ async def health_check(request: Request):
     dependency) was indistinguishable from a genuinely healthy one to
     anything checking this endpoint or `docker ps`/HEALTHCHECK.
     """
-    if is_node_running():
+    # is_node_running() itself is a blocking socket.connect_ex (up to a
+    # 0.5s timeout, see its definition above) — every async handler in this
+    # file calls it before deciding whether to proxy, so leaving it
+    # unwrapped would block the event loop on every single request through
+    # the gateway. asyncio.to_thread here matches how make_proxy_request's
+    # own blocking I/O is already handled just below.
+    if await asyncio.to_thread(is_node_running):
         try:
             # make_proxy_request is a blocking urllib call — run it in a
             # worker thread so a slow/hung Express response (e.g. a 100+s
@@ -450,7 +456,7 @@ async def health_check(request: Request):
 @app.get("/props")
 async def props_check(request: Request):
     """Props check proxy with automatic fallback."""
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             return await asyncio.to_thread(make_proxy_request, "/props", "GET", dict(request.headers))
         except Exception:
@@ -465,7 +471,7 @@ async def chat_proxy(request: Request):
     """
     body = await request.body()
 
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             forward_path = request.url.path
             if request.url.query:
@@ -505,7 +511,7 @@ async def wildcard_api_proxy(path_name: str, request: Request):
     body = await request.body()
 
     # Try proxying to Express server
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             forward_path = request.url.path
             if request.url.query:
