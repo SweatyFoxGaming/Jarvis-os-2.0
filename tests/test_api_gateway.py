@@ -1,6 +1,8 @@
 """
 Regression coverage for src/api.py's async route handlers not blocking the
-event loop. Plain asyncio.run()-driven tests, matching daemon/tests/
+event loop, plus a pentest-caught gateway auth-bypass fix (see
+test_make_proxy_request_passes_through_the_callers_own_api_key_unchanged
+below). Plain asyncio.run()-driven tests, matching daemon/tests/
 test_voice_engine.py's convention (no pytest-asyncio dependency) rather than
 using anyio/pytest-asyncio markers, to keep this project's two Python test
 suites consistent.
@@ -8,6 +10,7 @@ suites consistent.
 import asyncio
 import os
 import sys
+import urllib.error
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -85,3 +88,54 @@ def test_is_node_running_is_offloaded_via_asyncio_to_thread_in_every_async_handl
             )
 
     _run(scenario())
+
+
+def test_make_proxy_request_passes_through_the_callers_own_api_key_unchanged():
+    # Penetration-test-caught regression: make_proxy_request/
+    # proxy_streaming_request used to unconditionally overwrite the
+    # proxied request's x-api-key header with INTERNAL_API_KEY, regardless
+    # of what the original caller actually sent -- meaning every request
+    # through this gateway (unauthenticated, wrong key, or a real non-admin
+    # user's own key) reached Express as full admin. Live-verified via a
+    # real gateway+Express pair: an unauthenticated GET through the gateway
+    # returned admin-level data that the same request sent directly to
+    # Express correctly 401'd. Fixed by no longer stamping x-api-key at
+    # all -- the caller's own header (or its absence) must now reach
+    # Express unchanged, letting Express's own validateApiKey decide.
+    captured_requests = []
+
+    def fake_urlopen(req, timeout=None):
+        captured_requests.append(req)
+        # Short-circuits make_proxy_request's own try/except (it re-raises
+        # URLError to trigger the caller's fallback path) -- this test only
+        # needs the Request object urlopen was handed, not a real response.
+        raise urllib.error.URLError("test: not actually connecting anywhere")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        # Case 1: caller sent their own (non-admin) key -- must reach
+        # Express as-is, not silently upgraded to INTERNAL_API_KEY.
+        try:
+            api.make_proxy_request("/api/whoami", "GET", {"x-api-key": "some-non-admin-users-own-key"})
+        except urllib.error.URLError:
+            pass
+        assert len(captured_requests) == 1
+        forwarded_key = captured_requests[0].get_header("X-api-key")
+        assert forwarded_key == "some-non-admin-users-own-key", (
+            f"expected the caller's own x-api-key to reach Express unchanged, "
+            f"got {forwarded_key!r} (INTERNAL_API_KEY is {api.INTERNAL_API_KEY!r})"
+        )
+        assert forwarded_key != api.INTERNAL_API_KEY
+
+        # Case 2: caller sent no key at all -- must reach Express with no
+        # key either (so Express's own validateApiKey correctly 401s it),
+        # not silently granted the admin key.
+        captured_requests.clear()
+        try:
+            api.make_proxy_request("/api/whoami", "GET", {})
+        except urllib.error.URLError:
+            pass
+        assert len(captured_requests) == 1
+        assert captured_requests[0].get_header("X-api-key") is None, (
+            f"expected no x-api-key on a request whose caller sent none, "
+            f"got {captured_requests[0].get_header('X-api-key')!r}"
+        )

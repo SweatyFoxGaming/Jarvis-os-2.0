@@ -6,7 +6,12 @@ services:
     container_name: jarvis-os-api
     ports:
       - "8000:8000"
-      - "3000:3000"
+      # Loopback-only: nothing in this project's architecture expects an
+      # external client to hit Express directly rather than through the
+      # gateway on 8000 — publishing 3000 to 0.0.0.0 only doubled the
+      # attack surface for no benefit. Still reachable from the host
+      # itself for local debugging (curl localhost:3000/...).
+      - "127.0.0.1:3000:3000"
     environment:
       - NODE_ENV=production
     env_file:

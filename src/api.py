@@ -252,13 +252,18 @@ def make_proxy_request(path: str, method: str, headers: Dict[str, str], body: by
     """Helper to perform synchronous HTTP proxying to the Node.js backend using urllib."""
     target_url = f"{NODE_URL}{path}"
     
-    # Filter and construct headers to pass through
+    # Filter and construct headers to pass through. Deliberately NOT
+    # stamping x-api-key here -- this used to unconditionally overwrite it
+    # with INTERNAL_API_KEY, meaning every request through this gateway
+    # (authenticated or not) reached Express as full admin, regardless of
+    # what credentials the original caller actually supplied. Passing the
+    # caller's own x-api-key (or its absence) through unchanged lets
+    # Express's own validateApiKey make the real authorization decision,
+    # exactly as it would for a request that hit Express directly.
     excluded_headers = {'host', 'connection', 'content-length'}
     proxy_headers = {
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
-    
-    proxy_headers["x-api-key"] = INTERNAL_API_KEY
 
     req = urllib.request.Request(
         url=target_url,
@@ -266,7 +271,7 @@ def make_proxy_request(path: str, method: str, headers: Dict[str, str], body: by
         headers=proxy_headers,
         method=method
     )
-    
+
     try:
         with urllib.request.urlopen(req, timeout=120) as response:
             res_body = response.read()
@@ -299,13 +304,13 @@ async def proxy_streaming_request(path: str, method: str, headers: Dict[str, str
     """Helper to perform asynchronous streaming HTTP proxying to the Node.js backend using urllib."""
     target_url = f"{NODE_URL}{path}"
     
-    # Filter and construct headers to pass through
+    # Filter and construct headers to pass through -- see the identical
+    # comment in make_proxy_request above for why x-api-key is no longer
+    # overwritten here.
     excluded_headers = {'host', 'connection', 'content-length', 'transfer-encoding', 'accept-encoding'}
     proxy_headers = {
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
-    
-    proxy_headers["x-api-key"] = INTERNAL_API_KEY
 
     req = urllib.request.Request(
         url=target_url,

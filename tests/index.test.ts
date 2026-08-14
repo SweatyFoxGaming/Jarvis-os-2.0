@@ -2274,6 +2274,44 @@ registerTest("HTTP Boundary", "POST /api/chat/stream requires an API key", async
   }
 });
 
+// Penetration-test-caught regression: validateApiKey used a raw
+// crypto.timingSafeEqual(...) call with no length check first, which
+// throws a RangeError for any submitted key of a different length than
+// ADMIN_API_KEY's own -- an unhandled promise rejection in async
+// middleware with no try/catch around it, so the request/connection just
+// hung forever instead of getting a 401. Pre-authentication, trivially
+// remote, on every route validateApiKey guards. Uses a short timeout so
+// this test fails fast (not after minutes) if the bug ever reappears.
+registerTest("HTTP Boundary", "an API key of the wrong length gets a clean 401, not a hung connection", async () => {
+  const port = 3023;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+
+  try {
+    const wrongLength = await fetch(`http://127.0.0.1:${port}/api/chat/stream?prompt=hello`, {
+      headers: { "x-api-key": "short" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (wrongLength.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 for a wrong-length API key, got ${wrongLength.status}`);
+    }
+
+    // The server itself must still be alive and serving other requests
+    // afterward -- proves this isn't just a per-request timeout masking a
+    // crashed/hung process underneath. (A real prompt would trigger a real
+    // provider call, so this only checks the auth gate passed -- not 401 --
+    // rather than asserting a specific success status.)
+    const validKeyNoBody = await fetch(`http://127.0.0.1:${port}/api/chat/stream`, {
+      headers: { "x-api-key": TEST_ADMIN_API_KEY },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (validKeyNoBody.status === 401) {
+      throw new Error(`HTTP Boundary: server appears dead/still-auth-rejecting after the wrong-length attempt, got 401 with a valid key`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // Locks in the fix for a reflected-XSS bug CodeRabbit found in review: the
 // calendar OAuth callback used to interpolate the untrusted `error` query
 // param straight into an HTML response with no escaping, so a crafted link

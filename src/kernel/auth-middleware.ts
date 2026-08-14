@@ -84,9 +84,21 @@ export const validateApiKey = async (req: any, res: any, next: any) => {
     observation.logTelemetry("warn", "Security", "Access denied: Missing API Key", requestInfo);
     return res.status(401).json({ error: "Missing API Key" });
   }
-  if (!crypto.timingSafeEqual(Buffer.from(ADMIN_API_KEY), Buffer.from(apiKey))) {
+  // A raw x-api-key header appearing twice makes Express hand back a
+  // string[] instead of a string -- coerce to a single string before any
+  // comparison, matching authMiddleware's own normalization above.
+  const submittedKey = Array.isArray(apiKey) ? apiKey[0] : apiKey;
+  // safeCompare, not a raw crypto.timingSafeEqual(...) call: timingSafeEqual
+  // throws a RangeError ("Input buffers must have the same byte length") on
+  // ANY length mismatch, and this function has no try/catch -- an attacker
+  // submitting a key of any length other than ADMIN_API_KEY's own would
+  // trigger an unhandled promise rejection with no response ever sent,
+  // hanging the request/connection indefinitely. Pre-authentication,
+  // trivially remote, on every route this middleware guards. safeCompare
+  // (defined just above) already handles the length-mismatch case safely.
+  if (!submittedKey || !safeCompare(ADMIN_API_KEY, submittedKey)) {
     try {
-      const username = await usersRepo.getUsernameByApiKey(apiKey);
+      const username = await usersRepo.getUsernameByApiKey(submittedKey);
       if (username) {
         req.username = username;
         return next();
