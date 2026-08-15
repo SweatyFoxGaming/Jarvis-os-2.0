@@ -15,6 +15,18 @@ export const invitesRouter = Router();
 // only ever sees the state of the world at the moment an invite is minted).
 export const MAX_NON_ADMIN_USERS = 10;
 
+invitesRouter.get("/api/invites", validateApiKey, async (req: any, res: any) => {
+  if (req.username !== "admin") {
+    return res.status(403).json({ error: "Only admin can view invites" });
+  }
+  try {
+    const invites = await invitesRepo.listPendingInvites();
+    res.json({ invites: invites.map((i) => ({ token: i.token, createdAt: i.created_at, expiresAt: i.expires_at })) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 invitesRouter.post("/api/invites", validateApiKey, async (req: any, res: any) => {
   if (req.username !== "admin") {
     return res.status(403).json({ error: "Only admin can create invites" });

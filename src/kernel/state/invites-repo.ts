@@ -50,6 +50,17 @@ export async function revokeInvite(token: string): Promise<boolean> {
   return !!rowCount;
 }
 
+// Backs the admin UI's invite list — only ever shows invites an admin could
+// still act on (revoke), so already-redeemed ones are excluded here rather
+// than filtered client-side.
+export async function listPendingInvites(): Promise<InviteToken[]> {
+  const db = getPool();
+  const { rows } = await db.query(
+    `SELECT * FROM invite_tokens WHERE used_by IS NULL AND expires_at > now() ORDER BY created_at DESC`
+  );
+  return rows;
+}
+
 export async function getInvite(token: string): Promise<InviteToken | null> {
   try {
     const db = getPool();

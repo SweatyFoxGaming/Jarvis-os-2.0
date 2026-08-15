@@ -163,6 +163,21 @@ export async function listUsernames(): Promise<string[]> {
   return ["admin", ...rows.map((r: any) => r.username)];
 }
 
+// Backs the admin UI's user-management list. Deliberately excludes the
+// synthetic "admin" identity — it's not a `users` row, has no created_at,
+// and DELETE /api/admin/users/:username already refuses to remove it, so
+// there's nothing actionable to show for it here.
+export interface UserSummary {
+  username: string;
+  createdAt: Date;
+}
+
+export async function listUsersWithMeta(): Promise<UserSummary[]> {
+  const db = getPool();
+  const { rows } = await db.query("SELECT username, created_at FROM users ORDER BY created_at ASC");
+  return rows.map((r: any) => ({ username: r.username, createdAt: r.created_at }));
+}
+
 // Backs the admin-only DELETE /api/admin/users/:username route
 // (admin-routes.ts) — full cascade delete of an account and every piece of
 // personal data scoped to their username, per this plan's design doc

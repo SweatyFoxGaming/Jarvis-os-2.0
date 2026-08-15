@@ -9,6 +9,18 @@ const observation = ObservationPlatform.getInstance();
 
 export const adminRouter = Router();
 
+adminRouter.get("/api/admin/users", validateApiKey, async (req: any, res: any) => {
+  if (req.username !== "admin") {
+    return res.status(403).json({ error: "Only admin can list users" });
+  }
+  try {
+    const users = await usersRepo.listUsersWithMeta();
+    res.json({ users });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Admin-only full account removal — see this plan's design doc
 // (docs/superpowers/specs/2026-08-01-multi-user-personal-brains-design.md,
 // Component 9): "full cascade delete of the account, personal facts/
