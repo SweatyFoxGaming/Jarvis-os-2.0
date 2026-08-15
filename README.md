@@ -498,6 +498,40 @@ To restore a dump:
 gunzip -c backups/jarvis-<db>-<timestamp>.sql.gz | docker exec -i jarvis-postgres psql -U "$POSTGRES_USER" "$POSTGRES_DB"
 ```
 
+## Secrets management
+
+`.env` holds every real credential this deployment has — provider API keys,
+`POSTGRES_PASSWORD`, `GOOGLE_CLIENT_SECRET`, `INTERNAL_API_KEY`, all of it —
+in plaintext, because `docker-compose.yml`'s `env_file:` and `tsx
+--env-file=.env` both need a real file to read while containers are
+running. That's an accepted, unavoidable cost of unattended operation (no
+one's typing a passphrase when Docker restarts on its own) — what's
+avoidable is *everywhere else that plaintext file could end up*: a backup,
+a snapshot, a copy to new hardware, an accidental `git add -A`.
+
+`scripts/env-encrypt.sh` encrypts `.env` into `.env.age` using
+[age](https://age-encryption.org) — first run generates a keypair
+(`age-keygen`) under `~/.config/jarvis/age-key.txt` by default (override
+with `JARVIS_AGE_KEY_PATH`), **outside the repo**, and prints a one-time
+warning to back that file up somewhere separate from your regular repo
+backups. Losing it means losing every secret in `.env` with no recovery
+path; anyone who gets both the key and `.env.age` can decrypt everything,
+so never store them together.
+
+```sh
+sudo apt-get install -y age   # once
+scripts/env-encrypt.sh        # .env -> .env.age, whenever a secret changes
+```
+
+`.env.age` is the artifact that's actually safe to copy into a backup,
+send to new hardware, or otherwise store somewhere `.env` itself never
+should. To restore it:
+
+```sh
+scripts/env-decrypt.sh          # .env.age -> .env
+scripts/env-decrypt.sh --force  # overwrite an existing .env
+```
+
 ## Files/notes
 
 `JARVIS_FILES_DIR` (host path, defaults to `./jarvis-notes`) is bind-mounted
