@@ -289,7 +289,7 @@ registerTest("createUser + verifyCredentials round-trip for real, and rejects a 
   if (!invalidThrew) throw new Error('createUser did not throw InvalidUsernameError for a username containing "|" and under 3 characters of real content');
 });
 
-registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it becomes both hashed-at-rest and authenticate-compatible, and leaves an already-hashed row untouched", async () => {
+registerTest("migrations/012: re-keys a legacy plaintext api_keys row so it becomes both hashed-at-rest and authenticate-compatible, and leaves an already-hashed row untouched", async () => {
   const username = `db_it_legacyapikey_${RUN_ID}`;
   await createUser(username, "a-real-password-123");
   const db = getPool();
