@@ -302,8 +302,20 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         pass
     finally:
         _active_writers.discard(writer)
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except (ConnectionResetError, BrokenPipeError):
+            # The peer can legitimately have already torn down its side
+            # (e.g. its own client-side timeout fired and destroyed the
+            # socket while we were still writing) -- closing our side can
+            # race that. Previously uncaught here (the same exception types
+            # ARE caught around the read loop above, but that except clause
+            # doesn't cover this finally block), which surfaced as a noisy
+            # "Unhandled exception in client_connected_cb" traceback in the
+            # logs on every client-timeout, even though the daemon itself
+            # was never actually broken by it.
+            pass
         log.info(f"connection closed: {peer}")
 
 
@@ -323,11 +335,48 @@ def _prepare_socket_dir() -> None:
     _cleanup_socket()
 
 
+async def _warm_models() -> None:
+    """Pre-loads both models in the background right after the daemon starts
+    accepting connections, so the FIRST real transcribe/synthesize request
+    doesn't pay the one-time weights-download-and-load cost (tens of
+    seconds on a cold cache, live-verified: ~9s for Kokoro once cached,
+    ~32s for faster-whisper's first-ever load including the Hugging Face
+    download) on top of whatever client-side timeout is racing it --
+    exactly the failure mode that broke voice on this daemon's actual first
+    real use: audio-client.ts's 60s synthesizeOverSocket/
+    transcribeOverSocket timeouts collided with a cold container (0
+    restarts, hours of uptime, never having served one real request) doing
+    its first-ever HF download AND model load in the same window.
+
+    Submitted through _inference_queue (not a bare asyncio.to_thread) so it
+    naturally serializes with any real request that arrives while it's
+    still loading, rather than racing two model-load threads against each
+    other. Harmless no-op if a real request gets there first --
+    SpeechToText/TextToSpeech's _ensure_loaded() already de-dupes concurrent
+    loads via its own lock, so whichever caller (this warm-up or a real
+    request) loses the race just finds the model already loaded.
+    """
+    try:
+        log.info("pre-warming STT/TTS models in the background...")
+        stt_future, _ = await _inference_queue.submit(_stt._ensure_loaded)
+        await stt_future
+        tts_future, _ = await _inference_queue.submit(_tts._ensure_loaded)
+        await tts_future
+        log.info("model pre-warm complete")
+    except Exception:
+        # Never let a warm-up failure crash the daemon or block real
+        # requests -- worst case, the lazy-load path in models.py pays the
+        # same cost the next real request pays anyway, same as before this
+        # existed.
+        log.exception("model pre-warm failed; models will still lazy-load on first real request")
+
+
 async def main() -> None:
     # Must start from inside this running event loop -- InferenceQueue.start()
     # calls asyncio.create_task, which requires one (unlike the plain
     # Semaphore/Queue construction this replaced, which didn't).
     _inference_queue.start()
+    asyncio.create_task(_warm_models())
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
