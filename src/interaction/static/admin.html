@@ -576,6 +576,16 @@
             } catch {}
         }
 
+        // Prefer the server's PUBLIC_BASE_URL-derived link — it's the one
+        // address guaranteed to resolve for the person being invited, not
+        // just for whichever host/port admin's own browser happens to be
+        // pointed at right now (see invites-routes.ts's buildInviteUrl for
+        // the real-world failure this fixes: an admin testing from
+        // localhost generated links that only ever worked on that machine).
+        function resolveInviteUrl(inv) {
+            return inv.inviteUrl || `${window.location.origin}/invite/${inv.token}`;
+        }
+
         function renderInvitesList(invites) {
             const container = document.getElementById('invites-list');
             if (!invites || invites.length === 0) {
@@ -583,12 +593,15 @@
                 return;
             }
             container.innerHTML = invites.map(inv => `
-                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
+                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl gap-2">
                     <div class="min-w-0">
                         <div class="text-white font-bold text-[10px]">${escapeHtml(inv.token.slice(0, 12))}&hellip;</div>
                         <div class="text-secondary text-[9px]">Expires ${new Date(inv.expiresAt).toLocaleString()}</div>
                     </div>
-                    <button onclick="revokeInvite('${encodeURIComponent(inv.token)}')" class="px-2.5 py-1 bg-danger/10 border border-danger/30 rounded-lg text-danger font-bold hover:bg-danger/20 transition-all font-mono text-[9px] uppercase flex-shrink-0">REVOKE</button>
+                    <div class="flex gap-1.5 flex-shrink-0">
+                        <button onclick="copyText('${encodeURIComponent(resolveInviteUrl(inv))}')" class="px-2.5 py-1 bg-primary/10 border border-primary/30 rounded-lg text-primary font-bold hover:bg-primary/20 transition-all font-mono text-[9px] uppercase">COPY</button>
+                        <button onclick="revokeInvite('${encodeURIComponent(inv.token)}')" class="px-2.5 py-1 bg-danger/10 border border-danger/30 rounded-lg text-danger font-bold hover:bg-danger/20 transition-all font-mono text-[9px] uppercase">REVOKE</button>
+                    </div>
                 </div>
             `).join('');
         }
@@ -613,24 +626,35 @@
         async function createInvite() {
             try {
                 const data = await apiCall('/api/invites', { method: 'POST' });
-                const link = `${window.location.origin}/invite/${data.token}`;
+                const link = resolveInviteUrl(data);
                 document.getElementById('new-invite-link').value = link;
                 document.getElementById('new-invite-banner').classList.remove('hidden');
-                showMessage('Invite generated — link ready to share.', 'success');
+                if (data.inviteUrl) {
+                    showMessage('Invite generated — link ready to share.', 'success');
+                } else {
+                    // PUBLIC_BASE_URL isn't set server-side, so this link was
+                    // built from this browser's own address bar — it will
+                    // only work if the invitee opens it from this exact
+                    // host/port, which is almost never true off-device.
+                    showMessage('Invite generated, but PUBLIC_BASE_URL isn\'t configured — this link only works from this browser\'s own address. Set PUBLIC_BASE_URL in .env to a reachable URL (e.g. your Tailscale hostname) to fix this.', 'warning');
+                }
                 loadAccessControl();
             } catch (err) {
                 showMessage('Could not create invite: ' + err.message, 'danger');
             }
         }
 
-        function copyInviteLink() {
-            const input = document.getElementById('new-invite-link');
-            input.select();
-            navigator.clipboard.writeText(input.value).then(() => {
-                showMessage('Invite link copied to clipboard.', 'info');
+        function copyText(encodedValue) {
+            const value = decodeURIComponent(encodedValue);
+            navigator.clipboard.writeText(value).then(() => {
+                showMessage('Copied to clipboard.', 'info');
             }).catch(() => {
-                showMessage('Copy failed — select and copy the link manually.', 'warning');
+                showMessage('Copy failed — copy it manually: ' + value, 'warning');
             });
+        }
+
+        function copyInviteLink() {
+            copyText(encodeURIComponent(document.getElementById('new-invite-link').value));
         }
 
         async function revokeInvite(token) {
