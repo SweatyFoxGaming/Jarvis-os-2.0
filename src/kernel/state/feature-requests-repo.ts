@@ -30,17 +30,38 @@ export async function addFeatureRequest(
   return rows[0];
 }
 
-export async function getFeatureRequests(status?: FeatureRequestStatus): Promise<FeatureRequest[]> {
+// `username`, when passed, scopes results to that requester's own rows only
+// (`requested_by = username`) — the route layer's job is to pass it for
+// every caller except admin, so a personal user's titles/descriptions/
+// research notes never leak to another personal user. Omitting it (as the
+// route does for admin) returns every request system-wide, matching the
+// pre-fix behavior admin still needs to triage the whole queue.
+export async function getFeatureRequests(status?: FeatureRequestStatus, username?: string): Promise<FeatureRequest[]> {
   const db = getPool();
+  const conditions: string[] = [];
+  const params: (FeatureRequestStatus | string)[] = [];
   if (status) {
-    const { rows } = await db.query(
-      `SELECT * FROM feature_requests WHERE status = $1 ORDER BY created_at DESC`,
-      [status]
-    );
-    return rows;
+    params.push(status);
+    conditions.push(`status = $${params.length}`);
   }
-  const { rows } = await db.query(`SELECT * FROM feature_requests ORDER BY created_at DESC`);
+  if (username) {
+    params.push(username);
+    conditions.push(`requested_by = $${params.length}`);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const { rows } = await db.query(`SELECT * FROM feature_requests ${where} ORDER BY created_at DESC`, params);
   return rows;
+}
+
+// Backs the ownership check the POST /:id/status route performs before
+// calling updateFeatureRequestStatus below — that update function has no
+// ownership check of its own (any id, any status), so the route fetches the
+// row first via this function to confirm the caller actually owns it (or is
+// admin) before ever attempting the write.
+export async function getFeatureRequestById(id: number): Promise<FeatureRequest | null> {
+  const db = getPool();
+  const { rows } = await db.query(`SELECT * FROM feature_requests WHERE id = $1`, [id]);
+  return rows[0] || null;
 }
 
 export async function updateFeatureRequestStatus(

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import path from "path";
 import crypto from "crypto";
 import { applyHybridSearchSchema } from './kernel/state/hybridSearchMigration.js';
@@ -58,9 +59,11 @@ import { briefingMemoryRouter } from "./interaction/routes/briefing-memory-route
 import { evolutionRouter } from "./interaction/routes/evolution-routes.js";
 import { rewardRouter } from "./interaction/routes/reward-routes.js";
 import { permissionsRouter } from "./interaction/routes/permissions-routes.js";
+import { invitesRouter } from "./interaction/routes/invites-routes.js";
 import { integrationsRouter } from "./interaction/routes/integrations-routes.js";
 import { hudRouter } from "./interaction/routes/hud-routes.js";
 import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
+import { adminRouter } from "./interaction/routes/admin-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
 import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
@@ -101,6 +104,30 @@ const PORT = positiveIntegerEnv(process.env.PORT, 3000);
 // INTERNAL_API_KEY's fail-fast validation now lives in
 // kernel/auth-middleware.ts, run at that module's first import (below) —
 // still before app.listen(), same as when this check was inline here.
+
+// Same fail-fast posture as INTERNAL_API_KEY above, but this one has to live
+// here rather than in kernel/token-crypto.ts: token-crypto's getKey() reads
+// OAUTH_TOKEN_ENCRYPTION_KEY lazily (only when encrypt/decrypt is actually
+// called), so a module-load-time check there wouldn't run until the first
+// OAuth token round-trip — long after app.listen(). Placed here, after
+// dotenv.config() above, so it reads the real value rather than racing it
+// (unlike auth-middleware.ts, which reads INTERNAL_API_KEY at its own
+// module top-level and — because ES module imports are hoisted before any
+// of this file's top-level statements, including dotenv.config() — has a
+// pre-existing, separately-tracked bug where it can run before dotenv.config()
+// executes; this check, being one of server.ts's own top-level statements,
+// does not have that problem).
+{
+  const oauthKeyRaw = process.env.OAUTH_TOKEN_ENCRYPTION_KEY;
+  const oauthKeyBytes = oauthKeyRaw ? Buffer.from(oauthKeyRaw, "base64").length : 0;
+  if (!oauthKeyRaw || oauthKeyBytes !== 32) {
+    console.error(
+      "[server] FATAL: OAUTH_TOKEN_ENCRYPTION_KEY is not set (or does not decode to exactly 32 bytes). " +
+      "Refusing to start without a valid token-encryption key — set OAUTH_TOKEN_ENCRYPTION_KEY to a base64-encoded 32-byte value in .env (generate one with `openssl rand -base64 32`)."
+    );
+    process.exit(1);
+  }
+}
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000,http://localhost:3000")
   .split(",")
@@ -156,6 +183,11 @@ app.use(helmet({
 app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ limit: "15mb", extended: true }));
+// Unsigned parsing only — the one cookie this app sets
+// (integrations-routes.ts's OAuth CSRF-binding cookie) is itself an HMAC
+// value, so cookie-parser doesn't need its own signing secret on top of
+// that.
+app.use(cookieParser());
 
 // authLimiter/loginUsernameLimiter moved to interaction/routes/auth-routes.ts
 // with the routes they exclusively guard.
@@ -383,7 +415,17 @@ app.use(settingsRouter);
 app.use(observationRouter);
 
 // Autonomous Executive Execution Hook
-app.post("/api/executive/run", validateApiKey, aiLimiter, async (req: any, res: any) => {
+//
+// requireCapability("executive.plan") matches the exact gate the chat
+// tool-calling path already enforces for the same underlying action (see
+// capabilities/tools.ts's PERMISSION_BY_TOOL map) — without it, this route
+// let a personal user reach executive.executeObjective() directly, bypassing
+// the gate entirely, since "executive.plan" is deliberately NOT included in
+// DEFAULT_PERSONAL_CAPABILITIES (kernel/security.ts) and can trigger real
+// autonomous coding pipeline activity (research, build_requests creation,
+// real GitHub branch/commit/PR activity, writes into the shared admin
+// Obsidian vault).
+app.post("/api/executive/run", validateApiKey, requireCapability("executive.plan"), aiLimiter, async (req: any, res: any) => {
   const { objective } = req.body;
   if (!objective) {
     return res.status(400).json({ error: "Missing objective" });
@@ -1282,6 +1324,10 @@ app.use(rewardRouter);
 // src/interaction/routes/permissions-routes.ts, mounted below.
 app.use(permissionsRouter);
 
+// Admin-only invite generation/revocation endpoints — see
+// src/interaction/routes/invites-routes.ts, mounted below.
+app.use(invitesRouter);
+
 // GitHub/email/TTS/files/calendar/news/websearch integration endpoints —
 // see src/interaction/routes/integrations-routes.ts, mounted below.
 app.use(integrationsRouter);
@@ -1289,6 +1335,10 @@ app.use(integrationsRouter);
 // Desktop HUD status endpoint — see src/interaction/routes/hud-routes.ts.
 app.use(hudRouter);
 app.use(adaptationRouter);
+
+// Admin-only account removal (full personal-data cascade delete) — see
+// src/interaction/routes/admin-routes.ts, mounted below.
+app.use(adminRouter);
 
 // ---------- Static Files Serving ----------
 const staticDir = path.join(process.cwd(), "src", "interaction", "static");

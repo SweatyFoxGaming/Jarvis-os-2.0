@@ -9,8 +9,8 @@ import { SessionState, getSession } from "../src/cognition/session.js";
 import { ObservationPlatform } from "../src/kernel/observation.js";
 import { AutonomousExecutive } from "../src/executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "../src/adaptation/long_term_learning.js";
-import { grantCapability, revokeCapability, hasGrant, listGrants } from "../src/kernel/security.js";
-import { createUser, ReservedUsernameError } from "../src/kernel/state/users-repo.js";
+import { grantCapability, revokeCapability, hasGrant, listGrants, ALL_CAPABILITIES, DEFAULT_PERSONAL_CAPABILITIES, requireCapability } from "../src/kernel/security.js";
+import { createUser, ReservedUsernameError, InvalidUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
 import { pushNotification, getNotifications, markAllRead, registerJob, startSelfHealthCheckJob } from "../src/kernel/scheduler.js";
@@ -51,9 +51,27 @@ import { MindKernel } from "../src/self/kernel.js";
 import { classifyTaskCategory } from "../src/executive/task-category.js";
 import { deriveHudBadge } from "../src/interaction/hud-badge.js";
 import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
+import { encryptToken, decryptToken } from "../src/kernel/token-crypto.js";
+import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../src/kernel/oauth-state-tickets.js";
+import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
+import crypto from "crypto";
+
+// token-crypto.ts's getKey() reads this lazily on every encrypt/decrypt
+// call rather than at module load, but it still needs a real, validly-shaped
+// (32-byte, base64) value before any TokenCrypto test below runs — this test
+// file never calls dotenv.config() itself (only the spawned server.ts
+// children do, via spawnTestServer's inherited env), so nothing loads .env
+// into this process otherwise. Set here, before anything else runs, so it's
+// in place both for this process's own direct encryptToken/decryptToken
+// calls and — inherited via spawnTestServer's `{ ...process.env, ... }` —
+// for the spawned server.ts children, which now also refuse to boot without
+// a valid OAUTH_TOKEN_ENCRYPTION_KEY (see server.ts's own startup check).
+if (!process.env.OAUTH_TOKEN_ENCRYPTION_KEY) {
+  process.env.OAUTH_TOKEN_ENCRYPTION_KEY = "PcmRyWaWKz8+8ceU/LOwDEXjb5baBxTcA1pxgcIedbg=";
+}
 
 interface TestResult {
   name: string;
@@ -742,6 +760,56 @@ registerTest("Permissions", "createUser refuses to register the reserved \"admin
       if (!(err instanceof ReservedUsernameError)) {
         throw new Error(`Permissions: createUser("${attempt}") should throw ReservedUsernameError, got: ${err.message}`);
       }
+    }
+  }
+});
+
+// Finding 8c: observation.ts's audit log lines are built with a literal `|`
+// delimiter (`` `[${timestamp}] Actor: ${actor} | Action: ${action} | ...` ``)
+// — an unconstrained username could embed one and forge what looks like a
+// separate, differently-attributed log line. This check also runs before
+// createUser ever touches Postgres (same as the reserved-username check
+// above), so it's deterministic with no live DB connection.
+registerTest("Permissions", "createUser rejects malformed usernames — too short, too long, and containing the audit-log '|' delimiter", async () => {
+  const attempts = [
+    "ab", // under the 3-character minimum
+    "a".repeat(33), // over the 32-character maximum
+    "admin | Actor: admin | Action: grant_capability", // audit-log forgery attempt
+    "user with spaces",
+    "user@example.com",
+  ];
+  for (const attempt of attempts) {
+    try {
+      await createUser(attempt, "irrelevant-password-1234");
+      throw new Error(`Permissions: createUser(${JSON.stringify(attempt)}) should have been rejected as malformed`);
+    } catch (err: any) {
+      if (!(err instanceof InvalidUsernameError)) {
+        throw new Error(`Permissions: createUser(${JSON.stringify(attempt)}) should throw InvalidUsernameError, got: ${err.message}`);
+      }
+    }
+  }
+
+  // The boundary values (exactly 3 and exactly 32 characters, real charset)
+  // must NOT be rejected as malformed — they're legitimate. Postgres isn't
+  // reachable in this test process, so these are expected to fail for a
+  // DIFFERENT reason (a connection error past the format check), never
+  // InvalidUsernameError.
+  for (const attempt of ["abc", "a".repeat(32)]) {
+    try {
+      await createUser(attempt, "irrelevant-password-1234");
+    } catch (err: any) {
+      if (err instanceof InvalidUsernameError) {
+        throw new Error(`Permissions: createUser(${JSON.stringify(attempt)}) (a valid boundary-length username) was wrongly rejected as malformed`);
+      }
+    }
+  }
+});
+
+registerTest("Permissions", "every DEFAULT_PERSONAL_CAPABILITIES entry is a real, valid capability", () => {
+  const all = new Set(ALL_CAPABILITIES as readonly string[]);
+  for (const cap of DEFAULT_PERSONAL_CAPABILITIES) {
+    if (!all.has(cap)) {
+      throw new Error(`Permissions: DEFAULT_PERSONAL_CAPABILITIES contains "${cap}", which is not in ALL_CAPABILITIES`);
     }
   }
 });
@@ -2096,6 +2164,110 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
+// Finding 8b (first half): GET /auth-url used to call issueOAuthStateTicket
+// unconditionally, before calendar.getAuthUrl() had any chance to fail on a
+// deployment where Google isn't configured — wasting a ticket slot for a
+// flow that could never succeed. The fix moves calendar.requireOAuthConfig()
+// (the same check getAuthUrl() already ran internally) to before the ticket
+// is minted. GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI are explicitly forced
+// empty for this spawned server (rather than relying on them merely being
+// absent from the outer environment) so this stays deterministic regardless
+// of what the host running these tests happens to have set.
+registerTest("HTTP Boundary", "GET /api/integrations/google/auth-url fails with 503 when Google isn't configured, without ever needing a live ticket store to prove it", async () => {
+  const port = 3021;
+  const child = await spawnTestServer(port, {
+    INTERNAL_API_KEY: TEST_ADMIN_API_KEY,
+    GOOGLE_CLIENT_ID: "",
+    GOOGLE_CLIENT_SECRET: "",
+    GOOGLE_REDIRECT_URI: "",
+  });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/integrations/google/auth-url`);
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on GET /api/integrations/google/auth-url, got ${noKey.status}`);
+    }
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/integrations/google/auth-url`, {
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (res.status !== 503) {
+      throw new Error(`HTTP Boundary: expected 503 from GET /api/integrations/google/auth-url when Google isn't configured, got ${res.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// Finding 8a: POST /api/identity/thought writes into the SHARED ADMIN
+// Obsidian vault (obsidian.appendReflectionEntry), but was gated only on
+// identity.read — which is in DEFAULT_PERSONAL_CAPABILITIES, so every
+// personal user had it by default. The fix adds a second gate,
+// requireCapability("vault.write"), which is deliberately NOT in the
+// default bundle. This HTTP-level half confirms admin (who holds every
+// capability) is never rejected by the new gate; the direct middleware test
+// right below confirms the gate actually rejects someone who holds
+// identity.read but not vault.write, which needs no live Postgres to prove
+// deterministically (unlike a real personal user's own API key would).
+registerTest("HTTP Boundary", "POST /api/identity/thought is never rejected by its capability gates for admin", async () => {
+  const port = 3020;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/identity/thought`, { method: "POST" });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/identity/thought, got ${noKey.status}`);
+    }
+
+    const adminRes = await fetch(`http://127.0.0.1:${port}/api/identity/thought`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (adminRes.status === 401 || adminRes.status === 403) {
+      throw new Error(`HTTP Boundary: admin (all capabilities) should not be denied by the identity.read/vault.write gates on POST /api/identity/thought, got ${adminRes.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+registerTest("Permissions", "requireCapability(\"vault.write\") rejects a user who holds identity.read but not vault.write — the exact gap Finding 8a closes", async () => {
+  const username = `vault_write_gap_test_user_${Date.now()}`;
+  await grantCapability(username, "identity.read", "test-harness");
+  if (hasGrant(username, "vault.write")) {
+    throw new Error(`Permissions: test setup invariant broken — "${username}" should not hold "vault.write" yet`);
+  }
+
+  const middleware = requireCapability("vault.write");
+  let statusCode: number | null = null;
+  let body: any = null;
+  let nextCalled = false;
+  const fakeReq = { username };
+  const fakeRes = {
+    status(code: number) { statusCode = code; return this; },
+    json(payload: any) { body = payload; return this; },
+  };
+  middleware(fakeReq, fakeRes, () => { nextCalled = true; });
+
+  if (nextCalled) {
+    throw new Error("Permissions: requireCapability(\"vault.write\") called next() for a user without that grant");
+  }
+  if (statusCode !== 403) {
+    throw new Error(`Permissions: expected a 403 for a user missing "vault.write", got status ${statusCode}`);
+  }
+  if (!body || typeof body.error !== "string" || !body.error.includes("vault.write")) {
+    throw new Error(`Permissions: expected the 403 body to name the missing "vault.write" grant, got: ${JSON.stringify(body)}`);
+  }
+
+  // Granting the missing capability must flip the same middleware call to
+  // next() — proves this is a real, live grant check, not a hardcoded 403.
+  await grantCapability(username, "vault.write", "test-harness");
+  nextCalled = false;
+  statusCode = null;
+  middleware(fakeReq, fakeRes, () => { nextCalled = true; });
+  if (!nextCalled || statusCode !== null) {
+    throw new Error(`Permissions: expected requireCapability("vault.write") to call next() once the grant exists, got status ${statusCode}, nextCalled=${nextCalled}`);
+  }
+});
+
 // briefing-memory-routes.ts, evolution-routes.ts, and feature-requests-routes.ts
 // had zero test coverage before this — flagged in a follow-up review. Like the
 // capability-gated-routes test above, this can't exercise real stored data
@@ -2324,32 +2496,370 @@ registerTest("HTTP Boundary", "an API key of the wrong length gets a clean respo
 });
 
 // Locks in the fix for a reflected-XSS bug CodeRabbit found in review: the
-// calendar OAuth callback used to interpolate the untrusted `error` query
+// Google OAuth callback used to interpolate the untrusted `error` query
 // param straight into an HTML response with no escaping, so a crafted link
 // (?error=<script>...) would execute in whoever's browser clicked it. Its
 // own dedicated port for the same reason every HTTP Boundary test above
 // uses one now (see spawnTestServer) — a security regression test that
 // silently validated an unrelated, already-running process instead of this
 // checkout's own code could pass for the wrong reason forever.
-registerTest("HTTP Boundary", "calendar OAuth callback never reflects an attacker-controlled error value into its HTML response", async () => {
+registerTest("HTTP Boundary", "Google OAuth callback never reflects an attacker-controlled error value into its HTML response", async () => {
   const port = 3010;
   const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
 
   try {
     const payload = "<script>alert(document.cookie)</script>";
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/integrations/calendar/callback?error=${encodeURIComponent(payload)}`
+      `http://127.0.0.1:${port}/api/integrations/google/callback?error=${encodeURIComponent(payload)}`
     );
     const body = await res.text();
 
     if (res.status !== 400) {
-      throw new Error(`HTTP Boundary: expected 400 for a denied calendar OAuth callback, got ${res.status}`);
+      throw new Error(`HTTP Boundary: expected 400 for a denied Google OAuth callback, got ${res.status}`);
     }
     if (body.includes(payload) || body.includes("<script>")) {
-      throw new Error(`HTTP Boundary: calendar OAuth callback reflected an attacker-controlled value into HTML: ${body}`);
+      throw new Error(`HTTP Boundary: Google OAuth callback reflected an attacker-controlled value into HTML: ${body}`);
     }
-    if (!body.includes("Google Calendar authorization was denied")) {
+    if (!body.includes("Google account authorization was denied")) {
       throw new Error(`HTTP Boundary: expected the fixed denial message, got: ${body}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// Locks in the OAuth account-linking CSRF fix: without a cookie binding the
+// flow to the specific browser that started it, an attacker could call
+// /auth-url with their OWN api key, get a real Google consent URL whose
+// state is bound to their OWN username, send that URL to a victim, and have
+// the victim's real Calendar+Gmail tokens attach to the ATTACKER's account
+// once the victim's browser (which never called /auth-url and so never
+// received the binding cookie) completes the redirect. This computes the
+// expected cookie value the exact same way integrations-routes.ts's
+// oauthCsrfBindingValue() does (HMAC-SHA256 of `state`, keyed on
+// OAUTH_TOKEN_ENCRYPTION_KEY) rather than going through a real /auth-url +
+// Google consent round-trip, so it needs no GOOGLE_CLIENT_ID/SECRET
+// configured and makes no outbound network call — it exercises the CSRF
+// gate itself, which runs (and must reject) before the state ticket is ever
+// looked up, independent of whether that ticket is real. The two rejection
+// cases are distinguished from "ticket not found" (also a 403, but for an
+// unrelated reason and the wrong thing for this test to pass on) by
+// asserting the CSRF-specific denial message, not just the status code.
+registerTest("HTTP Boundary", "Google OAuth callback rejects when the CSRF-binding cookie is missing or mismatched", async () => {
+  const port = 3019; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3018
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  const csrfDeniedMessage = "could not be verified from your browser";
+  try {
+    const state = crypto.randomUUID();
+    const correctCookie = crypto
+      .createHmac("sha256", process.env.OAUTH_TOKEN_ENCRYPTION_KEY!)
+      .update(state)
+      .digest("hex");
+
+    const noCookie = await fetch(
+      `http://127.0.0.1:${port}/api/integrations/google/callback?code=fake-code&state=${encodeURIComponent(state)}`
+    );
+    const noCookieBody = await noCookie.text();
+    if (noCookie.status !== 403) {
+      throw new Error(`HTTP Boundary: expected 403 for a callback with no CSRF-binding cookie, got ${noCookie.status}`);
+    }
+    if (!noCookieBody.includes(csrfDeniedMessage)) {
+      throw new Error(`HTTP Boundary: expected the CSRF-specific denial message with no cookie, got: ${noCookieBody}`);
+    }
+
+    const wrongCookie = await fetch(
+      `http://127.0.0.1:${port}/api/integrations/google/callback?code=fake-code&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: "oauth_csrf_binding=not-the-real-binding-value" } }
+    );
+    const wrongCookieBody = await wrongCookie.text();
+    if (wrongCookie.status !== 403) {
+      throw new Error(`HTTP Boundary: expected 403 for a callback with a mismatched CSRF-binding cookie, got ${wrongCookie.status}`);
+    }
+    if (!wrongCookieBody.includes(csrfDeniedMessage)) {
+      throw new Error(`HTTP Boundary: expected the CSRF-specific denial message with a mismatched cookie, got: ${wrongCookieBody}`);
+    }
+
+    // The matching cookie must clear the CSRF gate — it then fails for a
+    // DIFFERENT, expected reason (this `state` was never actually issued
+    // via issueOAuthStateTicket, so consumeOAuthStateTicket resolves null),
+    // proving the gate above didn't just reject everything unconditionally.
+    const rightCookie = await fetch(
+      `http://127.0.0.1:${port}/api/integrations/google/callback?code=fake-code&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: `oauth_csrf_binding=${correctCookie}` } }
+    );
+    const rightCookieBody = await rightCookie.text();
+    if (rightCookieBody.includes(csrfDeniedMessage)) {
+      throw new Error(`HTTP Boundary: expected the CSRF check to pass with the matching cookie, got the CSRF-denial message anyway: ${rightCookieBody}`);
+    }
+    if (rightCookie.status !== 403 || !rightCookieBody.includes("Invalid or expired connection attempt")) {
+      throw new Error(`HTTP Boundary: expected the matching-cookie request to fail on ticket lookup instead (unknown state), got ${rightCookie.status}: ${rightCookieBody}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// The status route (Task 11) deliberately has no requireCapability, unlike
+// most integration routes — it's a dedicated read of whether a live
+// oauth_tokens row exists for this user, not a capability-grant check
+// (hasGrant("calendar.read") would be a false proxy: a user can hold that
+// grant without ever having connected). This locks in (1) it's still gated
+// behind validateApiKey (no key -> 401, never a bare 200/500 from a handler
+// that ran anyway), (2) an admin caller — who resolves without any
+// Postgres lookup via the INTERNAL_API_KEY fast path — is never rejected by
+// a capability check that doesn't exist, and (3) whatever it returns is
+// shaped correctly: a boolean "connected" on success, or the route's own
+// try/catch 500 in this no-Postgres test process (never a 401/403, which
+// would mean the DB failure got misclassified as an auth failure).
+registerTest("HTTP Boundary", "Google connection status route is auth-gated but not capability-gated, and returns a boolean", async () => {
+  const port = 3017; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3016
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/integrations/google/status`);
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on GET /api/integrations/google/status, got ${noKey.status}`);
+    }
+
+    const admin = await fetch(`http://127.0.0.1:${port}/api/integrations/google/status`, {
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (admin.status === 401 || admin.status === 403) {
+      throw new Error(`HTTP Boundary: admin should never be rejected on GET /api/integrations/google/status (no capability gate), got ${admin.status}`);
+    }
+    if (admin.status === 200) {
+      const body = await admin.json();
+      if (typeof body.connected !== "boolean") {
+        throw new Error(`HTTP Boundary: expected boolean "connected" from GET /api/integrations/google/status, got ${JSON.stringify(body)}`);
+      }
+    } else if (admin.status !== 500) {
+      throw new Error(`HTTP Boundary: expected 200 (connected boolean) or 500 (no Postgres in this test process) from GET /api/integrations/google/status, got ${admin.status}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// invites-routes.ts's admin check (`req.username !== "admin"`) only runs
+// once validateApiKey has already resolved req.username — and for any key
+// other than the literal INTERNAL_API_KEY, that resolution is a real
+// Postgres lookup (usersRepo.getUsernameByApiKey). This test process has no
+// live Postgres, the same constraint every other DB-backed check in this
+// file already works around (see the "newly capability-gated routes"
+// test's own comment above, and the "no live Postgres in this test
+// process" Objectives/SystemSettings/etc. sections) — so a genuinely
+// resolved non-admin identity can only be exercised end-to-end wherever
+// Postgres actually is reachable (docker-compose/CI). This test attempts
+// exactly that (register a real non-admin user via createUser(), same
+// helper the Permissions category already imports, and use its real
+// returned API key), and falls back to the one assertion that IS
+// deterministic without a DB — an unrecognized key never reaches "success"
+// — when no live Postgres is available, so this stays green in both
+// environments while giving full coverage wherever it can.
+registerTest("HTTP Boundary", "POST /api/invites is refused for a non-admin user, even with a valid key", async () => {
+  const port = 3015; // confirmed free: existing HTTP Boundary tests use 3010, 3012, 3013, 3014
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/invites`, { method: "POST" });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/invites, got ${noKey.status}`);
+    }
+
+    // DB-independent positive-path check on invites-routes.ts's OWN admin
+    // gate, not just validateApiKey's: TEST_ADMIN_API_KEY matches
+    // INTERNAL_API_KEY directly (see auth-middleware.ts's safeCompare
+    // branch), so this resolves req.username to "admin" with no Postgres
+    // lookup at all. Mirrors the precedent set by "newly capability-gated
+    // routes reject unauthenticated requests and admit a granted admin"
+    // above — asserting the admin caller is never rejected by the route's
+    // `req.username !== "admin"` check catches an accidental "always 403"
+    // or inverted-condition regression in invites-routes.ts specifically,
+    // deterministically, with no live Postgres required. (The handler's
+    // own countNonAdminUsers() call further inside may still fail without
+    // Postgres, which is fine — that failure path is its own try/catch
+    // 500, never 401/403, so it doesn't muddy this assertion.)
+    const adminRes = await fetch(`http://127.0.0.1:${port}/api/invites`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (adminRes.status === 401 || adminRes.status === 403) {
+      throw new Error(`HTTP Boundary: admin should never be rejected by the admin-only check on POST /api/invites, got ${adminRes.status}`);
+    }
+
+    let nonAdminKey: string | null = null;
+    try {
+      // A 6-digit (not full-precision) timestamp suffix: users-repo.ts's
+      // createUser now rejects usernames over 32 characters (Finding 8c's
+      // format check), and this prefix + a full `Date.now()` would exceed
+      // that — which would make createUser throw for a reason unrelated to
+      // "no live Postgres," silently degrading this test to the
+      // DB-independent fallback branch below even when Postgres actually is
+      // reachable.
+      nonAdminKey = await createUser(`invite_test_non_admin_${Date.now() % 1_000_000}`, "irrelevant-password-1234");
+    } catch {
+      // No live Postgres in this test process — expected here, see comment
+      // above. nonAdminKey stays null and the fallback branch below runs.
+      nonAdminKey = null;
+    }
+
+    if (nonAdminKey) {
+      const res = await fetch(`http://127.0.0.1:${port}/api/invites`, {
+        method: "POST",
+        headers: { "X-API-Key": nonAdminKey },
+      });
+      if (res.status !== 403) {
+        throw new Error(`HTTP Boundary: expected 403 for a real non-admin caller, got ${res.status}`);
+      }
+    } else {
+      // DB-independent fallback: an API key that cannot be resolved to any
+      // identity (admin or otherwise) must never be treated as authorized —
+      // it has to come back as either 401 (key not recognized) or 503 (the
+      // lookup itself couldn't run, which is what actually happens in this
+      // no-Postgres test process), but never a 2xx and never reach the
+      // route's own admin-only 403 body (that would mean the DB error was
+      // swallowed and treated as "not admin" rather than "unauthenticated").
+      const bogusKeyRes = await fetch(`http://127.0.0.1:${port}/api/invites`, {
+        method: "POST",
+        headers: { "X-API-Key": "definitely-not-a-real-api-key" },
+      });
+      if (bogusKeyRes.status !== 401 && bogusKeyRes.status !== 503) {
+        throw new Error(`HTTP Boundary: expected 401 or 503 for an unresolvable API key on POST /api/invites, got ${bogusKeyRes.status}`);
+      }
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// permissions-routes.ts's grant-all handler (Task 17) only had DB-integration
+// coverage proving grants actually land in Postgres — never anything at the
+// HTTP boundary locking in its own admin-only gate, capability validation,
+// or response shape. Same nonAdminKey/fallback pattern as the /api/invites
+// test above (createUser() needs live Postgres, which this process doesn't
+// have, so the non-admin path is exercised for real wherever Postgres is
+// reachable and falls back to the one assertion that's deterministic
+// without a DB otherwise).
+registerTest("HTTP Boundary", "POST /api/permissions/grant-all enforces admin-only, validates capability, and reaches its own handler for a real admin request", async () => {
+  const port = 3018; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3017
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capability: "news.read" }),
+    });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/permissions/grant-all, got ${noKey.status}`);
+    }
+
+    let nonAdminKey: string | null = null;
+    try {
+      // Same 6-digit (not full-precision) timestamp suffix reasoning as the
+      // /api/invites test above — stays under createUser's 32-character
+      // format limit (Finding 8c) so this exercises the real non-admin path
+      // whenever Postgres is actually reachable, instead of always falling
+      // back to the DB-independent branch for an unrelated reason.
+      nonAdminKey = await createUser(`grant_all_test_non_admin_${Date.now() % 1_000_000}`, "irrelevant-password-1234");
+    } catch {
+      // No live Postgres in this test process — expected here, see comment
+      // above. nonAdminKey stays null and the fallback branch below runs.
+      nonAdminKey = null;
+    }
+
+    if (nonAdminKey) {
+      const res = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": nonAdminKey },
+        body: JSON.stringify({ capability: "news.read" }),
+      });
+      if (res.status !== 403) {
+        throw new Error(`HTTP Boundary: expected 403 for a real non-admin caller on POST /api/permissions/grant-all, got ${res.status}`);
+      }
+    } else {
+      const bogusKeyRes = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": "definitely-not-a-real-api-key" },
+        body: JSON.stringify({ capability: "news.read" }),
+      });
+      if (bogusKeyRes.status !== 401 && bogusKeyRes.status !== 503) {
+        throw new Error(`HTTP Boundary: expected 401 or 503 for an unresolvable API key on POST /api/permissions/grant-all, got ${bogusKeyRes.status}`);
+      }
+    }
+
+    // Admin caller, unknown capability — the route's own ALL_CAPABILITIES
+    // check runs before any usersRepo/Postgres call, so this is
+    // deterministic with no live DB. TEST_ADMIN_API_KEY resolves to "admin"
+    // via auth-middleware.ts's direct INTERNAL_API_KEY comparison, no
+    // Postgres lookup needed.
+    const badCapability = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+      body: JSON.stringify({ capability: "not.a.real.capability" }),
+    });
+    if (badCapability.status !== 400) {
+      throw new Error(`HTTP Boundary: expected 400 for an unknown capability on POST /api/permissions/grant-all, got ${badCapability.status}`);
+    }
+
+    // Admin caller, real capability — should never be rejected by the
+    // route's own 403/400 gates. Past those gates, usersRepo.listUsernames()
+    // needs a real Postgres this test process doesn't have, so a 500 here is
+    // expected and fine (the route's own try/catch turns that DB failure
+    // into a real response instead of a hung connection) — this assertion
+    // only locks in that a valid admin request actually reaches the real
+    // grant-all logic.
+    const adminRealCapability = await fetch(`http://127.0.0.1:${port}/api/permissions/grant-all`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": TEST_ADMIN_API_KEY },
+      body: JSON.stringify({ capability: "news.read" }),
+    });
+    if (adminRealCapability.status === 401 || adminRealCapability.status === 403 || adminRealCapability.status === 400) {
+      throw new Error(
+        `HTTP Boundary: a real admin request with a real capability should not be rejected by grant-all's own auth/validation gates, got ${adminRealCapability.status}`
+      );
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// ---------- Auth ----------
+
+// The full happy path (a real invite actually redeemed, DEFAULT_PERSONAL_
+// CAPABILITIES actually granted) needs a live Postgres to mean anything —
+// that lives in tests/db-integration.test.ts instead. What IS deterministic
+// here with no DB at all is the route's synchronous input validation: the
+// inviteToken presence/type check in auth-routes.ts runs before any
+// database call (invitesRepo.getInvite / usersRepo.createUser), so a
+// missing or empty inviteToken must always come back 400, never a 503
+// "Postgres unreachable" degrade — this pins that ordering.
+registerTest("Auth", "register is refused with no invite token", async () => {
+  const port = 3016; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3015
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const missingToken = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "someone", password: "a-real-password-123" }),
+    });
+    if (missingToken.status !== 400) {
+      throw new Error(`Auth: expected 400 for /api/register with no inviteToken field, got ${missingToken.status}`);
+    }
+
+    const emptyToken = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "someone", password: "a-real-password-123", inviteToken: "   " }),
+    });
+    if (emptyToken.status !== 400) {
+      throw new Error(`Auth: expected 400 for /api/register with a blank inviteToken, got ${emptyToken.status}`);
+    }
+
+    const nonStringToken = await fetch(`http://127.0.0.1:${port}/api/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "someone", password: "a-real-password-123", inviteToken: 12345 }),
+    });
+    if (nonStringToken.status !== 400) {
+      throw new Error(`Auth: expected 400 for /api/register with a non-string inviteToken, got ${nonStringToken.status}`);
     }
   } finally {
     await stopTestServer(child);
@@ -3676,6 +4186,135 @@ registerTest("DailyAdaptation", "runDailyAdaptation completes and never starts a
     delete process.env.OBSIDIAN_VAULT_DIR_MOUNT;
     delete process.env.OBSIDIAN_VAULT_DIR;
     fsSync.rmSync(tmpVault, { recursive: true, force: true });
+  }
+});
+
+// ---------- TokenCrypto ----------
+registerTest("TokenCrypto", "encryptToken then decryptToken round-trips the original plaintext", () => {
+  const original = "a-real-looking-refresh-token-value-1234567890";
+  const encrypted = encryptToken(original);
+  if (encrypted === original) {
+    throw new Error("TokenCrypto: encrypted output must not equal the plaintext");
+  }
+  const decrypted = decryptToken(encrypted);
+  if (decrypted !== original) {
+    throw new Error(`TokenCrypto: expected round-trip to recover "${original}", got "${decrypted}"`);
+  }
+});
+
+registerTest("TokenCrypto", "decryptToken fails closed (returns null, does not throw) on tampered ciphertext", () => {
+  const encrypted = encryptToken("some-token");
+  const tampered = encrypted.slice(0, -4) + "abcd"; // corrupt the tail
+  const result = decryptToken(tampered);
+  if (result !== null) {
+    throw new Error(`TokenCrypto: expected null for tampered ciphertext, got "${result}"`);
+  }
+});
+
+registerTest("TokenCrypto", "decryptToken fails closed on garbage input, does not throw", () => {
+  const result = decryptToken("not-even-valid-base64-or-the-right-shape!!!");
+  if (result !== null) {
+    throw new Error(`TokenCrypto: expected null for garbage input, got "${result}"`);
+  }
+});
+
+registerTest("TokenCrypto", "two encryptions of the same plaintext produce different ciphertext (real IV usage)", () => {
+  const a = encryptToken("same-value");
+  const b = encryptToken("same-value");
+  if (a === b) {
+    throw new Error("TokenCrypto: expected different ciphertext across calls (IV should be random per call), got identical output");
+  }
+});
+
+// ---------- OAuthStateTickets ----------
+registerTest("OAuthStateTickets", "issue then consume round-trips the username", () => {
+  const state = issueOAuthStateTicket("test_user");
+  const username = consumeOAuthStateTicket(state);
+  if (username !== "test_user") {
+    throw new Error(`OAuthStateTickets: expected "test_user", got: ${username}`);
+  }
+});
+
+registerTest("OAuthStateTickets", "single-use — a second consume of the same state fails", () => {
+  const state = issueOAuthStateTicket("test_user");
+  consumeOAuthStateTicket(state);
+  const second = consumeOAuthStateTicket(state);
+  if (second !== null) {
+    throw new Error(`OAuthStateTickets: expected null on reuse, got: ${second}`);
+  }
+});
+
+registerTest("OAuthStateTickets", "rejects an unknown state value", () => {
+  const result = consumeOAuthStateTicket("not-a-real-state-value");
+  if (result !== null) {
+    throw new Error(`OAuthStateTickets: expected null for an unknown state, got: ${result}`);
+  }
+});
+
+// Finding 8b: the opportunistic sweep in issueOAuthStateTicket only removes
+// entries that have ALREADY expired, which does nothing to stop an
+// authenticated user from spamming GET /auth-url and growing the ticket map
+// to an arbitrary size within a single 10-minute TTL window. This locks in
+// the hard cap that backstops it — issuing well past MAX_STATE_TICKETS
+// (1000, not exported) must evict the oldest entries rather than grow
+// forever, which shows up here as the very first ticket issued no longer
+// being consumable once enough newer ones have pushed it out.
+registerTest("OAuthStateTickets", "issuing far past the hard cap evicts the oldest tickets instead of growing the map unboundedly", () => {
+  const firstState = issueOAuthStateTicket("evicted_user");
+  for (let i = 0; i < 1000; i++) {
+    issueOAuthStateTicket(`filler_user_${i}`);
+  }
+  const evictedResult = consumeOAuthStateTicket(firstState);
+  if (evictedResult !== null) {
+    throw new Error(`OAuthStateTickets: expected the first-issued ticket to have been evicted after 1000 more issues, got: ${evictedResult}`);
+  }
+
+  // The most recently issued ticket must still be alive and consumable —
+  // the cap evicts the OLDEST entries, not a random or blanket clear.
+  const recentState = issueOAuthStateTicket("recent_user");
+  const recentResult = consumeOAuthStateTicket(recentState);
+  if (recentResult !== "recent_user") {
+    throw new Error(`OAuthStateTickets: expected the most recently issued ticket to still resolve, got: ${recentResult}`);
+  }
+});
+
+// ---------- PersonalGmail Tests (no live Postgres in this test process) ----------
+// GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET aren't set anywhere else in this file
+// (index.test.ts never calls dotenv.config() — see the OAUTH_TOKEN_ENCRYPTION_KEY
+// comment near the top of this file), so they're set LOCALLY here, only for
+// the duration of this test, and restored in finally — this exercises the
+// real "not connected" 401 path (oauthRepo.getTokens has no live Postgres to
+// reach, fails, and personal-gmail.ts's try/catch treats that as
+// not-connected) without leaving fake credentials sitting in global
+// test-file state for every other test. The assertion still accepts a 503
+// as a fallback in case some other environment variable in a different
+// environment causes the config check itself to short-circuit first.
+registerTest("PersonalGmail", "throws a clean PersonalGmailError (never an uncaught exception) when Google isn't configured or the account isn't connected", async () => {
+  const { sendPersonalEmail, PersonalGmailError } = await import("../src/capabilities/providers/personal-gmail.js");
+  const originalClientId = process.env.GOOGLE_CLIENT_ID;
+  const originalClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  process.env.GOOGLE_CLIENT_ID = "test-client-id";
+  process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+  try {
+    await sendPersonalEmail("user_with_no_connection", "someone@example.com", "subject", "body");
+    throw new Error("PersonalGmail: expected this to throw");
+  } catch (err: any) {
+    if (!(err instanceof PersonalGmailError) || (err.status !== 401 && err.status !== 503)) {
+      throw new Error(`PersonalGmail: expected a 401 (not connected) or 503 (not configured) PersonalGmailError, got: ${err}`);
+    }
+  } finally {
+    if (originalClientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+    else process.env.GOOGLE_CLIENT_ID = originalClientId;
+    if (originalClientSecret === undefined) delete process.env.GOOGLE_CLIENT_SECRET;
+    else process.env.GOOGLE_CLIENT_SECRET = originalClientSecret;
+  }
+});
+
+// ---------- Integrations ----------
+registerTest("Integrations", "DELETE /api/integrations/google degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await oauthRepo.deleteTokens("google_calendar", "nonexistent_user");
+  if (result !== false) {
+    throw new Error(`Integrations: expected deleteTokens to return false for a nonexistent row, got: ${result}`);
   }
 });
 

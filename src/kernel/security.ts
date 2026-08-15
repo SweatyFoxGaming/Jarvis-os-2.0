@@ -36,8 +36,20 @@ export const ALL_CAPABILITIES = [
   "github.read",
   "github.issues.create",
   "github.pulls.create",
+  // Gate the SHARED ADMIN SMTP/IMAP mailbox (EMAIL_USER/EMAIL_PASSWORD env
+  // vars) — see src/interaction/routes/integrations-routes.ts's
+  // /api/integrations/email/* routes and src/capabilities/tools.ts's
+  // send_email tool. Deliberately admin-only: never include these in
+  // DEFAULT_PERSONAL_CAPABILITIES, or every invited user would be able to
+  // read/send from the operator's own inbox.
   "email.send",
   "email.read",
+  // Gate each user's OWN connected Gmail account (Task 12's
+  // src/capabilities/providers/personal-gmail.ts), resolved per-username via
+  // oauth-repo — distinct from, and safe to auto-grant alongside, the
+  // admin-only email.read/email.send above.
+  "email.personal.send",
+  "email.personal.read",
   "tts.speak",
   "executive.plan",
   "calendar.read",
@@ -87,6 +99,34 @@ export const ALL_CAPABILITIES = [
   // Triggers the daily adaptation engine — reads/analyzes/proposes, never writes code or registers tools unattended.
   "adaptation.run",
 ] as const;
+
+// Granted automatically the moment an invite is redeemed (Task 4) — every
+// name here must already be a member of ALL_CAPABILITIES above; this is a
+// subset used for auto-provisioning, not a separate grantable-capability
+// concept. calendar.read/write now genuinely resolve to the granted user's
+// own Google account (Task 10), and email.personal.send similarly resolves
+// to each user's own connected Gmail account (Task 12), so both are safe to
+// include here. email.read/email.send are DELIBERATELY EXCLUDED: those gate
+// the shared admin SMTP/IMAP mailbox (EMAIL_USER/EMAIL_PASSWORD), not a
+// per-user resource — auto-granting them here would let any invited user
+// read or send from the operator's own inbox (see final-review finding C1).
+// They remain grantable, but only an admin should hand them out explicitly.
+// email.personal.read is similarly excluded for now, not for a security
+// reason but because no chat tool or route currently exercises it — add it
+// here if/when one does.
+export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
+  "web.search",
+  "news.read",
+  "tts.speak",
+  "knowledge.read",
+  "identity.read",
+  "hud.read",
+  "feature.propose",
+  "system.sandbox_execute",
+  "calendar.read",
+  "calendar.write",
+  "email.personal.send",
+];
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];
 
@@ -172,6 +212,20 @@ export async function revokeCapability(username: string, capability: string, rev
 
 export function listGrants(username: string): string[] {
   return Array.from(grants.get(username) ?? []);
+}
+
+// Called only by admin-routes.ts's remove-user route, after that route's own
+// transaction has already deleted the capability_grants row(s) from
+// Postgres — this only drops the in-memory cache entry (module-level
+// `grants` Map above), it does not touch the DB itself. Kept separate from
+// revokeCapability() (which deletes one capability at a time and persists
+// to Postgres on every call) since remove-user already deletes every row
+// for this username in one DELETE FROM capability_grants WHERE username =
+// $1 inside its own transaction; looping revokeCapability() per-capability
+// here would just be a second, redundant set of DB round-trips for the
+// same rows.
+export function clearGrantsCache(username: string): void {
+  grants.delete(username);
 }
 
 // A handful of REST endpoints (e.g. under /api/integrations/*) perform the

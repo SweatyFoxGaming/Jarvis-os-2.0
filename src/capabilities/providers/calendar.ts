@@ -1,12 +1,17 @@
 import { ObservationPlatform } from "../../kernel/observation.js";
 import * as oauthRepo from "../../kernel/state/oauth-repo.js";
 import { fetchWithRetry } from "../../kernel/http-retry.js";
+import * as scheduler from "../../kernel/scheduler.js";
 
 const observation = ObservationPlatform.getInstance();
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
-const SCOPE = "https://www.googleapis.com/auth/calendar";
+const SCOPE = [
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.send",
+].join(" ");
 const PROVIDER = "google_calendar";
 
 export class CalendarIntegrationError extends Error {
@@ -15,7 +20,12 @@ export class CalendarIntegrationError extends Error {
   }
 }
 
-function requireOAuthConfig() {
+// Exported so callers that need to fail fast BEFORE doing anything else
+// (e.g. integrations-routes.ts's /auth-url route, which must not mint an
+// OAuth state ticket at all when Google isn't even configured) can run this
+// same check up front instead of discovering the same failure only after
+// getAuthUrl() below has already had a side effect.
+export function requireOAuthConfig() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   const redirectUri = process.env.GOOGLE_REDIRECT_URI;
@@ -29,11 +39,12 @@ function requireOAuthConfig() {
 }
 
 /**
- * Step 1 of the one-time OAuth setup: the URL an operator opens in a
- * browser to grant Jarvis calendar access. Deployment-wide, single-tenant
- * (like GITHUB_TOKEN/EMAIL_*), not a per-registered-user OAuth flow.
+ * Step 1 of the OAuth connect flow: the URL a user's browser is sent to in
+ * order to grant Jarvis Calendar + Gmail access. `state` carries a
+ * single-use ticket (see kernel/oauth-state-tickets.ts) so the callback can
+ * recover which user initiated the connection.
  */
-export function getAuthUrl(): string {
+export function getAuthUrl(state: string): string {
   const { clientId, redirectUri } = requireOAuthConfig();
   const params = new URLSearchParams({
     client_id: clientId,
@@ -42,6 +53,7 @@ export function getAuthUrl(): string {
     scope: SCOPE,
     access_type: "offline",
     prompt: "consent",
+    state,
   });
   return `${GOOGLE_AUTH_URL}?${params.toString()}`;
 }
@@ -52,7 +64,7 @@ export function getAuthUrl(): string {
  * The refresh token is long-lived; getValidAccessToken() below uses it to
  * mint new access tokens automatically after this one-time setup.
  */
-export async function exchangeCodeForTokens(code: string): Promise<void> {
+export async function exchangeCodeForTokens(code: string, username: string): Promise<void> {
   const { clientId, clientSecret, redirectUri } = requireOAuthConfig();
   const res = await fetchWithRetry(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -81,8 +93,8 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
     );
   }
   const expiry = new Date(Date.now() + data.expires_in * 1000);
-  await oauthRepo.saveTokens(PROVIDER, data.access_token, data.refresh_token, expiry);
-  observation.logTelemetry("info", "Integrations", "Google Calendar OAuth tokens stored.");
+  await oauthRepo.saveTokens(PROVIDER, username, data.access_token, data.refresh_token, expiry);
+  observation.logTelemetry("info", "Integrations", `Google account connected for "${username}".`);
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; expiry: Date }> {
@@ -105,12 +117,12 @@ async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: 
   return { accessToken: data.access_token, expiry: new Date(Date.now() + data.expires_in * 1000) };
 }
 
-async function getValidAccessToken(): Promise<string> {
+async function getValidAccessToken(username: string): Promise<string> {
   requireOAuthConfig(); // surface the root cause ("not configured") before the less specific "not authorized yet"
-  const stored = await oauthRepo.getTokens(PROVIDER);
+  const stored = await oauthRepo.getTokens(PROVIDER, username);
   if (!stored) {
     throw new CalendarIntegrationError(
-      "Google Calendar isn't authorized yet — visit GET /api/integrations/calendar/auth-url to start the one-time setup.",
+      "Google Calendar isn't authorized yet — visit GET /api/integrations/google/auth-url to start the connect flow.",
       401
     );
   }
@@ -118,13 +130,33 @@ async function getValidAccessToken(): Promise<string> {
   if (new Date(stored.expiry).getTime() > Date.now() + 60_000) {
     return stored.access_token;
   }
-  const { accessToken, expiry } = await refreshAccessToken(stored.refresh_token);
-  await oauthRepo.saveTokens(PROVIDER, accessToken, stored.refresh_token, expiry);
-  return accessToken;
+  let refreshed: { accessToken: string; expiry: Date };
+  try {
+    refreshed = await refreshAccessToken(stored.refresh_token);
+  } catch (err) {
+    // A 400/401 from Google's token endpoint here means the refresh token
+    // itself is invalid (invalid_grant class) — the user revoked access, or
+    // it otherwise went stale, and no retry will fix it. That's the one
+    // case that actually means "reconnect your Google account", so it gets
+    // a durable push notification in addition to the thrown error below —
+    // a transient 5xx (or anything else) does NOT get this notification,
+    // since reconnecting wouldn't help there. Fire-and-forget: this must
+    // not delay or block the throw that reports failure to the caller.
+    if (err instanceof CalendarIntegrationError && (err.status === 400 || err.status === 401)) {
+      scheduler.pushNotification(
+        username,
+        "Your Google connection needs renewing, sir — click Connect Google Account again in the dashboard.",
+        "warning"
+      );
+    }
+    throw err;
+  }
+  await oauthRepo.saveTokens(PROVIDER, username, refreshed.accessToken, stored.refresh_token, refreshed.expiry);
+  return refreshed.accessToken;
 }
 
-async function calendarRequest(path: string, init: RequestInit = {}): Promise<any> {
-  const accessToken = await getValidAccessToken();
+async function calendarRequest(path: string, username: string, init: RequestInit = {}): Promise<any> {
+  const accessToken = await getValidAccessToken(username);
   const res = await fetchWithRetry(`${CALENDAR_API}${path}`, {
     ...init,
     headers: {
@@ -142,7 +174,7 @@ async function calendarRequest(path: string, init: RequestInit = {}): Promise<an
   return res.json();
 }
 
-export async function listEvents(timeMinISO?: string, timeMaxISO?: string, maxResults = 10): Promise<any[]> {
+export async function listEvents(username: string, timeMinISO?: string, timeMaxISO?: string, maxResults = 10): Promise<any[]> {
   const params = new URLSearchParams({
     timeMin: timeMinISO || new Date().toISOString(),
     maxResults: String(maxResults),
@@ -150,7 +182,7 @@ export async function listEvents(timeMinISO?: string, timeMaxISO?: string, maxRe
     orderBy: "startTime",
   });
   if (timeMaxISO) params.set("timeMax", timeMaxISO);
-  const result = await calendarRequest(`/calendars/primary/events?${params.toString()}`);
+  const result = await calendarRequest(`/calendars/primary/events?${params.toString()}`, username);
   return (result?.items || []).map((e: any) => ({
     id: e.id,
     summary: e.summary,
@@ -160,8 +192,8 @@ export async function listEvents(timeMinISO?: string, timeMaxISO?: string, maxRe
   }));
 }
 
-export async function createEvent(summary: string, startISO: string, endISO: string, description?: string): Promise<any> {
-  const created = await calendarRequest(`/calendars/primary/events`, {
+export async function createEvent(username: string, summary: string, startISO: string, endISO: string, description?: string): Promise<any> {
+  const created = await calendarRequest(`/calendars/primary/events`, username, {
     method: "POST",
     body: JSON.stringify({
       summary,
