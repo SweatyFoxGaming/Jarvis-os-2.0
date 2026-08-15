@@ -354,6 +354,62 @@
         html:has(#nav-trigger-strip:hover, #left-sidebar:hover, #app-header:hover, #left-sidebar:focus-within, #app-header:focus-within) #app-header {
             transform: translateY(0);
         }
+        /* Mobile fix: the entire reveal mechanism above is :hover-driven,
+           and touch devices have no hover state at all -- on a phone,
+           #left-sidebar/#app-header were permanently off-screen with
+           genuinely no way to reach them (no hover, and nothing has
+           :focus-within on a fresh page load), making every nav item,
+           the offline-mode toggle, and everything else that lives in the
+           header completely unreachable. toggleMobileNav() (below) adds a
+           real tap target that toggles this class instead of relying on
+           :hover, and these two rules just extend the exact same reveal
+           condition to also fire off it -- same transforms, same
+           transition, nothing about the desktop hover behavior changes. */
+        html.nav-force-reveal #left-sidebar {
+            transform: translateX(0);
+        }
+        html.nav-force-reveal #app-header {
+            transform: translateY(0);
+        }
+        /* #app-header's left inset (var(--sidebar-width)) assumes desktop's
+           side-by-side layout, where the sidebar occupies real column space
+           the header needs to start after. On touch, #left-sidebar is a
+           fixed-position overlay drawer instead (see #nav-backdrop above) --
+           it doesn't push anything, so the header should span the full
+           width underneath it, not get squeezed into whatever's left of a
+           256px-wide inset on a ~375px phone screen. */
+        @media (hover: none) {
+            html.nav-force-reveal #app-header {
+                left: 0;
+            }
+        }
+        /* #mobile-nav-toggle: hidden by default (desktop hover-reveal covers
+           that case). (hover: none) targets touch-primary devices
+           specifically rather than just a viewport-width breakpoint, since
+           a touch device in a narrow *or* wide window (e.g. a tablet) still
+           has no hover to fall back on. */
+        #mobile-nav-toggle { display: none; }
+        @media (hover: none) {
+            #mobile-nav-toggle { display: flex; }
+        }
+        /* Backdrop behind the force-revealed sidebar/header on mobile --
+           without this there's no way to tell "revealed" from "not", nor
+           any way to dismiss it besides picking a nav item (switchTab()
+           closes it too, see below), since there's no hover-out to close it
+           the way there is on desktop. */
+        #nav-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(2, 3, 8, 0.6);
+            /* Below #app-header's z-10 too, not just #left-sidebar's z-20 --
+               both reveal together as one unit here, so the backdrop should
+               dim only the plain content behind them, not the header. */
+            z-index: 9;
+        }
+        html.nav-force-reveal #nav-backdrop {
+            display: block;
+        }
         /* #nav-trigger-strip intentionally keeps a static z-index:25 (always
            above #app) rather than conditionally dropping below it once
            revealed. A conditional drop was tried (to close the ~1.5px sliver
@@ -402,6 +458,16 @@
      #app-header themselves once revealed) slides the sidebar/header into
      view. See the #nav-trigger-strip rules in <head> for the mechanics. -->
 <div id="nav-trigger-strip" aria-hidden="true"></div>
+<!-- Touch-only fallback for the hover-driven reveal above -- touch devices
+     have no hover state, so without a real tap target the sidebar/header
+     were permanently unreachable on mobile. Hidden on hover-capable
+     devices via the #mobile-nav-toggle CSS rule in <head>. -->
+<button id="mobile-nav-toggle" onclick="toggleMobileNav()" aria-label="Open navigation" class="fixed top-3 left-3 z-30 w-10 h-10 items-center justify-center rounded-xl bg-surface/90 border border-white/10 text-white shadow-lg backdrop-blur-sm">
+    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+</button>
+<div id="nav-backdrop" onclick="toggleMobileNav()" aria-hidden="true"></div>
 <canvas id="neural-bg-canvas" class="fixed inset-0 w-full h-full" style="z-index: 0; pointer-events: none;"></canvas>
 
 <div id="app" class="h-full w-full flex relative">
@@ -2560,6 +2626,10 @@
 
     // 5. SUBSYSTEM TAB CONTROLS
     function switchTab(tabId) {
+        // Mirrors what hovering away already does for free on desktop --
+        // on touch there's no hover-out, so picking a destination is the
+        // natural "I'm done with the nav" signal instead.
+        document.documentElement.classList.remove('nav-force-reveal');
         CURRENT_TAB = tabId;
         document.querySelectorAll('.view-pane').forEach(el => el.classList.add('hidden'));
         const pane = document.getElementById(`view-${tabId}`);
@@ -4591,6 +4661,14 @@
         } catch (err) {
             addNotification(`Connection error: ${err.message}`, "danger");
         }
+    }
+
+    // Touch-only reveal for the hover-driven sidebar/header (see
+    // #mobile-nav-toggle's own comment in the body markup for why this
+    // exists at all). switchTab() closes it automatically on navigate --
+    // there's no hover-out to close it the way desktop gets for free.
+    function toggleMobileNav() {
+        document.documentElement.classList.toggle('nav-force-reveal');
     }
 
     // SIDEBAR CONTROLLERS
