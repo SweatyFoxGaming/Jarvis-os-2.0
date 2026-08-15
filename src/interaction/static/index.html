@@ -1407,6 +1407,52 @@
     </div>
 </div>
 
+<!-- Sign-in gate for a returning user with no stored key (a new device, a
+     cleared browser, etc.) — previously the dashboard just silently sat
+     inert with no explanation, since every function early-returns on an
+     empty CURRENT_API_KEY. A personal account only ever has a username +
+     password (see /api/register) — this calls the already-existing
+     POST /api/login rather than asking anyone to know or paste a raw
+     API key. Admin has no username/password (INTERNAL_API_KEY is checked
+     directly, no `users` row exists for it), so the toggle below reveals
+     the original raw-key field for that one identity only. -->
+<div id="login-overlay" class="fixed inset-0 bg-[#020308]/95 z-[100] hidden flex flex-col items-center justify-center gap-4 p-6">
+    <div class="w-full max-w-sm bg-surface/50 border border-white/5 p-6 rounded-3xl space-y-5 relative">
+        <div class="absolute top-0 right-0 w-8 h-8 border-t border-r border-primary/20 rounded-tr-3xl"></div>
+        <div class="absolute bottom-0 left-0 w-8 h-8 border-b border-l border-primary/20 rounded-bl-3xl"></div>
+
+        <div class="flex justify-between items-center border-b border-white/5 pb-3">
+            <div>
+                <h3 class="font-display font-bold text-xs tracking-widest uppercase">SIGN IN</h3>
+                <p class="text-[9px] text-secondary/50 font-mono">IDENTITY_VERIFICATION</p>
+            </div>
+            <span class="text-[10px] font-mono text-primary bg-primary/5 px-2 py-0.5 border border-primary/10 rounded">AUTH</span>
+        </div>
+
+        <div id="login-personal-fields" class="space-y-5">
+            <div class="space-y-2">
+                <label class="text-[10px] font-mono text-secondary tracking-wider block">USERNAME</label>
+                <input type="text" id="login-username-input" autocomplete="username" placeholder="Your username..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+            </div>
+            <div class="space-y-2">
+                <label class="text-[10px] font-mono text-secondary tracking-wider block">PASSWORD</label>
+                <input type="password" id="login-password-input" autocomplete="current-password" placeholder="Your password..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+            </div>
+            <button id="login-submit" class="w-full py-3 bg-primary/5 hover:bg-primary/10 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">SIGN IN</button>
+        </div>
+
+        <div id="login-admin-fields" class="hidden space-y-2">
+            <label class="text-[10px] font-mono text-secondary tracking-wider block">X-API-KEY (JARVIS AUTH VECTOR)</label>
+            <input type="password" id="login-admin-key-input" placeholder="Enter your API key..." class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+            <button id="login-admin-submit" class="w-full py-3 bg-primary/5 hover:bg-primary/10 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">CONNECT</button>
+        </div>
+
+        <p id="login-error" class="text-[10px] font-mono text-danger hidden"></p>
+
+        <button id="login-mode-toggle" class="w-full text-center text-[9px] font-mono text-secondary/60 hover:text-secondary tracking-wider uppercase transition-all">Admin? Sign in with your API key instead</button>
+    </div>
+</div>
+
 <!-- Toasts -->
 <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
@@ -1684,7 +1730,8 @@
             localStorage.removeItem('admin_api_key');
             if (!authFailureNotified) {
                 authFailureNotified = true;
-                addNotification("Your API key is invalid or expired — please re-enter it in Settings.", "danger");
+                addNotification("Your session expired — please sign in again.", "danger");
+                showLoginGate();
             }
         }
         return res;
@@ -5022,6 +5069,104 @@
         }
     }
 
+    // 13. SIGN-IN GATE
+    // Shown whenever there's no stored key and this isn't a fresh invite
+    // redemption — see showLoginGate's own call site in the
+    // DOMContentLoaded handler below. Personal accounts sign in with
+    // username/password against the already-existing POST /api/login
+    // (never need to see or handle a raw API key); admin toggles to the
+    // original raw-key field, the only credential that identity has.
+    let loginGateWired = false;
+    function showLoginGate() {
+        const overlay = document.getElementById('login-overlay');
+        if (!overlay) return;
+        overlay.classList.remove('hidden');
+        // Called again on a later 401 (session expired mid-use), not just at
+        // page load — guard against re-attaching every listener below a
+        // second time, which would fire each submit handler twice per click.
+        if (loginGateWired) return;
+        loginGateWired = true;
+
+        document.getElementById('login-submit').addEventListener('click', submitLogin);
+        document.getElementById('login-password-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitLogin();
+        });
+
+        document.getElementById('login-admin-submit').addEventListener('click', submitAdminKeyLogin);
+        document.getElementById('login-admin-key-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitAdminKeyLogin();
+        });
+
+        const personalFields = document.getElementById('login-personal-fields');
+        const adminFields = document.getElementById('login-admin-fields');
+        const toggle = document.getElementById('login-mode-toggle');
+        toggle.addEventListener('click', () => {
+            const showingAdmin = !adminFields.classList.contains('hidden');
+            personalFields.classList.toggle('hidden', !showingAdmin);
+            adminFields.classList.toggle('hidden', showingAdmin);
+            toggle.textContent = showingAdmin
+                ? "Admin? Sign in with your API key instead"
+                : "Have a personal account? Sign in with username/password instead";
+            document.getElementById('login-error').classList.add('hidden');
+        });
+    }
+
+    async function submitLogin() {
+        const errorEl = document.getElementById('login-error');
+        const submitBtn = document.getElementById('login-submit');
+        const username = document.getElementById('login-username-input').value.trim();
+        const password = document.getElementById('login-password-input').value;
+        errorEl.classList.add('hidden');
+
+        if (!username || !password) {
+            errorEl.textContent = "Username and password are required.";
+            errorEl.classList.remove('hidden');
+            return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = "SIGNING IN...";
+
+        try {
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                errorEl.textContent = data.error || "Sign-in failed. Check your username and password.";
+                errorEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = "SIGN IN";
+                return;
+            }
+            // Same transition submitInviteSignup uses above: stash the key,
+            // reload so the normal DOMContentLoaded sequence runs fresh with
+            // CURRENT_API_KEY already populated.
+            localStorage.setItem('admin_api_key', data.api_key);
+            window.location.href = '/';
+        } catch (err) {
+            errorEl.textContent = "Couldn't reach the server. Please try again.";
+            errorEl.classList.remove('hidden');
+            submitBtn.disabled = false;
+            submitBtn.textContent = "SIGN IN";
+        }
+    }
+
+    function submitAdminKeyLogin() {
+        const errorEl = document.getElementById('login-error');
+        const key = document.getElementById('login-admin-key-input').value.trim();
+        errorEl.classList.add('hidden');
+        if (!key) {
+            errorEl.textContent = "An API key is required.";
+            errorEl.classList.remove('hidden');
+            return;
+        }
+        localStorage.setItem('admin_api_key', key);
+        window.location.href = '/';
+    }
+
     document.getElementById('api-key-input').addEventListener('change', (e) => {
         CURRENT_API_KEY = e.target.value.trim();
         localStorage.setItem('admin_api_key', CURRENT_API_KEY);
@@ -5113,6 +5258,8 @@
     window.addEventListener('DOMContentLoaded', () => {
         if (INVITE_TOKEN_FROM_PATH) {
             showInviteSignupGate(INVITE_TOKEN_FROM_PATH);
+        } else if (!CURRENT_API_KEY) {
+            showLoginGate();
         }
         NeuralOrb.register(document.getElementById('neural-bg-canvas'), { neuronCount: 300, dim: 0.35, R: 0.42, cy: 0.5 });
         initCytoscape();
