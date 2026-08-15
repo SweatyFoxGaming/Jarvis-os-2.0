@@ -391,6 +391,15 @@
         #mobile-nav-toggle { display: none; }
         @media (hover: none) {
             #mobile-nav-toggle { display: flex; }
+            /* The desktop-only manual collapse/expand feature's "expand"
+               button no longer has anything to do on touch (its
+               corresponding collapsed state is never restored there
+               anymore -- see the DOMContentLoaded handler's isTouchDevice
+               check) and live-tested to visually collide with
+               #mobile-nav-toggle in the same top-left corner when it WAS
+               still showing (both #app-header's own top-left content and
+               this fixed-position button occupy that same ~40px square). */
+            #sidebar-expand-btn { display: none !important; }
         }
         /* Backdrop behind the force-revealed sidebar/header on mobile --
            without this there's no way to tell "revealed" from "not", nor
@@ -4667,7 +4676,35 @@
     // #mobile-nav-toggle's own comment in the body markup for why this
     // exists at all). switchTab() closes it automatically on navigate --
     // there's no hover-out to close it the way desktop gets for free.
+    //
+    // Live-tested and caught a real second bug here: the DESKTOP-only
+    // manual collapse feature (toggleSidebar()/localStorage['sidebar-
+    // collapsed'], restored inline via width/padding/borderRightWidth at
+    // page load -- see the DOMContentLoaded handler far below) is
+    // orthogonal to this reveal state, but shares the same #left-sidebar
+    // element. If a "collapsed" preference was ever set on this device
+    // (e.g. from earlier desktop-style use of the same browser), the
+    // sidebar's real width was pinned to 0px via inline style -- this
+    // toggle only ever animated `transform`, so revealing it just slid a
+    // genuinely zero-width, zero-content-visible panel into view. On a
+    // touch device there's no legitimate reason for that collapsed state
+    // to exist at all (the whole point of this reveal is a temporary
+    // overlay, not a persistent column worth reclaiming space from), so
+    // clear it here unconditionally rather than trying to keep two
+    // independent "is the sidebar visible" mechanisms in sync.
     function toggleMobileNav() {
+        const revealing = !document.documentElement.classList.contains('nav-force-reveal');
+        if (revealing) {
+            const sidebar = document.getElementById('left-sidebar');
+            if (sidebar) {
+                sidebar.style.width = '';
+                sidebar.style.padding = '';
+                sidebar.style.borderRightWidth = '';
+            }
+            sidebarCollapsed = false;
+            localStorage.removeItem('sidebar-collapsed');
+            document.documentElement.style.removeProperty('--sidebar-width');
+        }
         document.documentElement.classList.toggle('nav-force-reveal');
     }
 
@@ -5086,8 +5123,15 @@
             }
         });
         
-        // Restore sidebar state if collapsed
-        if (localStorage.getItem('sidebar-collapsed') === 'true') {
+        // Restore sidebar state if collapsed -- desktop only. This
+        // preference (and the manual collapse/expand feature that sets it)
+        // predates the touch reveal mechanism above and doesn't make sense
+        // on a touch device: there's no persistent sidebar column there to
+        // reclaim space from in the first place, only a temporary overlay
+        // (see toggleMobileNav()'s own comment for the live bug this
+        // caused when both mechanisms fought over #left-sidebar's width).
+        const isTouchDevice = window.matchMedia('(hover: none)').matches;
+        if (!isTouchDevice && localStorage.getItem('sidebar-collapsed') === 'true') {
             sidebarCollapsed = true;
             const sidebar = document.getElementById('left-sidebar');
             const expandBtn = document.getElementById('sidebar-expand-btn');
