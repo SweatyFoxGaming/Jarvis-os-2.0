@@ -47,7 +47,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 // as "already migrated") is astronomically unlikely — not worth guarding
 // against given this codebase's own key format is nothing like that shape.
 const migration: Migration = {
-  id: "008_hash_legacy_api_keys",
+  id: "012_hash_legacy_api_keys",
   description:
     "Re-key any api_keys rows still storing a raw plaintext key (written before the sha256-at-rest fix) so they're hashed the same way createApiKey/getUsernameByApiKey now expect, restoring both at-rest safety and the ability to authenticate.",
   up: async (client) => {

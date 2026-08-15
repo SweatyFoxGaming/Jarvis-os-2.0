@@ -23,7 +23,7 @@
 import crypto from "crypto";
 import { pingDatabase, initDatabase, getPool, isVectorReady } from "../src/kernel/state/db.js";
 import { runMigrations, ALL_MIGRATIONS } from "../src/kernel/state/migrations/index.js";
-import legacyApiKeyMigration from "../src/kernel/state/migrations/008_hash_legacy_api_keys.js";
+import legacyApiKeyMigration from "../src/kernel/state/migrations/012_hash_legacy_api_keys.js";
 import { createUser, verifyCredentials, UsernameTakenError, ReservedUsernameError, removeUser } from "../src/kernel/state/users-repo.js";
 import * as usersRepo from "../src/kernel/state/users-repo.js";
 import { appendMessage, loadRecentHistory, pruneOldMessages } from "../src/kernel/state/session-repo.js";
@@ -303,7 +303,7 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
 
   // Also seed a NORMAL, already-migrated user via the real createUser/
   // createApiKey path — this row is already correctly hashed (HEX64
-  // matches its api_keys.key), so migration 008's `if (HEX64.test(row.key))
+  // matches its api_keys.key), so migration 012's `if (HEX64.test(row.key))
   // continue;` line is supposed to leave it completely alone. The test
   // above only proves the RE-HASHING branch works; without this, nothing
   // in this suite exercises the SKIP branch at all — if that condition
@@ -313,18 +313,18 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
   const normalUsername = `db_it_legacyapikey2_${RUN_ID}`;
   const normalRawKey = await createUser(normalUsername, "a-real-password-123");
 
-  // Before migration 008 runs, this legacy row must NOT authenticate —
+  // Before migration 012 runs, this legacy row must NOT authenticate —
   // getUsernameByApiKey hashes the incoming raw key and looks up by hash,
   // which can never match a still-plaintext row. Confirms the bug this
   // migration exists to fix is real, not just theoretical.
   const beforeMigration = await usersRepo.getUsernameByApiKey(legacyRawKey);
   if (beforeMigration !== null) {
-    throw new Error(`expected the legacy plaintext api_keys row to NOT authenticate before migration 008 runs, got: ${JSON.stringify(beforeMigration)}`);
+    throw new Error(`expected the legacy plaintext api_keys row to NOT authenticate before migration 012 runs, got: ${JSON.stringify(beforeMigration)}`);
   }
 
-  // Run migration 008's up() directly against a real transaction — not via
+  // Run migration 012's up() directly against a real transaction — not via
   // runMigrations/ALL_MIGRATIONS, since the earlier "applies every
-  // migration cleanly" test already recorded "008_hash_legacy_api_keys" as
+  // migration cleanly" test already recorded "012_hash_legacy_api_keys" as
   // applied in schema_migrations, and this legacy row was seeded AFTER
   // that ran. Calling up() directly exercises the actual re-keying logic
   // against this specific seeded row, matching what a real deployment
@@ -345,7 +345,7 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
   // it was re-keyed, not merely left in place alongside a copy.
   const { rows: stillPlaintext } = await db.query(`SELECT 1 FROM api_keys WHERE key = $1`, [legacyRawKey]);
   if (stillPlaintext.length !== 0) {
-    throw new Error("migration 008: the legacy row's raw plaintext value is still present in api_keys.key after the migration ran");
+    throw new Error("migration 012: the legacy row's raw plaintext value is still present in api_keys.key after the migration ran");
   }
 
   // A new row keyed by sha256(legacyRawKey), owned by the same username,
@@ -354,7 +354,7 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
   const expectedHash = crypto.createHash("sha256").update(legacyRawKey).digest("hex");
   const { rows: hashedRow } = await db.query(`SELECT username FROM api_keys WHERE key = $1`, [expectedHash]);
   if (hashedRow.length !== 1 || hashedRow[0].username !== username) {
-    throw new Error(`migration 008: expected exactly one api_keys row keyed by sha256(legacy raw key) owned by "${username}", got: ${JSON.stringify(hashedRow)}`);
+    throw new Error(`migration 012: expected exactly one api_keys row keyed by sha256(legacy raw key) owned by "${username}", got: ${JSON.stringify(hashedRow)}`);
   }
 
   // The real proof, end to end through the app's own auth path: the SAME
@@ -364,7 +364,7 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
   // produces, and the app's hash-and-compare lookup finds it.
   const resolvedUsername = await usersRepo.getUsernameByApiKey(legacyRawKey);
   if (resolvedUsername !== username) {
-    throw new Error(`migration 008: getUsernameByApiKey(legacyRawKey) expected to resolve "${username}" after migration, got: ${JSON.stringify(resolvedUsername)}`);
+    throw new Error(`migration 012: getUsernameByApiKey(legacyRawKey) expected to resolve "${username}" after migration, got: ${JSON.stringify(resolvedUsername)}`);
   }
 
   // The SKIP branch, proven the same way: the already-hashed row belonging
@@ -374,7 +374,7 @@ registerTest("migrations/008: re-keys a legacy plaintext api_keys row so it beco
   // silently invalidate it).
   const resolvedNormalUsername = await usersRepo.getUsernameByApiKey(normalRawKey);
   if (resolvedNormalUsername !== normalUsername) {
-    throw new Error(`migration 008: getUsernameByApiKey(normalRawKey) expected to resolve "${normalUsername}" after migration (skip branch should have left this already-hashed row untouched), got: ${JSON.stringify(resolvedNormalUsername)}`);
+    throw new Error(`migration 012: getUsernameByApiKey(normalRawKey) expected to resolve "${normalUsername}" after migration (skip branch should have left this already-hashed row untouched), got: ${JSON.stringify(resolvedNormalUsername)}`);
   }
 });
 

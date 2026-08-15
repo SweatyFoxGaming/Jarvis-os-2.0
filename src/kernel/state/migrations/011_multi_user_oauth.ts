@@ -21,7 +21,7 @@ import type { Migration } from "./runner.js";
 // is enforced at the application level instead: every write path always
 // passes an explicit username, either 'admin' or a genuine `users` row.
 const migration: Migration = {
-  id: "007_multi_user_oauth",
+  id: "011_multi_user_oauth",
   description:
     "Scope oauth_tokens to (provider, username) instead of a single global row per provider, backfilling existing rows to 'admin', and add invite_tokens for admin-issued single-use signup links.",
   up: async (client) => {
