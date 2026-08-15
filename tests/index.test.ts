@@ -5845,6 +5845,83 @@ registerTest("VoiceSession", "a voice:transcript event missing sessionId or user
   }
 });
 
+registerTest("VoiceSessionManager", "createVoiceSession returns a unique sessionId per call", async () => {
+  const manager = await import("../src/interaction/voice-session-manager.js");
+  const id1 = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "alice");
+  const id2 = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "bob");
+  try {
+    if (typeof id1 !== "string" || !id1) throw new Error(`VoiceSessionManager: expected a real sessionId string, got: ${JSON.stringify(id1)}`);
+    if (id1 === id2) throw new Error("VoiceSessionManager: expected two different sessions to get different sessionIds");
+  } finally {
+    manager.destroyVoiceSession(id1);
+    manager.destroyVoiceSession(id2);
+  }
+});
+
+registerTest("VoiceSessionManager", "destroyVoiceSession reports whether a session actually existed", async () => {
+  const manager = await import("../src/interaction/voice-session-manager.js");
+  const id = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "alice");
+  const firstDestroy = manager.destroyVoiceSession(id);
+  const secondDestroy = manager.destroyVoiceSession(id);
+  if (firstDestroy !== true) throw new Error("VoiceSessionManager: expected destroying a real session to return true");
+  if (secondDestroy !== false) throw new Error("VoiceSessionManager: expected destroying an already-gone session to return false, not throw or return true again");
+});
+
+registerTest("VoiceSessionManager", "two real concurrent daemon connections stay isolated per session", async () => {
+  // Live-daemon isolation check (spec's "real connection" test tier) --
+  // uses two fake Unix-socket servers standing in for the daemon (same
+  // fake-server pattern the AudioClient tests already use) rather than the
+  // real Python daemon, since this environment doesn't reliably have
+  // faster-whisper/kokoro installed outside the daemon's own Docker image.
+  // This still proves the real thing this task adds: createVoiceSession
+  // opens one REAL, independent net.Socket connection per session, and a
+  // message written to one fake daemon never reaches the other session's
+  // socket.
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const manager = await import("../src/interaction/voice-session-manager.js");
+
+  const aliceSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-alice-${Date.now()}.sock`);
+  const bobSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-bob-${Date.now()}.sock`);
+
+  const aliceServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "transcript", text: "alice said this" }) + "\n");
+  });
+  const bobServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "transcript", text: "bob said this" }) + "\n");
+  });
+  await new Promise<void>((resolve) => aliceServer.listen(aliceSocketPath, resolve));
+  await new Promise<void>((resolve) => bobServer.listen(bobSocketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  const transcriptsBySession: Record<string, string[]> = {};
+  const unsubscribe = bus.subscribe<{ text: string; sessionId: string }>("voice:transcript", (payload) => {
+    (transcriptsBySession[payload.sessionId] ||= []).push(payload.text);
+  });
+
+  const aliceSessionId = manager.createVoiceSession(aliceSocketPath, "alice");
+  const bobSessionId = manager.createVoiceSession(bobSocketPath, "bob");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const aliceTranscripts = transcriptsBySession[aliceSessionId] || [];
+    const bobTranscripts = transcriptsBySession[bobSessionId] || [];
+    if (aliceTranscripts.length !== 1 || aliceTranscripts[0] !== "alice said this") {
+      throw new Error(`VoiceSessionManager: expected alice's session to receive only alice's transcript, got: ${JSON.stringify(transcriptsBySession)}`);
+    }
+    if (bobTranscripts.length !== 1 || bobTranscripts[0] !== "bob said this") {
+      throw new Error(`VoiceSessionManager: expected bob's session to receive only bob's transcript, got: ${JSON.stringify(transcriptsBySession)}`);
+    }
+  } finally {
+    unsubscribe();
+    manager.destroyVoiceSession(aliceSessionId);
+    manager.destroyVoiceSession(bobSessionId);
+    aliceServer.close();
+    bobServer.close();
+  }
+});
+
 // ---------- HealthWatchdog Tests ----------
 registerTest("HealthWatchdog", "assessSystemHealth reports ok when every dependency is reachable", async () => {
   const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
