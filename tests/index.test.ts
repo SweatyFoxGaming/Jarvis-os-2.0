@@ -5291,11 +5291,11 @@ registerTest("AudioClient", "publishes voice:transcript when the daemon sends a 
   let received: any = null;
   const unsubscribe = bus.subscribe("voice:transcript", (payload) => { received = payload; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
-    if (!received || received.text !== "hello from the daemon") {
-      throw new Error(`AudioClient: expected a real voice:transcript publish, got: ${JSON.stringify(received)}`);
+    if (!received || received.text !== "hello from the daemon" || received.sessionId !== "test-session-1" || received.username !== "voice_test_user") {
+      throw new Error(`AudioClient: expected a real voice:transcript publish with sessionId/username, got: ${JSON.stringify(received)}`);
     }
   } finally {
     unsubscribe();
@@ -5313,7 +5313,7 @@ registerTest("AudioClient", "publishes voice:error exactly once when the socket 
   let publishCount = 0;
   const unsubscribe = bus.subscribe("voice:error", (payload) => { received = payload; publishCount++; });
 
-  const client = startAudioClient("/nonexistent/path/that/cannot/possibly/exist.sock");
+  const client = startAudioClient("/nonexistent/path/that/cannot/possibly/exist.sock", "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!received) throw new Error("AudioClient: expected a voice:error publish on connection failure");
@@ -5347,14 +5347,23 @@ registerTest("AudioClient", "forwards a voice:reply bus event to the daemon as a
   await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
 
   const bus = EventBus.getInstance();
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
-    bus.publish("voice:reply", { text: "here is my answer" });
+    bus.publish("voice:reply", { text: "here is my answer", sessionId: "test-session-1" });
     await new Promise((resolve) => setTimeout(resolve, 200));
     const parsed = JSON.parse(receivedByDaemon.trim());
     if (parsed.type !== "speak" || parsed.text !== "here is my answer") {
       throw new Error(`AudioClient: expected a real "speak" message forwarded to the daemon, got: ${receivedByDaemon}`);
+    }
+
+    // A reply for a DIFFERENT session must not be spoken over this
+    // connection at all.
+    receivedByDaemon = "";
+    bus.publish("voice:reply", { text: "someone else's answer", sessionId: "a-different-session" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (receivedByDaemon.trim().length !== 0) {
+      throw new Error(`AudioClient: expected a different session's voice:reply to be ignored, but the daemon received: ${receivedByDaemon}`);
     }
   } finally {
     client.stop();
@@ -5379,11 +5388,11 @@ registerTest("AudioClient", "publishes voice:audio-chunk when the daemon sends a
   let received: any = null;
   const unsubscribe = bus.subscribe("voice:audio-chunk", (payload) => { received = payload; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
-    if (!received || received.data !== "ZmFrZS1hdWRpby1ieXRlcw==") {
-      throw new Error(`AudioClient: expected a real voice:audio-chunk publish, got: ${JSON.stringify(received)}`);
+    if (!received || received.data !== "ZmFrZS1hdWRpby1ieXRlcw==" || received.sessionId !== "test-session-1") {
+      throw new Error(`AudioClient: expected a real voice:audio-chunk publish with sessionId, got: ${JSON.stringify(received)}`);
     }
   } finally {
     unsubscribe();
@@ -5409,7 +5418,7 @@ registerTest("AudioClient", "stop() closes the socket and unsubscribes so no fur
   let errorCount = 0;
   const unsubscribe = bus.subscribe("voice:error", () => { errorCount++; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   await new Promise((resolve) => setTimeout(resolve, 150));
   client.stop();
   await new Promise((resolve) => setTimeout(resolve, 150));
@@ -5446,7 +5455,7 @@ registerTest("AudioClient", "reconnects with backoff and starts working once the
   let received: any = null;
   const unsubscribe = bus.subscribe("voice:transcript", (payload) => { received = payload; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   let fakeServer: import("net").Server | null = null;
   try {
     // Nothing is listening yet -- confirm the first connection attempt

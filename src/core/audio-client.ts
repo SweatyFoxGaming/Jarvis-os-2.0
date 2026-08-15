@@ -56,7 +56,7 @@ function decodeBase64Strict(value: unknown): Buffer | null {
  * client keeps retrying indefinitely instead of giving up after the first
  * failure.
  */
-export function startAudioClient(socketPath: string): { stop: () => void } {
+export function startAudioClient(socketPath: string, sessionId: string = "", username: string = ""): { stop: () => void } {
   const bus = EventBus.getInstance();
   let stopped = false;
   let socket: net.Socket | null = null;
@@ -65,7 +65,11 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
   let backoffMs = INITIAL_RECONNECT_DELAY_MS;
 
   const unsubscribeReply = bus.subscribe("voice:reply", (payload: any) => {
-    if (stopped || !socket || !socket.writable) return;
+    // A reply for a DIFFERENT session must never be spoken over THIS
+    // connection's daemon socket -- with multiple concurrent sessions now
+    // possible, voice:reply is no longer implicitly "the one reply
+    // everyone's waiting on".
+    if (stopped || !socket || !socket.writable || payload.sessionId !== sessionId) return;
     socket.write(JSON.stringify({ type: "speak", text: payload.text }) + "\n");
   });
 
@@ -121,11 +125,11 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
       }
 
       if (msg.type === "transcript") {
-        bus.publish("voice:transcript", { text: msg.text });
+        bus.publish("voice:transcript", { text: msg.text, sessionId, username });
       } else if (msg.type === "audio_chunk") {
-        bus.publish("voice:audio-chunk", { data: msg.data });
+        bus.publish("voice:audio-chunk", { data: msg.data, sessionId });
       } else if (msg.type === "queued") {
-        bus.publish("voice:queued", { position: msg.position });
+        bus.publish("voice:queued", { position: msg.position, sessionId });
       }
     });
 
@@ -141,7 +145,7 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
       if (stopped || errorReported) return;
       errorReported = true;
       observation.logTelemetry("warn", "AudioClient", `Voice daemon socket error: ${err.message || err}`);
-      bus.publish("voice:error", { message: err.message || String(err) });
+      bus.publish("voice:error", { message: err.message || String(err), sessionId });
     });
 
     newSocket.on("close", () => {
@@ -149,7 +153,7 @@ export function startAudioClient(socketPath: string): { stop: () => void } {
       if (stopped) return;
       if (!errorReported) {
         errorReported = true;
-        bus.publish("voice:error", { message: "Voice daemon connection closed unexpectedly" });
+        bus.publish("voice:error", { message: "Voice daemon connection closed unexpectedly", sessionId });
       }
       scheduleReconnect();
     });
