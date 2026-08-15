@@ -1,0 +1,17 @@
+# daemon/Dockerfile's build context is ./daemon, not the repo root -- the
+# repo-root .dockerignore (if any) doesn't apply here. Without this file,
+# `docker compose build voice-daemon` uploads daemon/venv/ (the local dev
+# virtualenv, ~5.5GB) as part of the build context on every single build,
+# on top of __pycache__/.pytest_cache/tests, none of which the image needs
+# (voice_engine.py only imports protocol.py/models.py at runtime -- see
+# daemon/Dockerfile's own COPY step, which already copies just those three
+# files explicitly rather than the whole directory).
+venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+tests/
+*.pyc
+.git/
+.gitignore

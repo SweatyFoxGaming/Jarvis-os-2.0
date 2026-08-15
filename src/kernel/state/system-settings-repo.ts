@@ -9,6 +9,12 @@ export interface SystemSettingsRow {
   local_model_name: string;
   local_api_key: string;
   llm_mode: string;
+  // 0-100 dials (migrations/007_personality_settings.ts) that steer the
+  // real system prompt's register — see identity.ts's
+  // buildPersonalityPromptFragment, the actual consumer of these values.
+  personality_formality: number;
+  personality_humor: number;
+  personality_verbosity: number;
   updated_by: string | null;
   updated_at: Date;
 }
@@ -35,6 +41,9 @@ export interface SystemSettingsUpdate {
   localModelName?: string;
   localApiKey?: string;
   llmMode?: string;
+  personalityFormality?: number;
+  personalityHumor?: number;
+  personalityVerbosity?: number;
 }
 
 // Partial update — an omitted (undefined) field keeps its current value via
@@ -52,7 +61,10 @@ export async function updateSystemSettings(update: SystemSettingsUpdate, updated
          local_model_name = COALESCE($3, local_model_name),
          local_api_key = COALESCE($4, local_api_key),
          llm_mode = COALESCE($5, llm_mode),
-         updated_by = $6,
+         personality_formality = COALESCE($6, personality_formality),
+         personality_humor = COALESCE($7, personality_humor),
+         personality_verbosity = COALESCE($8, personality_verbosity),
+         updated_by = $9,
          updated_at = now()
        WHERE id = true
        RETURNING *`,
@@ -62,6 +74,9 @@ export async function updateSystemSettings(update: SystemSettingsUpdate, updated
         update.localModelName ?? null,
         update.localApiKey ?? null,
         update.llmMode ?? null,
+        update.personalityFormality ?? null,
+        update.personalityHumor ?? null,
+        update.personalityVerbosity ?? null,
         updatedBy,
       ]
     );

@@ -1,0 +1,26 @@
+# kokoro (below) pulls in torch as an unpinned transitive dependency. Do
+# NOT just `pip install -r requirements.txt` on a fresh CPU-only machine --
+# plain PyPI resolves torch's default (CUDA/GPU) build, which drags in
+# several GB of nvidia-*/triton packages this daemon has no use for (no
+# GPU on this stack). Install a CPU-only torch FIRST -- see daemon/
+# Dockerfile's dedicated `pip install torch --index-url
+# https://download.pytorch.org/whl/cpu` step -- so this file's own install
+# finds torch already satisfied and never reaches back to PyPI's default
+# build. (daemon/venv, this repo's own dev venv, predates this fix and
+# still has the GPU build installed; regenerating it isn't required for
+# anything to function -- CPU inference works fine with either build, it's
+# purely a disk/bandwidth concern -- but a fresh venv should follow the
+# same CPU-first install order as the Dockerfile.)
+# Pinned exactly (not a floor) -- Task 2's implementer already hit one real
+# API-shape mismatch between the plan's assumed Kokoro interface and the
+# actually-installed 0.9.4 version (see models.py's TextToSpeech). An
+# unpinned floor risks a future rebuild silently resolving a newer Kokoro
+# with yet another API change; synthesize()'s broad exception catch in
+# voice_engine.py's _handle_speak would swallow that and just return no
+# audio rather than a clear failure. 0.9.4 is the exact version this whole
+# implementation was built and tested against.
+faster-whisper==1.0.3
+kokoro==0.9.4
+soundfile>=0.12.1
+numpy>=1.26.0
+pytest>=8.0.0

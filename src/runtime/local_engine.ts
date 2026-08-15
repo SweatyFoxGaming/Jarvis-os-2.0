@@ -65,7 +65,8 @@ export class LocalCognitiveEngine {
         `Greetings, sir. All core sub-systems are currently steady. How may I be of service today?`,
         `Good day, sir. JARVIS is online. Our local environment is primed and awaiting your directives.`
       ];
-      return this.enrich(openers[Math.floor(Math.random() * openers.length)], workspace, systemMetrics);
+    const opener = openers[Math.floor(Math.random() * openers.length)] || "";
+    return this.enrich(opener, workspace, systemMetrics);  
     }
 
     // 2. SYSTEM STATUS / HEALTH / CORE / HOW ARE YOU

@@ -10,6 +10,7 @@ import asyncio
 from typing import Any, Dict, List
 import urllib.request
 import urllib.error
+from contextlib import asynccontextmanager
 
 # Check for FastAPI. If not present, log a warning (though it should be in the user's environment)
 try:
@@ -28,9 +29,6 @@ except ImportError:
         def get(self, *args, **kwargs):
             def decorator(func): return func
             return decorator
-        def on_event(self, *args, **kwargs):
-            def decorator(func): return func
-            return decorator
     class Request: pass
     class Response: pass
     class HTTPException(Exception):
@@ -45,48 +43,41 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("jarvis-gateway")
 
-app = FastAPI(
-    title="JARVIS Cognitive Gateway",
-    description="Deterministic Python-to-TypeScript Proxy Gateway",
-    version="1.8.0"
-)
-
-# Wildcard origins combined with allow_credentials=True makes Starlette
-# reflect the caller's actual Origin header (browsers reject a literal
-# wildcard + credentials response), which effectively allows any site to
-# make credentialed cross-origin requests. Use an explicit allowlist instead.
-ALLOWED_ORIGINS = [
-    o.strip()
-    for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:8000,http://localhost:3000").split(",")
-    if o.strip()
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No literal fallback here on purpose — mirrors src/kernel/auth-middleware.ts's
+# ADMIN_API_KEY fail-fast (that file's own comment explains why: a missing
+# key must fail loudly at boot, not silently proceeding on a guessable/
+# shared default). This constant is no longer used to authenticate proxied
+# requests (make_proxy_request/proxy_streaming_request below pass each
+# caller's own x-api-key through unchanged now, letting Express's own
+# validateApiKey decide -- see their comments for why a pentest found the
+# opposite behavior a critical vulnerability). It's kept purely as a
+# boot-time assertion that the admin key Express itself requires
+# (auth-middleware.ts's own fail-fast) is actually configured in this
+# shared container/environment, so a misconfiguration surfaces immediately
+# rather than only once the first real admin-authenticated request fails.
+INTERNAL_API_KEY = os.environ.get("ADMIN_API_KEY") or os.environ.get("INTERNAL_API_KEY")
+if not INTERNAL_API_KEY or len(INTERNAL_API_KEY) < 16:
+    logger.error(
+        "[Gateway] FATAL: ADMIN_API_KEY or INTERNAL_API_KEY must be set and at least "
+        "16 characters (matching .env.example's own documented minimum) — set "
+        "ADMIN_API_KEY or INTERNAL_API_KEY to a long random string in .env (it must "
+        "match the value Express itself reads via src/kernel/auth-middleware.ts's own "
+        "ADMIN_API_KEY fallback chain)."
+    )
+    sys.exit(1)
 
 NODE_PORT = 3000
 NODE_URL = f"http://127.0.0.1:{NODE_PORT}"
 
-# Thread-safe variable to track Node.js server process
+# Thread-safe global variables for Node.js server supervision
 node_process = None
-
-# Real health state for the Express subprocess, so /health can report the
-# truth instead of always saying "up". Previously /health fell back to a
-# hardcoded {"status": "up"} whenever the proxy call failed for ANY reason,
-# including "Node has been crash-looping for 20 minutes" — live-observed:
-# the Express server crashed on every boot for 18+ minutes (a missing
-# npm dependency) while docker ps and this endpoint both reported healthy.
-GATEWAY_START_TIME = time.time()
-STARTUP_GRACE_SECONDS = 30  # Node normally binds its port within a few seconds
-MAX_CONSECUTIVE_BOOT_FAILURES = 5
 node_supervisor_status = "starting"  # "starting" | "healthy" | "crash_looping" | "given_up"
 node_consecutive_boot_failures = 0
 node_last_exit_code: int | None = None
+
+GATEWAY_START_TIME = time.time()
+STARTUP_GRACE_SECONDS = 30  # Node normally binds its port within a few seconds
+MAX_CONSECUTIVE_BOOT_FAILURES = 5
 
 def is_node_running() -> bool:
     """Check if the Node.js server is already running on port 3000."""
@@ -209,41 +200,84 @@ def supervise_node_server():
         time.sleep(backoff_seconds)
         backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
 
-@app.on_event("startup")
-async def on_startup():
-    """Trigger the Express server initialization (with crash supervision) on startup."""
-    threading.Thread(target=supervise_node_server, daemon=True).start()
+@asynccontextmanager
+async def lifespan_manager(app: FastAPI):
+    """
+    Manages the lifecycle of the Node.js Express server subprocess.
+    Spawns it on startup and ensures its termination on shutdown.
+    """
+    global node_process, node_supervisor_status, node_consecutive_boot_failures, node_last_exit_code
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    """Terminate the Node.js background process on gateway shutdown."""
-    global node_process
-    if node_process:
-        logger.info("[Gateway] Terminating background Node.js server...")
-        try:
-            node_process.terminate()
-            node_process.wait(timeout=2.0)
-            logger.info("[Gateway] Node.js server terminated.")
-        except Exception as e:
-            logger.warning("[Gateway] Error terminating Node.js process: %s", e)
+    node_supervisor_status = "starting"
+    node_consecutive_boot_failures = 0
+    node_last_exit_code = None
+
+    # Start the supervision thread in the background
+    supervisor_thread = threading.Thread(target=supervise_node_server, daemon=True)
+    supervisor_thread.start()
+
+    try:
+        yield # Application startup completes, app can now receive requests
+    finally:
+        # Application shutdown logic
+        if node_process:
+            logger.info("[Gateway] Terminating background Node.js server...")
+            try:
+                node_process.terminate()
+                node_process.wait(timeout=2.0)
+                logger.info("[Gateway] Node.js server terminated.")
+            except Exception as e:
+                logger.warning("[Gateway] Error terminating Node.js process: %s", e)
+
+app = FastAPI(
+    title="JARVIS Cognitive Gateway",
+    description="Deterministic Python-to-TypeScript Proxy Gateway",
+    version="1.8.0",
+    lifespan=lifespan_manager
+)
+
+# Wildcard origins combined with allow_credentials=True makes Starlette
+# reflect the caller's actual Origin header (browsers reject a literal
+# wildcard + credentials response), which effectively allows any site to
+# make credentialed cross-origin requests. Use an explicit allowlist instead.
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:8000,http://localhost:3000").split(",")
+    if o.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def make_proxy_request(path: str, method: str, headers: Dict[str, str], body: bytes = None) -> Response:
     """Helper to perform synchronous HTTP proxying to the Node.js backend using urllib."""
     target_url = f"{NODE_URL}{path}"
     
-    # Filter and construct headers to pass through
+    # Filter and construct headers to pass through. Deliberately NOT
+    # stamping x-api-key here -- this used to unconditionally overwrite it
+    # with INTERNAL_API_KEY, meaning every request through this gateway
+    # (authenticated or not) reached Express as full admin, regardless of
+    # what credentials the original caller actually supplied. Passing the
+    # caller's own x-api-key (or its absence) through unchanged lets
+    # Express's own validateApiKey make the real authorization decision,
+    # exactly as it would for a request that hit Express directly.
     excluded_headers = {'host', 'connection', 'content-length'}
     proxy_headers = {
         k: v for k, v in headers.items() if k.lower() not in excluded_headers
     }
-    
+
     req = urllib.request.Request(
         url=target_url,
         data=body,
         headers=proxy_headers,
         method=method
     )
-    
+
     try:
         with urllib.request.urlopen(req, timeout=120) as response:
             res_body = response.read()
@@ -265,12 +299,68 @@ def make_proxy_request(path: str, method: str, headers: Dict[str, str], body: by
         # Pass through the target server's exact error
         try:
             err_body = e.read()
-            return Response(content=err_body, status_code=e.code)
+            return Response(content=err_body, status_code=e.code, media_type="application/json")
         except Exception:
             return Response(content=json.dumps({"error": str(e)}), status_code=e.code, media_type="application/json")
     except urllib.error.URLError as e:
         # Node server is likely offline or unreachable, raise to trigger fallback
         raise e
+
+async def proxy_streaming_request(path: str, method: str, headers: Dict[str, str], body: bytes = None) -> StreamingResponse:
+    """Helper to perform asynchronous streaming HTTP proxying to the Node.js backend using urllib."""
+    target_url = f"{NODE_URL}{path}"
+    
+    # Filter and construct headers to pass through -- see the identical
+    # comment in make_proxy_request above for why x-api-key is no longer
+    # overwritten here.
+    excluded_headers = {'host', 'connection', 'content-length', 'transfer-encoding', 'accept-encoding'}
+    proxy_headers = {
+        k: v for k, v in headers.items() if k.lower() not in excluded_headers
+    }
+
+    req = urllib.request.Request(
+        url=target_url,
+        data=body,
+        headers=proxy_headers,
+        method=method
+    )
+
+    response = None
+    try:
+        response = await asyncio.to_thread(urllib.request.urlopen, req, timeout=180) # Use a longer timeout for chat streams
+        
+        async def stream_content():
+            while True:
+                chunk = await asyncio.to_thread(response.read, 4096) # Read in chunks
+                if not chunk:
+                    break
+                yield chunk
+            # The response connection must be closed after streaming
+            await asyncio.to_thread(response.close) 
+
+        # Filter response headers
+        res_headers = dict(response.info())
+        final_headers = {}
+        for k, v in res_headers.items():
+            if k.lower() not in {'content-encoding', 'transfer-encoding', 'content-length', 'connection'}:
+                final_headers[k] = v
+        
+        return StreamingResponse(
+            stream_content(),
+            status_code=response.getcode(),
+            headers=final_headers,
+            media_type="text/event-stream" # Assuming SSE for chat
+        )
+    except urllib.error.HTTPError as e:
+        if response: # ensure closing if HTTPError occurs after response object is created
+            await asyncio.to_thread(response.close)
+        err_body = await asyncio.to_thread(e.read)
+        raise HTTPException(status_code=e.code, detail=err_body.decode(errors='ignore'))
+    except urllib.error.URLError as e:
+        if response:
+            await asyncio.to_thread(response.close)
+        # Node server is likely offline or unreachable, raise to trigger fallback
+        raise HTTPException(status_code=503, detail=f"Proxy target unreachable: {e.reason}")
 
 # ---------- FALLBACK SIMULATION ROUTER ----------
 # This router acts as a fallback if the Express server is offline or unreachable.
@@ -325,7 +415,13 @@ async def health_check(request: Request):
     dependency) was indistinguishable from a genuinely healthy one to
     anything checking this endpoint or `docker ps`/HEALTHCHECK.
     """
-    if is_node_running():
+    # is_node_running() itself is a blocking socket.connect_ex (up to a
+    # 0.5s timeout, see its definition above) — every async handler in this
+    # file calls it before deciding whether to proxy, so leaving it
+    # unwrapped would block the event loop on every single request through
+    # the gateway. asyncio.to_thread here matches how make_proxy_request's
+    # own blocking I/O is already handled just below.
+    if await asyncio.to_thread(is_node_running):
         try:
             # make_proxy_request is a blocking urllib call — run it in a
             # worker thread so a slow/hung Express response (e.g. a 100+s
@@ -371,12 +467,54 @@ async def health_check(request: Request):
 @app.get("/props")
 async def props_check(request: Request):
     """Props check proxy with automatic fallback."""
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             return await asyncio.to_thread(make_proxy_request, "/props", "GET", dict(request.headers))
         except Exception:
             pass
     return {"status": "up", "version": "1.8.0", "engine_ready": True}
+
+@app.post("/api/chat")
+async def chat_proxy(request: Request):
+    """
+    Chat endpoint proxy — streams responses from the Node.js backend,
+    falling back to simulated logic if unreachable.
+    """
+    body = await request.body()
+
+    if await asyncio.to_thread(is_node_running):
+        try:
+            forward_path = request.url.path
+            if request.url.query:
+                forward_path = f"{forward_path}?{request.url.query}"
+            
+            return await proxy_streaming_request(
+                forward_path,
+                request.method,
+                dict(request.headers),
+                body if body else None
+            )
+        except HTTPException as e:
+            # Re-raise HTTPExceptions to be handled by FastAPI's error handler
+            raise e
+        except Exception as e:
+            logger.warning("[Gateway] Failed to proxy streaming chat to Express backend. Falling back to python mock responses. Error: %s", e)
+
+    # Express server is unreachable - implement fallback handler
+    try:
+        body_json = json.loads(body)
+        message = body_json.get("message", "")
+    except Exception:
+        message = ""
+        
+    async def mock_stream():
+        sim_reply = f"[Gateway Fallback] Received: '{message}'. Node.js server is offline or loading. Operating in Python fallback simulation mode."
+        for word in sim_reply.split(" "):
+            yield f"data: {word} \n\n"
+            await asyncio.sleep(0.04)
+
+    return StreamingResponse(mock_stream(), media_type="text/event-stream")
+
 
 @app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"])
 async def wildcard_api_proxy(path_name: str, request: Request):
@@ -384,7 +522,7 @@ async def wildcard_api_proxy(path_name: str, request: Request):
     body = await request.body()
 
     # Try proxying to Express server
-    if is_node_running():
+    if await asyncio.to_thread(is_node_running):
         try:
             forward_path = request.url.path
             if request.url.query:
@@ -439,21 +577,9 @@ async def wildcard_api_proxy(path_name: str, request: Request):
     elif path == "/api/memory/pending":
         return []
         
-    elif path == "/api/chat":
-        # Handle chat requests with a friendly placeholder explaining the fallback
-        try:
-            body_json = json.loads(body)
-            message = body_json.get("message", "")
-        except Exception:
-            message = ""
-            
-        async def mock_stream():
-            sim_reply = f"[Gateway Fallback] Received: '{message}'. Node.js server is offline or loading. Operating in Python fallback simulation mode."
-            for word in sim_reply.split(" "):
-                yield f"data: {word} \n\n"
-                await asyncio.sleep(0.04)
-
-        return StreamingResponse(mock_stream(), media_type="text/event-stream")
+    # The /api/chat fallback is now handled by the dedicated @app.post("/api/chat") route above
+    # elif path == "/api/chat":
+    #    ...
 
     elif path == "/api/voice-input":
         return {"transcription": "Configure process.env.GEMINI_API_KEY to activate voice services."}

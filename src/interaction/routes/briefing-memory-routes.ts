@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -6,11 +6,11 @@ import * as briefing from "../../world/briefing.js";
 import * as briefingRepo from "../../kernel/state/briefing-repo.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
 import * as memoryRepo from "../../kernel/state/memory-repo.js";
-import { getGroq } from "../../runtime/clients.js";
+import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const briefingMemoryRouter = Router();
+export const briefingMemoryRouter: Router = Router();
 
 // No dedicated capability exists for the memory-review queue or admin
 // consolidation controls (unlike briefing.read below) — these operate on
@@ -31,7 +31,7 @@ function requireAdmin(req: any, res: any, next: any) {
 // scheduler.ts runs the same real synthesis on a timer without being asked.
 briefingMemoryRouter.get("/api/briefing", validateApiKey, requireCapability("briefing.read"), async (req: any, res: any) => {
   try {
-    const result = await briefing.generateBriefing(getGroq(), req.username);
+    const result = await briefing.generateBriefing(getCognitionRouter(), req.username);
     try {
       await briefingRepo.saveBriefing(result.text, result.itemCount, result.items);
       obsidian.appendBriefingEntry(result.text, result.itemCount).catch((err: any) => {

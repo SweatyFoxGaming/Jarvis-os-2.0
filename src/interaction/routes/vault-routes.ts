@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
@@ -7,7 +7,7 @@ import * as obsidian from "../../capabilities/providers/obsidian.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const vaultRouter = Router();
+export const vaultRouter: Router = Router();
 
 vaultRouter.get("/api/system/vault/notes", validateApiKey, async (req: any, res: any) => {
   if (!permissions.hasGrant(req.username, "vault.read")) {

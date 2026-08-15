@@ -5,19 +5,46 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # HTTP Boundary tests spawn a real `tsx src/server.ts` child process,
+      # which exits immediately if these are unset (see server.ts's own
+      # REQUIRED_ENV_VARS fail-fast) -- no live Postgres is required for
+      # these to boot far enough to serve /health (applyHybridSearchSchema's
+      # own connection failure is caught and logged, not fatal).
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: jarvis_ci_placeholder
+      POSTGRES_USER: jarvis_ci_placeholder
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No later step in this job needs authenticated git operations
+          # (no push, no fetch beyond the initial checkout) -- persisting
+          # the GITHUB_TOKEN in local git config for the rest of the job
+          # would be an unused credential sitting around for every
+          # dependency-install/test step (npm install, pip install, pytest)
+          # to potentially read.
+          persist-credentials: false
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install dependencies
         run: npm install
       - name: Type check
         run: npx tsc --noEmit
       - name: Run test suite
         run: npm test
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Python gateway tests
+        run: |
+          pip install -r requirements.txt
+          pytest tests/test_api_gateway.py daemon/tests/test_protocol.py -v
       - name: Check README/docs accuracy
         run: bash scripts/check-docs-accuracy.sh
       - name: Install jarvis-builder dependencies

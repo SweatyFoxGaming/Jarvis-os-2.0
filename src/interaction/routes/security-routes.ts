@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
@@ -10,7 +10,7 @@ import * as mcpRegistry from "../../capabilities/mcp-registry.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const securityRouter = Router();
+export const securityRouter: Router = Router();
 
 // ---------- Security Ops (human-gated) ----------
 // Jarvis observes and proposes here; it never applies anything itself.

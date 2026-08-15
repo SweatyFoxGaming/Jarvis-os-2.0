@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
@@ -11,11 +11,11 @@ import * as github from "../../capabilities/providers/github.js";
 import * as departments from "../../executive/departments.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
 import * as scheduler from "../../kernel/scheduler.js";
-import { getGroq } from "../../runtime/clients.js";
+import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const buildRequestsRouter = Router();
+export const buildRequestsRouter: Router = Router();
 
 buildRequestsRouter.get("/api/system/build-requests", validateApiKey, async (req: any, res: any) => {
   if (!permissions.hasGrant(req.username, "github.pulls.create")) {
@@ -167,7 +167,7 @@ buildRequestsRouter.post("/api/system/build-requests/:id/approve-code", validate
         // AI, for as long as the review call took. Computing it first means
         // its findings can actually be baked into the PR body itself instead
         // of arriving as a note attached after the fact.
-        const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getGroq());
+        const qaSummary = await departments.reviewCodeDiff(buildRequest.objective, files, getCognitionRouter(), req.username);
 
         const branchName = `jarvis/build-request-${buildRequest.id}`;
 

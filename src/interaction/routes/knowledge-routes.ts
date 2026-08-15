@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import { requireCapability } from "../../kernel/security.js";
@@ -7,11 +7,11 @@ import * as knowledgeGraphRepo from "../../kernel/state/knowledge-graph-repo.js"
 import * as identity from "../../self/identity.js";
 import * as identityRepo from "../../kernel/state/identity-repo.js";
 import * as obsidian from "../../capabilities/providers/obsidian.js";
-import { getGroq } from "../../runtime/clients.js";
+import { getCognitionRouter } from "../../runtime/clients.js";
 
 const observation = ObservationPlatform.getInstance();
 
-export const knowledgeRouter = Router();
+export const knowledgeRouter: Router = Router();
 
 // ---------- Structured Knowledge Graph ----------
 // The reliable complement to pgvector similarity recall — a real
@@ -65,10 +65,10 @@ knowledgeRouter.get("/api/identity/reflections", validateApiKey, requireCapabili
 // channel otherwise). Still reachable for anyone admin explicitly grants
 // vault.write to.
 knowledgeRouter.post("/api/identity/thought", validateApiKey, requireCapability("identity.read"), requireCapability("vault.write"), async (req: any, res: any) => {
-  const groq = getGroq();
-  if (!groq) return res.status(503).json({ error: "Requires GROQ_API_KEY to be configured." });
+  const router = getCognitionRouter();
+  if (!router) return res.status(503).json({ error: "Requires GROQ_API_KEYS or GEMINI_API_KEYS to be configured." });
   try {
-    const result = await identity.generateProactiveThought(req.username, groq);
+    const result = await identity.generateProactiveThought(req.username, router);
     if (!result) {
       return res.json({ available: false, reason: "Not enough recorded self-reflection history yet to generate a genuine thought from." });
     }

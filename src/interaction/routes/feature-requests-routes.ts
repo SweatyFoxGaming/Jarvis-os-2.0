@@ -1,9 +1,9 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as permissions from "../../kernel/security.js";
 import * as featureRequestsRepo from "../../kernel/state/feature-requests-repo.js";
 
-export const featureRequestsRouter = Router();
+export const featureRequestsRouter: Router = Router();
 
 // ---------- Feature Requests ----------
 // The bridge between "asked Jarvis for it in chat" and "actually built by a

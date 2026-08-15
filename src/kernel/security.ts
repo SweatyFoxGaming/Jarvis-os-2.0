@@ -16,6 +16,22 @@ const observation = ObservationPlatform.getInstance();
  * lookup instead of a DB round-trip per tool call.
  */
 
+import crypto from 'crypto';
+
+/**
+ * Compare two strings in constant time to prevent timing attacks.
+ */
+export function timingSafeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+  
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export const ALL_CAPABILITIES = [
   "github.read",
   "github.issues.create",
@@ -71,6 +87,15 @@ export const ALL_CAPABILITIES = [
   "reward.read",
   // Read-only: the desktop HUD's own status summary, no write action.
   "hud.read",
+  // Deliberately separate from hud.read (same read/write split as
+  // vault.read/vault.write and evolution.read/evolution.manage above): this
+  // is the write side, letting the EWW HUD bridge (src/ipc/eww-bridge.ts,
+  // via POST /api/hud/report-version) record its own self-reported version.
+  // hud.read's own doc comment says "no write action" -- reusing it to gate
+  // a write route would silently contradict that and let any principal
+  // holding the harmless read grant spoof or suppress the companion-
+  // staleness health signal (see self/health-watchdog.ts).
+  "hud.report_version",
   // Triggers the daily adaptation engine — reads/analyzes/proposes, never writes code or registers tools unattended.
   "adaptation.run",
 ] as const;

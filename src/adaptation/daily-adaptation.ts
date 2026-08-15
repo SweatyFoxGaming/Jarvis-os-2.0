@@ -8,9 +8,9 @@
 // through (AutonomousExecutive.executeObjective), which halts at
 // awaiting_consult for any objective classified with a coding step —
 // the existing human-confirmation gate is never bypassed.
-import Groq from "groq-sdk";
 import { Type } from "@google/genai";
 import { toGroqSchema } from "../runtime/groq-client.js";
+import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import * as buildRequestsRepo from "../kernel/state/build-requests-repo.js";
@@ -22,9 +22,9 @@ import { AutonomousExecutive } from "../executive/autonomous_executive.js";
 
 const observation = ObservationPlatform.getInstance();
 
-let configuredGroq: Groq | null = null;
-export function configureGroq(client: Groq | null): void {
-  configuredGroq = client;
+let configuredRouter: CognitionRouter | null = null;
+export function configureGroq(router: CognitionRouter | null): void {
+  configuredRouter = router;
 }
 
 const ADAPTATION_SCHEMA = {
@@ -53,43 +53,47 @@ export async function runDailyAdaptation(username = "admin"): Promise<{ ok: bool
       .map(([name, result]) => `${name}: score ${result.score}, ${result.issues.length} issue(s)${result.issues.length ? ` (${result.issues.slice(0, 3).map(i => i.message).join("; ")})` : ""}`)
       .join("\n");
 
-    let reflectionText = "No Groq client configured — unable to generate a written reflection today.";
+    let reflectionText = "No cognition router configured — unable to generate a written reflection today.";
     let capabilityGaps: string[] = [];
     let candidateObjective = "";
 
-    if (configuredGroq) {
+    if (configuredRouter) {
       const objectivesSummary = objectives.length > 0
         ? objectives.map(o => `- ${o.description}`).join("\n")
         : "(no active objectives)";
 
-      // Guarded independently of the outer try/catch: a Groq outage here
-      // must degrade to the same placeholder text used when Groq isn't
-      // configured at all, not skip the report/notification entirely —
-      // the whole point of graceful degradation is that an LLM failure on
-      // any given day still leaves a report with real analyzer signals.
+      // Guarded independently of the outer try/catch: a cognition-router
+      // outage here must degrade to the same placeholder text used when no
+      // router is configured at all, not skip the report/notification
+      // entirely — the whole point of graceful degradation is that an LLM
+      // failure on any given day still leaves a report with real analyzer
+      // signals.
       try {
-        const response = await configuredGroq.chat.completions.create({
-          model: "openai/gpt-oss-20b",
-          messages: [{
-            role: "user",
-            content:
-              "You are Jarvis's own daily self-adaptation reflection. Given the current active objectives and real, computed system-analysis signals below, " +
-              "write a short honest reflection, list any concrete capability gaps you notice, and propose exactly one candidate next objective if something " +
-              "concrete stands out — leave it empty if nothing does. Do not invent problems that aren't supported by the signals.\n\n" +
-              `Active objectives:\n${objectivesSummary}\n\nAnalysis signals:\n${issuesSummary}`,
-          }],
-          response_format: {
-            type: "json_schema",
-            json_schema: { name: "daily_adaptation", schema: toGroqSchema(ADAPTATION_SCHEMA), strict: true },
+        const response = await configuredRouter.generateWithFallback(
+          username,
+          {
+            messages: [{
+              role: "user",
+              content:
+                "You are Jarvis's own daily self-adaptation reflection. Given the current active objectives and real, computed system-analysis signals below, " +
+                "write a short honest reflection, list any concrete capability gaps you notice, and propose exactly one candidate next objective if something " +
+                "concrete stands out — leave it empty if nothing does. Do not invent problems that aren't supported by the signals.\n\n" +
+                `Active objectives:\n${objectivesSummary}\n\nAnalysis signals:\n${issuesSummary}`,
+            }],
+            response_format: {
+              type: "json_schema",
+              json_schema: { name: "daily_adaptation", schema: toGroqSchema(ADAPTATION_SCHEMA), strict: true },
+            },
           },
-        });
+          ["groq:openai/gpt-oss-20b"]
+        );
         const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
         reflectionText = typeof parsed.reflectionText === "string" ? parsed.reflectionText : reflectionText;
         capabilityGaps = Array.isArray(parsed.capabilityGaps) ? parsed.capabilityGaps : [];
         candidateObjective = typeof parsed.candidateObjective === "string" ? parsed.candidateObjective : "";
       } catch (err: any) {
-        observation.logTelemetry("warn", "Adaptation", `Groq reflection call failed: ${err.message} — falling back to a signals-only report.`);
-        reflectionText = `Groq reflection call failed today (${err.message}) — this report reflects only the computed analyzer signals below.`;
+        observation.logTelemetry("warn", "Adaptation", `Cognition router reflection call failed: ${err.message} — falling back to a signals-only report.`);
+        reflectionText = `Cognition router reflection call failed today (${err.message}) — this report reflects only the computed analyzer signals below.`;
       }
     }
 

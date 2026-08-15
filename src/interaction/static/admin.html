@@ -247,7 +247,10 @@
     <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
-        let apiKey = localStorage.getItem('admin_api_key') || '';
+        // No hardcoded fallback here on purpose — a missing key must fail
+        // requests loudly (401s) rather than silently authenticating with a
+        // retired, guessable literal.
+        let apiKey = localStorage.getItem('admin_api_key') || "";
         let CURRENT_ADMIN_TAB = 'memory';
         let telemetryInterval = null;
 

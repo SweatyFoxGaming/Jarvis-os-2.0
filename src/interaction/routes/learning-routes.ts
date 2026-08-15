@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from 'express';
 import { ObservationPlatform } from "../../kernel/observation.js";
 import { LongTermLearningEngine } from "../../adaptation/long_term_learning.js";
 import { validateApiKey } from "../../kernel/auth-middleware.js";
@@ -7,7 +7,7 @@ import { getSession } from "../../cognition/session.js";
 const observation = ObservationPlatform.getInstance();
 const learningEngine = LongTermLearningEngine.getInstance();
 
-export const learningRouter = Router();
+export const learningRouter: Router = Router();
 
 // ---------- Pass XV: Long-Term Learning Endpoints ----------
 //
@@ -35,7 +35,7 @@ const requireAdmin = (req: any, res: any, next: any) => {
   next();
 };
 
-learningRouter.get("/api/learning/dashboard", validateApiKey, requireAdmin, (req, res) => {
+learningRouter.get("/api/learning/dashboard", validateApiKey, requireAdmin, (req: Request, res: Response) => {
   res.json({
     stylePreferences: learningEngine.getStylePreferences(),
     optimizedWorkflows: learningEngine.listOptimizedWorkflows(),
@@ -43,7 +43,7 @@ learningRouter.get("/api/learning/dashboard", validateApiKey, requireAdmin, (req
   });
 });
 
-learningRouter.post("/api/learning/style", validateApiKey, requireAdmin, (req, res) => {
+learningRouter.post("/api/learning/style", validateApiKey, requireAdmin, (req: Request, res: Response) => {
   const { namingConvention, tabSize, frameworkPreference, architecturePattern } = req.body;
   learningEngine.updateStylePreference({
     namingConvention,
@@ -54,23 +54,25 @@ learningRouter.post("/api/learning/style", validateApiKey, requireAdmin, (req, r
   res.json({ status: "success", preferences: learningEngine.getStylePreferences() });
 });
 
-learningRouter.post("/api/learning/mistake", validateApiKey, requireAdmin, (req, res) => {
+learningRouter.post("/api/learning/mistake", validateApiKey, requireAdmin, (req: Request, res: Response) => {
   const { errorSignature, affectedFile, rootCause, successfulFix } = req.body;
   if (!errorSignature || !affectedFile) {
-    return res.status(400).json({ error: "Missing errorSignature or affectedFile" });
+    res.status(400).json({ error: "Missing errorSignature or affectedFile" });
+    return;
   }
   learningEngine.logMistake(errorSignature, affectedFile, rootCause, successfulFix);
   res.json({ status: "success", count: learningEngine.getMistakeLog().length });
 });
 
 // Learn Endpoint — a quick fact added to the CURRENT session's workspace
-// knowledge, distinct from the persistent style/mistake learning above
-// (LongTermLearningEngine); grouped here by URL namespace, not mechanism.
-learningRouter.post("/api/learn", validateApiKey, async (req: any, res: any) => {
+learningRouter.post("/api/learn", validateApiKey, async (req: Request, res: Response) => {
   const { message } = req.body;
-  const session = await getSession(req.username);
+  const username = (req as any).username ?? 'operator';
+  const session = await getSession(username);
+  
   session.workspace.knowledge.addFact(`Learned from operator: ${message}`);
   observation.logTelemetry("info", "Cognition", `Dynamically learned new concept: "${message}"`);
+  
   res.json({
     status: "success",
     language: message,

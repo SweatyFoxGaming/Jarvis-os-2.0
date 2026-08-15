@@ -1,19 +1,24 @@
+import 'dotenv/config';
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import path from "path";
 import crypto from "crypto";
+import { applyHybridSearchSchema } from './kernel/state/hybridSearchMigration.js';
+import { getPool } from "./kernel/state/db.js";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
-import { GoogleGenAI, Content, FunctionCall } from "@google/genai";
+import { GoogleGenAI, type Content, type FunctionCall } from "@google/genai";
 import { toGroqTools, generateWithFallback as generateGroqWithFallback } from "./runtime/groq-client.js";
-import Groq from "groq-sdk";
 import { ObservationPlatform } from "./kernel/observation.js";
 import { AutonomousExecutive } from "./executive/autonomous_executive.js";
 import { LongTermLearningEngine } from "./adaptation/long_term_learning.js";
 import { MindKernel } from "./self/kernel.js";
 import { LocalCognitiveEngine } from "./runtime/local_engine.js";
+import { KeyPool } from "./runtime/key-pool.js";
+import { CognitionRouter } from "./runtime/cognition-router.js";
+import { recordUsage, getRecentShare } from "./kernel/state/usage-repo.js";
 import * as whisper from "./interaction/whisper.js";
 import { initDatabase, pingDatabase } from "./kernel/state/db.js";
 import * as memoryRepo from "./kernel/state/memory-repo.js";
@@ -22,17 +27,19 @@ import { getSession, pruneIdleSessions, getActiveSessionCount, SessionState } fr
 import { getAllToolDeclarations, executeTool, looksToolShaped, looksTrivial } from "./capabilities/tools.js";
 import * as permissions from "./kernel/security.js";
 import { requireCapability } from "./kernel/security.js";
-import { validateApiKey } from "./kernel/auth-middleware.js";
+import { validateApiKey, safeCompare, ADMIN_API_KEY } from "./kernel/auth-middleware.js";
 import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "./kernel/egress.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
 import { reflectAndLearn } from "./adaptation/reflection.js";
+import http from "node:http";
 import { WebSocketServer } from "ws";
-import * as liveVoice from "./interaction/live-voice.js";
+import { handleChatStream } from "./routes/streamRoute.js";
 import * as knowledgeGraph from "./cognition/knowledge-graph.js";
 import * as knowledgeGraphRepo from "./kernel/state/knowledge-graph-repo.js";
 import * as briefing from "./world/briefing.js";
 import * as identity from "./self/identity.js";
+import * as rapport from "./self/rapport.js";
 import * as identityRepo from "./kernel/state/identity-repo.js";
 import * as commandProposalsRepo from "./kernel/state/command-proposals-repo.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
@@ -41,7 +48,7 @@ import { settingsRouter } from "./interaction/routes/settings-routes.js";
 import { observationRouter } from "./interaction/routes/observation-routes.js";
 import { learningRouter } from "./interaction/routes/learning-routes.js";
 import { notificationsRouter } from "./interaction/routes/notifications-routes.js";
-import { setSharedClients } from "./runtime/clients.js";
+import { setSharedRouter } from "./runtime/clients.js";
 import { positiveIntegerEnv } from "./kernel/env.js";
 import { knowledgeRouter } from "./interaction/routes/knowledge-routes.js";
 import { featureRequestsRouter } from "./interaction/routes/feature-requests-routes.js";
@@ -58,6 +65,21 @@ import { hudRouter } from "./interaction/routes/hud-routes.js";
 import { adaptationRouter } from "./interaction/routes/adaptation-routes.js";
 import { adminRouter } from "./interaction/routes/admin-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
+import { EventBus } from "./core/event-bus.js";
+import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
+import { startAudioClient } from "./core/audio-client.js";
+import { startLiveAnalysis } from "./adaptation/live-analysis.js";
+import { startShadowVerifier } from "./executive/shadow-verifier.js";
+import { startVoiceSession } from "./interaction/voice-session.js";
+import type { Request, Response, NextFunction } from 'express';
+
+let httpServer: http.Server | undefined;
+let eventsWss: WebSocketServer | undefined;
+let audioClient: any;
+let voiceSession: any;
+let liveAnalysis: any;
+let shadowVerifier: any;
+let fsWatcher: any;
 
 dotenv.config();
 
@@ -183,6 +205,34 @@ const aiLimiter = rateLimit({
   message: { error: "Too many requests — please slow down." },
 });
 
+app.post('/api/chat/stream', validateApiKey, aiLimiter, handleChatStream);
+app.get('/api/chat/stream', validateApiKey, aiLimiter, handleChatStream);
+
+const REQUIRED_ENV_VARS = [
+  "POSTGRES_HOST",
+  "POSTGRES_DB",
+  "POSTGRES_USER",
+  // "PORT", // Uncomment if you require PORT in .env
+];
+
+const missingEnvVars = REQUIRED_ENV_VARS.filter((varName) => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+  console.error(`[Fatal Startup Error] Missing required environment variables: ${missingEnvVars.join(", ")}`);
+  process.exit(1);
+}
+try {
+  // A Postgres outage at boot must not take the whole gateway down with it --
+  // every DB-backed repo function elsewhere in this codebase already degrades
+  // cleanly when Postgres is unreachable (see the Vault/UsageEvents/
+  // WellbeingRepo etc. tests), so crashing here on the same failure would be
+  // the one place that doesn't. Hybrid search's schema just won't be applied
+  // until the next successful boot with Postgres reachable.
+  await applyHybridSearchSchema();
+} catch (err: any) {
+  console.error(`[Startup] applyHybridSearchSchema failed (Postgres unreachable?), continuing without it: ${err?.message || err}`);
+}
+
 // ---------- Platform Instances ----------
 // Per-user conversational state lives in SessionState (src/cognition/session.ts),
 // fetched per-request via getSession(req.username) — not a shared global, so
@@ -208,19 +258,49 @@ if (process.env.GEMINI_API_KEY) {
   observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
 }
 
-// ---------- Groq Client Initialization (primary cloud tier) ----------
-let groq: Groq | null = null;
-if (process.env.GROQ_API_KEY) {
-  groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-  observation.logTelemetry("info", "Cognition", "Groq client successfully configured with API Key.");
+// ---------- Cognition Router Initialization (primary cloud tier) ----------
+// Jarvis's own multi-key provider pool, replacing the old OmniRoute gateway
+// (OMNIROUTE_API_KEY/OMNIROUTE_BASE_URL are no longer read — see
+// .env.example's GROQ_API_KEYS/GEMINI_API_KEYS block below) — see
+// cognition-router.ts for the fallback chain (cloud providers, one
+// key/model at a time -> local LLM endpoint -> offline keyword engine) and
+// key-pool.ts for the per-provider, multi-key rotation/cooldown logic that
+// lets one key hitting a rate limit not take the whole provider down. Every
+// call site that used to read the old `omniRoute` identifier — briefing/
+// daily-adaptation configureGroq, AutonomousExecutive's constructor, the
+// write-side reflection/knowledge-graph/self-reflection calls, the voice
+// bridge, the two scheduler jobs, and (as of this final cleanup pass) the
+// /api/chat tool-shaped execution-chain promotion below — has been retyped
+// onto `cognitionRouter` / the `groqKeys`/`geminiKeys` arrays declared here.
+const groqKeys = (process.env.GROQ_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+let cognitionRouter: CognitionRouter | null = null;
+if (groqKeys.length > 0 || geminiKeys.length > 0) {
+  const keyPool = new KeyPool({ groq: groqKeys, gemini: geminiKeys });
+  // Read fresh, synchronous defaults here (module scope, before
+  // initDatabase()/MindKernel.hydrateFromDb() run later in async startup
+  // below) — matching this block's own module-scope lifecycle exactly like
+  // the OmniRoute block it replaces. A DB-persisted override to the local
+  // LLM endpoint/model/key made via Settings after boot is not picked up by
+  // this already-constructed router until process restart; that's an
+  // existing tradeoff of RouterDeps taking plain fields rather than a live
+  // accessor (see cognition-router.ts), not something introduced here.
+  const kernelDefaults = MindKernel.getInstance();
+  cognitionRouter = new CognitionRouter({
+    keyPool,
+    recordUsage,
+    getRecentShare,
+    localLlmEndpoint: kernelDefaults.localLlmEndpoint,
+    localModelName: kernelDefaults.localModelName,
+    localApiKey: kernelDefaults.localApiKey,
+    localEngine: LocalCognitiveEngine.getInstance(),
+  });
+  observation.logTelemetry("info", "Cognition", "CognitionRouter configured from GROQ_API_KEYS/GEMINI_API_KEYS.");
 } else {
-  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEY detected. Groq features unavailable.");
+  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEYS or GEMINI_API_KEYS configured. Cloud-backed cognition features unavailable — falling back to local LLM/keyword engine only.");
 }
-briefing.configureGroq(groq);
-dailyAdaptation.configureGroq(groq);
-// The agentic coding loop (src/executive/coding-agent.ts) runs entirely on
-// this same Groq client — no separate API key to configure or log here;
-// the GROQ_API_KEY check above already covers whether it's available.
+briefing.configureGroq(cognitionRouter);
+dailyAdaptation.configureGroq(cognitionRouter);
 
 // Robust content generation wrapper with fallback models to mitigate 503 high-demand errors
 async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, customModels?: string[]) {
@@ -245,14 +325,14 @@ async function generateContentWithFallback(aiClient: GoogleGenAI, params: any, c
   throw lastError || new Error("All fallback models failed content generation");
 }
 
-const executive = AutonomousExecutive.getInstance(observation, ai, groq);
+const executive = AutonomousExecutive.getInstance(observation, ai, cognitionRouter);
 const learningEngine = LongTermLearningEngine.getInstance();
 // Makes these same already-constructed clients reachable from extracted
 // routers (src/interaction/routes/) via runtime/clients.ts's getters —
 // see that module's own comment for why this must happen here (after
 // construction) rather than the routers reading them at their own
 // module-load time.
-setSharedClients(ai, groq);
+setSharedRouter(ai, cognitionRouter);
 
 // Users, API keys, and memory records are persisted in Postgres (src/data/) —
 // see initDatabase() near the bottom of this file, called before app.listen.
@@ -382,7 +462,8 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
     // wake-word spotting, which records and transcribes a short clip every
     // few seconds for as long as live voice is on) — routing that to Gemini
     // would mean a real API call every few seconds indefinitely, just to
-    // check for one word. Local whisper-cpp is free and already always
+    // check for one word. The local voice daemon (daemon/voice_engine.py,
+    // via whisper.transcribeAudio below) is free and already always
     // running; forcing it here regardless of the general online/offline
     // preference is a narrower, correct choice for that specific caller,
     // not a change to this endpoint's default behavior for anyone else
@@ -390,7 +471,26 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
     // better accuracy for a real one-off dictated command).
     if (ai && !kernel.offlineMode && !forceOffline) {
       observation.incrementMetric("geminiApiCalls");
-      
+
+      // Intentionally NOT migrated to OmniRoute (OmniRoute cognition gateway
+      // task 7 — see .superpowers/sdd/2026-08-03-omniroute-cognition-gateway/
+      // task-7-report.md for full evidence). Reading OmniRoute's own
+      // translator source confirmed it CAN convert an OpenAI-shaped
+      // `input_audio` content part into Gemini's native inlineData for
+      // models routed through its "gemini" format (open-sse/translator/
+      // request/openai-to-gemini.ts + helpers/geminiHelper.ts's
+      // convertOpenAIContentToParts). But empirically hitting the real,
+      // locally-running OmniRoute instance showed the three bare model
+      // names below ("gemini-3.5-flash", "gemini-3.1-flash-lite",
+      // "gemini-flash-latest") are rejected outright as an "Ambiguous
+      // model" (OmniRoute requires a provider/model prefix), the "gemini"
+      // provider that actually implements the audio translation has zero
+      // active credentials configured, and "gemini-flash-latest" isn't a
+      // recognized OmniRoute model ID under any provider at all. Migrating
+      // this call site today would make voice transcription fail 100% of
+      // the time instead of working via the direct Gemini SDK, so it stays
+      // on `ai.models.generateContent` (via generateContentWithFallback)
+      // until a provider-prefixed, credentialed model list is confirmed.
       const response = await generateContentWithFallback(ai, {
         contents: [
           "Please transcribe this voice recording accurately into plain English text. If there is no audible speech, return an empty string. Do not add any conversational remarks, commentary, or punctuation padding, just the literal transcribed words.",
@@ -407,19 +507,21 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
       observation.logTelemetry("info", "Sensors", `Voice transcription completed: "${transcription}"`);
       res.json({ transcription });
     } else {
-      // Offline-first path: a real local whisper-cpp service, matching the
-      // local-first chat pattern, instead of going straight to a canned
-      // string. Only falls back to the simulated text below if whisper-cpp
-      // itself is unreachable/not configured.
+      // Offline-first path: the real local voice daemon (see
+      // src/interaction/whisper.ts, bridging onto daemon/voice_engine.py
+      // over its Unix socket), matching the local-first chat pattern,
+      // instead of going straight to a canned string. Only falls back to
+      // the simulated text below if the daemon itself is unreachable/not
+      // running.
       try {
         const transcription = await whisper.transcribeAudio(audio, mimeType || "audio/webm");
-        observation.logTelemetry("info", "Sensors", `Offline (whisper-cpp) transcription completed: "${transcription}"`);
+        observation.logTelemetry("info", "Sensors", `Offline (voice daemon) transcription completed: "${transcription}"`);
         res.json({ transcription });
       } catch (whisperErr: any) {
         observation.logTelemetry("warn", "Sensors", `Offline transcription unavailable: ${whisperErr.message}`);
         const simText = kernel.offlineMode
           ? "Notice: Voice input was captured, but offline speech-to-text isn't reachable right now, sir."
-          : "Simulated speech transcription: Please configure your GEMINI_API_KEY, or ensure the whisper-cpp service is running, to activate voice listening.";
+          : "Simulated speech transcription: Please configure your GEMINI_API_KEY, or ensure the local voice daemon is running, to activate voice listening.";
         res.json({ transcription: simText });
       }
     }
@@ -492,6 +594,25 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // in the relationship for this to have accumulated anything).
     const identityContext = await identity.buildIdentityContext(req.username);
 
+    // Real persisted personality dials (system_settings.personality_*,
+    // migrations/007_personality_settings.ts), turned into natural-language
+    // guidance rather than echoed as raw numbers — see
+    // identity.ts's buildPersonalityPromptFragment. Reads straight off the
+    // in-memory kernel singleton (already hydrated at boot / kept current by
+    // /api/settings), matching how kernel.localLlmEndpoint etc. are read
+    // above with no extra DB round trip per chat message.
+    const personalityContext = identity.buildPersonalityPromptFragment({
+      personality_formality: kernel.personalityFormality,
+      personality_humor: kernel.personalityHumor,
+      personality_verbosity: kernel.personalityVerbosity,
+    });
+
+    // Real recent tone observations of the user (rapport_signals table) —
+    // see self/rapport.ts. The most ephemeral/recency-weighted signal among
+    // the identity/personality group, so it's spliced in right after the
+    // personality dials below, calibrating within them rather than against.
+    const rapportContext = await rapport.buildRapportContext(req.username);
+
     // Pulls a currently-awaiting-consult build request's research findings
     // into context the same way memory/identity already are — without this,
     // Jarvis has no way to discuss research it did moments (or turns) ago
@@ -516,7 +637,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const baseSystemInstruction =
       "You are JARVIS, styled after Tony Stark's AI in the Iron Man films: composed, dryly witty, unfailingly polite, and quietly confident rather than warm or effusive. Address the user as \"sir\" where it reads naturally — not in every sentence, and drop it entirely if it starts to feel forced. Keep responses concise and precise; substance over flourish. A touch of understated, deadpan humor is welcome, but avoid gushing enthusiasm, exclamation points, or flowery language. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. If asked about your own state or system metrics, report them plainly and matter-of-factly — composed even when the news is bad, the way JARVIS would be."
       + "\n\nIf the user asks for something you have no tool for, don't just decline or invent a fake result. Use search_web to research whether/how it could genuinely be built, then present a concrete, honest plan in conversation — what it would do, roughly how. If they clearly approve building it, that's enough — the executive planner will pick up the objective on its own, research it properly, and come back to consult on direction before anything gets built. Don't invent a special tool call for this; just proceed with the normal planning flow. If they don't approve, or you're just discussing the idea, don't start anything."
-      + memoryContext + styleContext + identityContext + buildRequestContext;
+      + memoryContext + styleContext + identityContext + personalityContext + rapportContext + buildRequestContext;
 
     // The Gemini branch genuinely has tool access (declared via `tools` in
     // its request config below), so its prompt stays as-is. The local model
@@ -574,13 +695,23 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // it needs the same treatment: promote a tool-capable backend to the
     // front instead of letting LocalLLM (no tool support at all) answer it
     // in prose before Groq/Gemini ever get a turn.
+    //
+    // `groqKeys.length > 0` (module-scope, boot-time — same "is this
+    // provider configured at all" signal `ai` already is for Gemini) is the
+    // real "does Groq have any configured keys" check here, replacing the
+    // old always-null `omniRoute` truthiness check this branched on before
+    // this final cleanup pass. KeyPool.getAvailableKey() was deliberately
+    // NOT used for this: it consumes rotation state (advances the
+    // round-robin cursor) as a side effect, which is wrong for a read-only
+    // "is this provider configured" check made on every tool-shaped
+    // request.
     const hasPendingConfirmation = !!awaitingBuildRequest || !!pendingRewardGate;
     if (kernel.llmMode !== "strictly-local" && (looksToolShaped(message) || hasPendingConfirmation)) {
-      if (groq && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
+      if (groqKeys.length > 0 && executionChain[0] !== "Groq" && executionChain.includes("Groq")) {
         const idx = executionChain.indexOf("Groq");
         executionChain.splice(idx, 1);
         executionChain.unshift("Groq");
-      } else if (!groq && ai && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
+      } else if (groqKeys.length === 0 && geminiKeys.length > 0 && executionChain[0] !== "Gemini" && executionChain.includes("Gemini")) {
         // No Groq configured — fall back to promoting Gemini for tool-shaped
         // requests, restoring this codebase's pre-Groq behavior rather than
         // silently losing tool-calling capability to LocalLLM's honest decline.
@@ -720,7 +851,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
 
       else if (step === "Groq") {
-        if (groq) {
+        if (cognitionRouter) {
           try {
             observation.incrementMetric("groqApiCalls");
             session.updateState({
@@ -748,12 +879,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               { role: "system", content: systemInstruction },
               { role: "user", content: message },
             ];
+            // Provider-prefixed ("groq:<model>") since
+            // CognitionRouter.generateWithFallback requires it — an
+            // unprefixed entry is silently skipped as malformed (see
+            // cognition-router.ts's "expected provider:model" log line),
+            // matching the exact fix applied to groq-agent-client.ts's
+            // DEFAULT_MODELS in commit ce54af0.
             const groqModels = isFastPath
-              ? ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
-              : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+              ? ["groq:llama-3.1-8b-instant", "groq:llama-3.3-70b-versatile"]
+              : ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
 
             let response = await generateGroqWithFallback(
-              groq,
+              cognitionRouter,
+              req.username,
               groqTools ? { messages, tools: groqTools } : { messages },
               groqModels
             );
@@ -815,7 +953,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               }
               messages.push(...toolResponseMessages);
 
-              response = await generateGroqWithFallback(groq, { messages, tools: groqTools }, groqModels);
+              response = await generateGroqWithFallback(cognitionRouter, req.username, { messages, tools: groqTools }, groqModels);
               toolCalls = response.choices[0]?.message?.tool_calls || [];
             }
 
@@ -835,7 +973,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       }
 
       else if (step === "Gemini") {
-        if (ai) {
+        if (cognitionRouter) {
           try {
             observation.incrementMetric("geminiApiCalls");
             session.updateState({
@@ -844,52 +982,59 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
               activeCapability: "Gemini LLM Generation"
             }, observation);
 
-            // Real function-calling: Gemini can choose to invoke a tool
-            // (src/execution/tools.ts) with structured arguments it extracts
-            // from the conversation, gated by the caller's permission grants.
-            const messageParts: any[] = [{ text: message }];
-            if (image) {
-              messageParts.push({ inlineData: { mimeType: "image/jpeg", data: image } });
-            }
-            const contents: Content[] = [{ role: "user", parts: messageParts }];
-            const chatModels = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+            // Real function-calling: the model can choose to invoke a tool
+            // (src/capabilities/tools.ts) with structured arguments it
+            // extracts from the conversation, gated by the caller's
+            // permission grants. Mirrors the Groq branch above exactly —
+            // both tiers now go through CognitionRouter's OpenAI-compatible
+            // transport, so the same message/tool-loop shape applies.
+            const geminiTools = toGroqTools(getAllToolDeclarations());
+            const messages: any[] = [
+              { role: "system", content: systemInstruction },
+              { role: "user", content: message },
+            ];
+            // Vision (a live camera frame) has no bearing on this router-based
+            // path — the image-attachment handling that existed in the old
+            // Gemini-native SDK call is intentionally not carried over here;
+            // if the router's OpenAI-compatible transport is later confirmed
+            // to support image_url content parts for one of these models,
+            // that's a follow-up, not part of this task.
+            const chatModels = ["gemini:gemini-2.0-flash", "gemini:gemini-1.5-flash"];
 
-            let response = await generateContentWithFallback(ai, {
-              contents,
-              config: {
-                systemInstruction,
-                tools: [{ functionDeclarations: getAllToolDeclarations() }],
-              },
-            }, chatModels);
-
-            let calls: FunctionCall[] = response.functionCalls || [];
+            let response = await cognitionRouter.generateWithFallback(req.username, { messages, tools: geminiTools }, chatModels);
+            let toolCalls = response.choices[0]?.message?.tool_calls || [];
             let guard = 0;
-            while (calls.length > 0 && guard < 3) {
-              guard++;
-              // Echo back the model's own raw content (not a hand-built
-              // { functionCall } part) — Gemini attaches a thought_signature
-              // to each function-call part and rejects a follow-up request
-              // that's missing it (confirmed live: "Function call is missing
-              // a thought_signature..." / 400 INVALID_ARGUMENT).
-              const modelContent = response.candidates?.[0]?.content;
-              contents.push(modelContent && modelContent.parts?.length
-                ? { role: "model", parts: modelContent.parts }
-                : { role: "model", parts: calls.map(c => ({ functionCall: c })) });
 
-              const responseParts = [];
-              for (const call of calls) {
+            while (toolCalls.length > 0 && guard < 3) {
+              guard++;
+              const assistantMessage = response.choices[0].message;
+              messages.push({
+                role: "assistant",
+                content: assistantMessage.content,
+                tool_calls: assistantMessage.tool_calls,
+              });
+
+              const toolResponseMessages: any[] = [];
+              for (const call of toolCalls) {
+                let args: Record<string, any> = {};
+                try {
+                  args = JSON.parse(call.function.arguments || "{}");
+                } catch {
+                  // Malformed arguments from the model — executeTool below
+                  // fails cleanly on whatever this leaves args as, same as
+                  // a genuinely empty-args call would.
+                }
+
                 const result = await executeTool(
-                  call.name || "",
-                  call.args || {},
+                  call.function.name || "",
+                  args,
                   req.username,
                   ai,
                   kernel.localLlmEndpoint,
-                  { alreadyAttached: !!image, supportsRoundTrip: true }
+                  { alreadyAttached: false, supportsRoundTrip: true }
                 );
 
-                // view_screen can't execute server-side — it needs the connected client to
-                // capture a screenshot and resubmit (see Task 1's design note). End this
-                // turn here rather than feeding a fake function response back to Gemini.
+                // Mirrors the Groq branch's identical handling above.
                 if (result.needsClientAction === "capture_screen") {
                   res.write("data: request_screen\n\n");
                   res.write("data: [DONE]\n\n");
@@ -899,9 +1044,6 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                   return;
                 }
 
-                // display_content executes entirely server-side and just packages a
-                // directive for the dashboard's display panel — relay it over the
-                // existing SSE stream as its own frame (see Task 1's design note).
                 if (result.displayDirective) {
                   res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
                 }
@@ -910,23 +1052,19 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 }
 
                 toolCallsExecuted.push({ name: result.name, ok: result.ok });
-                responseParts.push({
-                  functionResponse: {
-                    name: call.name,
-                    response: result.ok ? { output: result.output } : { error: result.error },
-                  },
+                toolResponseMessages.push({
+                  role: "tool",
+                  tool_call_id: call.id,
+                  content: JSON.stringify(result.ok ? { output: result.output } : { error: result.error }),
                 });
               }
-              contents.push({ role: "user", parts: responseParts });
+              messages.push(...toolResponseMessages);
 
-              response = await generateContentWithFallback(ai, {
-                contents,
-                config: { systemInstruction, tools: [{ functionDeclarations: getAllToolDeclarations() }] },
-              }, chatModels);
-              calls = response.functionCalls || [];
+              response = await cognitionRouter.generateWithFallback(req.username, { messages, tools: geminiTools }, chatModels);
+              toolCalls = response.choices[0]?.message?.tool_calls || [];
             }
 
-            const finalText = response.text || "";
+            const finalText = response.choices[0]?.message?.content || "";
             if (finalText) {
               for (const word of finalText.split(" ")) {
                 fullReply += word + " ";
@@ -983,16 +1121,18 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
         .catch(() => {});
 
       // Write side of style/mistake learning — see reflection.ts. Needs
-      // Groq specifically (structured JSON output), independent of which
-      // backend actually answered the user.
-      if (groq) {
-        reflectAndLearn(groq, message, fullReply).catch(() => {});
+      // structured JSON output from the cognition router, independent of
+      // which backend actually answered the user.
+      if (cognitionRouter) {
+        reflectAndLearn(cognitionRouter, req.username, message, fullReply).catch(() => {});
         // Write side of the structured knowledge graph — see
         // cognition/knowledge-graph.ts. A separate call/schema from
         // reflection above so each stays focused on its own judgment call.
-        knowledgeGraph.extractAndStore(req.username, groq, message, fullReply).catch(() => {});
+        knowledgeGraph.extractAndStore(req.username, cognitionRouter, message, fullReply).catch(() => {});
         // Write side of continuity-of-self — see self/identity.ts.
-        identity.extractSelfReflection(req.username, groq, message, fullReply).catch(() => {});
+        identity.extractSelfReflection(req.username, cognitionRouter, message, fullReply).catch(() => {});
+        // Write side of per-user rapport/tone modeling — see self/rapport.ts.
+        rapport.extractRapportSignal(req.username, cognitionRouter, message).catch(() => {});
       }
     }
 
@@ -1107,16 +1247,19 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
     const kernel = MindKernel.getInstance();
     const session = await getSession(req.username);
     const localEngine = LocalCognitiveEngine.getInstance();
-    if (ai && !kernel.offlineMode) {
+    if (cognitionRouter && !kernel.offlineMode) {
       try {
         observation.incrementMetric("geminiApiCalls");
-        const response = await generateContentWithFallback(ai, {
-          contents: userMsg,
-          config: {
-            systemInstruction: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences.",
-          }
-        });
-        reply = response.text || "";
+        const messages = [
+          {
+            role: "system",
+            content: "You are JARVIS, a highly sophisticated, fluent, warm, and brilliant AI companion with a charismatic, witty, and deeply human-like conversational style. Speak naturally, with refined British poise, warmth, and intellectual depth. Avoid robotic phrasing, dry bullet points, or repetitive templates unless requested. Engage as a true intellectual partner, responding with direct, fluent, and elegant sentences.",
+          },
+          { role: "user", content: userMsg },
+        ];
+        const chatModels = ["gemini:gemini-2.0-flash", "gemini:gemini-1.5-flash"];
+        const response = await cognitionRouter.generateWithFallback(req.username, { messages }, chatModels);
+        reply = response.choices?.[0]?.message?.content || "";
       } catch (err: any) {
         observation.logTelemetry("warn", "Cognition", `Online completion failed: ${err.message}. Reverting to local engine.`);
         const stats = observation.getMetrics();
@@ -1140,12 +1283,6 @@ app.post(["/v1/chat/completions", "/api/v1/chat/completions"], validateApiKey, a
     observation.logTelemetry("error", "Cognition", `Chat completion failed: ${error.message}`);
     res.status(500).json({ error: "Chat completion failed" });
   }
-});
-
-// Shutdown Hook
-app.post("/api/shutdown", validateApiKey, (req, res) => {
-  observation.logTelemetry("warn", "System", "Server shutdown API invoked");
-  res.json({ status: "shutdown initiated" });
 });
 
 // Notifications + Web Push endpoints — see
@@ -1222,32 +1359,58 @@ app.get("*", (req, res) => {
 
 observation.endProfile("startup");
 
-// One-time tickets for /ws/voice — see the comment on the WS handshake below
-// for why this exists instead of the permanent API key riding in the URL.
-const VOICE_TICKET_TTL_MS = 30_000;
-const voiceTickets = new Map<string, { username: string; expiresAt: number }>();
+// One-time tickets for /ws/events — a browser WebSocket handshake can't
+// carry a custom X-API-Key header, so identity crosses via a short-lived,
+// single-use ticket obtained through a normal authenticated POST instead.
+const EVENTS_TICKET_TTL_MS = 30_000;
+const eventsTickets = new Map<string, { username: string; expiresAt: number }>();
 
-function issueVoiceTicket(username: string): string {
+function issueEventsTicket(username: string): string {
   const now = Date.now();
-  for (const [t, v] of voiceTickets) {
-    if (v.expiresAt < now) voiceTickets.delete(t); // opportunistic sweep, keeps the map bounded
+  for (const [t, v] of eventsTickets) {
+    if (v.expiresAt < now) eventsTickets.delete(t);
   }
   const ticket = crypto.randomBytes(24).toString("hex");
-  voiceTickets.set(ticket, { username, expiresAt: now + VOICE_TICKET_TTL_MS });
+  eventsTickets.set(ticket, { username, expiresAt: now + EVENTS_TICKET_TTL_MS });
   return ticket;
 }
 
-function consumeVoiceTicket(ticket: string): string | null {
-  const entry = voiceTickets.get(ticket);
-  voiceTickets.delete(ticket); // single-use regardless of outcome
+function consumeEventsTicket(ticket: string): string | null {
+  const entry = eventsTickets.get(ticket);
+  eventsTickets.delete(ticket);
   if (!entry || entry.expiresAt < Date.now()) return null;
   return entry.username;
 }
 
-app.post("/api/voice-ticket", validateApiKey, (req: any, res: any) => {
-  res.json({ ticket: issueVoiceTicket(req.username) });
+app.post("/api/events-ticket", validateApiKey, requireCapability("hud.read"), (req: any, res: any) => {
+  res.json({ ticket: issueEventsTicket(req.username) });
 });
 
+// Explicitly set PostgreSQL connection parameters to ensure TCP connection to localhost
+// This helps prevent peer authentication errors that can arise from unexpected
+// Unix domain socket attempts or misconfigured host resolution within the container.
+process.env.POSTGRES_HOST = process.env.POSTGRES_HOST || "127.0.0.1";
+process.env.POSTGRES_PORT = process.env.POSTGRES_PORT || "5432";
+
+export const asyncHandler = (fn: Function) => 
+  (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+
+// 2. Global Express Error Handler (Must be attached before starting server)
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error(`[Unhandled Error] ${req.method} ${req.path}:`, err.stack || err.message || err);
+  
+  if (res.headersSent) {
+    return next(err);
+  }
+  
+  res.status(err.status || 500).json({
+    error: err.message || "Internal Server Error"
+  });
+});
+
+// 3. Database initialization and server bootstrap
 initDatabase().then(async (ready) => {
   if (ready) {
     try {
@@ -1261,62 +1424,181 @@ initDatabase().then(async (ready) => {
       observation.logTelemetry("warn", "Database", `Failed to load capability grants: ${err.message}`);
     }
     try {
-      // After migrations (part of initDatabase() above) so system_settings
-      // is guaranteed to exist by the time this queries it. A failure here
-      // just leaves MindKernel's hardcoded defaults in place — see its own
-      // hydrateFromDb() doc comment.
       await MindKernel.getInstance().hydrateFromDb();
     } catch (err: any) {
       observation.logTelemetry("warn", "Database", `Failed to hydrate system settings: ${err.message}`);
     }
   }
-  const httpServer = app.listen(PORT, "0.0.0.0", () => {
+
+  httpServer = app.listen(PORT, "0.0.0.0", () => {
     observation.logTelemetry("info", "System", `🚀 Jarvis OS Server running on http://localhost:${PORT}`);
   });
 
-  // ---------- Voice-native mode (Gemini Live API) ----------
-  // A continuous WebSocket audio stream, not a request/response round trip —
-  // see src/cognition/live-voice.ts. Browser WebSocket clients can't attach a
-  // custom x-api-key header on the handshake, and the permanent admin/user
-  // key deliberately never goes in a URL elsewhere (see the header-only note
-  // above validateApiKey — query strings end up in access logs). So the
-  // handshake instead carries a short-lived, single-use ticket obtained via
-  // a normal authenticated POST (see /api/voice-ticket below); the permanent
-  // key never touches a URL or a log line for this path either.
-  const voiceWss = new WebSocketServer({ server: httpServer, path: "/ws/voice" });
-  voiceWss.on("connection", async (ws, req) => {
+  eventsWss = new WebSocketServer({ noServer: true });
+  eventsWss.on("connection", (ws, req) => {
     const url = new URL(req.url || "", `http://${req.headers.host}`);
     const ticket = url.searchParams.get("ticket");
-    const username = ticket ? consumeVoiceTicket(ticket) : null;
+    const apiKeyHeader = req.headers["x-api-key"];
+
+    let username: string | null = null;
+    if (ticket) {
+      username = consumeEventsTicket(ticket);
+    } else if (
+      typeof apiKeyHeader === "string" &&
+      typeof ADMIN_API_KEY === "string" &&
+      ADMIN_API_KEY.length > 0 &&
+      safeCompare(apiKeyHeader, ADMIN_API_KEY)
+    ) {
+      username = "admin";
+    }
 
     if (!username) {
-      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid/expired voice ticket." }));
-      ws.close();
-      return;
-    }
-    if (!ai) {
-      ws.send(JSON.stringify({ type: "error", message: "Voice-native mode requires GEMINI_API_KEY to be configured." }));
+      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid/expired events ticket, and no valid X-API-Key header." }));
       ws.close();
       return;
     }
 
-    observation.logTelemetry("info", "LiveVoice", `WebSocket voice connection opened for "${username}".`);
-    await liveVoice.bridgeVoiceSession(ai, groq, ws, username);
+    observation.logTelemetry("info", "EventsWs", `/ws/events connection opened for "${username}".`);
+    ws.on("error", (err: any) => {
+      observation.logTelemetry("warn", "EventsWs", `/ws/events socket error for "${username}": ${err.message || err}`);
+    });
+
+    const bus = EventBus.getInstance();
+    const unsubscribers: Array<() => void> = [];
+    const forward = (topic: string) => (payload: any) => {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: "event", topic, payload }));
+      }
+    };
+    // There's no bus-level "subscribe to everything" API by design (Task 1
+    // keeps the bus's interface to per-topic subscribe/publish only) — this
+    // route explicitly stays subscribed to the known Phase-1 topic set,
+    // extended as new publishers are added in later tasks/phases.
+    for (const topic of ["filesystem:changed", "system:anomaly", "voice:queued"]) {
+      unsubscribers.push(bus.subscribe(topic, forward(topic)));
+    }
+
+    ws.on("close", () => {
+      for (const unsub of unsubscribers) unsub();
+      observation.logTelemetry("info", "EventsWs", `/ws/events connection closed for "${username}".`);
+    });
   });
 
+  httpServer.on("upgrade", (req, socket, head) => {
+    let pathname: string;
+    try {
+      ({ pathname } = new URL(req.url || "", `http://${req.headers.host}`));
+    } catch {
+      socket.destroy();
+      return;
+    }
+
+    if (pathname === "/ws/events" && eventsWss) {
+      const wss = eventsWss;
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  if (process.env.JARVIS_FILES_DIR) {
+    fsWatcher = startFilesystemWatcher([process.env.JARVIS_FILES_DIR]);
+  } else {
+    observation.logTelemetry("warn", "FilesystemWatcher", "JARVIS_FILES_DIR not set — filesystem watching disabled.");
+  }
+
+  liveAnalysis = startLiveAnalysis();
+  shadowVerifier = startShadowVerifier();
+  audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
+  voiceSession = startVoiceSession();
+
+  // Opt-in, no-ops if REDIS_URL is unset (every deployment today) -- see
+  // docs/superpowers/plans/2026-08-10-shared-state-multi-tenant-infra.md.
+  // "system:anomaly" is the one topic genuinely useful across instances
+  // today (a real multi-instance deployment doesn't exist yet); extending
+  // this list is a deployment decision for whenever one does.
+  EventBus.getInstance().startCrossInstanceRelay(["system:anomaly"]);
+
   scheduler.startEmailWatchJob();
-  scheduler.startBriefingJob(groq);
-  scheduler.startSelfReflectionJob(groq);
+  scheduler.startBriefingJob(cognitionRouter);
+  scheduler.startSelfReflectionJob(cognitionRouter);
+  scheduler.startWellbeingCheckJob();
   scheduler.startMcpHealthCheckJob();
+  scheduler.startSelfHealthCheckJob();
   scheduler.startVaultSyncJob();
   scheduler.startDataRetentionJob();
 });
 
-// Evict idle per-user session state (working memory, not persisted data) so
-// long-running deployments don't accumulate one SessionState per visitor forever.
+// Periodic session cleanup
 setInterval(() => {
   const pruned = pruneIdleSessions();
   if (pruned > 0) {
     observation.logTelemetry("info", "System", `Pruned ${pruned} idle session(s). ${getActiveSessionCount()} active.`);
   }
 }, 30 * 60 * 1000);
+
+// 4. Global process crash & signal handling
+process.on("uncaughtException", (err: Error) => {
+  console.error("[Fatal System Error] Uncaught Exception:", err.stack || err);
+});
+
+process.on("unhandledRejection", (reason: unknown) => {
+  console.error("[Fatal System Error] Unhandled Rejection:", reason);
+});
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`\n[Server] Received ${signal}. Initiating graceful shutdown...`);
+
+  try {
+    audioClient?.stop?.();
+    fsWatcher?.stop?.();
+    liveAnalysis?.stop?.();
+    shadowVerifier?.stop?.();
+    voiceSession?.stop?.();
+    console.log("[Server] Stopped background workers.");
+  } catch (err) {
+    console.error("[Server] Error stopping background workers:", err);
+  }
+
+  try {
+    if (eventsWss) {
+      eventsWss.clients.forEach((client: any) => {
+        client.close(1001, "Server shutting down");
+      });
+      eventsWss.close();
+      console.log("[Server] Closed WebSocket connections.");
+    }
+  } catch (err) {
+    console.error("[Server] Error closing WebSockets:", err);
+  }
+
+  if (httpServer) {
+    httpServer.close(() => {
+      console.log("[Server] HTTP server closed cleanly.");
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      console.warn("[Server] Forceful shutdown triggered after timeout.");
+      process.exit(1);
+    }, 5000).unref();
+  } else {
+    process.exit(0);
+  }
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
+app.post("/api/shutdown", validateApiKey, (req, res) => {
+  observation.logTelemetry("warn", "System", "Server shutdown API invoked via HTTP");
+  res.json({ status: "shutdown initiated" });
+  gracefulShutdown("HTTP_API");
+});

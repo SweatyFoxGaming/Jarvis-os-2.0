@@ -1,4 +1,4 @@
-import { MindStateTracker, MindState } from "../self/state.js";
+import { MindStateTracker, type MindState } from "../self/state.js";
 import { AttentionEngine } from "../self/attention.js";
 import { ThoughtEngine } from "../self/thought.js";
 import { ConfidenceModel } from "../self/confidence.js";
@@ -24,6 +24,15 @@ const observation = ObservationPlatform.getInstance();
  * LongTermLearningEngine (Jarvis's own learned style/skills — one intelligence,
  * not split per user), and ObservationPlatform (system-wide operational
  * telemetry for admins).
+ *
+ * NOT cross-instance: unlike KeyPool and EventBus, SessionState is held
+ * entirely in process memory and has no Redis-backed path. It was
+ * deliberately left out of the Redis migration because it holds 7
+ * non-serializable engine class instances (workspace, stateTracker, etc.)
+ * -- see docs/superpowers/plans/2026-08-10-shared-state-multi-tenant-infra.md
+ * for the reasoning. A deployment behind a load balancer must route a given
+ * user's requests to the same instance, or session state will appear to
+ * reset.
  */
 export class SessionState {
   public workspace = new CognitiveWorkspace();
@@ -72,23 +81,40 @@ export class SessionState {
 // one piece of session state persisted to Postgres and rehydrated below.
 const SESSION_IDLE_TTL_MS = 1000 * 60 * 60 * 4; // 4 hours
 const sessions = new Map<string, SessionState>();
+const sessionPromises = new Map<string, Promise<SessionState>>();
 
 export async function getSession(username: string): Promise<SessionState> {
   let session = sessions.get(username);
   if (!session) {
-    session = new SessionState();
-    sessions.set(username, session);
-    try {
-      const history = await sessionRepo.loadRecentHistory(username);
-      if (history.length > 0) {
-        session.workspace.userContext.history = history;
-        observation.logTelemetry("info", "Session", `Rehydrated ${history.length} conversation message(s) for "${username}" from Postgres.`);
+    const pending = sessionPromises.get(username);
+    if (pending) {
+      session = await pending;
+    } else {
+      const promise = createSession(username);
+      sessionPromises.set(username, promise);
+      try {
+        session = await promise;
+      } finally {
+        sessionPromises.delete(username);
       }
-    } catch (err: any) {
-      observation.logTelemetry("warn", "Session", `Conversation history rehydration failed for "${username}": ${err.message}`);
+      sessions.set(username, session);
     }
   }
   session.lastActiveAt = Date.now();
+  return session;
+}
+
+async function createSession(username: string): Promise<SessionState> {
+  const session = new SessionState();
+  try {
+    const history = await sessionRepo.loadRecentHistory(username);
+    if (history.length > 0) {
+      session.workspace.userContext.history = history;
+      observation.logTelemetry("info", "Session", `Rehydrated ${history.length} conversation message(s) for "${username}" from Postgres.`);
+    }
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Session", `Conversation history rehydration failed for "${username}": ${err.message}`);
+  }
   return session;
 }
 

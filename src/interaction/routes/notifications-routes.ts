@@ -1,10 +1,10 @@
-import { Router } from "express";
+import { Router } from 'express';
 import { validateApiKey } from "../../kernel/auth-middleware.js";
 import * as scheduler from "../../kernel/scheduler.js";
 import * as push from "../push.js";
 import * as pushRepo from "../../kernel/state/push-subscriptions-repo.js";
 
-export const notificationsRouter = Router();
+export const notificationsRouter: Router = Router();
 
 // Notifications Stream
 notificationsRouter.get("/api/notifications/stream", validateApiKey, (req: any, res: any) => {

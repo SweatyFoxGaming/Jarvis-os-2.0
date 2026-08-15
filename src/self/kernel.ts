@@ -32,6 +32,15 @@ export class MindKernel {
   public localApiKey = "";
   public llmMode = "local-first";
 
+  // 0-100 dials consumed by identity.ts's buildPersonalityPromptFragment to
+  // shape the real system prompt every /api/chat call uses (see
+  // migrations/007_personality_settings.ts) — not display-only, so these
+  // defaults must match the neutral/understated-humor baseline the
+  // hardcoded persona in server.ts already implies today.
+  public personalityFormality = 50;
+  public personalityHumor = 30;
+  public personalityVerbosity = 50;
+
   private constructor() {}
 
   // Called once at server startup, after initDatabase() (and therefore its
@@ -47,6 +56,9 @@ export class MindKernel {
     this.localModelName = row.local_model_name;
     this.localApiKey = row.local_api_key;
     this.llmMode = row.llm_mode;
+    this.personalityFormality = row.personality_formality;
+    this.personalityHumor = row.personality_humor;
+    this.personalityVerbosity = row.personality_verbosity;
   }
 
   // Takes the caller's explicit partial update (only the fields THIS
