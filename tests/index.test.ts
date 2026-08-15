@@ -5525,9 +5525,9 @@ registerTest("VoiceSession", "a real transcript produces a real voice:reply", as
     }),
   } as any;
 
-  const handle = voiceSessionModule.startVoiceSession({ router: fakeRouter, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: fakeRouter });
   try {
-    bus.publish("voice:transcript", { text: "what's the weather like" });
+    bus.publish("voice:transcript", { text: "what's the weather like", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!reply || !reply.text.includes("spoken answer")) {
       throw new Error(`VoiceSession: expected a real voice:reply, got: ${JSON.stringify(reply)}`);
@@ -5546,10 +5546,10 @@ registerTest("VoiceSession", "an empty transcript produces no reply", async () =
   let replyCount = 0;
   const unsubscribe = bus.subscribe("voice:reply", () => { replyCount++; });
 
-  const handle = voiceSessionModule.startVoiceSession({ router: null, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: null });
   try {
-    bus.publish("voice:transcript", { text: "" });
-    bus.publish("voice:transcript", { text: "   " });
+    bus.publish("voice:transcript", { text: "", sessionId: "test-session-1", username: "voice_test_user" });
+    bus.publish("voice:transcript", { text: "   ", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 200));
     if (replyCount !== 0) throw new Error(`VoiceSession: expected no reply for an empty/whitespace-only transcript, got ${replyCount}`);
   } finally {
@@ -5567,9 +5567,9 @@ registerTest("VoiceSession", "a pipeline failure produces an honest spoken error
   const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
 
   const throwingRouter = { generateWithFallback: async () => { throw new Error("simulated failure"); } } as any;
-  const handle = voiceSessionModule.startVoiceSession({ router: throwingRouter, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: throwingRouter });
   try {
-    bus.publish("voice:transcript", { text: "do something" });
+    bus.publish("voice:transcript", { text: "do something", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest error reply, got none");
     if (reply.text.toLowerCase().includes("spoken answer")) {
@@ -5589,9 +5589,9 @@ registerTest("VoiceSession", "no cognition router configured produces an honest 
   let reply: any = null;
   const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
 
-  const handle = voiceSessionModule.startVoiceSession({ router: null, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: null });
   try {
-    bus.publish("voice:transcript", { text: "do something real" });
+    bus.publish("voice:transcript", { text: "do something real", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest decline reply when no router is configured, got none");
   } finally {
@@ -5634,11 +5634,10 @@ registerTest("VoiceSession", "executes a tool call via executeTool before produc
 
   const handle = voiceSessionModule.startVoiceSession({
     router: fakeRouter,
-    username: "voice_test_user",
     executeTool: fakeExecuteTool as any,
   });
   try {
-    bus.publish("voice:transcript", { text: "what time is it" });
+    bus.publish("voice:transcript", { text: "what time is it", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (executedToolName !== "get_time") {
       throw new Error(`VoiceSession: expected executeTool to be called with "get_time", got: ${executedToolName}`);
@@ -5683,7 +5682,6 @@ registerTest("VoiceSession", "a successful voice turn writes to session history,
 
   const handle = voiceSessionModule.startVoiceSession({
     router: fakeRouter,
-    username: "voice_test_user",
     appendMessage: (async (username: string, role: string, content: string) => {
       appendCalls.push({ username, role, content });
     }) as any,
@@ -5695,7 +5693,7 @@ registerTest("VoiceSession", "a successful voice turn writes to session history,
     extractRapportSignal: (async () => { extractRapportSignalCalled = true; }) as any,
   });
   try {
-    bus.publish("voice:transcript", { text: "what's the weather like" });
+    bus.publish("voice:transcript", { text: "what's the weather like", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     if (!reply || !reply.text.includes("spoken answer")) {
@@ -5735,7 +5733,6 @@ registerTest("VoiceSession", "a pipeline failure still logs the user's message b
 
   const handle = voiceSessionModule.startVoiceSession({
     router: throwingRouter,
-    username: "voice_test_user",
     appendMessage: (async (username: string, role: string, content: string) => {
       appendCalls.push({ username, role, content });
     }) as any,
@@ -5747,7 +5744,7 @@ registerTest("VoiceSession", "a pipeline failure still logs the user's message b
     extractRapportSignal: (async () => { learningWriteCalled = true; }) as any,
   });
   try {
-    bus.publish("voice:transcript", { text: "do something" });
+    bus.publish("voice:transcript", { text: "do something", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest error reply, got none");
@@ -5756,6 +5753,82 @@ registerTest("VoiceSession", "a pipeline failure still logs the user's message b
     }
     if (learningWriteCalled) {
       throw new Error("VoiceSession: expected NO memory/learning writes for a pipeline-failure fallback reply");
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "two concurrent sessions never cross-contaminate identity or replies", async () => {
+  // The real bug this guards against: before sessionId/username were
+  // required on every event, a single shared voice-session subscription
+  // had no way to tell two overlapping conversations apart -- everything
+  // silently fell back to one fixed identity. This publishes two
+  // interleaved transcripts under two different sessionId/username pairs
+  // and asserts each one's memory/reply is correctly attributed to ITS
+  // OWN session, never the other's.
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  const repliesBySession: Record<string, string[]> = {};
+  const unsubscribe = bus.subscribe<{ text: string; sessionId: string }>("voice:reply", (payload) => {
+    (repliesBySession[payload.sessionId] ||= []).push(payload.text);
+  });
+
+  const recallCallsByUsername: string[] = [];
+  const fakeRouter = {
+    generateWithFallback: async (username: string) => ({
+      choices: [{ message: { content: `Reply for ${username}`, tool_calls: undefined } }],
+    }),
+  } as any;
+
+  const handle = voiceSessionModule.startVoiceSession({
+    router: fakeRouter,
+    recall: (async (username: string) => { recallCallsByUsername.push(username); return []; }) as any,
+  });
+  try {
+    bus.publish("voice:transcript", { text: "question from alice", sessionId: "session-alice", username: "alice" });
+    bus.publish("voice:transcript", { text: "question from bob", sessionId: "session-bob", username: "bob" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    if (!recallCallsByUsername.includes("alice") || !recallCallsByUsername.includes("bob")) {
+      throw new Error(`VoiceSession: expected recall() called with both real usernames, got: ${JSON.stringify(recallCallsByUsername)}`);
+    }
+    const aliceReplies = repliesBySession["session-alice"] || [];
+    const bobReplies = repliesBySession["session-bob"] || [];
+    if (aliceReplies.length !== 1 || !aliceReplies[0].includes("alice")) {
+      throw new Error(`VoiceSession: expected session-alice's own reply, got: ${JSON.stringify(repliesBySession)}`);
+    }
+    if (bobReplies.length !== 1 || !bobReplies[0].includes("bob")) {
+      throw new Error(`VoiceSession: expected session-bob's own reply, got: ${JSON.stringify(repliesBySession)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "a voice:transcript event missing sessionId or username is dropped, not misattributed", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let replyCount = 0;
+  const unsubscribe = bus.subscribe("voice:reply", () => { replyCount++; });
+
+  const fakeRouter = {
+    generateWithFallback: async () => ({ choices: [{ message: { content: "should never be spoken", tool_calls: undefined } }] }),
+  } as any;
+
+  const handle = voiceSessionModule.startVoiceSession({ router: fakeRouter });
+  try {
+    bus.publish("voice:transcript", { text: "no sessionId here", username: "voice_test_user" });
+    bus.publish("voice:transcript", { text: "no username here", sessionId: "test-session-1" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (replyCount !== 0) {
+      throw new Error(`VoiceSession: expected events missing sessionId/username to be dropped silently, got ${replyCount} replies`);
     }
   } finally {
     unsubscribe();
