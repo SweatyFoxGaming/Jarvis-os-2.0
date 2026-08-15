@@ -48,6 +48,12 @@ function decodeBase64Strict(value: unknown): Buffer | null {
  * JSON control messages on the socket into bus events, and voice:reply
  * bus events back into a "speak" message on the socket.
  *
+ * Session-scoped for multi-user safety: each connection must provide its own
+ * sessionId and username. Every event published by this client carries that
+ * sessionId, and the voice:reply subscription only forwards replies that
+ * match this session's ID — preventing cross-session audio interference where
+ * one user's reply would accidentally be spoken over another's connection.
+ *
  * Reconnects automatically with capped exponential backoff (I5) on any
  * connection failure or drop that wasn't caused by an explicit stop() —
  * see INITIAL_RECONNECT_DELAY_MS/MAX_RECONNECT_DELAY_MS above. Each failed
@@ -56,7 +62,7 @@ function decodeBase64Strict(value: unknown): Buffer | null {
  * client keeps retrying indefinitely instead of giving up after the first
  * failure.
  */
-export function startAudioClient(socketPath: string, sessionId: string = "", username: string = ""): { stop: () => void } {
+export function startAudioClient(socketPath: string, sessionId: string, username: string): { stop: () => void } {
   const bus = EventBus.getInstance();
   let stopped = false;
   let socket: net.Socket | null = null;

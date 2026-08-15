@@ -1531,7 +1531,14 @@ initDatabase().then(async (ready) => {
 
   liveAnalysis = startLiveAnalysis();
   shadowVerifier = startShadowVerifier();
-  audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
+  // TEMPORARY: this whole boot-time singleton call is removed in Task 3
+  // once voice-session-manager.ts replaces it with real per-session
+  // connections opened on demand. "boot-session"/"admin" preserves this
+  // call's exact pre-Task-1 behavior (the old DEFAULT_USERNAME this
+  // pipeline used before session-scoping was "admin") so click-to-talk
+  // keeps working unchanged until Task 3 lands, instead of silently
+  // going dead.
+  audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock", "boot-session", "admin");
   voiceSession = startVoiceSession();
 
   // Opt-in, no-ops if REDIS_URL is unset (every deployment today) -- see
