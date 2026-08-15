@@ -740,6 +740,26 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       executionChain.unshift("Gemini");
     }
 
+    // Guarantee a REAL fallback always runs before the fake one below, no
+    // matter what llmMode chose to prefer. Live-caught 2026-08-15: with
+    // llmMode="strictly-online" and both cloud providers unreachable (in
+    // that incident, actually never configured at all — see the
+    // GROQ_API_KEYS/GEMINI_API_KEYS live-config-gap fix), the chain was
+    // just ["Groq", "Gemini"] with nothing real to fall back to, so every
+    // single chat message silently fabricated a reply via LocalCognitive
+    // Engine's canned "Simulated" step — no error, no degraded-mode
+    // indicator, just fluent-sounding text with zero real reasoning behind
+    // it. llmMode's ordering among LocalLLM/Groq/Gemini is a legitimate
+    // user preference (which backend to try FIRST, for cost/latency/
+    // privacy reasons) and stays untouched here — this only guarantees
+    // LocalLLM (a real, even if slower/less capable model) gets one shot
+    // before ever reaching the fabricated fallback, in every mode
+    // including "strictly-online" and "strictly-local"'s offline branch
+    // above. A no-op whenever LocalLLM is already in the chain.
+    if (!executionChain.includes("LocalLLM")) {
+      executionChain.push("LocalLLM");
+    }
+
     // Always append simulated as final fallback
     executionChain.push("Simulated");
 
