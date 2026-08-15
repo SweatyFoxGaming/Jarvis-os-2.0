@@ -86,6 +86,7 @@
                     <button onclick="switchAdminTab('memory')" id="tab-memory" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">MEMORY INDEX</button>
                     <button onclick="switchAdminTab('telemetry')" id="tab-telemetry" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">TELEMETRY STREAMS</button>
                     <button onclick="switchAdminTab('learning')" id="tab-learning" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">LEARNING CACHE</button>
+                    <button onclick="switchAdminTab('access')" id="tab-access" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">ACCESS CONTROL</button>
                     <button onclick="switchAdminTab('diagnostics')" id="tab-diagnostics" class="px-3.5 py-2 rounded-lg font-mono text-xs font-semibold tracking-wider transition-all duration-200">DIAGNOSTICS HUD</button>
                 </div>
             </div>
@@ -171,6 +172,39 @@
                         <h3 class="font-bold text-xs tracking-widest uppercase mb-1">RESOLVED LINT EXCEPTIONS</h3>
                         <p class="text-[9px] text-secondary tracking-wide mb-3">Cognitive error mitigations index</p>
                         <div id="mistake-log-list" class="space-y-2 font-mono text-[9px] text-secondary flex-1 overflow-y-auto pr-1"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================= TAB CONTENT: ACCESS CONTROL ================= -->
+            <div id="admin-view-access" class="tab-pane space-y-6 hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- Invites -->
+                    <div class="rounded-2xl glass-panel p-5 flex flex-col h-[520px]">
+                        <div class="flex justify-between items-center pb-2 border-b border-white/5 mb-3">
+                            <div>
+                                <h3 class="font-bold text-xs tracking-widest uppercase">PENDING INVITES</h3>
+                                <p class="text-[9px] text-secondary">Invite-only registration · <span id="invite-slots-remaining">-</span> slot(s) remaining</p>
+                            </div>
+                            <button onclick="createInvite()" id="create-invite-btn" class="px-3 py-1.5 bg-success/10 hover:bg-success/20 border border-success/30 text-success hover:text-white font-mono text-[10px] font-bold uppercase rounded-xl transition-all">GENERATE_INVITE</button>
+                        </div>
+                        <div id="new-invite-banner" class="hidden mb-3 p-3 bg-primary/10 border border-primary/25 rounded-xl space-y-2">
+                            <p class="text-[9px] text-secondary uppercase tracking-wider">Share this link — single use, expires in 7 days</p>
+                            <div class="flex gap-2">
+                                <input type="text" id="new-invite-link" readonly class="flex-1 bg-bg border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white">
+                                <button onclick="copyInviteLink()" class="px-3 py-2 bg-primary/15 hover:bg-primary/25 border border-primary/30 text-primary hover:text-white font-mono text-[9px] font-bold uppercase rounded-lg transition-all">COPY</button>
+                            </div>
+                        </div>
+                        <div id="invites-list" class="flex-1 overflow-y-auto font-mono text-xs space-y-2 pr-1"></div>
+                    </div>
+
+                    <!-- Users -->
+                    <div class="rounded-2xl glass-panel p-5 flex flex-col h-[520px]">
+                        <div class="pb-2 border-b border-white/5 mb-3">
+                            <h3 class="font-bold text-xs tracking-widest uppercase">REGISTERED USERS</h3>
+                            <p class="text-[9px] text-secondary">Personal accounts with their own Google connection and data</p>
+                        </div>
+                        <div id="users-list" class="flex-1 overflow-y-auto font-mono text-xs space-y-2 pr-1"></div>
                     </div>
                 </div>
             </div>
@@ -384,6 +418,8 @@
                     await loadAuditLedger();
                 } else if (CURRENT_ADMIN_TAB === 'learning') {
                     await loadLearningCache();
+                } else if (CURRENT_ADMIN_TAB === 'access') {
+                    await loadAccessControl();
                 }
             } catch (err) {
                 console.error('Telemetry fetch failure', err);
@@ -519,6 +555,103 @@
                     `).join('');
                 }
             } catch {}
+        }
+
+        // Access Control (invites + users)
+        // Mirrors invites-routes.ts's MAX_NON_ADMIN_USERS — this is a display
+        // hint only, the server enforces the real cap on invite creation.
+        const MAX_NON_ADMIN_USERS = 10;
+
+        async function loadAccessControl() {
+            try {
+                const [invitesData, usersData] = await Promise.all([
+                    apiCall('/api/invites'),
+                    apiCall('/api/admin/users')
+                ]);
+                renderInvitesList(invitesData.invites);
+                renderUsersList(usersData.users);
+                const remaining = Math.max(0, MAX_NON_ADMIN_USERS - usersData.users.length);
+                document.getElementById('invite-slots-remaining').textContent = remaining;
+                document.getElementById('create-invite-btn').disabled = remaining === 0;
+            } catch {}
+        }
+
+        function renderInvitesList(invites) {
+            const container = document.getElementById('invites-list');
+            if (!invites || invites.length === 0) {
+                container.innerHTML = `<div class="text-secondary/45 text-center py-12 text-[9px] tracking-widest uppercase">No pending invites.</div>`;
+                return;
+            }
+            container.innerHTML = invites.map(inv => `
+                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
+                    <div class="min-w-0">
+                        <div class="text-white font-bold text-[10px]">${escapeHtml(inv.token.slice(0, 12))}&hellip;</div>
+                        <div class="text-secondary text-[9px]">Expires ${new Date(inv.expiresAt).toLocaleString()}</div>
+                    </div>
+                    <button onclick="revokeInvite('${encodeURIComponent(inv.token)}')" class="px-2.5 py-1 bg-danger/10 border border-danger/30 rounded-lg text-danger font-bold hover:bg-danger/20 transition-all font-mono text-[9px] uppercase flex-shrink-0">REVOKE</button>
+                </div>
+            `).join('');
+        }
+
+        function renderUsersList(users) {
+            const container = document.getElementById('users-list');
+            if (!users || users.length === 0) {
+                container.innerHTML = `<div class="text-secondary/45 text-center py-12 text-[9px] tracking-widest uppercase">No personal accounts registered yet.</div>`;
+                return;
+            }
+            container.innerHTML = users.map(u => `
+                <div class="flex items-center justify-between p-3 bg-bg/50 border border-white/5 rounded-xl">
+                    <div class="min-w-0">
+                        <div class="text-white font-bold text-[10px]">${escapeHtml(u.username)}</div>
+                        <div class="text-secondary text-[9px]">Joined ${new Date(u.createdAt).toLocaleDateString()}</div>
+                    </div>
+                    <button onclick="removeAdminUser('${encodeURIComponent(u.username)}')" class="px-2.5 py-1 bg-danger/10 border border-danger/30 rounded-lg text-danger font-bold hover:bg-danger/20 transition-all font-mono text-[9px] uppercase flex-shrink-0">REMOVE</button>
+                </div>
+            `).join('');
+        }
+
+        async function createInvite() {
+            try {
+                const data = await apiCall('/api/invites', { method: 'POST' });
+                const link = `${window.location.origin}/invite/${data.token}`;
+                document.getElementById('new-invite-link').value = link;
+                document.getElementById('new-invite-banner').classList.remove('hidden');
+                showMessage('Invite generated — link ready to share.', 'success');
+                loadAccessControl();
+            } catch (err) {
+                showMessage('Could not create invite: ' + err.message, 'danger');
+            }
+        }
+
+        function copyInviteLink() {
+            const input = document.getElementById('new-invite-link');
+            input.select();
+            navigator.clipboard.writeText(input.value).then(() => {
+                showMessage('Invite link copied to clipboard.', 'info');
+            }).catch(() => {
+                showMessage('Copy failed — select and copy the link manually.', 'warning');
+            });
+        }
+
+        async function revokeInvite(token) {
+            try {
+                await apiCall(`/api/invites/${token}`, { method: 'DELETE' });
+                showMessage('Invite revoked.', 'success');
+                loadAccessControl();
+            } catch (err) {
+                showMessage('Could not revoke invite: ' + err.message, 'danger');
+            }
+        }
+
+        async function removeAdminUser(username) {
+            if (!confirm(`Permanently remove "${decodeURIComponent(username)}"? This deletes their account, personal data, and disconnects their Google account. This cannot be undone.`)) return;
+            try {
+                await apiCall(`/api/admin/users/${username}`, { method: 'DELETE' });
+                showMessage(`User "${decodeURIComponent(username)}" removed.`, 'success');
+                loadAccessControl();
+            } catch (err) {
+                showMessage('Could not remove user: ' + err.message, 'danger');
+            }
         }
 
         // Diagnostics
