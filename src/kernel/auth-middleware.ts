@@ -74,19 +74,38 @@ export function safeCompare(a: string, b: string): boolean {
 // Referer headers, so ?api_key=... is intentionally not accepted.
 export const validateApiKey = async (req: any, res: any, next: any) => {
   const apiKey = req.headers["x-api-key"];
+  // Redact the submitted key itself before it ever reaches telemetry/logs
+  // below -- the comment at the bottom of this function already explains
+  // why the key isn't logged directly; req.headers carries it too, and
+  // both the logTelemetry calls and the console.warn further down used to
+  // serialize the raw headers object, writing every guessed/malicious key
+  // straight into logs.
+  const redactedHeaders = { ...req.headers, "x-api-key": "[REDACTED]" };
   const requestInfo = {
     url: req.originalUrl,
     ip: req.ip,
-    headers: req.headers,
+    headers: redactedHeaders,
   };
 
   if (!apiKey) {
     observation.logTelemetry("warn", "Security", "Access denied: Missing API Key", requestInfo);
     return res.status(401).json({ error: "Missing API Key" });
   }
-  if (!crypto.timingSafeEqual(Buffer.from(ADMIN_API_KEY), Buffer.from(apiKey))) {
+  // A raw x-api-key header appearing twice makes Express hand back a
+  // string[] instead of a string -- coerce to a single string before any
+  // comparison, matching authMiddleware's own normalization above.
+  const submittedKey = Array.isArray(apiKey) ? apiKey[0] : apiKey;
+  // safeCompare, not a raw crypto.timingSafeEqual(...) call: timingSafeEqual
+  // throws a RangeError ("Input buffers must have the same byte length") on
+  // ANY length mismatch, and this function has no try/catch -- an attacker
+  // submitting a key of any length other than ADMIN_API_KEY's own would
+  // trigger an unhandled promise rejection with no response ever sent,
+  // hanging the request/connection indefinitely. Pre-authentication,
+  // trivially remote, on every route this middleware guards. safeCompare
+  // (defined just above) already handles the length-mismatch case safely.
+  if (!submittedKey || !safeCompare(ADMIN_API_KEY, submittedKey)) {
     try {
-      const username = await usersRepo.getUsernameByApiKey(apiKey);
+      const username = await usersRepo.getUsernameByApiKey(submittedKey);
       if (username) {
         req.username = username;
         return next();
@@ -106,7 +125,7 @@ export const validateApiKey = async (req: any, res: any, next: any) => {
     // API key, silently breaking unrelated features like chat.
     console.warn(
       `[Security] Access denied: Invalid API Key for ${req.method} ${req.originalUrl} ` +
-      `from IP ${req.ip}. Headers: ${JSON.stringify(req.headers)}`
+      `from IP ${req.ip}. Headers: ${JSON.stringify(redactedHeaders)}`
     );
     observation.logTelemetry("warn", "Security", "Access denied: Invalid API Key", requestInfo);
     return res.status(401).json({ error: "Invalid API Key" });

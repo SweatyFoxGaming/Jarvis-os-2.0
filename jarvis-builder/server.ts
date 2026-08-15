@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "crypto";
 import {
   createWorkspace,
   execInWorkspace,
@@ -23,6 +24,22 @@ if (!SECRET || SECRET.length < 16) {
   process.exit(1);
 }
 
+// Plain !== on a secret is subject to a timing attack in theory (string
+// comparison short-circuits on the first mismatched byte) — matters more
+// here than most: this is the one process in the stack with access to the
+// host's Docker socket, so a timing side-channel here is a path straight
+// to that. Compares equal-length buffers either way so the time taken
+// doesn't leak how many leading characters of a guess were correct.
+function safeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, Buffer.alloc(bufA.length));
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 // Every route below this line requires the shared secret — this service
 // sits on the internal Docker network only (never published to the host),
 // but the secret is a deliberate second layer: this is the one process in
@@ -31,7 +48,7 @@ if (!SECRET || SECRET.length < 16) {
 app.use((req, res, next) => {
   if (req.path === "/health") return next();
   const provided = req.headers["x-builder-secret"];
-  if (provided !== SECRET) {
+  if (typeof provided !== "string" || !safeCompare(provided, SECRET)) {
     return res.status(401).json({ error: "Missing or invalid X-Builder-Secret header." });
   }
   next();
