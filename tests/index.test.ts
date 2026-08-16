@@ -5915,6 +5915,51 @@ registerTest("VoiceSession", "a voice:transcript event missing sessionId or user
   }
 });
 
+registerTest("VoiceSession", "a slow session's turn does not delay a different session's reply", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startVoiceSession } = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  const replies: Array<{ sessionId: string; at: number }> = [];
+  const unsubscribe = bus.subscribe<{ sessionId: string }>("voice:reply", (payload) => {
+    replies.push({ sessionId: payload.sessionId, at: Date.now() });
+  });
+
+  const fakeRouter = {
+    generateWithFallback: async (username: string) => {
+      if (username === "slow_user") {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+      return { choices: [{ message: { content: `Reply for ${username}`, tool_calls: undefined } }] };
+    },
+  } as any;
+
+  const session = startVoiceSession({ router: fakeRouter, recall: (async () => []) as any });
+  try {
+    const startedAt = Date.now();
+    bus.publish("voice:transcript", { text: "slow question", sessionId: "slow-session", username: "slow_user" });
+    // Published second but must NOT wait behind the slow session above --
+    // this is exactly the fix: independent per-sessionId queues.
+    bus.publish("voice:transcript", { text: "fast question", sessionId: "fast-session", username: "fast_user" });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const fastReply = replies.find((r) => r.sessionId === "fast-session");
+    if (!fastReply) {
+      throw new Error("VoiceSession: expected the fast session's reply well before the slow session's 800ms delay elapses");
+    }
+    if (fastReply.at - startedAt > 500) {
+      throw new Error(`VoiceSession: fast session's reply took ${fastReply.at - startedAt}ms -- it was blocked behind the slow session`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const slowReply = replies.find((r) => r.sessionId === "slow-session");
+    if (!slowReply) throw new Error("VoiceSession: expected the slow session's reply to eventually arrive too");
+  } finally {
+    unsubscribe();
+    session.stop();
+  }
+});
+
 registerTest("VoiceSessionManager", "createVoiceSession returns a unique sessionId per call", async () => {
   const manager = await import("../src/interaction/voice-session-manager.js");
   const id1 = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "alice");
