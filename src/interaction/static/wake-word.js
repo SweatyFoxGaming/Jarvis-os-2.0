@@ -113,10 +113,16 @@ async function startStreamingTurn() {
       endStreamingTurn();
     };
     ws.onerror = () => {
+      if (typeof addNotification === "function") {
+        addNotification("Ambient listening lost its connection to the server.", "danger");
+      }
       endStreamingTurn();
     };
   } catch (err) {
     console.error("Failed to start ambient voice turn:", err);
+    if (typeof addNotification === "function") {
+      addNotification(`Ambient listening failed to start: ${err.message || err}`, "danger");
+    }
     endStreamingTurn();
   }
 }
