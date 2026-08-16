@@ -5992,6 +5992,41 @@ registerTest("VoiceSessionManager", "two real concurrent daemon connections stay
   }
 });
 
+registerTest("VoiceSessionManager", "sendVoiceSessionAudioChunk delegates to the right session's daemon connection, and returns false for an unknown sessionId", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const manager = await import("../src/interaction/voice-session-manager.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-sendchunk-${Date.now()}.sock`);
+  let receivedByDaemon = "";
+  const fakeServer = net.createServer((conn) => {
+    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const sessionId = manager.createVoiceSession(socketPath, "alice");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const pcm = Buffer.from([9, 9, 9]);
+    const sent = manager.sendVoiceSessionAudioChunk(sessionId, pcm);
+    if (sent !== true) throw new Error("VoiceSessionManager: expected sendVoiceSessionAudioChunk to return true for a real session");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const parsed = JSON.parse(receivedByDaemon.trim());
+    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
+      throw new Error(`VoiceSessionManager: expected the chunk to reach the daemon, got: ${receivedByDaemon}`);
+    }
+
+    const sentUnknown = manager.sendVoiceSessionAudioChunk("not-a-real-session-id", pcm);
+    if (sentUnknown !== false) throw new Error("VoiceSessionManager: expected false for an unknown sessionId");
+  } finally {
+    manager.destroyVoiceSession(sessionId);
+    fakeServer.close();
+  }
+});
+
 registerTest("VoiceSessionManager", "a full round trip through the shared startVoiceSession only replies to its own session's daemon", async () => {
   // The proof this codebase was still missing: two independent
   // createVoiceSession calls, each backed by its own fake daemon

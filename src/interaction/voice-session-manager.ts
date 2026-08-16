@@ -6,7 +6,7 @@ const observation = ObservationPlatform.getInstance();
 
 interface ManagedSession {
   username: string;
-  audioClient: { stop: () => void };
+  audioClient: { stop: () => void; sendAudioChunk: (pcmBytes: Buffer) => boolean };
 }
 
 // Module-level by design (not a class) -- there's exactly one process-wide
@@ -42,6 +42,21 @@ export function createVoiceSession(socketPath: string, username: string): string
  */
 export function getVoiceSessionUsername(sessionId: string): string | undefined {
   return activeSessions.get(sessionId)?.username;
+}
+
+/**
+ * Forwards one raw PCM audio chunk into a still-active session's daemon
+ * connection. Returns false (no throw) for an unknown sessionId or a
+ * currently-unwritable connection -- callers (voice-stream-ws.ts) treat
+ * false as "this frame was dropped," not a fatal error, since a session
+ * can legitimately end mid-stream (the daemon fires an utterance-end
+ * transcript, or the browser side disconnects) without every in-flight
+ * frame being a bug.
+ */
+export function sendVoiceSessionAudioChunk(sessionId: string, pcmBytes: Buffer): boolean {
+  const session = activeSessions.get(sessionId);
+  if (!session) return false;
+  return session.audioClient.sendAudioChunk(pcmBytes);
 }
 
 /**
