@@ -15,28 +15,26 @@ import * as rapport from "../self/rapport.js";
 
 const observation = ObservationPlatform.getInstance();
 
-/**
- * One-turn text pipeline for the local voice daemon. Deliberately reuses
- * /api/chat's Groq/CognitionRouter tool-calling shape exactly (server.ts,
- * the "Groq" branch of its execution chain) rather than inventing a new
- * one — same message-building, same executeTool dispatch, same bounded
- * tool-call retry loop, same final-text extraction. It does NOT reuse
- * Gemini Live's bespoke functionResponse/thought_signature handling; that
- * pattern belonged to the old voice path this daemon replaces and is out
- * of scope here.
- *
- * Also mirrors /api/chat's per-turn memory/session-history/learning side
- * effects (I4 fix): sessionRepo.appendMessage for both the user's
- * transcript and the final spoken reply, memoryStore.recall to pull
- * relevant memory into context, and — on a genuine successful reply —
- * memoryStore.remember/reflectAndLearn/knowledgeGraph.extractAndStore/
- * identity.extractSelfReflection/rapport.extractRapportSignal. Without
- * these, a spoken conversation would leave zero trace anywhere text
- * chat's memory/learning draws from, making voice and text two
- * disconnected personas — see handleTranscript() below and the now-
- * deleted src/interaction/live-voice.ts's flushTurn() (git history, commit
- * e97ab96^) for the original version of this same pattern.
- */
+// One-turn text pipeline for the local voice daemon. Deliberately reuses
+// /api/chat's Groq/CognitionRouter tool-calling shape exactly (server.ts,
+// the "Groq" branch of its execution chain) rather than inventing a new
+// one — same message-building, same executeTool dispatch, same bounded
+// tool-call retry loop, same final-text extraction. It does NOT reuse
+// Gemini Live's bespoke functionResponse/thought_signature handling; that
+// pattern belonged to the old voice path this daemon replaces and is out
+// of scope here.
+//
+// Also mirrors /api/chat's per-turn memory/session-history/learning side
+// effects (I4 fix): sessionRepo.appendMessage for both the user's
+// transcript and the final spoken reply, memoryStore.recall to pull
+// relevant memory into context, and — on a genuine successful reply —
+// memoryStore.remember/reflectAndLearn/knowledgeGraph.extractAndStore/
+// identity.extractSelfReflection/rapport.extractRapportSignal. Without
+// these, a spoken conversation would leave zero trace anywhere text
+// chat's memory/learning draws from, making voice and text two
+// disconnected personas — see handleTranscript() below and the now-
+// deleted src/interaction/live-voice.ts's flushTurn() (git history, commit
+// e97ab96^) for the original version of this same pattern.
 
 // Mirrors /api/chat's Groq branch's tool-attached model order exactly
 // (server.ts) — the heavier, more reliably tool-capable model first since
@@ -174,7 +172,7 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
         // leave conversation history missing the reply the user actually
         // heard/saw -- every other reply path already does this.
         deps.appendMessage(username, "assistant", HONEST_PIPELINE_ERROR_REPLY).catch(() => {});
-        bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY, sessionId });
+        bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY, sessionId, username });
       });
   });
 
@@ -201,7 +199,7 @@ async function handleTranscript(text: string, sessionId: string, username: strin
   // persists it the same way /api/chat persists fullReply regardless of
   // whether it came from a real backend or a fallback.
   const publishReply = (replyText: string) => {
-    bus.publish("voice:reply", { text: replyText, sessionId });
+    bus.publish("voice:reply", { text: replyText, sessionId, username });
     deps.appendMessage(username, "assistant", replyText).catch(() => {});
   };
 

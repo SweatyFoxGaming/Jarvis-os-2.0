@@ -9,11 +9,11 @@ export class TtsIntegrationError extends Error {
   }
 }
 
-// Same default the server itself uses to start the daemon bridge (see
-// startAudioClient's call site in src/server.ts) -- kept in sync manually
-// since this module and src/core/audio-client.ts each open their own
-// connection to the same daemon rather than sharing one. Mirrors
-// whisper.ts's identical constant for the STT direction.
+// There's no single call site to stay in sync with anymore -- voice-session-
+// manager.ts's createVoiceSession() takes socketPath as a parameter from its
+// (currently nonexistent) caller, rather than defaulting it anywhere. This
+// constant is just this module's own default for its independent connection
+// to the daemon. Mirrors whisper.ts's identical constant for the STT direction.
 const DEFAULT_VOICE_DAEMON_SOCKET = "/tmp/jarvis-voice/voice.sock";
 
 // The sample rate daemon/models.py's TextToSpeech.synthesize actually

@@ -1,5 +1,8 @@
 import * as crypto from "crypto";
 import { startAudioClient } from "../core/audio-client.js";
+import { ObservationPlatform } from "../kernel/observation.js";
+
+const observation = ObservationPlatform.getInstance();
 
 interface ManagedSession {
   username: string;
@@ -31,17 +34,36 @@ export function createVoiceSession(socketPath: string, username: string): string
 }
 
 /**
+ * Looks up the username a still-active session was created with. Returns
+ * undefined for an unknown/already-destroyed sessionId. This is the
+ * supported sessionId -> username resolution path for future callers (e.g.
+ * Sub-project B) -- the `username` field on ManagedSession is otherwise
+ * write-only today, since no production caller exists yet.
+ */
+export function getVoiceSessionUsername(sessionId: string): string | undefined {
+  return activeSessions.get(sessionId)?.username;
+}
+
+/**
  * Closes a session's daemon connection and forgets it. Returns whether a
  * session with that id actually existed, so a caller can tell "I cleaned
  * up a real session" apart from "there was nothing to clean up" -- e.g. a
  * double-destroy from an overlapping wake-word/timeout race in a future
  * producer.
+ *
+ * Deletes the map entry BEFORE calling stop() (in a finally) so that a
+ * throwing audioClient.stop() can never leave a session permanently stuck
+ * in activeSessions -- without this, a retry would just look it up again
+ * and throw again forever.
  */
 export function destroyVoiceSession(sessionId: string): boolean {
   const session = activeSessions.get(sessionId);
   if (!session) return false;
-  session.audioClient.stop();
-  activeSessions.delete(sessionId);
+  try {
+    activeSessions.delete(sessionId);
+  } finally {
+    session.audioClient.stop();
+  }
   return true;
 }
 
@@ -50,9 +72,23 @@ export function destroyVoiceSession(sessionId: string): boolean {
  * clean process shutdown (see server.ts's SIGTERM handling), so a restart
  * doesn't leave orphaned daemon-side connections lingering until they time
  * out on their own.
+ *
+ * Each session is torn down inside its own try/catch: destroyAllVoiceSessions
+ * sits first in server.ts's shutdown chain, so one session's stop() throwing
+ * must never abort the loop and skip every other session's cleanup (or the
+ * fsWatcher/liveAnalysis/shadowVerifier/voiceSession teardown steps that run
+ * after this call returns).
  */
 export function destroyAllVoiceSessions(): void {
   for (const sessionId of Array.from(activeSessions.keys())) {
-    destroyVoiceSession(sessionId);
+    try {
+      destroyVoiceSession(sessionId);
+    } catch (err: any) {
+      observation.logTelemetry(
+        "error",
+        "VoiceSessionManager",
+        `Failed to cleanly destroy voice session ${sessionId} during shutdown, continuing with the rest: ${err?.message || err}`
+      );
+    }
   }
 }

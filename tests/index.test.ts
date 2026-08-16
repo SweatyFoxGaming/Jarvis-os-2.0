@@ -5922,6 +5922,87 @@ registerTest("VoiceSessionManager", "two real concurrent daemon connections stay
   }
 });
 
+registerTest("VoiceSessionManager", "a full round trip through the shared startVoiceSession only replies to its own session's daemon", async () => {
+  // The proof this codebase was still missing: two independent
+  // createVoiceSession calls, each backed by its own fake daemon
+  // connection, feeding into the ONE shared startVoiceSession subscription
+  // -- and each session's voice:reply reaching only ITS OWN fake daemon
+  // socket, never the other session's. The existing manager tests above
+  // only prove inbound transcript routing (createVoiceSession -> bus); the
+  // existing VoiceSession tests only prove bus-level routing with fake
+  // sessionId strings, no real daemon socket in the loop. Neither composes
+  // into the full round trip this test asserts.
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const manager = await import("../src/interaction/voice-session-manager.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const aliceSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-roundtrip-alice-${Date.now()}.sock`);
+  const bobSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-roundtrip-bob-${Date.now()}.sock`);
+
+  const aliceReceived: string[] = [];
+  const bobReceived: string[] = [];
+  const aliceServer = net.createServer((conn) => {
+    conn.on("data", (data) => { aliceReceived.push(data.toString()); });
+    conn.write(JSON.stringify({ type: "transcript", text: "question from alice" }) + "\n");
+  });
+  const bobServer = net.createServer((conn) => {
+    conn.on("data", (data) => { bobReceived.push(data.toString()); });
+    conn.write(JSON.stringify({ type: "transcript", text: "question from bob" }) + "\n");
+  });
+  await new Promise<void>((resolve) => aliceServer.listen(aliceSocketPath, resolve));
+  await new Promise<void>((resolve) => bobServer.listen(bobSocketPath, resolve));
+
+  const bus = EventBus.getInstance();
+
+  // Deterministic per-username reply, same pattern as the "two concurrent
+  // sessions never cross-contaminate identity or replies" VoiceSession test
+  // above -- so each fake daemon's expected reply text is unambiguous.
+  const fakeRouter = {
+    generateWithFallback: async (username: string) => ({
+      choices: [{ message: { content: `Reply for ${username}`, tool_calls: undefined } }],
+    }),
+  } as any;
+
+  const sessionHandle = voiceSessionModule.startVoiceSession({
+    router: fakeRouter,
+    recall: (async () => []) as any,
+  });
+
+  const aliceSessionId = manager.createVoiceSession(aliceSocketPath, "alice");
+  const bobSessionId = manager.createVoiceSession(bobSocketPath, "bob");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const aliceText = aliceReceived.join("");
+    const bobText = bobReceived.join("");
+
+    if (!aliceText.includes("Reply for alice")) {
+      throw new Error(`VoiceSessionManager: expected alice's fake daemon socket to receive alice's reply, got: ${JSON.stringify(aliceText)}`);
+    }
+    if (aliceText.includes("Reply for bob")) {
+      throw new Error(`VoiceSessionManager: alice's fake daemon socket must never receive bob's reply, got: ${JSON.stringify(aliceText)}`);
+    }
+    if (!bobText.includes("Reply for bob")) {
+      throw new Error(`VoiceSessionManager: expected bob's fake daemon socket to receive bob's reply, got: ${JSON.stringify(bobText)}`);
+    }
+    if (bobText.includes("Reply for alice")) {
+      throw new Error(`VoiceSessionManager: bob's fake daemon socket must never receive alice's reply, got: ${JSON.stringify(bobText)}`);
+    }
+    if (aliceSessionId === bobSessionId) {
+      throw new Error("VoiceSessionManager: expected alice and bob to get distinct sessionIds");
+    }
+  } finally {
+    sessionHandle.stop();
+    manager.destroyVoiceSession(aliceSessionId);
+    manager.destroyVoiceSession(bobSessionId);
+    aliceServer.close();
+    bobServer.close();
+  }
+});
+
 // ---------- HealthWatchdog Tests ----------
 registerTest("HealthWatchdog", "assessSystemHealth reports ok when every dependency is reachable", async () => {
   const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
