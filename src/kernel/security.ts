@@ -51,6 +51,12 @@ export const ALL_CAPABILITIES = [
   "email.personal.send",
   "email.personal.read",
   "tts.speak",
+  // Gates POST /api/voice-stream-ticket (src/server.ts) -- issuing a
+  // short-lived ticket to open the ambient wake-word /ws/voice-stream
+  // WebSocket. Kept separate from tts.speak (reply playback) since a user
+  // could reasonably be granted one without the other (e.g. click-to-talk
+  // only, no ambient listening).
+  "voice.ambient",
   "executive.plan",
   "calendar.read",
   "calendar.write",
@@ -118,6 +124,7 @@ export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "web.search",
   "news.read",
   "tts.speak",
+  "voice.ambient",
   "knowledge.read",
   "identity.read",
   "hud.read",

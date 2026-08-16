@@ -1405,6 +1405,37 @@ app.post("/api/events-ticket", validateApiKey, requireCapability("hud.read"), (r
   res.json({ ticket: issueEventsTicket(req.username) });
 });
 
+// One-time tickets for /ws/voice-stream -- same rationale as the
+// /ws/events tickets immediately above: a browser WebSocket handshake
+// can't carry a custom X-API-Key header, so identity crosses via a
+// short-lived, single-use ticket obtained through a normal authenticated
+// POST instead. Kept as its own Map/TTL rather than reusing eventsTickets
+// so a ticket meant for one WS endpoint can never be replayed against the
+// other.
+const VOICE_STREAM_TICKET_TTL_MS = 30_000;
+const voiceStreamTickets = new Map<string, { username: string; expiresAt: number }>();
+
+function issueVoiceStreamTicket(username: string): string {
+  const now = Date.now();
+  for (const [t, v] of voiceStreamTickets) {
+    if (v.expiresAt < now) voiceStreamTickets.delete(t);
+  }
+  const ticket = crypto.randomBytes(24).toString("hex");
+  voiceStreamTickets.set(ticket, { username, expiresAt: now + VOICE_STREAM_TICKET_TTL_MS });
+  return ticket;
+}
+
+function consumeVoiceStreamTicket(ticket: string): string | null {
+  const entry = voiceStreamTickets.get(ticket);
+  voiceStreamTickets.delete(ticket);
+  if (!entry || entry.expiresAt < Date.now()) return null;
+  return entry.username;
+}
+
+app.post("/api/voice-stream-ticket", validateApiKey, requireCapability("voice.ambient"), (req: any, res: any) => {
+  res.json({ ticket: issueVoiceStreamTicket(req.username) });
+});
+
 // Explicitly set PostgreSQL connection parameters to ensure TCP connection to localhost
 // This helps prevent peer authentication errors that can arise from unexpected
 // Unix domain socket attempts or misconfigured host resolution within the container.

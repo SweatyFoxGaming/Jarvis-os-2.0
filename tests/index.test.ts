@@ -2164,6 +2164,32 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
+registerTest("HTTP Boundary", "POST /api/voice-stream-ticket requires auth and returns a real ticket for a granted admin", async () => {
+  const port = 3024;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, { method: "POST" });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/voice-stream-ticket, got ${noKey.status}`);
+    }
+
+    const adminRes = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (adminRes.status !== 200) {
+      throw new Error(`HTTP Boundary: expected 200 for an admin request, got ${adminRes.status}`);
+    }
+    const body = await adminRes.json();
+    if (typeof body.ticket !== "string" || body.ticket.length === 0) {
+      throw new Error(`HTTP Boundary: expected a real ticket string, got: ${JSON.stringify(body)}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // Finding 8b (first half): GET /auth-url used to call issueOAuthStateTicket
 // unconditionally, before calendar.getAuthUrl() had any chance to fail on a
 // deployment where Google isn't configured — wasting a ticket slot for a
