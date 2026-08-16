@@ -5399,8 +5399,13 @@
 
     console.log("🧠 Jarvis OS Web Console compiled successfully.");
 </script>
-<script type="module" src="vendor/porcupine/porcupine-web.js"></script>
-<script type="module" src="vendor/porcupine/web-voice-processor.js"></script>
+<!-- Classic (non-module) UMD bundle -- exposes window.ort, which
+     openwakeword-engine.js's WakeWordEngine.load() reads directly. -->
+<script src="vendor/onnxruntime-web/ort.wasm.min.js"></script>
+<!-- ES module (uses `export class`) -- also assigns window.WakeWordEngine
+     as a bridge for wake-word.js, a classic script, to consume. See that
+     file's own comment for why it isn't a module itself. -->
+<script type="module" src="openwakeword-engine.js"></script>
 <script src="wake-word.js"></script>
 <script>
   let ambientListeningEnabled = false;

@@ -1,15 +1,20 @@
-// Ambient wake-word listening: Picovoice Porcupine detects "Jarvis"
-// entirely on-device (no network traffic) while enabled and idle. On
-// detection, opens a one-way WebSocket to /ws/voice-stream and streams
-// raw mono 16-bit PCM at 16kHz -- the exact format daemon/models.py's STT
-// expects (see src/core/audio-client.ts's transcribeOverSocket doc
-// comment) -- until the server sends back a "turn_complete" (carrying the
-// complete reply as one base64 WAV blob, already assembled server-side
-// from the daemon's own synthesized audio -- see voice-stream-ws.ts) or
-// "error" control message. Reply playback calls the SAME playAudioBase64
-// this page already uses elsewhere for a server-synthesized reply arriving
-// over a different channel -- this module adds no new audio DECODING or
-// raw-PCM playback code of its own.
+// Ambient wake-word listening: an on-device openWakeWord model ("hey
+// jarvis") detects the wake word entirely locally (no network traffic)
+// while enabled and idle -- see openwakeword-engine.js for the engine
+// itself (a from-scratch port of openWakeWord's real streaming pipeline,
+// since no official/well-maintained browser SDK exists; Picovoice
+// Porcupine, the original choice, turned out to require a company email
+// to even sign up for an AccessKey, which ruled it out for this personal
+// project). On detection, opens a one-way WebSocket to /ws/voice-stream
+// and streams raw mono 16-bit PCM at 16kHz -- the exact format
+// daemon/models.py's STT expects (see src/core/audio-client.ts's
+// transcribeOverSocket doc comment) -- until the server sends back a
+// "turn_complete" (carrying the complete reply as one base64 WAV blob,
+// already assembled server-side from the daemon's own synthesized audio
+// -- see voice-stream-ws.ts) or "error" control message. Reply playback
+// calls the SAME playAudioBase64 this page already uses elsewhere for a
+// server-synthesized reply arriving over a different channel -- this
+// module adds no new audio DECODING or raw-PCM playback code of its own.
 //
 // State machine, one turn at a time:
 //   idle (wake-word listening) -> streaming (WS open, sending PCM)
@@ -17,12 +22,17 @@
 //        message, or on the WS closing for any other reason.
 // A new wake-word detection while already "streaming" is ignored --
 // guarded by the `streaming` flag below -- so a false re-trigger mid-turn
-// can never open a second concurrent stream for the same tab.
+// can never open a second concurrent stream for the same tab. The same
+// flag also gates the ambient mic-processing loop below, so the wake-word
+// engine doesn't spend CPU/inference cycles on audio that's simultaneously
+// being streamed to the server for the active turn.
 
 const TARGET_SAMPLE_RATE = 16000;
 
 let streaming = false;
-let porcupineWorker = null;
+let wakeWordEngine = null;
+let ambientAudioContext = null;
+let ambientMicStream = null;
 let audioContext = null;
 let micStream = null;
 let ws = null;
@@ -171,33 +181,68 @@ function endStreamingTurn() {
     try { ws.close(); } catch {}
     ws = null;
   }
-  // Re-arm wake-word listening for the next "Jarvis."
-  if (porcupineWorker) {
-    porcupineWorker.postMessage({ command: "resume" });
-  }
+  // Nothing to explicitly "resume" -- unlike Porcupine's own pause/resume
+  // protocol, this engine never pauses itself; the ambient mic-processing
+  // loop below already keeps running the whole time listening is enabled,
+  // gated only by the `streaming` flag (which is now false again).
 }
 
 // Public entry points wired to the ambient-listening toggle in index.html.
 async function enableAmbientListening() {
-  if (porcupineWorker) return; // already enabled
-  // Porcupine Web SDK initialization (AccessKey + vendored model files) --
-  // see this task's Prerequisite note. PorcupineWorker is the SDK's own
-  // class, loaded via a <script type="module"> import in index.html
-  // pointed at the vendored src/interaction/static/vendor/porcupine/ files.
-  porcupineWorker = await PorcupineWorkerFactory.create(
-    window.PORCUPINE_ACCESS_KEY,
-    [{ builtin: "Jarvis" }],
-    (detection) => {
-      if (detection) startStreamingTurn();
-    }
-  );
-  await WebVoiceProcessor.subscribe(porcupineWorker);
+  if (wakeWordEngine) return; // already enabled
+
+  // WakeWordEngine is defined in openwakeword-engine.js, loaded via a
+  // <script type="module"> tag in index.html which also assigns it as a
+  // window global for this classic script to use -- see that file's own
+  // comment on why. Model files are the vendored, official openWakeWord
+  // releases (see that file's own license note: CC BY-NC-SA 4.0, personal/
+  // noncommercial use only).
+  const engine = new WakeWordEngine({
+    modelBaseUrl: "vendor/openwakeword/models/",
+    ortWasmPath: "vendor/onnxruntime-web/",
+    detectionThreshold: 0.5,
+  });
+  await engine.load();
+  engine.onDetection = () => {
+    startStreamingTurn();
+  };
+  wakeWordEngine = engine;
+
+  ambientMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  ambientAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const source = ambientAudioContext.createMediaStreamSource(ambientMicStream);
+  const processor = ambientAudioContext.createScriptProcessor(4096, 1, 1);
+
+  processor.onaudioprocess = (event) => {
+    if (!wakeWordEngine || streaming) return; // streaming: skip -- see the state-machine comment at the top of this file
+    const input = event.inputBuffer.getChannelData(0);
+    const pcm16 = downsampleTo16kHzPcm16(input, ambientAudioContext.sampleRate);
+    wakeWordEngine.processSamples(pcm16).catch((err) => {
+      console.error("Wake-word engine processing error:", err);
+    });
+  };
+
+  source.connect(processor);
+  // Same reasoning as startStreamingTurn's identical pattern below: keeps
+  // the audio graph "live" (ScriptProcessorNode requires a destination
+  // connection to fire its callback) without routing the live microphone
+  // audibly out through the speakers.
+  const mutedSink = ambientAudioContext.createGain();
+  mutedSink.gain.value = 0;
+  processor.connect(mutedSink);
+  mutedSink.connect(ambientAudioContext.destination);
 }
 
 function disableAmbientListening() {
-  if (!porcupineWorker) return;
-  WebVoiceProcessor.unsubscribe(porcupineWorker);
-  porcupineWorker.terminate();
-  porcupineWorker = null;
+  if (!wakeWordEngine) return;
+  wakeWordEngine = null; // processor.onaudioprocess checks this and stops feeding samples
+  if (ambientMicStream) {
+    ambientMicStream.getTracks().forEach((track) => track.stop());
+    ambientMicStream = null;
+  }
+  if (ambientAudioContext) {
+    ambientAudioContext.close();
+    ambientAudioContext = null;
+  }
   if (streaming) endStreamingTurn();
 }
