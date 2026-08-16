@@ -2190,6 +2190,57 @@ registerTest("HTTP Boundary", "POST /api/voice-stream-ticket requires auth and r
   }
 });
 
+// The WebSocket-level auth branch for /ws/voice-stream lives inside
+// server.ts's own boot sequence (voiceStreamWss's "connection" handler), not
+// in an independently-importable function -- handleVoiceStreamConnection
+// (covered by the VoiceStreamWs category) starts from an already-known-good
+// username and never sees a ticket. So the only way to exercise the reject
+// path is against a real spawned server, same as the /api/voice-stream-ticket
+// test above. Asserts BOTH halves of the rejection: an error control message
+// is actually sent, and the socket is then closed rather than left hanging
+// (a silently-accepted or hanging unauthenticated connection would be the
+// real bug here).
+registerTest("HTTP Boundary", "WS /ws/voice-stream rejects a connection with no ticket and no valid API key", async () => {
+  const port = 3025; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3024
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const WebSocketCtor = (await import("ws")).default;
+    const ws = new WebSocketCtor(`ws://127.0.0.1:${port}/ws/voice-stream`);
+
+    let errorMessage: any = null;
+    const closed = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 10000);
+      ws.on("message", (data: any) => {
+        try {
+          errorMessage = JSON.parse(data.toString());
+        } catch {
+          errorMessage = { raw: data.toString() };
+        }
+      });
+      ws.on("close", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+      ws.on("error", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+
+    if (!errorMessage || errorMessage.type !== "error") {
+      throw new Error(
+        `HTTP Boundary: expected an "error" control message on an unauthenticated /ws/voice-stream connection, got: ${JSON.stringify(errorMessage)}`
+      );
+    }
+    if (!closed) {
+      throw new Error("HTTP Boundary: unauthenticated /ws/voice-stream connection was left open instead of being closed");
+    }
+    try { ws.close(); } catch {}
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // Finding 8b (first half): GET /auth-url used to call issueOAuthStateTicket
 // unconditionally, before calendar.getAuthUrl() had any chance to fail on a
 // deployment where Google isn't configured — wasting a ticket slot for a

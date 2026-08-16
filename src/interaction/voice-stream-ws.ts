@@ -6,6 +6,16 @@ import { pcm16ToWav, KOKORO_SAMPLE_RATE } from "./tts.js";
 
 const observation = ObservationPlatform.getInstance();
 
+// Hard ceiling on how long one ambient turn may stay open. Nothing else
+// bounds this connection: if the trigger produced silence, an empty
+// transcript, or the daemon's own inference failed, neither
+// voice:speak-done nor voice:error ever fires, so finish() would never
+// run -- leaking the daemon connection and the session-manager entry, and
+// leaving the browser streaming live microphone audio indefinitely. Since
+// /ws/voice-stream is remotely reachable by any authenticated personal
+// user, an unbounded turn is also a trivial resource-exhaustion vector.
+const TURN_TIMEOUT_MS = 60_000;
+
 /**
  * Handles one already-authenticated /ws/voice-stream connection end to
  * end: opens a fresh per-connection voice session, forwards every inbound
@@ -36,10 +46,12 @@ export function handleVoiceStreamConnection(ws: WebSocket, username: string, soc
   let unsubAudioChunk: () => void = () => {};
   let unsubSpeakDone: () => void = () => {};
   let unsubError: () => void = () => {};
+  let turnTimeout: NodeJS.Timeout | undefined;
 
   const finish = (reason: "reply" | "error" | "client-closed", message?: string) => {
     if (closed) return;
     closed = true;
+    if (turnTimeout) clearTimeout(turnTimeout);
     unsubAudioChunk();
     unsubSpeakDone();
     unsubError();
@@ -56,6 +68,14 @@ export function handleVoiceStreamConnection(ws: WebSocket, username: string, soc
     destroyVoiceSession(sessionId);
     observation.logTelemetry("info", "VoiceStreamWs", `/ws/voice-stream session ${sessionId} for "${username}" ended (${reason}).`);
   };
+
+  // Armed before any subscription exists, so finish() can never be reached
+  // (by a bus event or a client close) while the timer is still unset; the
+  // clearTimeout in finish() then makes a normal completion cancel it, and
+  // the `closed` guard means it can never fire twice or after the fact.
+  turnTimeout = setTimeout(() => {
+    finish("error", "Ambient voice turn timed out waiting for a reply");
+  }, TURN_TIMEOUT_MS);
 
   unsubAudioChunk = bus.subscribe<{ sessionId?: string; data?: string }>("voice:audio-chunk", (payload) => {
     if (payload?.sessionId !== sessionId || typeof payload.data !== "string") return;

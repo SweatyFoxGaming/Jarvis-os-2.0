@@ -183,6 +183,31 @@ export async function loadGrantsFromDb(): Promise<void> {
     observation.logTelemetry("info", "Permissions", `Backfilled admin grant(s) for: ${missing.join(", ")}.`);
   }
 
+  // Backfill any DEFAULT_PERSONAL_CAPABILITIES capability a registered
+  // personal user is missing (e.g. voice.ambient, added after they
+  // registered) -- mirrors the admin backfill above exactly, just scoped
+  // to personal accounts instead of ALL_CAPABILITIES. Without this, any
+  // capability added to DEFAULT_PERSONAL_CAPABILITIES after a user's own
+  // registration date silently never reaches them -- registration only
+  // grants the list as it existed at signup time, so they'd get 403s
+  // forever with nothing in the UI explaining why.
+  const backfilledPersonal: string[] = [];
+  for (const [username, userGrants] of grants) {
+    if (username === "admin") continue;
+    const missingPersonal = DEFAULT_PERSONAL_CAPABILITIES.filter(c => !userGrants.has(c));
+    for (const capability of missingPersonal) {
+      await db.query(
+        `INSERT INTO capability_grants (username, capability, granted_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`,
+        [username, capability, "system"]
+      );
+      userGrants.add(capability);
+      backfilledPersonal.push(`${username}:${capability}`);
+    }
+  }
+  if (backfilledPersonal.length > 0) {
+    observation.logTelemetry("info", "Permissions", `Backfilled default personal grant(s) for: ${backfilledPersonal.join(", ")}.`);
+  }
+
   observation.logTelemetry("info", "Permissions", `Loaded ${rows.length} persisted capability grant(s) from Postgres.`);
 }
 

@@ -28,8 +28,17 @@ let micStream = null;
 let ws = null;
 
 async function fetchVoiceStreamTicket() {
-  const apiKey = window.CURRENT_API_KEY; // set elsewhere in index.html's existing auth flow
-  const res = await fetch("/api/voice-stream-ticket", {
+  // Bare global, NOT window.CURRENT_API_KEY: index.html declares it with a
+  // top-level `let` inside a classic <script>, which binds in that script's
+  // own scope and never becomes a window property. This file is likewise a
+  // classic script loaded after it, so the bare identifier resolves through
+  // the shared global scope both scripts run in.
+  const apiKey = CURRENT_API_KEY;
+  // authFetch (index.html) wraps fetch and additionally clears the stale key
+  // and prompts a re-login on a real 401 -- every other authenticated call in
+  // the page goes through it, so this one does too. It does not add the key
+  // header itself; that stays our job.
+  const res = await authFetch("/api/voice-stream-ticket", {
     method: "POST",
     headers: { "X-API-Key": apiKey },
   });
@@ -41,8 +50,9 @@ async function fetchVoiceStreamTicket() {
 }
 
 // Downsamples a Float32Array captured at the AudioContext's native sample
-// rate down to TARGET_SAMPLE_RATE mono 16-bit PCM. Simple linear-interp
-// decimation -- adequate for speech-to-text input (Whisper itself resamples
+// rate down to TARGET_SAMPLE_RATE mono 16-bit PCM. Simple nearest-neighbor
+// decimation (point sampling: each output sample is the nearest input
+// sample, with no interpolation between adjacent samples) -- adequate for speech-to-text input (Whisper itself resamples
 // internally for a lot of its own training data), not audiophile-grade,
 // which this doesn't need to be. This is the OUTBOUND (mic-capture)
 // direction only -- there is no corresponding downstream/decode step in
@@ -99,6 +109,16 @@ async function startStreamingTurn() {
         if (msg.audio && typeof playAudioBase64 === "function") {
           playAudioBase64(msg.mimeType || "audio/wav", msg.audio);
         }
+        // KNOWN, ACCEPTED DEVIATION from the original design intent, which
+        // was to re-arm the wake-word engine only AFTER reply playback ends:
+        // playAudioBase64 (index.html) is async but its promise settles on
+        // `await currentAudioEl.play()`, i.e. when playback STARTS -- it
+        // exposes no completion signal, and its own `onended` handler is
+        // private to it. So endStreamingTurn() re-arms Porcupine immediately
+        // and Jarvis's own spoken reply could in theory self-trigger a new
+        // turn. Fixing it properly means changing playAudioBase64's contract
+        // (a shared function several other callers depend on), which is out
+        // of scope for this fix wave.
         endStreamingTurn();
       } else if (msg.type === "error") {
         console.warn("Ambient voice error:", msg.message);

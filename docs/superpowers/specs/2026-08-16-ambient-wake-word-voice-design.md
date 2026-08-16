@@ -12,6 +12,8 @@ The daemon itself already has unused, purpose-built support for this: `daemon/vo
 
 A user can enable "ambient listening" from their dashboard tab, say "Jarvis," speak, and get a spoken reply — without clicking anything — while their tab stays open. Multiple users can do this concurrently, each fully isolated (built on Sub-project A's guarantees), and a slow reply for one user must not delay another user's reply.
 
+That last guarantee is scoped to the Node layer. This plan removes the Node-level bottleneck (Task 3) that would otherwise serialize every session's cognition/reply regardless of the daemon; the voice daemon's own STT/TTS inference queue (`daemon/voice_engine.py`) is still globally shared across all connections and was explicitly out of scope here (`No daemon-side changes` is a stated Global Constraint). So two users speaking at roughly the same time will still queue behind each other at the daemon's inference layer even though Node/Express no longer serializes them — genuine concurrent-request audio processing would need a separate follow-up.
+
 ## Design, confirmed with the project owner before implementation
 
 ### Where wake-word detection happens
