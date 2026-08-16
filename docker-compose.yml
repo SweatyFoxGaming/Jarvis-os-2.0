@@ -110,6 +110,26 @@ services:
       context: ./daemon
     container_name: jarvis-voice-daemon
     restart: unless-stopped
+    # Passes the host's real ALSA audio devices through to the container --
+    # required for the ambient host-mic listener (Task 3) to reach a
+    # physical mic/speaker at all. Absent or empty on a host with no
+    # AMBIENT_LISTENING_ENABLED intent -- see that env var below, which
+    # gates whether the daemon even tries to open a device, so a host with
+    # no `/dev/snd` (e.g. a cloud VM) still boots cleanly with ambient
+    # listening simply never turned on.
+    devices:
+      - "/dev/snd:/dev/snd"
+    # The container's default user must belong to the host's `audio` GID to
+    # open /dev/snd/* -- exact GID varies per host (verify with `getent
+    # group audio` on the real deploy host and adjust if it isn't 29, the
+    # common Debian/Ubuntu default).
+    group_add:
+      - "29"
+    environment:
+      - AMBIENT_LISTENING_ENABLED=${AMBIENT_LISTENING_ENABLED:-false}
+      - AMBIENT_MIC_DEVICE=${AMBIENT_MIC_DEVICE:-}
+      - AMBIENT_SPEAKER_DEVICE=${AMBIENT_SPEAKER_DEVICE:-}
+      - AMBIENT_WAKE_WORD_THRESHOLD=${AMBIENT_WAKE_WORD_THRESHOLD:-0.5}
     volumes:
       - voice-socket:/tmp/jarvis-voice
       # Persists faster-whisper/Kokoro-82M model weights (downloaded from

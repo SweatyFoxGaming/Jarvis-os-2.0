@@ -24,3 +24,5 @@ kokoro==0.9.4
 soundfile>=0.12.1
 numpy>=1.26.0
 pytest>=8.0.0
+openwakeword==0.6.0
+sounddevice>=0.4.6

@@ -14,6 +14,7 @@ FROM python:3.11-slim
 # a hard runtime dependency for synthesize() to succeed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     espeak-ng \
+    libportaudio2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
