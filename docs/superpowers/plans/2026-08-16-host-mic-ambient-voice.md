@@ -38,16 +38,28 @@
 ```python
 # daemon/tests/test_models.py -- add at the end of the file
 def test_audio_player_calls_the_injected_backend_with_the_right_sample_rate():
+    import numpy as np
+
     calls = []
 
+    # Matches the real sounddevice-shaped call AudioPlayer.play() makes
+    # below: backend.play(audio_array, samplerate=..., device=...) followed
+    # by backend.wait() -- NOT a (pcm_bytes, sample_rate) positional shape.
     class FakeBackend:
-        def play(self, pcm_bytes, sample_rate):
-            calls.append((pcm_bytes, sample_rate))
+        def play(self, data, samplerate=None, device=None):
+            calls.append((data, samplerate, device))
+
+        def wait(self):
+            calls.append("waited")
 
     player = models.AudioPlayer(player_loader=lambda: FakeBackend())
-    player.play(b"\x01\x02\x03\x04", 24000)
+    player.play(b"\x01\x00\x02\x00", 24000)
 
-    assert calls == [(b"\x01\x02\x03\x04", 24000)]
+    assert len(calls) == 2, f"expected one play() call and one wait() call, got: {calls}"
+    data, samplerate, device = calls[0]
+    assert np.array_equal(data, np.array([1, 2], dtype=np.int16)), f"expected the PCM bytes decoded as int16, got: {data}"
+    assert samplerate == 24000
+    assert calls[1] == "waited"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
