@@ -4,10 +4,11 @@ import logging
 import os
 import signal
 import sys
-from typing import Set
+from typing import Callable, Optional, Set
 
 import numpy as np
 
+from ambient_listener import AmbientListener, start_mic_capture
 from models import AudioPlayer, SpeechToText, TextToSpeech, KOKORO_SAMPLE_RATE
 from protocol import (
     ProtocolError,
@@ -24,6 +25,9 @@ SOCKET_PATH = os.environ.get("VOICE_DAEMON_SOCKET", "/tmp/jarvis-voice/voice.soc
 SILENCE_RMS_THRESHOLD = 500
 SPEAK_CHUNK_BYTES = 32000
 MAX_UTTERANCE_BYTES = 2 * 60 * 32000
+AMBIENT_LISTENING_ENABLED = os.environ.get("AMBIENT_LISTENING_ENABLED", "false").lower() == "true"
+AMBIENT_MIC_DEVICE = os.environ.get("AMBIENT_MIC_DEVICE") or None
+AMBIENT_WAKE_WORD_THRESHOLD = float(os.environ.get("AMBIENT_WAKE_WORD_THRESHOLD", "0.5"))
 
 _stt = SpeechToText()
 _tts = TextToSpeech()
@@ -31,6 +35,27 @@ _player = AudioPlayer()
 
 # Track active client writers so we can gracefully close them on shutdown
 _active_writers: Set[asyncio.StreamWriter] = set()
+
+# Set by handle_connection when the Node ambient client's persistent
+# connection identifies itself via a "hello_ambient" message (see the new
+# dispatch case below and Task 4's ambient-daemon-client.ts, which sends
+# it immediately on connect) -- None until Node connects, and cleared back
+# to None in handle_connection's own finally block when THAT connection
+# closes. AmbientListener's on_transcript callback below writes to
+# whichever writer this currently points at; if it's None when a wake word
+# fires (Node hasn't connected yet, or dropped), the transcript is logged
+# and discarded rather than crashing the listener.
+_ambient_writer: Optional[asyncio.StreamWriter] = None
+_ambient_listener: Optional["AmbientListener"] = None
+
+
+async def _dispatch_ambient_transcript(text: str) -> None:
+    if _ambient_writer is None or _ambient_writer.is_closing():
+        log.warning(f"ambient wake word fired but no Node ambient connection is active; discarding transcript: {text!r}")
+        if _ambient_listener is not None:
+            _ambient_listener.turn_complete()
+        return
+    await _write_message(_ambient_writer, {"type": "ambient_transcript", "text": text})
 
 
 class InferenceQueue:
@@ -273,31 +298,39 @@ async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> N
 async def _handle_speak_local(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
     """Synthesizes and plays text DIRECTLY out the host speaker -- unlike
     _handle_speak above, there is no caller waiting to receive audio_chunk
-    frames back; this is the ambient host-mic path's reply mechanism (Task
-    3), where the daemon itself owns playback. Still goes through
-    _inference_queue (Kokoro synthesis is exactly as slow/synchronous here
-    as it is for _handle_speak) but AudioPlayer.play() blocks on real
-    playback duration too -- submitted as its own inference-queue job so a
-    long reply's PLAYBACK time doesn't hold the queue open for OTHER
-    connections' STT/TTS calls, only the synthesis step does."""
+    frames back; this is the ambient host-mic path's reply mechanism. The
+    finally block re-arms AmbientListener regardless of success/failure --
+    only the ambient connection ever sends speak_local (Task 4's
+    ambient-daemon-client.ts), so it's always correct to call
+    turn_complete() once this handler is done, whichever way it ends."""
     text = msg.get("text", "")
-    future, position = await _inference_queue.submit(_tts.synthesize, text)
-    if position > 0:
-        await _write_message(writer, {"type": "queued", "position": position})
     try:
-        audio_bytes = await future
-    except Exception:
-        log.exception(f"TTS synthesis failed for {peer} (speak_local)")
-        return
-    try:
-        await asyncio.to_thread(_player.play, audio_bytes, KOKORO_SAMPLE_RATE)
-    except Exception:
-        log.exception(f"Local playback failed for {peer} (speak_local)")
-        return
-    await _write_message(writer, {"type": "speak_local_done"})
+        future, position = await _inference_queue.submit(_tts.synthesize, text)
+        if position > 0:
+            await _write_message(writer, {"type": "queued", "position": position})
+        try:
+            audio_bytes = await future
+        except Exception:
+            log.exception(f"TTS synthesis failed for {peer} (speak_local)")
+            return
+        try:
+            await asyncio.to_thread(_player.play, audio_bytes, KOKORO_SAMPLE_RATE)
+        except Exception:
+            log.exception(f"Local playback failed for {peer} (speak_local)")
+            return
+        await _write_message(writer, {"type": "speak_local_done"})
+    finally:
+        if _ambient_listener is not None:
+            _ambient_listener.turn_complete()
 
 
 async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    # Declared once, at the top of the function: Python raises a SyntaxError
+    # ("name '_ambient_writer' is assigned to before global declaration") if
+    # `global _ambient_writer` appears more than once in the same function
+    # body at different points, since the first occurrence already makes
+    # every later reference in this function refer to the module-level name.
+    global _ambient_writer
     peer = writer.get_extra_info("peername") or "unix-client"
     log.info(f"connection opened: {peer}")
     _active_writers.add(writer)
@@ -324,6 +357,9 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
                 await _handle_speak_local(writer, msg, peer)
             elif msg_type == "transcribe":
                 await _handle_transcribe(writer, detector, utterance_buffer, peer)
+            elif msg_type == "hello_ambient":
+                _ambient_writer = writer
+                log.info(f"ambient connection identified: {peer}")
             else:
                 log.info(f"received control message: {msg_type}")
     except (ConnectionResetError, BrokenPipeError):
@@ -332,6 +368,8 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         pass
     finally:
         _active_writers.discard(writer)
+        if _ambient_writer is writer:
+            _ambient_writer = None
         try:
             writer.close()
             await writer.wait_closed()
@@ -401,12 +439,54 @@ async def _warm_models() -> None:
         log.exception("model pre-warm failed; models will still lazy-load on first real request")
 
 
+def _make_wake_word_predictor() -> Callable[[np.ndarray], float]:
+    """Real openWakeWord adapter -- wraps openwakeword.Model's predict()
+    call behind AmbientListener's simple `frame -> float` interface.
+    openWakeWord's real Model.predict(frame) takes a 1D int16 numpy array
+    of exactly CHUNK_SAMPLES (1280) samples and returns a dict of
+    {model_name: score} -- verify this against the actually-installed
+    openwakeword==0.6.0 (Task 2) before relying on it; if the real
+    installed API differs, this is the one function that needs to change,
+    everything else in this file is decoupled from openWakeWord's exact
+    shape by AmbientListener's injectable interface.
+    """
+    from openwakeword.model import Model
+    model = Model(wakeword_models=["hey_jarvis"])
+
+    def predict(frame: np.ndarray) -> float:
+        prediction = model.predict(frame)
+        return float(prediction.get("hey_jarvis", 0.0))
+
+    return predict
+
+
 async def main() -> None:
     # Must start from inside this running event loop -- InferenceQueue.start()
     # calls asyncio.create_task, which requires one (unlike the plain
     # Semaphore/Queue construction this replaced, which didn't).
     _inference_queue.start()
     asyncio.create_task(_warm_models())
+
+    if AMBIENT_LISTENING_ENABLED:
+        global _ambient_listener
+        try:
+            frame_queue = start_mic_capture(AMBIENT_MIC_DEVICE)
+            _ambient_listener = AmbientListener(
+                frame_queue=frame_queue,
+                wake_word_predict=_make_wake_word_predictor(),
+                transcribe=_stt.transcribe,
+                on_transcript=_dispatch_ambient_transcript,
+                threshold=AMBIENT_WAKE_WORD_THRESHOLD,
+            )
+            asyncio.create_task(_ambient_listener.run())
+            log.info(f"ambient host-mic listening enabled (device={AMBIENT_MIC_DEVICE or 'default'})")
+        except Exception:
+            log.exception(
+                "failed to start ambient host-mic listening -- AMBIENT_LISTENING_ENABLED is true but the "
+                "mic device could not be opened; the rest of the daemon (click-to-talk STT/TTS) is unaffected"
+            )
+    else:
+        log.info("ambient host-mic listening disabled (AMBIENT_LISTENING_ENABLED is not 'true')")
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
