@@ -212,6 +212,7 @@ async function enableAmbientListening() {
   // of reloading the page.
   let engine = null;
   let micStreamLocal = null;
+  let audioContextLocal = null;
 
   try {
     // WakeWordEngine is defined in openwakeword-engine.js, loaded via a
@@ -232,17 +233,20 @@ async function enableAmbientListening() {
 
     micStreamLocal = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-    // Everything succeeded -- commit state.
-    wakeWordEngine = engine;
-    ambientMicStream = micStreamLocal;
-    ambientAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const source = ambientAudioContext.createMediaStreamSource(ambientMicStream);
-    const processor = ambientAudioContext.createScriptProcessor(4096, 1, 1);
+    // Build the AudioContext and graph on locals too -- if any of this
+    // throws (e.g. createMediaStreamSource on a bad track), module state
+    // must stay exactly as it was before this call, or a stuck
+    // wakeWordEngine would permanently block every future retry via the
+    // early-return above with no way to recover short of reloading the
+    // page.
+    audioContextLocal = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContextLocal.createMediaStreamSource(micStreamLocal);
+    const processor = audioContextLocal.createScriptProcessor(4096, 1, 1);
 
     processor.onaudioprocess = (event) => {
       if (!wakeWordEngine || streaming) return; // streaming: skip -- see the state-machine comment at the top of this file
       const input = event.inputBuffer.getChannelData(0);
-      const pcm16 = downsampleTo16kHzPcm16(input, ambientAudioContext.sampleRate);
+      const pcm16 = downsampleTo16kHzPcm16(input, audioContextLocal.sampleRate);
       wakeWordEngine.processSamples(pcm16).catch((err) => {
         console.error("Wake-word engine processing error:", err);
       });
@@ -253,10 +257,15 @@ async function enableAmbientListening() {
     // the audio graph "live" (ScriptProcessorNode requires a destination
     // connection to fire its callback) without routing the live microphone
     // audibly out through the speakers.
-    const mutedSink = ambientAudioContext.createGain();
+    const mutedSink = audioContextLocal.createGain();
     mutedSink.gain.value = 0;
     processor.connect(mutedSink);
-    mutedSink.connect(ambientAudioContext.destination);
+    mutedSink.connect(audioContextLocal.destination);
+
+    // Everything succeeded -- commit state.
+    wakeWordEngine = engine;
+    ambientMicStream = micStreamLocal;
+    ambientAudioContext = audioContextLocal;
   } catch (err) {
     // Release anything THIS call already acquired before state was
     // committed -- module-level variables were never set on this path, so
@@ -264,6 +273,7 @@ async function enableAmbientListening() {
     // locals directly instead.
     if (engine) await engine.release().catch(() => {});
     if (micStreamLocal) micStreamLocal.getTracks().forEach((track) => track.stop());
+    if (audioContextLocal) await audioContextLocal.close().catch(() => {});
     throw err; // propagates to toggleAmbientListening's own try/catch, which surfaces the notification
   } finally {
     ambientEnabling = false;

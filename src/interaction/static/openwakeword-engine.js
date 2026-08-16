@@ -47,6 +47,12 @@ const EMBEDDING_DIM = 96;
 const FEATURE_BUFFER_MAX_LEN = 120; // ~10s of embedding-feature history
 const CLASSIFIER_WINDOW_SIZE = 16; // embedding vectors consumed per classifier call
 const RAW_BUFFER_MAX_SAMPLES = SAMPLE_RATE * 10; // 10s of raw audio history
+// WakeWordEngine.processSamples backpressure: at ~85ms/chunk, 2 queued
+// calls is already ~170ms of latency added on top of whatever the current
+// in-flight call is taking -- past that, the audio is stale enough that
+// dropping it (rather than growing the queue further) is the right
+// tradeoff for a live wake-word detector.
+const MAX_QUEUED_CHUNKS = 2;
 
 /**
  * Applies openWakeWord's fixed melspectrogram post-transform
@@ -275,6 +281,15 @@ export class WakeWordEngine {
     // used for exactly this class of bug in voice-session.ts's per-session
     // turn queue.
     this._queue = Promise.resolve();
+    // Bounds the chain above: if inference falls behind the ~85ms audio
+    // callback interval, processSamples drops new chunks past this depth
+    // instead of piling up Int16Arrays and promises indefinitely -- stale
+    // audio a backlog that size behind is no longer useful for wake-word
+    // detection anyway.
+    this._queueDepth = 0;
+    // Set by release() so a call already in flight when release() starts
+    // still finishes (release() awaits it), but no NEW call is accepted.
+    this._closed = false;
   }
 
   async load() {
@@ -325,14 +340,27 @@ export class WakeWordEngine {
    * on the latest feature window and fires onDetection when the score
    * crosses detectionThreshold. Calls are serialized (see the `_queue`
    * comment in the constructor) -- a caller that fires this from an audio
-   * callback without awaiting the previous call is still safe.
+   * callback without awaiting the previous call is still safe. Drops the
+   * chunk instead of queueing it once MAX_QUEUED_CHUNKS calls are already
+   * pending (inference falling behind real-time), and no-ops once release()
+   * has been called.
    */
   async processSamples(int16Samples) {
+    if (this._closed) return;
+    if (this._queueDepth >= MAX_QUEUED_CHUNKS) return;
+    this._queueDepth++;
     const run = this._queue.then(() => this._processSamplesSerialized(int16Samples));
     // Swallow rejections here so one failed call doesn't permanently wedge
     // the chain for every future call -- the caller of THIS call still
     // sees the real rejection via the returned `run` promise.
     this._queue = run.catch(() => {});
+    // .catch() here (not on `run` itself) so this bookkeeping chain never
+    // produces its own unhandled rejection -- the caller of THIS call
+    // still sees `run`'s real rejection separately, via the returned
+    // promise above.
+    run.finally(() => {
+      this._queueDepth--;
+    }).catch(() => {});
     return run;
   }
 
@@ -361,9 +389,21 @@ export class WakeWordEngine {
    * which garbage collection alone does NOT reclaim just because the JS
    * reference is dropped -- without this, repeated enable/disable cycles
    * of ambient listening would grow the tab's heap indefinitely.
+   *
+   * `_closed = true` happens synchronously, before any `await` below, so
+   * no processSamples() call still to come can queue new work once
+   * release() has started (see its `_closed` check). Then this awaits
+   * `_queue` itself -- draining whatever call was ALREADY in flight when
+   * release() started -- before touching `extractor`/the sessions. Without
+   * that drain, a `_processSamplesSerialized` call suspended mid-`await`
+   * (e.g. inside `classifierSession.run()`) could resume after this
+   * function has already nulled `extractor` and released the sessions out
+   * from under it.
    */
   async release() {
+    this._closed = true;
     this.onDetection = null;
+    await this._queue.catch(() => {});
     this.extractor = null;
     const sessions = [this.melspecSession, this.embeddingSession, this.classifierSession];
     this.melspecSession = null;
