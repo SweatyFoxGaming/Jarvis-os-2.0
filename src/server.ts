@@ -146,22 +146,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      // 'wasm-unsafe-eval' is required for WebAssembly.instantiate to run
-      // under this CSP at all (the ambient wake-word engine runs
-      // openWakeWord's ONNX models via onnxruntime-web, which is WASM) --
-      // without it, its WASM module load throws a CSP violation in any
-      // browser enforcing this policy strictly. Every resource it needs
-      // (onnxruntime-web's runtime + the melspectrogram/embedding/
-      // hey_jarvis ONNX model files) is vendored locally under
-      // src/interaction/static/vendor/onnxruntime-web/ and
-      // src/interaction/static/vendor/openwakeword/ and served from
-      // 'self', so no connect-src/worker-src change is needed alongside
-      // this -- onnxruntime-web is configured single-threaded
-      // (ort.env.wasm.numThreads = 1, see openwakeword-engine.js), which
-      // avoids needing Cross-Origin-Opener-Policy/Cross-Origin-Embedder-
-      // Policy headers for SharedArrayBuffer that a multi-threaded build
-      // would require.
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "'wasm-unsafe-eval'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
       // Helmet defaults script-src-attr to 'none' — a SEPARATE CSP directive
       // from script-src that governs inline event handler attributes
       // (onclick=, etc.) specifically. This frontend uses 36+ onclick=
