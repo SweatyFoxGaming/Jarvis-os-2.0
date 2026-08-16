@@ -126,6 +126,7 @@ class AudioPlayer:
         self._loader = player_loader or _load_audio_player_backend
         self._backend = None
         self._load_lock = threading.Lock()
+        self._play_lock = threading.Lock()  # Protects concurrent play() calls on the shared audio device
 
     def _ensure_loaded(self):
         if self._backend is None:
@@ -138,5 +139,6 @@ class AudioPlayer:
         import numpy as np
         backend = self._ensure_loaded()
         audio = np.frombuffer(pcm_bytes, dtype=np.int16)
-        backend.play(audio, samplerate=sample_rate, device=_AMBIENT_SPEAKER_DEVICE)
-        backend.wait()
+        with self._play_lock:
+            backend.play(audio, samplerate=sample_rate, device=_AMBIENT_SPEAKER_DEVICE)
+            backend.wait()
