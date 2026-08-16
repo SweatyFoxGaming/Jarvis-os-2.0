@@ -6230,6 +6230,79 @@ registerTest("VoiceSessionManager", "a full round trip through the shared startV
   }
 });
 
+// ---------- AmbientDaemonClient Tests ----------
+registerTest("AmbientDaemonClient", "an ambient_transcript message triggers a real turn and the reply is sent back as speak_local", async () => {
+  const net = await import("net");
+  const os = await import("os");
+  const path = await import("path");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAmbientDaemonClient, AMBIENT_SESSION_ID } = await import("../src/core/ambient-daemon-client.js");
+  const { startVoiceSession } = await import("../src/interaction/voice-session.js");
+
+  const sockPath = path.join(os.tmpdir(), `ambient-test-${Date.now()}.sock`);
+  const server = net.createServer((socket) => {
+    socket.on("data", (data) => {
+      const lines = data.toString("utf-8").split("\n").filter(Boolean);
+      for (const line of lines) {
+        const msg = JSON.parse(line);
+        (server as any)._received = (server as any)._received || [];
+        (server as any)._received.push(msg);
+      }
+    });
+    (server as any)._socket = socket;
+  });
+  await new Promise<void>((resolve) => server.listen(sockPath, resolve));
+
+  const bus = EventBus.getInstance();
+  const voiceSession = startVoiceSession({
+    router: {
+      generateWithFallback: async () => ({
+        choices: [{ message: { content: "Hello, sir.", tool_calls: [] } }],
+      }),
+    } as any,
+    getAllToolDeclarations: () => [],
+    toGroqTools: () => [],
+    executeTool: (async () => ({ ok: true, output: "" })) as any,
+    appendMessage: (async () => {}) as any,
+    recall: (async () => []) as any,
+    remember: (async () => {}) as any,
+    reflectAndLearn: (async () => {}) as any,
+    extractAndStore: (async () => {}) as any,
+    extractSelfReflection: (async () => {}) as any,
+    extractRapportSignal: (async () => {}) as any,
+  });
+
+  const client = startAmbientDaemonClient(sockPath, "alice");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300)); // let the client connect
+
+    const clientSocket = (server as any)._socket as import("net").Socket;
+    clientSocket.write(JSON.stringify({ type: "ambient_transcript", text: "what's the time" }) + "\n");
+
+    let received: any[] = [];
+    for (let i = 0; i < 50; i++) {
+      received = (server as any)._received || [];
+      if (received.some((m) => m.type === "speak_local")) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    const speakLocal = received.find((m) => m.type === "speak_local");
+    if (!speakLocal) {
+      throw new Error(`AmbientDaemonClient: expected a speak_local message, got: ${JSON.stringify(received)}`);
+    }
+    if (speakLocal.text !== "Hello, sir.") {
+      throw new Error(`AmbientDaemonClient: expected the real turn's reply text, got: ${speakLocal.text}`);
+    }
+    if (AMBIENT_SESSION_ID !== "ambient-host") {
+      throw new Error(`AmbientDaemonClient: expected AMBIENT_SESSION_ID to be "ambient-host", got: ${AMBIENT_SESSION_ID}`);
+    }
+  } finally {
+    client.stop();
+    voiceSession.stop();
+    server.close();
+  }
+});
+
 // ---------- VoiceStreamWs Tests ----------
 registerTest("VoiceStreamWs", "forwards inbound binary frames to the daemon as audio_chunk, and ignores an unrelated session's voice:error", async () => {
   const os = await import("os");
