@@ -68,6 +68,7 @@ import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
 import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
 import { destroyAllVoiceSessions } from "./interaction/voice-session-manager.js";
+import { handleVoiceStreamConnection } from "./interaction/voice-stream-ws.js";
 import { startLiveAnalysis } from "./adaptation/live-analysis.js";
 import { startShadowVerifier } from "./executive/shadow-verifier.js";
 import { startVoiceSession } from "./interaction/voice-session.js";
@@ -75,6 +76,7 @@ import type { Request, Response, NextFunction } from 'express';
 
 let httpServer: http.Server | undefined;
 let eventsWss: WebSocketServer | undefined;
+let voiceStreamWss: WebSocketServer | undefined;
 let voiceSession: any;
 let liveAnalysis: any;
 let shadowVerifier: any;
@@ -144,7 +146,15 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+      // 'wasm-unsafe-eval' is required for WebAssembly.instantiate to run
+      // under this CSP at all (Porcupine's wake-word engine is WASM) --
+      // without it, wake-word.js's WASM module load throws a CSP
+      // violation in any browser enforcing this policy strictly. Every
+      // other resource Porcupine needs (its worker script, .wasm binary,
+      // and the "Jarvis" keyword model file) is vendored locally under
+      // src/interaction/static/vendor/porcupine/ and served from 'self',
+      // so no connect-src/worker-src change is needed alongside this.
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "'wasm-unsafe-eval'"],
       // Helmet defaults script-src-attr to 'none' — a SEPARATE CSP directive
       // from script-src that governs inline event handler attributes
       // (onclick=, etc.) specifically. This frontend uses 36+ onclick=
@@ -1405,6 +1415,37 @@ app.post("/api/events-ticket", validateApiKey, requireCapability("hud.read"), (r
   res.json({ ticket: issueEventsTicket(req.username) });
 });
 
+// One-time tickets for /ws/voice-stream -- same rationale as the
+// /ws/events tickets immediately above: a browser WebSocket handshake
+// can't carry a custom X-API-Key header, so identity crosses via a
+// short-lived, single-use ticket obtained through a normal authenticated
+// POST instead. Kept as its own Map/TTL rather than reusing eventsTickets
+// so a ticket meant for one WS endpoint can never be replayed against the
+// other.
+const VOICE_STREAM_TICKET_TTL_MS = 30_000;
+const voiceStreamTickets = new Map<string, { username: string; expiresAt: number }>();
+
+function issueVoiceStreamTicket(username: string): string {
+  const now = Date.now();
+  for (const [t, v] of voiceStreamTickets) {
+    if (v.expiresAt < now) voiceStreamTickets.delete(t);
+  }
+  const ticket = crypto.randomBytes(24).toString("hex");
+  voiceStreamTickets.set(ticket, { username, expiresAt: now + VOICE_STREAM_TICKET_TTL_MS });
+  return ticket;
+}
+
+function consumeVoiceStreamTicket(ticket: string): string | null {
+  const entry = voiceStreamTickets.get(ticket);
+  voiceStreamTickets.delete(ticket);
+  if (!entry || entry.expiresAt < Date.now()) return null;
+  return entry.username;
+}
+
+app.post("/api/voice-stream-ticket", validateApiKey, requireCapability("voice.ambient"), (req: any, res: any) => {
+  res.json({ ticket: issueVoiceStreamTicket(req.username) });
+});
+
 // Explicitly set PostgreSQL connection parameters to ensure TCP connection to localhost
 // This helps prevent peer authentication errors that can arise from unexpected
 // Unix domain socket attempts or misconfigured host resolution within the container.
@@ -1503,6 +1544,34 @@ initDatabase().then(async (ready) => {
     });
   });
 
+  const DEFAULT_VOICE_DAEMON_SOCKET = "/tmp/jarvis-voice/voice.sock";
+  voiceStreamWss = new WebSocketServer({ noServer: true });
+  voiceStreamWss.on("connection", (ws, req) => {
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    const ticket = url.searchParams.get("ticket");
+    const apiKeyHeader = req.headers["x-api-key"];
+
+    let username: string | null = null;
+    if (ticket) {
+      username = consumeVoiceStreamTicket(ticket);
+    } else if (
+      typeof apiKeyHeader === "string" &&
+      typeof ADMIN_API_KEY === "string" &&
+      ADMIN_API_KEY.length > 0 &&
+      safeCompare(apiKeyHeader, ADMIN_API_KEY)
+    ) {
+      username = "admin";
+    }
+
+    if (!username) {
+      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid/expired voice-stream ticket, and no valid X-API-Key header." }));
+      ws.close();
+      return;
+    }
+
+    handleVoiceStreamConnection(ws, username, process.env.VOICE_DAEMON_SOCKET || DEFAULT_VOICE_DAEMON_SOCKET);
+  });
+
   httpServer.on("upgrade", (req, socket, head) => {
     let pathname: string;
     try {
@@ -1514,6 +1583,11 @@ initDatabase().then(async (ready) => {
 
     if (pathname === "/ws/events" && eventsWss) {
       const wss = eventsWss;
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } else if (pathname === "/ws/voice-stream" && voiceStreamWss) {
+      const wss = voiceStreamWss;
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
       });
@@ -1598,8 +1672,17 @@ async function gracefulShutdown(signal: string) {
         client.close(1001, "Server shutting down");
       });
       eventsWss.close();
-      console.log("[Server] Closed WebSocket connections.");
     }
+    if (voiceStreamWss) {
+      // Without this, an open /ws/voice-stream connection outlives
+      // httpServer.close() -- its daemon session and socket stay alive,
+      // and the process never exits cleanly on its own.
+      voiceStreamWss.clients.forEach((client: any) => {
+        client.close(1001, "Server shutting down");
+      });
+      voiceStreamWss.close();
+    }
+    console.log("[Server] Closed WebSocket connections.");
   } catch (err) {
     console.error("[Server] Error closing WebSockets:", err);
   }

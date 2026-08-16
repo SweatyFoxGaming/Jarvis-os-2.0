@@ -62,7 +62,7 @@ function decodeBase64Strict(value: unknown): Buffer | null {
  * client keeps retrying indefinitely instead of giving up after the first
  * failure.
  */
-export function startAudioClient(socketPath: string, sessionId: string, username: string): { stop: () => void } {
+export function startAudioClient(socketPath: string, sessionId: string, username: string): { stop: () => void; sendAudioChunk: (pcmBytes: Buffer) => boolean } {
   const bus = EventBus.getInstance();
   let stopped = false;
   let socket: net.Socket | null = null;
@@ -136,6 +136,8 @@ export function startAudioClient(socketPath: string, sessionId: string, username
         bus.publish("voice:audio-chunk", { data: msg.data, sessionId });
       } else if (msg.type === "queued") {
         bus.publish("voice:queued", { position: msg.position, sessionId });
+      } else if (msg.type === "speak_done") {
+        bus.publish("voice:speak-done", { sessionId });
       }
     });
 
@@ -178,6 +180,11 @@ export function startAudioClient(socketPath: string, sessionId: string, username
       }
       if (rl) rl.close();
       if (socket) socket.destroy();
+    },
+    sendAudioChunk: (pcmBytes: Buffer): boolean => {
+      if (stopped || !socket || !socket.writable) return false;
+      socket.write(JSON.stringify({ type: "audio_chunk", data: pcmBytes.toString("base64") }) + "\n");
+      return true;
     },
   };
 }

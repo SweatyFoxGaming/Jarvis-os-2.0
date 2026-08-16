@@ -2164,6 +2164,83 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
+registerTest("HTTP Boundary", "POST /api/voice-stream-ticket requires auth and returns a real ticket for a granted admin", async () => {
+  const port = 3024;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+
+  try {
+    const noKey = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, { method: "POST" });
+    if (noKey.status !== 401) {
+      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/voice-stream-ticket, got ${noKey.status}`);
+    }
+
+    const adminRes = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (adminRes.status !== 200) {
+      throw new Error(`HTTP Boundary: expected 200 for an admin request, got ${adminRes.status}`);
+    }
+    const body = await adminRes.json();
+    if (typeof body.ticket !== "string" || body.ticket.length === 0) {
+      throw new Error(`HTTP Boundary: expected a real ticket string, got: ${JSON.stringify(body)}`);
+    }
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
+// The WebSocket-level auth branch for /ws/voice-stream lives inside
+// server.ts's own boot sequence (voiceStreamWss's "connection" handler), not
+// in an independently-importable function -- handleVoiceStreamConnection
+// (covered by the VoiceStreamWs category) starts from an already-known-good
+// username and never sees a ticket. So the only way to exercise the reject
+// path is against a real spawned server, same as the /api/voice-stream-ticket
+// test above. Asserts BOTH halves of the rejection: an error control message
+// is actually sent, and the socket is then closed rather than left hanging
+// (a silently-accepted or hanging unauthenticated connection would be the
+// real bug here).
+registerTest("HTTP Boundary", "WS /ws/voice-stream rejects a connection with no ticket and no valid API key", async () => {
+  const port = 3025; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3024
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
+  try {
+    const WebSocketCtor = (await import("ws")).default;
+    const ws = new WebSocketCtor(`ws://127.0.0.1:${port}/ws/voice-stream`);
+
+    let errorMessage: any = null;
+    const closed = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 10000);
+      ws.on("message", (data: any) => {
+        try {
+          errorMessage = JSON.parse(data.toString());
+        } catch {
+          errorMessage = { raw: data.toString() };
+        }
+      });
+      ws.on("close", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+      ws.on("error", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+
+    if (!errorMessage || errorMessage.type !== "error") {
+      throw new Error(
+        `HTTP Boundary: expected an "error" control message on an unauthenticated /ws/voice-stream connection, got: ${JSON.stringify(errorMessage)}`
+      );
+    }
+    if (!closed) {
+      throw new Error("HTTP Boundary: unauthenticated /ws/voice-stream connection was left open instead of being closed");
+    }
+    try { ws.close(); } catch {}
+  } finally {
+    await stopTestServer(child);
+  }
+});
+
 // Finding 8b (first half): GET /auth-url used to call issueOAuthStateTicket
 // unconditionally, before calendar.getAuthUrl() had any chance to fail on a
 // deployment where Google isn't configured — wasting a ticket slot for a
@@ -5371,6 +5448,76 @@ registerTest("AudioClient", "forwards a voice:reply bus event to the daemon as a
   }
 });
 
+registerTest("AudioClient", "sendAudioChunk writes a correctly-shaped audio_chunk message to the daemon, and no-ops after stop()", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+  let receivedByDaemon = "";
+  const fakeServer = net.createServer((conn) => {
+    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const pcm = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+    const sent = client.sendAudioChunk(pcm);
+    if (sent !== true) throw new Error("AudioClient: expected sendAudioChunk to return true while connected");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const parsed = JSON.parse(receivedByDaemon.trim());
+    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
+      throw new Error(`AudioClient: expected a correctly-shaped audio_chunk message, got: ${receivedByDaemon}`);
+    }
+
+    client.stop();
+    const sentAfterStop = client.sendAudioChunk(pcm);
+    if (sentAfterStop !== false) throw new Error("AudioClient: expected sendAudioChunk to return false after stop()");
+  } finally {
+    client.stop();
+    fakeServer.close();
+  }
+});
+
+registerTest("AudioClient", "publishes voice:speak-done when the daemon sends a speak_done message", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-speakdone-${Date.now()}.sock`);
+  const fakeServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  let publishCount = 0;
+  const unsubscribe = bus.subscribe("voice:speak-done", (payload) => { received = payload; publishCount++; });
+
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (!received || received.sessionId !== "test-session-1") {
+      throw new Error(`AudioClient: expected a voice:speak-done publish with sessionId, got: ${JSON.stringify(received)}`);
+    }
+    if (publishCount !== 1) {
+      throw new Error(`AudioClient: expected exactly 1 voice:speak-done publish, got ${publishCount}`);
+    }
+  } finally {
+    unsubscribe();
+    client.stop();
+    fakeServer.close();
+  }
+});
+
 registerTest("AudioClient", "publishes voice:audio-chunk when the daemon sends an audio_chunk message", async () => {
   const os = await import("os");
   const path = await import("path");
@@ -5845,6 +5992,51 @@ registerTest("VoiceSession", "a voice:transcript event missing sessionId or user
   }
 });
 
+registerTest("VoiceSession", "a slow session's turn does not delay a different session's reply", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startVoiceSession } = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  const replies: Array<{ sessionId: string; at: number }> = [];
+  const unsubscribe = bus.subscribe<{ sessionId: string }>("voice:reply", (payload) => {
+    replies.push({ sessionId: payload.sessionId, at: Date.now() });
+  });
+
+  const fakeRouter = {
+    generateWithFallback: async (username: string) => {
+      if (username === "slow_user") {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+      return { choices: [{ message: { content: `Reply for ${username}`, tool_calls: undefined } }] };
+    },
+  } as any;
+
+  const session = startVoiceSession({ router: fakeRouter, recall: (async () => []) as any });
+  try {
+    const startedAt = Date.now();
+    bus.publish("voice:transcript", { text: "slow question", sessionId: "slow-session", username: "slow_user" });
+    // Published second but must NOT wait behind the slow session above --
+    // this is exactly the fix: independent per-sessionId queues.
+    bus.publish("voice:transcript", { text: "fast question", sessionId: "fast-session", username: "fast_user" });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const fastReply = replies.find((r) => r.sessionId === "fast-session");
+    if (!fastReply) {
+      throw new Error("VoiceSession: expected the fast session's reply well before the slow session's 800ms delay elapses");
+    }
+    if (fastReply.at - startedAt > 500) {
+      throw new Error(`VoiceSession: fast session's reply took ${fastReply.at - startedAt}ms -- it was blocked behind the slow session`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const slowReply = replies.find((r) => r.sessionId === "slow-session");
+    if (!slowReply) throw new Error("VoiceSession: expected the slow session's reply to eventually arrive too");
+  } finally {
+    unsubscribe();
+    session.stop();
+  }
+});
+
 registerTest("VoiceSessionManager", "createVoiceSession returns a unique sessionId per call", async () => {
   const manager = await import("../src/interaction/voice-session-manager.js");
   const id1 = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "alice");
@@ -5919,6 +6111,41 @@ registerTest("VoiceSessionManager", "two real concurrent daemon connections stay
     manager.destroyVoiceSession(bobSessionId);
     aliceServer.close();
     bobServer.close();
+  }
+});
+
+registerTest("VoiceSessionManager", "sendVoiceSessionAudioChunk delegates to the right session's daemon connection, and returns false for an unknown sessionId", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const manager = await import("../src/interaction/voice-session-manager.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-sendchunk-${Date.now()}.sock`);
+  let receivedByDaemon = "";
+  const fakeServer = net.createServer((conn) => {
+    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const sessionId = manager.createVoiceSession(socketPath, "alice");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const pcm = Buffer.from([9, 9, 9]);
+    const sent = manager.sendVoiceSessionAudioChunk(sessionId, pcm);
+    if (sent !== true) throw new Error("VoiceSessionManager: expected sendVoiceSessionAudioChunk to return true for a real session");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const parsed = JSON.parse(receivedByDaemon.trim());
+    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
+      throw new Error(`VoiceSessionManager: expected the chunk to reach the daemon, got: ${receivedByDaemon}`);
+    }
+
+    const sentUnknown = manager.sendVoiceSessionAudioChunk("not-a-real-session-id", pcm);
+    if (sentUnknown !== false) throw new Error("VoiceSessionManager: expected false for an unknown sessionId");
+  } finally {
+    manager.destroyVoiceSession(sessionId);
+    fakeServer.close();
   }
 });
 
@@ -6000,6 +6227,151 @@ registerTest("VoiceSessionManager", "a full round trip through the shared startV
     manager.destroyVoiceSession(bobSessionId);
     aliceServer.close();
     bobServer.close();
+  }
+});
+
+// ---------- VoiceStreamWs Tests ----------
+registerTest("VoiceStreamWs", "forwards inbound binary frames to the daemon as audio_chunk, and ignores an unrelated session's voice:error", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { WebSocketServer, WebSocket } = await import("ws");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
+
+  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsstream-${Date.now()}.sock`);
+  let receivedByDaemon = "";
+  const fakeDaemon = net.createServer((conn) => {
+    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
+  });
+  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
+
+  const testWss = new WebSocketServer({ port: 0 });
+  const port = (testWss.address() as any).port;
+  testWss.on("connection", (ws) => {
+    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
+  });
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}`);
+  const clientMessages: any[] = [];
+  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
+  let clientClosed = false;
+  client.on("close", () => { clientClosed = true; });
+
+  try {
+    await new Promise<void>((resolve) => client.on("open", () => resolve()));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const pcm = Buffer.from([1, 2, 3]);
+    client.send(pcm);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const parsed = JSON.parse(receivedByDaemon.trim());
+    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
+      throw new Error(`VoiceStreamWs: expected the frame forwarded as audio_chunk, got: ${receivedByDaemon}`);
+    }
+
+    // This connection's real sessionId is internal (a fresh
+    // crypto.randomUUID() from createVoiceSession) -- there is no public
+    // "list sessions" API by design. The full happy path (matching
+    // sessionId, real turn_complete payload) is proven end to end by the
+    // round-trip test below; this test only proves the session-scoping
+    // guard itself: an event for a sessionId that can't possibly be this
+    // connection's must never affect it.
+    const bus = EventBus.getInstance();
+    bus.publish("voice:error", { message: "not for this connection", sessionId: "definitely-not-this-sessions-id" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (clientClosed) {
+      throw new Error("VoiceStreamWs: an unrelated session's voice:error must not close this connection");
+    }
+  } finally {
+    client.close();
+    testWss.close();
+    fakeDaemon.close();
+  }
+});
+
+registerTest("VoiceStreamWs", "a full round trip: connect, stream audio, daemon transcribes and synthesizes, turn_complete carries a real playable WAV", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const readline = await import("readline");
+  const { WebSocketServer, WebSocket } = await import("ws");
+  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
+  const { startVoiceSession } = await import("../src/interaction/voice-session.js");
+
+  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsroundtrip-${Date.now()}.sock`);
+  const fakeReplyPcm = Buffer.from([10, 20, 30, 40]);
+  const fakeDaemon = net.createServer((conn) => {
+    const rl = readline.createInterface({ input: conn });
+    let transcriptSent = false;
+    rl.on("line", (line) => {
+      let msg: any;
+      try { msg = JSON.parse(line); } catch { return; }
+      if (msg.type === "audio_chunk" && !transcriptSent) {
+        // Simulate the real daemon's UtteranceEndDetector firing on the
+        // first chunk of mic audio it receives.
+        transcriptSent = true;
+        conn.write(JSON.stringify({ type: "transcript", text: "what time is it" }) + "\n");
+      } else if (msg.type === "speak") {
+        // Simulate synthesis: one audio_chunk of fake reply PCM, then
+        // speak_done, exactly matching daemon/voice_engine.py's real
+        // _handle_speak sequence.
+        conn.write(JSON.stringify({ type: "audio_chunk", data: fakeReplyPcm.toString("base64") }) + "\n");
+        conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+      }
+    });
+  });
+  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
+
+  const fakeRouter = {
+    generateWithFallback: async () => ({
+      choices: [{ message: { content: "It's time to build.", tool_calls: undefined } }],
+    }),
+  } as any;
+  const sessionHandle = startVoiceSession({ router: fakeRouter, recall: (async () => []) as any });
+
+  const testWss = new WebSocketServer({ port: 0 });
+  const port = (testWss.address() as any).port;
+  testWss.on("connection", (ws) => {
+    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
+  });
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}`);
+  const clientMessages: any[] = [];
+  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
+  const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
+
+  try {
+    await new Promise<void>((resolve) => client.on("open", () => resolve()));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    client.send(Buffer.from([1, 2, 3, 4]));
+
+    await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for the connection to close")), 3000))]);
+
+    const turnComplete = clientMessages.find((m) => m.type === "turn_complete");
+    if (!turnComplete) {
+      throw new Error(`VoiceStreamWs: expected a turn_complete message before close, got: ${JSON.stringify(clientMessages)}`);
+    }
+    if (turnComplete.mimeType !== "audio/wav" || typeof turnComplete.audio !== "string") {
+      throw new Error(`VoiceStreamWs: expected turn_complete to carry a base64 audio/wav payload, got: ${JSON.stringify(turnComplete)}`);
+    }
+    const wavBytes = Buffer.from(turnComplete.audio, "base64");
+    // A valid minimal WAV: "RIFF" header, "WAVE" format tag, and the raw
+    // PCM bytes present verbatim after the 44-byte header -- proving this
+    // is a real, well-formed container built from the exact bytes the
+    // fake daemon sent, not a stub or an empty buffer.
+    if (wavBytes.toString("ascii", 0, 4) !== "RIFF" || wavBytes.toString("ascii", 8, 12) !== "WAVE") {
+      throw new Error("VoiceStreamWs: turn_complete's audio is not a well-formed WAV file");
+    }
+    if (!wavBytes.subarray(44).equals(fakeReplyPcm)) {
+      throw new Error("VoiceStreamWs: expected the WAV's PCM data to match the fake daemon's exact synthesized bytes");
+    }
+  } finally {
+    client.close();
+    testWss.close();
+    fakeDaemon.close();
+    sessionHandle.stop();
   }
 });
 

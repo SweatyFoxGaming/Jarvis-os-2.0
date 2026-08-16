@@ -51,6 +51,12 @@ export const ALL_CAPABILITIES = [
   "email.personal.send",
   "email.personal.read",
   "tts.speak",
+  // Gates POST /api/voice-stream-ticket (src/server.ts) -- issuing a
+  // short-lived ticket to open the ambient wake-word /ws/voice-stream
+  // WebSocket. Kept separate from tts.speak (reply playback) since a user
+  // could reasonably be granted one without the other (e.g. click-to-talk
+  // only, no ambient listening).
+  "voice.ambient",
   "executive.plan",
   "calendar.read",
   "calendar.write",
@@ -118,6 +124,7 @@ export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "web.search",
   "news.read",
   "tts.speak",
+  "voice.ambient",
   "knowledge.read",
   "identity.read",
   "hud.read",
@@ -174,6 +181,31 @@ export async function loadGrantsFromDb(): Promise<void> {
     }
     grants.set("admin", adminGrants);
     observation.logTelemetry("info", "Permissions", `Backfilled admin grant(s) for: ${missing.join(", ")}.`);
+  }
+
+  // Backfill any DEFAULT_PERSONAL_CAPABILITIES capability a registered
+  // personal user is missing (e.g. voice.ambient, added after they
+  // registered) -- mirrors the admin backfill above exactly, just scoped
+  // to personal accounts instead of ALL_CAPABILITIES. Without this, any
+  // capability added to DEFAULT_PERSONAL_CAPABILITIES after a user's own
+  // registration date silently never reaches them -- registration only
+  // grants the list as it existed at signup time, so they'd get 403s
+  // forever with nothing in the UI explaining why.
+  const backfilledPersonal: string[] = [];
+  for (const [username, userGrants] of grants) {
+    if (username === "admin") continue;
+    const missingPersonal = DEFAULT_PERSONAL_CAPABILITIES.filter(c => !userGrants.has(c));
+    for (const capability of missingPersonal) {
+      await db.query(
+        `INSERT INTO capability_grants (username, capability, granted_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`,
+        [username, capability, "system"]
+      );
+      userGrants.add(capability);
+      backfilledPersonal.push(`${username}:${capability}`);
+    }
+  }
+  if (backfilledPersonal.length > 0) {
+    observation.logTelemetry("info", "Permissions", `Backfilled default personal grant(s) for: ${backfilledPersonal.join(", ")}.`);
   }
 
   observation.logTelemetry("info", "Permissions", `Loaded ${rows.length} persisted capability grant(s) from Postgres.`);

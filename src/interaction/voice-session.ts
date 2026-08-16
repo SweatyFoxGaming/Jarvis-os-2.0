@@ -127,13 +127,20 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
 
   // Per-call, not module-level: startVoiceSession() returns an independent
   // { stop } handle, so each call (e.g. a fresh instance in tests) must get
-  // its own turn queue rather than sharing one across every call this
-  // process ever makes. Turns from DIFFERENT sessions still share this one
-  // queue (this is the one shared subscription every session's transcripts
-  // flow through) -- that's fine, it just means concurrent sessions' turns
-  // are processed one at a time rather than in parallel, same tradeoff the
-  // single-session version already had for tool-call loops within one turn.
-  let activeTurnPromise: Promise<void> = Promise.resolve();
+  // its own turn-queue registry rather than sharing one across every call
+  // this process ever makes.
+  //
+  // Keyed by sessionId, not shared: two DIFFERENT sessions' turns now run
+  // fully concurrently -- a slow LLM call for one user must never delay
+  // another user's reply (this is the fix for the head-of-line-blocking
+  // finding both the sub-project A final review and CodeRabbit raised).
+  // Turns WITHIN one session still run strictly in order (a session's own
+  // queue is still a promise chain), matching the original single-queue's
+  // per-session guarantee -- only the cross-session sharing is removed.
+  // Entries are deleted once a session's chain goes idle so this map never
+  // grows unbounded across the lifetime of a long-running process serving
+  // many short-lived ambient sessions.
+  const turnQueues = new Map<string, Promise<void>>();
 
   const unsubscribe = bus.subscribe<{ text?: string; sessionId?: string; username?: string }>("voice:transcript", (payload) => {
     const text = typeof payload?.text === "string" ? payload.text.trim() : "";
@@ -154,8 +161,10 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
       return;
     }
 
-    // Queue turns sequentially so tool loops never race.
-    activeTurnPromise = activeTurnPromise
+    // Queue this session's turns sequentially (so its own tool loops never
+    // race), independently of every other session's queue.
+    const priorTurn = turnQueues.get(sessionId) ?? Promise.resolve();
+    const thisTurn = priorTurn
       .then(() => handleTranscript(text, sessionId, username, deps, bus))
       .catch((err: any) => {
         // handleTranscript already catches every failure internally and
@@ -174,6 +183,13 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
         deps.appendMessage(username, "assistant", HONEST_PIPELINE_ERROR_REPLY).catch(() => {});
         bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY, sessionId, username });
       });
+    turnQueues.set(sessionId, thisTurn);
+    thisTurn.then(() => {
+      // Only clear this session's entry if nothing queued a NEWER turn
+      // behind it while it was running -- otherwise a fast second turn
+      // for the same session would lose its place in line.
+      if (turnQueues.get(sessionId) === thisTurn) turnQueues.delete(sessionId);
+    });
   });
 
   return {

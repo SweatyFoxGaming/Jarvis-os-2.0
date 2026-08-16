@@ -12,6 +12,8 @@ The daemon itself already has unused, purpose-built support for this: `daemon/vo
 
 A user can enable "ambient listening" from their dashboard tab, say "Jarvis," speak, and get a spoken reply — without clicking anything — while their tab stays open. Multiple users can do this concurrently, each fully isolated (built on Sub-project A's guarantees), and a slow reply for one user must not delay another user's reply.
 
+That last guarantee is scoped to the Node layer. This plan removes the Node-level bottleneck (Task 3) that would otherwise serialize every session's cognition/reply regardless of the daemon; the voice daemon's own STT/TTS inference queue (`daemon/voice_engine.py`) is still globally shared across all connections and was explicitly out of scope here (`No daemon-side changes` is a stated Global Constraint). So two users speaking at roughly the same time will still queue behind each other at the daemon's inference layer even though Node/Express no longer serializes them — genuine concurrent-request audio processing would need a separate follow-up.
+
 ## Design, confirmed with the project owner before implementation
 
 ### Where wake-word detection happens
@@ -26,8 +28,8 @@ Browser-side. Wraps Porcupine WASM. Exposes an "ambient listening" toggle (new U
 
 1. Guards against re-triggering while a turn is already in progress (ignore new detections until the current WS closes).
 2. Opens a WebSocket to `/ws/voice-stream`.
-3. Streams raw PCM audio chunks (base64-encoded, matching the daemon's existing `audio_chunk` wire format) over that WS until it's told the turn ended (WS close from the server) or a `voice:error` control frame arrives. **Format is load-bearing:** `daemon/models.py`'s STT path never resamples — it assumes the PCM bytes it receives are already mono 16-bit little-endian at the exact sample rate the Whisper model expects. Click-to-talk's one-shot path (`whisper.ts`) gets away with recording whatever format `MediaRecorder` produces because it runs the result through `ffmpeg` server-side first; the streaming `audio_chunk` path has no such conversion step. `wake-word.js` must capture and downsample directly to that target format client-side (e.g. via an `AudioWorklet`/`AudioContext` at the matching sample rate), not just hand `MediaRecorder`'s native output to the socket — the plan must pin down and verify the exact target sample rate against `daemon/models.py`'s actual Whisper model config before implementing this.
-4. On successful completion, plays the reply through the **existing** `/api/integrations/tts/speak` HTTP call the click-to-talk button already uses — this sub-project adds no new audio-*out* plumbing.
+3. Streams raw PCM audio chunks (as binary WS frames) over that WS until it receives a `turn_complete` or `error` control frame (both followed by the server closing the connection). **Format is load-bearing:** `daemon/models.py`'s STT path never resamples — it assumes the PCM bytes it receives are already mono 16-bit little-endian at the exact sample rate the Whisper model expects. Click-to-talk's one-shot path (`whisper.ts`) gets away with recording whatever format `MediaRecorder` produces because it runs the result through `ffmpeg` server-side first; the streaming `audio_chunk` path has no such conversion step. `wake-word.js` must capture and downsample directly to that target format client-side (e.g. via an `AudioWorklet`/`AudioContext` at the matching sample rate), not just hand `MediaRecorder`'s native output to the socket — the plan must pin down and verify the exact target sample rate against `daemon/models.py`'s actual Whisper model config before implementing this.
+4. Plays the reply via the browser's own existing `playAudioBase64(mimeType, base64)` (`index.html:2414` — already used for a server-synthesized reply arriving over a different channel today) once the server's `turn_complete` control message arrives, carrying the complete reply audio as one base64 WAV blob (see `voice-stream-ws.ts` below for how that's produced). **Not** a call to `/api/integrations/tts/speak`: that endpoint is click-to-talk's mechanism (`/api/voice-input` does STT only, then hands the transcript to the same `triggerChatDialogue()` path a typed message takes, and the browser separately requests synthesis for that text reply). This pipeline is different — a session opened via `createVoiceSession` already causes `voice-session.ts`'s `voice:reply` to make `audio-client.ts` send `{"type":"speak", text}` to the **daemon itself**, which synthesizes speech (Kokoro-82M, fixed 24kHz output — see `tts.ts`'s `KOKORO_SAMPLE_RATE`) and streams the result back as `audio_chunk` frames over the same daemon connection, already built and tested in Sub-project A, just never consumed by anything until now. Calling the HTTP TTS endpoint on top of that would synthesize the reply a second time, pointlessly. `wake-word.js` never handles raw PCM on the way back down — the server does the accumulate-and-wrap step once, server-side, and hands the browser something `playAudioBase64` already knows how to play, exactly like every other reply-audio path in this app.
 5. Re-arms wake-word listening once playback finishes (or immediately, on error).
 
 ### New component: `src/interaction/voice-stream-ws.ts`
@@ -40,7 +42,9 @@ Server-side `/ws/voice-stream` WebSocket handler, kept in its own module rather 
 
 **On each inbound WS frame:** forwards it into that session's daemon connection via the new `sendVoiceSessionAudioChunk(sessionId, data)` (see below) — no buffering or VAD logic in this module; the daemon already owns that.
 
-**On `voice:reply` for this session:** closes the WS (signals the browser the turn is over) and calls `destroyVoiceSession`.
+**On `voice:audio-chunk` for this session:** base64-decodes `payload.data` and appends it to an in-memory per-connection buffer — this is one piece of the daemon's already-synthesized reply audio, produced as a side effect of `voice:reply` triggering `audio-client.ts`'s `"speak"` message to the daemon, not a new synthesis request. Nothing is sent to the browser yet; the connection stays open and accumulates.
+
+**On `voice:speak-done` for this session** (the new event `audio-client.ts` now publishes once the daemon signals `"speak_done"` — see above): concatenates the accumulated buffer, wraps it as a proper WAV (reusing `tts.ts`'s existing `pcm16ToWav`/`KOKORO_SAMPLE_RATE`, both exported for this reuse), and sends one JSON control frame — `{"type": "turn_complete", "mimeType": "audio/wav", "audio": "<base64 wav>"}` — then closes the WS and calls `destroyVoiceSession`. This module does not need to subscribe to `voice:reply` directly — `voice:speak-done` is the precise "the audio is actually finished streaming" signal, whereas `voice:reply` alone only means "the text reply exists and synthesis has just been requested," which would mean sending an empty or truncated buffer.
 
 **On `voice:error` for this session:** relays it as a control frame to the browser (so `wake-word.js` can surface a notification and re-arm instead of hanging), then closes the WS and calls `destroyVoiceSession`.
 
@@ -48,7 +52,14 @@ Server-side `/ws/voice-stream` WebSocket handler, kept in its own module rather 
 
 ### Small addition: `src/core/audio-client.ts`
 
-`startAudioClient`'s returned handle currently exposes only `{ stop }`. Add `sendAudioChunk(base64Data): boolean` alongside it, writing `{"type": "audio_chunk", "data": base64Data}` to the daemon socket (returns `false` if the socket isn't currently writable, mirroring how `stop()` already no-ops safely on a dead connection).
+Two changes:
+
+1. `startAudioClient`'s returned handle currently exposes only `{ stop }`. Add `sendAudioChunk(pcmBytes): boolean` alongside it, writing `{"type": "audio_chunk", "data": <base64 of pcmBytes>}` to the daemon socket (returns `false` if the socket isn't currently writable, mirroring how `stop()` already no-ops safely on a dead connection).
+2. `startAudioClient`'s inbound message handler currently reacts to `"transcript"`, `"audio_chunk"`, and `"queued"` (line 133-137) but silently ignores `"speak_done"` — a real message type the daemon already sends once it's finished writing every `audio_chunk` of a synthesized reply (see `daemon/voice_engine.py`'s `_handle_speak`, and the *separate*, already-existing one-shot `synthesizeOverSocket` helper in this same file, which already does handle it, just on a different short-lived connection). Add a `"speak_done"` branch that publishes a new `voice:speak-done` bus event (`{ sessionId }`) — this is how `voice-stream-ws.ts` (below) knows precisely when the reply audio stream for a turn has actually finished, rather than guessing based on `voice:reply` alone (which fires *before* synthesis starts, not after it completes).
+
+### Small addition: `src/interaction/tts.ts`
+
+Export the existing (currently private) `pcm16ToWav(pcm: Buffer, sampleRate: number): Buffer` and `KOKORO_SAMPLE_RATE` constant — `voice-stream-ws.ts` reuses both to wrap the accumulated reply audio into the same WAV format `/api/integrations/tts/speak` already produces, rather than duplicating this logic.
 
 ### Small addition: `src/interaction/voice-session-manager.ts`
 
@@ -64,8 +75,9 @@ Sub-project A's spec assumed "one active session per username" as a scoping plac
 
 ## Testing approach
 
-- **`voice-stream-ws.ts`**: fake WS client + fake daemon socket (same pattern Sub-project A's tests use) — ticket/API-key auth accepted and rejected, `createVoiceSession`→`destroyVoiceSession` lifecycle on normal completion, on abrupt disconnect, and on `voice:error`; inbound frame forwarding reaches the fake daemon as a correctly-shaped `audio_chunk` message.
+- **`voice-stream-ws.ts`**: fake WS client + fake daemon socket (same pattern Sub-project A's tests use) — ticket/API-key auth accepted and rejected, `createVoiceSession`→`destroyVoiceSession` lifecycle on normal completion, on abrupt disconnect, and on `voice:error`; inbound frame forwarding reaches the fake daemon as a correctly-shaped `audio_chunk` message; a fake daemon sending one or more `audio_chunk` frames followed by `speak_done` results in exactly one `turn_complete` message carrying a valid, correctly-assembled base64 WAV built from those exact bytes, not before and not a truncated/empty one.
 - **`audio-client.ts`'s `sendAudioChunk`**: direct test asserting the exact wire message reaches a fake daemon socket, and that it returns `false` on a non-writable socket instead of throwing.
+- **`audio-client.ts`'s new `voice:speak-done` publish**: a fake daemon sending `{"type": "speak_done"}` results in exactly one `voice:speak-done` bus event carrying this connection's `sessionId`.
 - **`voice-session-manager.ts`'s `sendVoiceSessionAudioChunk`**: returns `false` for an unknown `sessionId`; delegates correctly for a real one.
 - **`voice-session.ts`'s per-session queueing**: two sessions, one with an artificially delayed fake router response, asserting the fast session's reply is not delayed by the slow one — this is the test CodeRabbit's finding on Sub-project A asked for, now finally reachable since there's a real reason two sessions run concurrently.
 - **Full round-trip through the WS layer**: extend Sub-project A's existing two-fake-daemon round-trip isolation test to go through `voice-stream-ws.ts` instead of calling `createVoiceSession` directly — proves the whole chain (WS in → daemon → transcript → reply → WS closes → session destroyed) end to end for two concurrent users.
@@ -74,6 +86,5 @@ Sub-project A's spec assumed "one active session per username" as a scoping plac
 ## Explicitly deferred / not in scope
 
 - True background/system-level listening (native app or browser extension) — tab-open is the accepted model for this sub-project.
-- Real-time streamed TTS playback (relaying the daemon's `audio_chunk` TTS frames back over the WS as they're generated) — reusing the existing HTTP TTS delivery path is sufficient; sub-second reply latency isn't a stated requirement.
-- Any change to click-to-talk (`/api/voice-input`) — untouched, already correct, a separate code path.
+- Any change to click-to-talk (`/api/voice-input`) — untouched, already correct, a separate code path with its own, unrelated reply-audio mechanism (browser-side `/api/integrations/tts/speak` request against a typed-chat-style text reply). This sub-project's reply audio always comes from the daemon's own synthesis, relayed live — there is no separate "streamed vs. HTTP" choice to defer here; live relay of already-synthesized audio is the only mechanism that makes sense once a session exists at all.
 - Custom wake-word training/models — Porcupine's built-in `"Jarvis"` keyword is used as-is.
