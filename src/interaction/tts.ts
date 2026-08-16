@@ -23,7 +23,7 @@ const DEFAULT_VOICE_DAEMON_SOCKET = "/tmp/jarvis-voice/voice.sock";
 // when Task 2 wrote its own live-check .wav via soundfile). The daemon
 // sends back bare 16-bit PCM with no header, so this value is required
 // here to wrap it into a real, browser-playable WAV container.
-const KOKORO_SAMPLE_RATE = 24000;
+export const KOKORO_SAMPLE_RATE = 24000;
 const PCM_BITS_PER_SAMPLE = 16;
 const PCM_CHANNELS = 1;
 
@@ -42,7 +42,7 @@ const PCM_CHANNELS = 1;
  * see synthesizeSpeech below) is what makes the daemon's actual output
  * format match what those existing callers already assume.
  */
-function pcm16ToWav(pcm: Buffer, sampleRate: number): Buffer {
+export function pcm16ToWav(pcm: Buffer, sampleRate: number): Buffer {
   const byteRate = (sampleRate * PCM_CHANNELS * PCM_BITS_PER_SAMPLE) / 8;
   const blockAlign = (PCM_CHANNELS * PCM_BITS_PER_SAMPLE) / 8;
   const header = Buffer.alloc(44);

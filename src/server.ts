@@ -68,6 +68,7 @@ import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
 import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
 import { destroyAllVoiceSessions } from "./interaction/voice-session-manager.js";
+import { handleVoiceStreamConnection } from "./interaction/voice-stream-ws.js";
 import { startLiveAnalysis } from "./adaptation/live-analysis.js";
 import { startShadowVerifier } from "./executive/shadow-verifier.js";
 import { startVoiceSession } from "./interaction/voice-session.js";
@@ -75,6 +76,7 @@ import type { Request, Response, NextFunction } from 'express';
 
 let httpServer: http.Server | undefined;
 let eventsWss: WebSocketServer | undefined;
+let voiceStreamWss: WebSocketServer | undefined;
 let voiceSession: any;
 let liveAnalysis: any;
 let shadowVerifier: any;
@@ -1534,6 +1536,34 @@ initDatabase().then(async (ready) => {
     });
   });
 
+  const DEFAULT_VOICE_DAEMON_SOCKET = "/tmp/jarvis-voice/voice.sock";
+  voiceStreamWss = new WebSocketServer({ noServer: true });
+  voiceStreamWss.on("connection", (ws, req) => {
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    const ticket = url.searchParams.get("ticket");
+    const apiKeyHeader = req.headers["x-api-key"];
+
+    let username: string | null = null;
+    if (ticket) {
+      username = consumeVoiceStreamTicket(ticket);
+    } else if (
+      typeof apiKeyHeader === "string" &&
+      typeof ADMIN_API_KEY === "string" &&
+      ADMIN_API_KEY.length > 0 &&
+      safeCompare(apiKeyHeader, ADMIN_API_KEY)
+    ) {
+      username = "admin";
+    }
+
+    if (!username) {
+      ws.send(JSON.stringify({ type: "error", message: "Missing or invalid/expired voice-stream ticket, and no valid X-API-Key header." }));
+      ws.close();
+      return;
+    }
+
+    handleVoiceStreamConnection(ws, username, process.env.VOICE_DAEMON_SOCKET || DEFAULT_VOICE_DAEMON_SOCKET);
+  });
+
   httpServer.on("upgrade", (req, socket, head) => {
     let pathname: string;
     try {
@@ -1545,6 +1575,11 @@ initDatabase().then(async (ready) => {
 
     if (pathname === "/ws/events" && eventsWss) {
       const wss = eventsWss;
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } else if (pathname === "/ws/voice-stream" && voiceStreamWss) {
+      const wss = voiceStreamWss;
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
       });

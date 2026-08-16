@@ -6179,6 +6179,151 @@ registerTest("VoiceSessionManager", "a full round trip through the shared startV
   }
 });
 
+// ---------- VoiceStreamWs Tests ----------
+registerTest("VoiceStreamWs", "forwards inbound binary frames to the daemon as audio_chunk, and ignores an unrelated session's voice:error", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { WebSocketServer, WebSocket } = await import("ws");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
+
+  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsstream-${Date.now()}.sock`);
+  let receivedByDaemon = "";
+  const fakeDaemon = net.createServer((conn) => {
+    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
+  });
+  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
+
+  const testWss = new WebSocketServer({ port: 0 });
+  const port = (testWss.address() as any).port;
+  testWss.on("connection", (ws) => {
+    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
+  });
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}`);
+  const clientMessages: any[] = [];
+  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
+  let clientClosed = false;
+  client.on("close", () => { clientClosed = true; });
+
+  try {
+    await new Promise<void>((resolve) => client.on("open", () => resolve()));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const pcm = Buffer.from([1, 2, 3]);
+    client.send(pcm);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const parsed = JSON.parse(receivedByDaemon.trim());
+    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
+      throw new Error(`VoiceStreamWs: expected the frame forwarded as audio_chunk, got: ${receivedByDaemon}`);
+    }
+
+    // This connection's real sessionId is internal (a fresh
+    // crypto.randomUUID() from createVoiceSession) -- there is no public
+    // "list sessions" API by design. The full happy path (matching
+    // sessionId, real turn_complete payload) is proven end to end by the
+    // round-trip test below; this test only proves the session-scoping
+    // guard itself: an event for a sessionId that can't possibly be this
+    // connection's must never affect it.
+    const bus = EventBus.getInstance();
+    bus.publish("voice:error", { message: "not for this connection", sessionId: "definitely-not-this-sessions-id" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (clientClosed) {
+      throw new Error("VoiceStreamWs: an unrelated session's voice:error must not close this connection");
+    }
+  } finally {
+    client.close();
+    testWss.close();
+    fakeDaemon.close();
+  }
+});
+
+registerTest("VoiceStreamWs", "a full round trip: connect, stream audio, daemon transcribes and synthesizes, turn_complete carries a real playable WAV", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const readline = await import("readline");
+  const { WebSocketServer, WebSocket } = await import("ws");
+  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
+  const { startVoiceSession } = await import("../src/interaction/voice-session.js");
+
+  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsroundtrip-${Date.now()}.sock`);
+  const fakeReplyPcm = Buffer.from([10, 20, 30, 40]);
+  const fakeDaemon = net.createServer((conn) => {
+    const rl = readline.createInterface({ input: conn });
+    let transcriptSent = false;
+    rl.on("line", (line) => {
+      let msg: any;
+      try { msg = JSON.parse(line); } catch { return; }
+      if (msg.type === "audio_chunk" && !transcriptSent) {
+        // Simulate the real daemon's UtteranceEndDetector firing on the
+        // first chunk of mic audio it receives.
+        transcriptSent = true;
+        conn.write(JSON.stringify({ type: "transcript", text: "what time is it" }) + "\n");
+      } else if (msg.type === "speak") {
+        // Simulate synthesis: one audio_chunk of fake reply PCM, then
+        // speak_done, exactly matching daemon/voice_engine.py's real
+        // _handle_speak sequence.
+        conn.write(JSON.stringify({ type: "audio_chunk", data: fakeReplyPcm.toString("base64") }) + "\n");
+        conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+      }
+    });
+  });
+  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
+
+  const fakeRouter = {
+    generateWithFallback: async () => ({
+      choices: [{ message: { content: "It's time to build.", tool_calls: undefined } }],
+    }),
+  } as any;
+  const sessionHandle = startVoiceSession({ router: fakeRouter, recall: (async () => []) as any });
+
+  const testWss = new WebSocketServer({ port: 0 });
+  const port = (testWss.address() as any).port;
+  testWss.on("connection", (ws) => {
+    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
+  });
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}`);
+  const clientMessages: any[] = [];
+  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
+  const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
+
+  try {
+    await new Promise<void>((resolve) => client.on("open", () => resolve()));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    client.send(Buffer.from([1, 2, 3, 4]));
+
+    await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for the connection to close")), 3000))]);
+
+    const turnComplete = clientMessages.find((m) => m.type === "turn_complete");
+    if (!turnComplete) {
+      throw new Error(`VoiceStreamWs: expected a turn_complete message before close, got: ${JSON.stringify(clientMessages)}`);
+    }
+    if (turnComplete.mimeType !== "audio/wav" || typeof turnComplete.audio !== "string") {
+      throw new Error(`VoiceStreamWs: expected turn_complete to carry a base64 audio/wav payload, got: ${JSON.stringify(turnComplete)}`);
+    }
+    const wavBytes = Buffer.from(turnComplete.audio, "base64");
+    // A valid minimal WAV: "RIFF" header, "WAVE" format tag, and the raw
+    // PCM bytes present verbatim after the 44-byte header -- proving this
+    // is a real, well-formed container built from the exact bytes the
+    // fake daemon sent, not a stub or an empty buffer.
+    if (wavBytes.toString("ascii", 0, 4) !== "RIFF" || wavBytes.toString("ascii", 8, 12) !== "WAVE") {
+      throw new Error("VoiceStreamWs: turn_complete's audio is not a well-formed WAV file");
+    }
+    if (!wavBytes.subarray(44).equals(fakeReplyPcm)) {
+      throw new Error("VoiceStreamWs: expected the WAV's PCM data to match the fake daemon's exact synthesized bytes");
+    }
+  } finally {
+    client.close();
+    testWss.close();
+    fakeDaemon.close();
+    sessionHandle.stop();
+  }
+});
+
 // ---------- HealthWatchdog Tests ----------
 registerTest("HealthWatchdog", "assessSystemHealth reports ok when every dependency is reachable", async () => {
   const { assessSystemHealth } = await import("../src/self/health-watchdog.js");
