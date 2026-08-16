@@ -2164,82 +2164,12 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
-registerTest("HTTP Boundary", "POST /api/voice-stream-ticket requires auth and returns a real ticket for a granted admin", async () => {
-  const port = 3024;
-  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
-
-  try {
-    const noKey = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, { method: "POST" });
-    if (noKey.status !== 401) {
-      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/voice-stream-ticket, got ${noKey.status}`);
-    }
-
-    const adminRes = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, {
-      method: "POST",
-      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
-    });
-    if (adminRes.status !== 200) {
-      throw new Error(`HTTP Boundary: expected 200 for an admin request, got ${adminRes.status}`);
-    }
-    const body = await adminRes.json();
-    if (typeof body.ticket !== "string" || body.ticket.length === 0) {
-      throw new Error(`HTTP Boundary: expected a real ticket string, got: ${JSON.stringify(body)}`);
-    }
-  } finally {
-    await stopTestServer(child);
-  }
-});
-
-// The WebSocket-level auth branch for /ws/voice-stream lives inside
-// server.ts's own boot sequence (voiceStreamWss's "connection" handler), not
-// in an independently-importable function -- handleVoiceStreamConnection
-// (covered by the VoiceStreamWs category) starts from an already-known-good
-// username and never sees a ticket. So the only way to exercise the reject
-// path is against a real spawned server, same as the /api/voice-stream-ticket
-// test above. Asserts BOTH halves of the rejection: an error control message
-// is actually sent, and the socket is then closed rather than left hanging
-// (a silently-accepted or hanging unauthenticated connection would be the
-// real bug here).
-registerTest("HTTP Boundary", "WS /ws/voice-stream rejects a connection with no ticket and no valid API key", async () => {
-  const port = 3025; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3024
-  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
-  try {
-    const WebSocketCtor = (await import("ws")).default;
-    const ws = new WebSocketCtor(`ws://127.0.0.1:${port}/ws/voice-stream`);
-
-    let errorMessage: any = null;
-    const closed = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), 10000);
-      ws.on("message", (data: any) => {
-        try {
-          errorMessage = JSON.parse(data.toString());
-        } catch {
-          errorMessage = { raw: data.toString() };
-        }
-      });
-      ws.on("close", () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-      ws.on("error", () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
-
-    if (!errorMessage || errorMessage.type !== "error") {
-      throw new Error(
-        `HTTP Boundary: expected an "error" control message on an unauthenticated /ws/voice-stream connection, got: ${JSON.stringify(errorMessage)}`
-      );
-    }
-    if (!closed) {
-      throw new Error("HTTP Boundary: unauthenticated /ws/voice-stream connection was left open instead of being closed");
-    }
-    try { ws.close(); } catch {}
-  } finally {
-    await stopTestServer(child);
-  }
-});
+// The "POST /api/voice-stream-ticket requires auth..." and "WS
+// /ws/voice-stream rejects a connection with no ticket..." tests that used
+// to live here were removed along with the route/WS themselves -- see the
+// "HTTP Boundary" / "/ws/voice-stream and /api/voice-stream-ticket no
+// longer exist" test (tests/index.test.ts, near the removed VoiceStreamWs
+// category) for their replacement.
 
 // Finding 8b (first half): GET /auth-url used to call issueOAuthStateTicket
 // unconditionally, before calendar.getAuthUrl() had any chance to fail on a
@@ -6303,148 +6233,40 @@ registerTest("AmbientDaemonClient", "an ambient_transcript message triggers a re
   }
 });
 
-// ---------- VoiceStreamWs Tests ----------
-registerTest("VoiceStreamWs", "forwards inbound binary frames to the daemon as audio_chunk, and ignores an unrelated session's voice:error", async () => {
-  const os = await import("os");
-  const path = await import("path");
-  const net = await import("net");
-  const { WebSocketServer, WebSocket } = await import("ws");
-  const { EventBus } = await import("../src/core/event-bus.js");
-  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
+// The "VoiceStreamWs" test category that used to live here was removed
+// along with src/interaction/voice-stream-ws.ts itself: the browser-based
+// ambient wake-word path (PR #154 and its predecessor) is gone entirely,
+// replaced by the host-mic ambient listener
+// (docs/superpowers/specs/2026-08-16-host-mic-ambient-voice-design.md).
+// Its real successor coverage is the "AmbientDaemonClient" category
+// (tests/index.test.ts) plus daemon/tests/test_ambient_listener.py and
+// daemon/tests/test_voice_engine.py's speak_local test -- there is no
+// browser-facing WS route left to test here at all.
 
-  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsstream-${Date.now()}.sock`);
-  let receivedByDaemon = "";
-  const fakeDaemon = net.createServer((conn) => {
-    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
-  });
-  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
-
-  const testWss = new WebSocketServer({ port: 0 });
-  const port = (testWss.address() as any).port;
-  testWss.on("connection", (ws) => {
-    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
-  });
-
-  const client = new WebSocket(`ws://127.0.0.1:${port}`);
-  const clientMessages: any[] = [];
-  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
-  let clientClosed = false;
-  client.on("close", () => { clientClosed = true; });
-
+registerTest("HTTP Boundary", "/ws/voice-stream and /api/voice-stream-ticket no longer exist", async () => {
+  const port = 3021;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
   try {
-    await new Promise<void>((resolve) => client.on("open", () => resolve()));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const pcm = Buffer.from([1, 2, 3]);
-    client.send(pcm);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const parsed = JSON.parse(receivedByDaemon.trim());
-    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
-      throw new Error(`VoiceStreamWs: expected the frame forwarded as audio_chunk, got: ${receivedByDaemon}`);
-    }
-
-    // This connection's real sessionId is internal (a fresh
-    // crypto.randomUUID() from createVoiceSession) -- there is no public
-    // "list sessions" API by design. The full happy path (matching
-    // sessionId, real turn_complete payload) is proven end to end by the
-    // round-trip test below; this test only proves the session-scoping
-    // guard itself: an event for a sessionId that can't possibly be this
-    // connection's must never affect it.
-    const bus = EventBus.getInstance();
-    bus.publish("voice:error", { message: "not for this connection", sessionId: "definitely-not-this-sessions-id" });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    if (clientClosed) {
-      throw new Error("VoiceStreamWs: an unrelated session's voice:error must not close this connection");
-    }
-  } finally {
-    client.close();
-    testWss.close();
-    fakeDaemon.close();
-  }
-});
-
-registerTest("VoiceStreamWs", "a full round trip: connect, stream audio, daemon transcribes and synthesizes, turn_complete carries a real playable WAV", async () => {
-  const os = await import("os");
-  const path = await import("path");
-  const net = await import("net");
-  const readline = await import("readline");
-  const { WebSocketServer, WebSocket } = await import("ws");
-  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
-  const { startVoiceSession } = await import("../src/interaction/voice-session.js");
-
-  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsroundtrip-${Date.now()}.sock`);
-  const fakeReplyPcm = Buffer.from([10, 20, 30, 40]);
-  const fakeDaemon = net.createServer((conn) => {
-    const rl = readline.createInterface({ input: conn });
-    let transcriptSent = false;
-    rl.on("line", (line) => {
-      let msg: any;
-      try { msg = JSON.parse(line); } catch { return; }
-      if (msg.type === "audio_chunk" && !transcriptSent) {
-        // Simulate the real daemon's UtteranceEndDetector firing on the
-        // first chunk of mic audio it receives.
-        transcriptSent = true;
-        conn.write(JSON.stringify({ type: "transcript", text: "what time is it" }) + "\n");
-      } else if (msg.type === "speak") {
-        // Simulate synthesis: one audio_chunk of fake reply PCM, then
-        // speak_done, exactly matching daemon/voice_engine.py's real
-        // _handle_speak sequence.
-        conn.write(JSON.stringify({ type: "audio_chunk", data: fakeReplyPcm.toString("base64") }) + "\n");
-        conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
-      }
+    const ticketRes = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
     });
-  });
-  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
-
-  const fakeRouter = {
-    generateWithFallback: async () => ({
-      choices: [{ message: { content: "It's time to build.", tool_calls: undefined } }],
-    }),
-  } as any;
-  const sessionHandle = startVoiceSession({ router: fakeRouter, recall: (async () => []) as any });
-
-  const testWss = new WebSocketServer({ port: 0 });
-  const port = (testWss.address() as any).port;
-  testWss.on("connection", (ws) => {
-    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
-  });
-
-  const client = new WebSocket(`ws://127.0.0.1:${port}`);
-  const clientMessages: any[] = [];
-  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
-  const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
-
-  try {
-    await new Promise<void>((resolve) => client.on("open", () => resolve()));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    client.send(Buffer.from([1, 2, 3, 4]));
-
-    await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for the connection to close")), 3000))]);
-
-    const turnComplete = clientMessages.find((m) => m.type === "turn_complete");
-    if (!turnComplete) {
-      throw new Error(`VoiceStreamWs: expected a turn_complete message before close, got: ${JSON.stringify(clientMessages)}`);
+    if (ticketRes.status !== 404) {
+      throw new Error(`Expected /api/voice-stream-ticket to be gone (404), got ${ticketRes.status}`);
     }
-    if (turnComplete.mimeType !== "audio/wav" || typeof turnComplete.audio !== "string") {
-      throw new Error(`VoiceStreamWs: expected turn_complete to carry a base64 audio/wav payload, got: ${JSON.stringify(turnComplete)}`);
-    }
-    const wavBytes = Buffer.from(turnComplete.audio, "base64");
-    // A valid minimal WAV: "RIFF" header, "WAVE" format tag, and the raw
-    // PCM bytes present verbatim after the 44-byte header -- proving this
-    // is a real, well-formed container built from the exact bytes the
-    // fake daemon sent, not a stub or an empty buffer.
-    if (wavBytes.toString("ascii", 0, 4) !== "RIFF" || wavBytes.toString("ascii", 8, 12) !== "WAVE") {
-      throw new Error("VoiceStreamWs: turn_complete's audio is not a well-formed WAV file");
-    }
-    if (!wavBytes.subarray(44).equals(fakeReplyPcm)) {
-      throw new Error("VoiceStreamWs: expected the WAV's PCM data to match the fake daemon's exact synthesized bytes");
+
+    const WebSocketCtor = (await import("ws")).default;
+    const ws = new WebSocketCtor(`ws://127.0.0.1:${port}/ws/voice-stream?ticket=anything`);
+    const closedCleanly = await new Promise<boolean>((resolve) => {
+      ws.on("open", () => resolve(false)); // should never open
+      ws.on("close", () => resolve(true));
+      ws.on("error", () => resolve(true));
+    });
+    if (!closedCleanly) {
+      throw new Error("Expected /ws/voice-stream to be gone -- the shared upgrade dispatcher should reject/destroy it, not accept a connection");
     }
   } finally {
-    client.close();
-    testWss.close();
-    fakeDaemon.close();
-    sessionHandle.stop();
+    await stopTestServer(child);
   }
 });
 
