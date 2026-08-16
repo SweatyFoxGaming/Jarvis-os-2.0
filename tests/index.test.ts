@@ -5371,6 +5371,76 @@ registerTest("AudioClient", "forwards a voice:reply bus event to the daemon as a
   }
 });
 
+registerTest("AudioClient", "sendAudioChunk writes a correctly-shaped audio_chunk message to the daemon, and no-ops after stop()", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-${Date.now()}.sock`);
+  let receivedByDaemon = "";
+  const fakeServer = net.createServer((conn) => {
+    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const pcm = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+    const sent = client.sendAudioChunk(pcm);
+    if (sent !== true) throw new Error("AudioClient: expected sendAudioChunk to return true while connected");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const parsed = JSON.parse(receivedByDaemon.trim());
+    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
+      throw new Error(`AudioClient: expected a correctly-shaped audio_chunk message, got: ${receivedByDaemon}`);
+    }
+
+    client.stop();
+    const sentAfterStop = client.sendAudioChunk(pcm);
+    if (sentAfterStop !== false) throw new Error("AudioClient: expected sendAudioChunk to return false after stop()");
+  } finally {
+    client.stop();
+    fakeServer.close();
+  }
+});
+
+registerTest("AudioClient", "publishes voice:speak-done when the daemon sends a speak_done message", async () => {
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const { startAudioClient } = await import("../src/core/audio-client.js");
+
+  const socketPath = path.join(os.tmpdir(), `jarvis-voice-test-speakdone-${Date.now()}.sock`);
+  const fakeServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+  });
+  await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  let received: any = null;
+  let publishCount = 0;
+  const unsubscribe = bus.subscribe("voice:speak-done", (payload) => { received = payload; publishCount++; });
+
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (!received || received.sessionId !== "test-session-1") {
+      throw new Error(`AudioClient: expected a voice:speak-done publish with sessionId, got: ${JSON.stringify(received)}`);
+    }
+    if (publishCount !== 1) {
+      throw new Error(`AudioClient: expected exactly 1 voice:speak-done publish, got ${publishCount}`);
+    }
+  } finally {
+    unsubscribe();
+    client.stop();
+    fakeServer.close();
+  }
+});
+
 registerTest("AudioClient", "publishes voice:audio-chunk when the daemon sends an audio_chunk message", async () => {
   const os = await import("os");
   const path = await import("path");
