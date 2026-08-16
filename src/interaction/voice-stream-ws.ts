@@ -26,6 +26,14 @@ const TURN_TIMEOUT_MS = 60_000;
 const MAX_PCM_FRAME_BYTES = 64 * 1024;
 const MAX_PCM_BYTES_PER_TURN = 4 * 1024 * 1024;
 
+// The byte caps above don't bound message COUNT -- a flood of empty or
+// near-empty frames stays under both while still forcing a daemon write
+// and an event-loop tick per message for the full turn window. The
+// browser's real onaudioprocess cadence is one ~4096-sample buffer every
+// ~85-100ms, so a 60-second turn produces on the order of 600-700 frames
+// under normal use; this cap gives a generous multiple of that.
+const MAX_PCM_FRAMES_PER_TURN = 2000;
+
 /**
  * Handles one already-authenticated /ws/voice-stream connection end to
  * end: opens a fresh per-connection voice session, forwards every inbound
@@ -53,6 +61,7 @@ export function handleVoiceStreamConnection(ws: WebSocket, username: string, soc
   let closed = false;
   const audioChunks: Buffer[] = [];
   let receivedPcmBytes = 0;
+  let receivedPcmFrames = 0;
 
   let unsubAudioChunk: () => void = () => {};
   let unsubSpeakDone: () => void = () => {};
@@ -105,11 +114,16 @@ export function handleVoiceStreamConnection(ws: WebSocket, username: string, soc
 
   ws.on("message", (data: Buffer, isBinary: boolean) => {
     if (closed || !isBinary) return;
-    if (data.length > MAX_PCM_FRAME_BYTES || receivedPcmBytes + data.length > MAX_PCM_BYTES_PER_TURN) {
+    if (
+      data.length > MAX_PCM_FRAME_BYTES ||
+      receivedPcmBytes + data.length > MAX_PCM_BYTES_PER_TURN ||
+      receivedPcmFrames + 1 > MAX_PCM_FRAMES_PER_TURN
+    ) {
       finish("error", "Ambient voice audio limit exceeded");
       return;
     }
     receivedPcmBytes += data.length;
+    receivedPcmFrames += 1;
     sendVoiceSessionAudioChunk(sessionId, data);
   });
 
