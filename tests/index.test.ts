@@ -5291,11 +5291,11 @@ registerTest("AudioClient", "publishes voice:transcript when the daemon sends a 
   let received: any = null;
   const unsubscribe = bus.subscribe("voice:transcript", (payload) => { received = payload; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
-    if (!received || received.text !== "hello from the daemon") {
-      throw new Error(`AudioClient: expected a real voice:transcript publish, got: ${JSON.stringify(received)}`);
+    if (!received || received.text !== "hello from the daemon" || received.sessionId !== "test-session-1" || received.username !== "voice_test_user") {
+      throw new Error(`AudioClient: expected a real voice:transcript publish with sessionId/username, got: ${JSON.stringify(received)}`);
     }
   } finally {
     unsubscribe();
@@ -5313,7 +5313,7 @@ registerTest("AudioClient", "publishes voice:error exactly once when the socket 
   let publishCount = 0;
   const unsubscribe = bus.subscribe("voice:error", (payload) => { received = payload; publishCount++; });
 
-  const client = startAudioClient("/nonexistent/path/that/cannot/possibly/exist.sock");
+  const client = startAudioClient("/nonexistent/path/that/cannot/possibly/exist.sock", "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!received) throw new Error("AudioClient: expected a voice:error publish on connection failure");
@@ -5347,14 +5347,23 @@ registerTest("AudioClient", "forwards a voice:reply bus event to the daemon as a
   await new Promise<void>((resolve) => fakeServer.listen(socketPath, resolve));
 
   const bus = EventBus.getInstance();
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
-    bus.publish("voice:reply", { text: "here is my answer" });
+    bus.publish("voice:reply", { text: "here is my answer", sessionId: "test-session-1" });
     await new Promise((resolve) => setTimeout(resolve, 200));
     const parsed = JSON.parse(receivedByDaemon.trim());
     if (parsed.type !== "speak" || parsed.text !== "here is my answer") {
       throw new Error(`AudioClient: expected a real "speak" message forwarded to the daemon, got: ${receivedByDaemon}`);
+    }
+
+    // A reply for a DIFFERENT session must not be spoken over this
+    // connection at all.
+    receivedByDaemon = "";
+    bus.publish("voice:reply", { text: "someone else's answer", sessionId: "a-different-session" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (receivedByDaemon.trim().length !== 0) {
+      throw new Error(`AudioClient: expected a different session's voice:reply to be ignored, but the daemon received: ${receivedByDaemon}`);
     }
   } finally {
     client.stop();
@@ -5379,11 +5388,11 @@ registerTest("AudioClient", "publishes voice:audio-chunk when the daemon sends a
   let received: any = null;
   const unsubscribe = bus.subscribe("voice:audio-chunk", (payload) => { received = payload; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
-    if (!received || received.data !== "ZmFrZS1hdWRpby1ieXRlcw==") {
-      throw new Error(`AudioClient: expected a real voice:audio-chunk publish, got: ${JSON.stringify(received)}`);
+    if (!received || received.data !== "ZmFrZS1hdWRpby1ieXRlcw==" || received.sessionId !== "test-session-1") {
+      throw new Error(`AudioClient: expected a real voice:audio-chunk publish with sessionId, got: ${JSON.stringify(received)}`);
     }
   } finally {
     unsubscribe();
@@ -5409,7 +5418,7 @@ registerTest("AudioClient", "stop() closes the socket and unsubscribes so no fur
   let errorCount = 0;
   const unsubscribe = bus.subscribe("voice:error", () => { errorCount++; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   await new Promise((resolve) => setTimeout(resolve, 150));
   client.stop();
   await new Promise((resolve) => setTimeout(resolve, 150));
@@ -5446,7 +5455,7 @@ registerTest("AudioClient", "reconnects with backoff and starts working once the
   let received: any = null;
   const unsubscribe = bus.subscribe("voice:transcript", (payload) => { received = payload; });
 
-  const client = startAudioClient(socketPath);
+  const client = startAudioClient(socketPath, "test-session-1", "voice_test_user");
   let fakeServer: import("net").Server | null = null;
   try {
     // Nothing is listening yet -- confirm the first connection attempt
@@ -5525,9 +5534,9 @@ registerTest("VoiceSession", "a real transcript produces a real voice:reply", as
     }),
   } as any;
 
-  const handle = voiceSessionModule.startVoiceSession({ router: fakeRouter, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: fakeRouter });
   try {
-    bus.publish("voice:transcript", { text: "what's the weather like" });
+    bus.publish("voice:transcript", { text: "what's the weather like", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!reply || !reply.text.includes("spoken answer")) {
       throw new Error(`VoiceSession: expected a real voice:reply, got: ${JSON.stringify(reply)}`);
@@ -5546,10 +5555,10 @@ registerTest("VoiceSession", "an empty transcript produces no reply", async () =
   let replyCount = 0;
   const unsubscribe = bus.subscribe("voice:reply", () => { replyCount++; });
 
-  const handle = voiceSessionModule.startVoiceSession({ router: null, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: null });
   try {
-    bus.publish("voice:transcript", { text: "" });
-    bus.publish("voice:transcript", { text: "   " });
+    bus.publish("voice:transcript", { text: "", sessionId: "test-session-1", username: "voice_test_user" });
+    bus.publish("voice:transcript", { text: "   ", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 200));
     if (replyCount !== 0) throw new Error(`VoiceSession: expected no reply for an empty/whitespace-only transcript, got ${replyCount}`);
   } finally {
@@ -5567,9 +5576,9 @@ registerTest("VoiceSession", "a pipeline failure produces an honest spoken error
   const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
 
   const throwingRouter = { generateWithFallback: async () => { throw new Error("simulated failure"); } } as any;
-  const handle = voiceSessionModule.startVoiceSession({ router: throwingRouter, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: throwingRouter });
   try {
-    bus.publish("voice:transcript", { text: "do something" });
+    bus.publish("voice:transcript", { text: "do something", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest error reply, got none");
     if (reply.text.toLowerCase().includes("spoken answer")) {
@@ -5589,9 +5598,9 @@ registerTest("VoiceSession", "no cognition router configured produces an honest 
   let reply: any = null;
   const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
 
-  const handle = voiceSessionModule.startVoiceSession({ router: null, username: "voice_test_user" });
+  const handle = voiceSessionModule.startVoiceSession({ router: null });
   try {
-    bus.publish("voice:transcript", { text: "do something real" });
+    bus.publish("voice:transcript", { text: "do something real", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest decline reply when no router is configured, got none");
   } finally {
@@ -5634,11 +5643,10 @@ registerTest("VoiceSession", "executes a tool call via executeTool before produc
 
   const handle = voiceSessionModule.startVoiceSession({
     router: fakeRouter,
-    username: "voice_test_user",
     executeTool: fakeExecuteTool as any,
   });
   try {
-    bus.publish("voice:transcript", { text: "what time is it" });
+    bus.publish("voice:transcript", { text: "what time is it", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (executedToolName !== "get_time") {
       throw new Error(`VoiceSession: expected executeTool to be called with "get_time", got: ${executedToolName}`);
@@ -5683,7 +5691,6 @@ registerTest("VoiceSession", "a successful voice turn writes to session history,
 
   const handle = voiceSessionModule.startVoiceSession({
     router: fakeRouter,
-    username: "voice_test_user",
     appendMessage: (async (username: string, role: string, content: string) => {
       appendCalls.push({ username, role, content });
     }) as any,
@@ -5695,7 +5702,7 @@ registerTest("VoiceSession", "a successful voice turn writes to session history,
     extractRapportSignal: (async () => { extractRapportSignalCalled = true; }) as any,
   });
   try {
-    bus.publish("voice:transcript", { text: "what's the weather like" });
+    bus.publish("voice:transcript", { text: "what's the weather like", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     if (!reply || !reply.text.includes("spoken answer")) {
@@ -5735,7 +5742,6 @@ registerTest("VoiceSession", "a pipeline failure still logs the user's message b
 
   const handle = voiceSessionModule.startVoiceSession({
     router: throwingRouter,
-    username: "voice_test_user",
     appendMessage: (async (username: string, role: string, content: string) => {
       appendCalls.push({ username, role, content });
     }) as any,
@@ -5747,7 +5753,7 @@ registerTest("VoiceSession", "a pipeline failure still logs the user's message b
     extractRapportSignal: (async () => { learningWriteCalled = true; }) as any,
   });
   try {
-    bus.publish("voice:transcript", { text: "do something" });
+    bus.publish("voice:transcript", { text: "do something", sessionId: "test-session-1", username: "voice_test_user" });
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     if (!reply || !reply.text) throw new Error("VoiceSession: expected an honest error reply, got none");
@@ -5760,6 +5766,240 @@ registerTest("VoiceSession", "a pipeline failure still logs the user's message b
   } finally {
     unsubscribe();
     handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "two concurrent sessions never cross-contaminate identity or replies", async () => {
+  // The real bug this guards against: before sessionId/username were
+  // required on every event, a single shared voice-session subscription
+  // had no way to tell two overlapping conversations apart -- everything
+  // silently fell back to one fixed identity. This publishes two
+  // interleaved transcripts under two different sessionId/username pairs
+  // and asserts each one's memory/reply is correctly attributed to ITS
+  // OWN session, never the other's.
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  const repliesBySession: Record<string, string[]> = {};
+  const unsubscribe = bus.subscribe<{ text: string; sessionId: string }>("voice:reply", (payload) => {
+    (repliesBySession[payload.sessionId] ||= []).push(payload.text);
+  });
+
+  const recallCallsByUsername: string[] = [];
+  const fakeRouter = {
+    generateWithFallback: async (username: string) => ({
+      choices: [{ message: { content: `Reply for ${username}`, tool_calls: undefined } }],
+    }),
+  } as any;
+
+  const handle = voiceSessionModule.startVoiceSession({
+    router: fakeRouter,
+    recall: (async (username: string) => { recallCallsByUsername.push(username); return []; }) as any,
+  });
+  try {
+    bus.publish("voice:transcript", { text: "question from alice", sessionId: "session-alice", username: "alice" });
+    bus.publish("voice:transcript", { text: "question from bob", sessionId: "session-bob", username: "bob" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    if (!recallCallsByUsername.includes("alice") || !recallCallsByUsername.includes("bob")) {
+      throw new Error(`VoiceSession: expected recall() called with both real usernames, got: ${JSON.stringify(recallCallsByUsername)}`);
+    }
+    const aliceReplies = repliesBySession["session-alice"] || [];
+    const bobReplies = repliesBySession["session-bob"] || [];
+    if (aliceReplies.length !== 1 || !aliceReplies[0].includes("alice")) {
+      throw new Error(`VoiceSession: expected session-alice's own reply, got: ${JSON.stringify(repliesBySession)}`);
+    }
+    if (bobReplies.length !== 1 || !bobReplies[0].includes("bob")) {
+      throw new Error(`VoiceSession: expected session-bob's own reply, got: ${JSON.stringify(repliesBySession)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSession", "a voice:transcript event missing sessionId or username is dropped, not misattributed", async () => {
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let replyCount = 0;
+  const unsubscribe = bus.subscribe("voice:reply", () => { replyCount++; });
+
+  const fakeRouter = {
+    generateWithFallback: async () => ({ choices: [{ message: { content: "should never be spoken", tool_calls: undefined } }] }),
+  } as any;
+
+  const handle = voiceSessionModule.startVoiceSession({ router: fakeRouter });
+  try {
+    bus.publish("voice:transcript", { text: "no sessionId here", username: "voice_test_user" });
+    bus.publish("voice:transcript", { text: "no username here", sessionId: "test-session-1" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (replyCount !== 0) {
+      throw new Error(`VoiceSession: expected events missing sessionId/username to be dropped silently, got ${replyCount} replies`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
+registerTest("VoiceSessionManager", "createVoiceSession returns a unique sessionId per call", async () => {
+  const manager = await import("../src/interaction/voice-session-manager.js");
+  const id1 = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "alice");
+  const id2 = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "bob");
+  try {
+    if (typeof id1 !== "string" || !id1) throw new Error(`VoiceSessionManager: expected a real sessionId string, got: ${JSON.stringify(id1)}`);
+    if (id1 === id2) throw new Error("VoiceSessionManager: expected two different sessions to get different sessionIds");
+  } finally {
+    manager.destroyVoiceSession(id1);
+    manager.destroyVoiceSession(id2);
+  }
+});
+
+registerTest("VoiceSessionManager", "destroyVoiceSession reports whether a session actually existed", async () => {
+  const manager = await import("../src/interaction/voice-session-manager.js");
+  const id = manager.createVoiceSession("/nonexistent/path/that/cannot/possibly/exist.sock", "alice");
+  const firstDestroy = manager.destroyVoiceSession(id);
+  const secondDestroy = manager.destroyVoiceSession(id);
+  if (firstDestroy !== true) throw new Error("VoiceSessionManager: expected destroying a real session to return true");
+  if (secondDestroy !== false) throw new Error("VoiceSessionManager: expected destroying an already-gone session to return false, not throw or return true again");
+});
+
+registerTest("VoiceSessionManager", "two real concurrent daemon connections stay isolated per session", async () => {
+  // Live-daemon isolation check (spec's "real connection" test tier) --
+  // uses two fake Unix-socket servers standing in for the daemon (same
+  // fake-server pattern the AudioClient tests already use) rather than the
+  // real Python daemon, since this environment doesn't reliably have
+  // faster-whisper/kokoro installed outside the daemon's own Docker image.
+  // This still proves the real thing this task adds: createVoiceSession
+  // opens one REAL, independent net.Socket connection per session, and a
+  // message written to one fake daemon never reaches the other session's
+  // socket.
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const manager = await import("../src/interaction/voice-session-manager.js");
+
+  const aliceSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-alice-${Date.now()}.sock`);
+  const bobSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-bob-${Date.now()}.sock`);
+
+  const aliceServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "transcript", text: "alice said this" }) + "\n");
+  });
+  const bobServer = net.createServer((conn) => {
+    conn.write(JSON.stringify({ type: "transcript", text: "bob said this" }) + "\n");
+  });
+  await new Promise<void>((resolve) => aliceServer.listen(aliceSocketPath, resolve));
+  await new Promise<void>((resolve) => bobServer.listen(bobSocketPath, resolve));
+
+  const bus = EventBus.getInstance();
+  const transcriptsBySession: Record<string, string[]> = {};
+  const unsubscribe = bus.subscribe<{ text: string; sessionId: string }>("voice:transcript", (payload) => {
+    (transcriptsBySession[payload.sessionId] ||= []).push(payload.text);
+  });
+
+  const aliceSessionId = manager.createVoiceSession(aliceSocketPath, "alice");
+  const bobSessionId = manager.createVoiceSession(bobSocketPath, "bob");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const aliceTranscripts = transcriptsBySession[aliceSessionId] || [];
+    const bobTranscripts = transcriptsBySession[bobSessionId] || [];
+    if (aliceTranscripts.length !== 1 || aliceTranscripts[0] !== "alice said this") {
+      throw new Error(`VoiceSessionManager: expected alice's session to receive only alice's transcript, got: ${JSON.stringify(transcriptsBySession)}`);
+    }
+    if (bobTranscripts.length !== 1 || bobTranscripts[0] !== "bob said this") {
+      throw new Error(`VoiceSessionManager: expected bob's session to receive only bob's transcript, got: ${JSON.stringify(transcriptsBySession)}`);
+    }
+  } finally {
+    unsubscribe();
+    manager.destroyVoiceSession(aliceSessionId);
+    manager.destroyVoiceSession(bobSessionId);
+    aliceServer.close();
+    bobServer.close();
+  }
+});
+
+registerTest("VoiceSessionManager", "a full round trip through the shared startVoiceSession only replies to its own session's daemon", async () => {
+  // The proof this codebase was still missing: two independent
+  // createVoiceSession calls, each backed by its own fake daemon
+  // connection, feeding into the ONE shared startVoiceSession subscription
+  // -- and each session's voice:reply reaching only ITS OWN fake daemon
+  // socket, never the other session's. The existing manager tests above
+  // only prove inbound transcript routing (createVoiceSession -> bus); the
+  // existing VoiceSession tests only prove bus-level routing with fake
+  // sessionId strings, no real daemon socket in the loop. Neither composes
+  // into the full round trip this test asserts.
+  const os = await import("os");
+  const path = await import("path");
+  const net = await import("net");
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const manager = await import("../src/interaction/voice-session-manager.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const aliceSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-roundtrip-alice-${Date.now()}.sock`);
+  const bobSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-roundtrip-bob-${Date.now()}.sock`);
+
+  const aliceReceived: string[] = [];
+  const bobReceived: string[] = [];
+  const aliceServer = net.createServer((conn) => {
+    conn.on("data", (data) => { aliceReceived.push(data.toString()); });
+    conn.write(JSON.stringify({ type: "transcript", text: "question from alice" }) + "\n");
+  });
+  const bobServer = net.createServer((conn) => {
+    conn.on("data", (data) => { bobReceived.push(data.toString()); });
+    conn.write(JSON.stringify({ type: "transcript", text: "question from bob" }) + "\n");
+  });
+  await new Promise<void>((resolve) => aliceServer.listen(aliceSocketPath, resolve));
+  await new Promise<void>((resolve) => bobServer.listen(bobSocketPath, resolve));
+
+  const bus = EventBus.getInstance();
+
+  // Deterministic per-username reply, same pattern as the "two concurrent
+  // sessions never cross-contaminate identity or replies" VoiceSession test
+  // above -- so each fake daemon's expected reply text is unambiguous.
+  const fakeRouter = {
+    generateWithFallback: async (username: string) => ({
+      choices: [{ message: { content: `Reply for ${username}`, tool_calls: undefined } }],
+    }),
+  } as any;
+
+  const sessionHandle = voiceSessionModule.startVoiceSession({
+    router: fakeRouter,
+    recall: (async () => []) as any,
+  });
+
+  const aliceSessionId = manager.createVoiceSession(aliceSocketPath, "alice");
+  const bobSessionId = manager.createVoiceSession(bobSocketPath, "bob");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const aliceText = aliceReceived.join("");
+    const bobText = bobReceived.join("");
+
+    if (!aliceText.includes("Reply for alice")) {
+      throw new Error(`VoiceSessionManager: expected alice's fake daemon socket to receive alice's reply, got: ${JSON.stringify(aliceText)}`);
+    }
+    if (aliceText.includes("Reply for bob")) {
+      throw new Error(`VoiceSessionManager: alice's fake daemon socket must never receive bob's reply, got: ${JSON.stringify(aliceText)}`);
+    }
+    if (!bobText.includes("Reply for bob")) {
+      throw new Error(`VoiceSessionManager: expected bob's fake daemon socket to receive bob's reply, got: ${JSON.stringify(bobText)}`);
+    }
+    if (bobText.includes("Reply for alice")) {
+      throw new Error(`VoiceSessionManager: bob's fake daemon socket must never receive alice's reply, got: ${JSON.stringify(bobText)}`);
+    }
+    if (aliceSessionId === bobSessionId) {
+      throw new Error("VoiceSessionManager: expected alice and bob to get distinct sessionIds");
+    }
+  } finally {
+    sessionHandle.stop();
+    manager.destroyVoiceSession(aliceSessionId);
+    manager.destroyVoiceSession(bobSessionId);
+    aliceServer.close();
+    bobServer.close();
   }
 });
 

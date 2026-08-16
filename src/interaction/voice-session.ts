@@ -15,34 +15,26 @@ import * as rapport from "../self/rapport.js";
 
 const observation = ObservationPlatform.getInstance();
 
-/**
- * One-turn text pipeline for the local voice daemon. Deliberately reuses
- * /api/chat's Groq/CognitionRouter tool-calling shape exactly (server.ts,
- * the "Groq" branch of its execution chain) rather than inventing a new
- * one — same message-building, same executeTool dispatch, same bounded
- * tool-call retry loop, same final-text extraction. It does NOT reuse
- * Gemini Live's bespoke functionResponse/thought_signature handling; that
- * pattern belonged to the old voice path this daemon replaces and is out
- * of scope here.
- *
- * Also mirrors /api/chat's per-turn memory/session-history/learning side
- * effects (I4 fix): sessionRepo.appendMessage for both the user's
- * transcript and the final spoken reply, memoryStore.recall to pull
- * relevant memory into context, and — on a genuine successful reply —
- * memoryStore.remember/reflectAndLearn/knowledgeGraph.extractAndStore/
- * identity.extractSelfReflection/rapport.extractRapportSignal. Without
- * these, a spoken conversation would leave zero trace anywhere text
- * chat's memory/learning draws from, making voice and text two
- * disconnected personas — see handleTranscript() below and the now-
- * deleted src/interaction/live-voice.ts's flushTurn() (git history, commit
- * e97ab96^) for the original version of this same pattern.
- *
- * A single fixed username is used because this is a single local device
- * with one primary user, the same "admin" fallback daily-adaptation.ts and
- * other background-triggered callers already use when there's no real
- * per-request identity to thread through.
- */
-const DEFAULT_USERNAME = "admin";
+// One-turn text pipeline for the local voice daemon. Deliberately reuses
+// /api/chat's Groq/CognitionRouter tool-calling shape exactly (server.ts,
+// the "Groq" branch of its execution chain) rather than inventing a new
+// one — same message-building, same executeTool dispatch, same bounded
+// tool-call retry loop, same final-text extraction. It does NOT reuse
+// Gemini Live's bespoke functionResponse/thought_signature handling; that
+// pattern belonged to the old voice path this daemon replaces and is out
+// of scope here.
+//
+// Also mirrors /api/chat's per-turn memory/session-history/learning side
+// effects (I4 fix): sessionRepo.appendMessage for both the user's
+// transcript and the final spoken reply, memoryStore.recall to pull
+// relevant memory into context, and — on a genuine successful reply —
+// memoryStore.remember/reflectAndLearn/knowledgeGraph.extractAndStore/
+// identity.extractSelfReflection/rapport.extractRapportSignal. Without
+// these, a spoken conversation would leave zero trace anywhere text
+// chat's memory/learning draws from, making voice and text two
+// disconnected personas — see handleTranscript() below and the now-
+// deleted src/interaction/live-voice.ts's flushTurn() (git history, commit
+// e97ab96^) for the original version of this same pattern.
 
 // Mirrors /api/chat's Groq branch's tool-attached model order exactly
 // (server.ts) — the heavier, more reliably tool-capable model first since
@@ -77,7 +69,6 @@ export interface VoiceSessionDeps {
   // server.ts's setSharedRouter() call at boot) is still seen; capturing
   // them once at startVoiceSession() call time would defeat that.
   router?: CognitionRouter | null;
-  username?: string;
   ai?: GoogleGenAI | null;
   localLlmEndpoint?: string | null;
   executeTool: typeof realExecuteTool;
@@ -135,18 +126,37 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
   const bus = EventBus.getInstance();
 
   // Per-call, not module-level: startVoiceSession() returns an independent
-  // { stop } handle, so each call (e.g. a fresh instance in tests, or a
-  // future multi-session scenario) must get its own turn queue rather than
-  // sharing one across every call this process ever makes.
+  // { stop } handle, so each call (e.g. a fresh instance in tests) must get
+  // its own turn queue rather than sharing one across every call this
+  // process ever makes. Turns from DIFFERENT sessions still share this one
+  // queue (this is the one shared subscription every session's transcripts
+  // flow through) -- that's fine, it just means concurrent sessions' turns
+  // are processed one at a time rather than in parallel, same tradeoff the
+  // single-session version already had for tool-call loops within one turn.
   let activeTurnPromise: Promise<void> = Promise.resolve();
 
-  const unsubscribe = bus.subscribe<{ text?: string }>("voice:transcript", (payload) => {
+  const unsubscribe = bus.subscribe<{ text?: string; sessionId?: string; username?: string }>("voice:transcript", (payload) => {
     const text = typeof payload?.text === "string" ? payload.text.trim() : "";
     if (!text) return; // empty/no-op transcript: do nothing, never publish
 
+    const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
+    const username = typeof payload?.username === "string" ? payload.username : "";
+    if (!sessionId || !username) {
+      // A real producer (Task 3's voice-session-manager and beyond) always
+      // stamps both -- this only fires for a malformed/legacy publisher,
+      // and must fail loudly rather than silently misattributing a turn to
+      // a fixed identity the way the old DEFAULT_USERNAME fallback did.
+      observation.logTelemetry(
+        "warn",
+        "VoiceSession",
+        `Dropping a voice:transcript event missing sessionId/username (sessionId=${sessionId || "<empty>"}, username=${username || "<empty>"}) -- refusing to guess who this turn belongs to.`
+      );
+      return;
+    }
+
     // Queue turns sequentially so tool loops never race.
     activeTurnPromise = activeTurnPromise
-      .then(() => handleTranscript(text, deps, bus))
+      .then(() => handleTranscript(text, sessionId, username, deps, bus))
       .catch((err: any) => {
         // handleTranscript already catches every failure internally and
         // always publishes an honest reply rather than throwing — this is
@@ -161,8 +171,8 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
         // inside handleTranscript) so this truly-last-resort path doesn't
         // leave conversation history missing the reply the user actually
         // heard/saw -- every other reply path already does this.
-        deps.appendMessage(deps.username ?? DEFAULT_USERNAME, "assistant", HONEST_PIPELINE_ERROR_REPLY).catch(() => {});
-        bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY });
+        deps.appendMessage(username, "assistant", HONEST_PIPELINE_ERROR_REPLY).catch(() => {});
+        bus.publish("voice:reply", { text: HONEST_PIPELINE_ERROR_REPLY, sessionId, username });
       });
   });
 
@@ -173,9 +183,8 @@ export function startVoiceSession(overrides: Partial<VoiceSessionDeps> = {}): { 
   };
 }
 
-async function handleTranscript(text: string, deps: VoiceSessionDeps, bus: EventBus): Promise<void> {
+async function handleTranscript(text: string, sessionId: string, username: string, deps: VoiceSessionDeps, bus: EventBus): Promise<void> {
   const router = deps.router !== undefined ? deps.router : getCognitionRouter();
-  const username = deps.username ?? DEFAULT_USERNAME;
 
   // Session-history write side — every spoken turn is persisted the same
   // way a typed one is (see /api/chat's sessionRepo.appendMessage call in
@@ -190,7 +199,7 @@ async function handleTranscript(text: string, deps: VoiceSessionDeps, bus: Event
   // persists it the same way /api/chat persists fullReply regardless of
   // whether it came from a real backend or a fallback.
   const publishReply = (replyText: string) => {
-    bus.publish("voice:reply", { text: replyText });
+    bus.publish("voice:reply", { text: replyText, sessionId, username });
     deps.appendMessage(username, "assistant", replyText).catch(() => {});
   };
 

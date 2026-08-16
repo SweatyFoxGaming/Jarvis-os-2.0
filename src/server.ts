@@ -67,7 +67,7 @@ import { adminRouter } from "./interaction/routes/admin-routes.js";
 import * as dailyAdaptation from "./adaptation/daily-adaptation.js";
 import { EventBus } from "./core/event-bus.js";
 import { startFilesystemWatcher } from "./core/filesystem-watcher.js";
-import { startAudioClient } from "./core/audio-client.js";
+import { destroyAllVoiceSessions } from "./interaction/voice-session-manager.js";
 import { startLiveAnalysis } from "./adaptation/live-analysis.js";
 import { startShadowVerifier } from "./executive/shadow-verifier.js";
 import { startVoiceSession } from "./interaction/voice-session.js";
@@ -75,7 +75,6 @@ import type { Request, Response, NextFunction } from 'express';
 
 let httpServer: http.Server | undefined;
 let eventsWss: WebSocketServer | undefined;
-let audioClient: any;
 let voiceSession: any;
 let liveAnalysis: any;
 let shadowVerifier: any;
@@ -1531,7 +1530,13 @@ initDatabase().then(async (ready) => {
 
   liveAnalysis = startLiveAnalysis();
   shadowVerifier = startShadowVerifier();
-  audioClient = startAudioClient(process.env.VOICE_DAEMON_SOCKET || "/tmp/jarvis-voice/voice.sock");
+  // Note: no boot-time audio-client connection anymore -- daemon
+  // connections are now opened per-session via voice-session-manager.ts's
+  // createVoiceSession(), on demand, once a real producer exists to call
+  // it (out of scope for this plan). This one shared voice:transcript
+  // subscription still starts at boot -- see voice-session.ts's own
+  // doc-comment -- so it's ready the moment any session's transcript
+  // arrives.
   voiceSession = startVoiceSession();
 
   // Opt-in, no-ops if REDIS_URL is unset (every deployment today) -- see
@@ -1577,7 +1582,7 @@ async function gracefulShutdown(signal: string) {
   console.log(`\n[Server] Received ${signal}. Initiating graceful shutdown...`);
 
   try {
-    audioClient?.stop?.();
+    destroyAllVoiceSessions();
     fsWatcher?.stop?.();
     liveAnalysis?.stop?.();
     shadowVerifier?.stop?.();

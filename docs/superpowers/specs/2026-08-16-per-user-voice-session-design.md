@@ -31,7 +31,7 @@ New module `src/interaction/voice-session-manager.ts` replaces the current boot-
 - `destroyVoiceSession(sessionId): void` — closes that session's daemon connection, cleans up its bus subscriptions.
 - One shared `voice:transcript` subscription (registered once, not per-session) reads `sessionId`/`username` off each event and calls `handleTranscript` — matches how a single Express route handler already serves many concurrent requests without one subscription per request.
 
-`server.ts`'s current `voiceSession = startVoiceSession()` and the module-level `startAudioClient()` call are removed from the boot sequence — this pipeline becomes purely on-demand, created only when something (sub-project B, or a test) actually calls `createVoiceSession`. Nothing in this sub-project calls it in production yet; it ships as tested, dormant infrastructure, the same way `voice-session.ts` itself has been since it was first built.
+`server.ts`'s module-level `startAudioClient()` boot connection is removed from the boot sequence -- the shared `voice:transcript` subscription described above still starts at boot (`voiceSession = startVoiceSession()` is kept), since that's what makes "one shared subscription registered once" true. Only the fixed single daemon connection goes away; session creation (and therefore any real daemon connection) becomes purely on-demand, created only when something (sub-project B, or a test) actually calls `createVoiceSession`. Nothing in this sub-project calls it in production yet; it ships as tested, dormant infrastructure, the same way `voice-session.ts` itself has been since it was first built.
 
 ### Daemon connection isolation
 
