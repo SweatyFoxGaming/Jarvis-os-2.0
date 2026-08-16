@@ -187,55 +187,96 @@ function endStreamingTurn() {
   // gated only by the `streaming` flag (which is now false again).
 }
 
+// Guards enableAmbientListening against a second call landing while the
+// first is still mid-flight (awaiting model load or a mic permission
+// prompt) -- without this, two overlapping calls could each pass the
+// `wakeWordEngine` check below (it's only set at the very end of a
+// successful run) and create two engines, two getUserMedia captures, and
+// two ScriptProcessorNodes, of which disableAmbientListening would only
+// ever clean up the second, leaking the first mic capture (and its
+// browser recording indicator) for the rest of the tab's life.
+let ambientEnabling = false;
+
 // Public entry points wired to the ambient-listening toggle in index.html.
 async function enableAmbientListening() {
-  if (wakeWordEngine) return; // already enabled
+  if (wakeWordEngine || ambientEnabling) return; // already enabled, or enabling right now
+  ambientEnabling = true;
 
-  // WakeWordEngine is defined in openwakeword-engine.js, loaded via a
-  // <script type="module"> tag in index.html which also assigns it as a
-  // window global for this classic script to use -- see that file's own
-  // comment on why. Model files are the vendored, official openWakeWord
-  // releases (see that file's own license note: CC BY-NC-SA 4.0, personal/
-  // noncommercial use only).
-  const engine = new WakeWordEngine({
-    modelBaseUrl: "vendor/openwakeword/models/",
-    ortWasmPath: "vendor/onnxruntime-web/",
-    detectionThreshold: 0.5,
-  });
-  await engine.load();
-  engine.onDetection = () => {
-    startStreamingTurn();
-  };
-  wakeWordEngine = engine;
+  // Local until every step below succeeds -- module-level state
+  // (wakeWordEngine/ambientMicStream/ambientAudioContext) is only ever
+  // committed once the whole sequence completes, so a failure partway
+  // through (e.g. the user denies the mic permission prompt AFTER the
+  // engine already loaded) can't leave wakeWordEngine truthy with no
+  // matching mic capture -- which would otherwise permanently block every
+  // future retry via the early-return above, with no way to recover short
+  // of reloading the page.
+  let engine = null;
+  let micStreamLocal = null;
 
-  ambientMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  ambientAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-  const source = ambientAudioContext.createMediaStreamSource(ambientMicStream);
-  const processor = ambientAudioContext.createScriptProcessor(4096, 1, 1);
-
-  processor.onaudioprocess = (event) => {
-    if (!wakeWordEngine || streaming) return; // streaming: skip -- see the state-machine comment at the top of this file
-    const input = event.inputBuffer.getChannelData(0);
-    const pcm16 = downsampleTo16kHzPcm16(input, ambientAudioContext.sampleRate);
-    wakeWordEngine.processSamples(pcm16).catch((err) => {
-      console.error("Wake-word engine processing error:", err);
+  try {
+    // WakeWordEngine is defined in openwakeword-engine.js, loaded via a
+    // <script type="module"> tag in index.html which also assigns it as a
+    // window global for this classic script to use -- see that file's own
+    // comment on why. Model files are the vendored, official openWakeWord
+    // releases (see that file's own license note: CC BY-NC-SA 4.0,
+    // personal/noncommercial use only).
+    engine = new WakeWordEngine({
+      modelBaseUrl: "vendor/openwakeword/models/",
+      ortWasmPath: "vendor/onnxruntime-web/",
+      detectionThreshold: 0.5,
     });
-  };
+    await engine.load();
+    engine.onDetection = () => {
+      startStreamingTurn();
+    };
 
-  source.connect(processor);
-  // Same reasoning as startStreamingTurn's identical pattern below: keeps
-  // the audio graph "live" (ScriptProcessorNode requires a destination
-  // connection to fire its callback) without routing the live microphone
-  // audibly out through the speakers.
-  const mutedSink = ambientAudioContext.createGain();
-  mutedSink.gain.value = 0;
-  processor.connect(mutedSink);
-  mutedSink.connect(ambientAudioContext.destination);
+    micStreamLocal = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // Everything succeeded -- commit state.
+    wakeWordEngine = engine;
+    ambientMicStream = micStreamLocal;
+    ambientAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = ambientAudioContext.createMediaStreamSource(ambientMicStream);
+    const processor = ambientAudioContext.createScriptProcessor(4096, 1, 1);
+
+    processor.onaudioprocess = (event) => {
+      if (!wakeWordEngine || streaming) return; // streaming: skip -- see the state-machine comment at the top of this file
+      const input = event.inputBuffer.getChannelData(0);
+      const pcm16 = downsampleTo16kHzPcm16(input, ambientAudioContext.sampleRate);
+      wakeWordEngine.processSamples(pcm16).catch((err) => {
+        console.error("Wake-word engine processing error:", err);
+      });
+    };
+
+    source.connect(processor);
+    // Same reasoning as startStreamingTurn's identical pattern below: keeps
+    // the audio graph "live" (ScriptProcessorNode requires a destination
+    // connection to fire its callback) without routing the live microphone
+    // audibly out through the speakers.
+    const mutedSink = ambientAudioContext.createGain();
+    mutedSink.gain.value = 0;
+    processor.connect(mutedSink);
+    mutedSink.connect(ambientAudioContext.destination);
+  } catch (err) {
+    // Release anything THIS call already acquired before state was
+    // committed -- module-level variables were never set on this path, so
+    // there's nothing for disableAmbientListening to find; clean up the
+    // locals directly instead.
+    if (engine) await engine.release().catch(() => {});
+    if (micStreamLocal) micStreamLocal.getTracks().forEach((track) => track.stop());
+    throw err; // propagates to toggleAmbientListening's own try/catch, which surfaces the notification
+  } finally {
+    ambientEnabling = false;
+  }
 }
 
-function disableAmbientListening() {
+async function disableAmbientListening() {
   if (!wakeWordEngine) return;
+  const engine = wakeWordEngine;
   wakeWordEngine = null; // processor.onaudioprocess checks this and stops feeding samples
+  await engine.release().catch((err) => {
+    console.error("Failed to release wake-word engine sessions:", err);
+  });
   if (ambientMicStream) {
     ambientMicStream.getTracks().forEach((track) => track.stop());
     ambientMicStream = null;

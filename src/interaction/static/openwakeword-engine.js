@@ -264,6 +264,17 @@ export class WakeWordEngine {
     this.classifierSession = null;
     this.extractor = null;
     this.onDetection = null;
+    // processSamples is called from an audio callback (onaudioprocess)
+    // that fires roughly every 85ms and does NOT await the previous call
+    // -- if one pass through the three ONNX sessions ever takes longer
+    // than that (plausible on a slower device), two calls would otherwise
+    // interleave their awaits and corrupt the extractor's shared mutable
+    // state (accumulatedSamples, rawDataRemainder, the row buffers).
+    // This promise chain serializes every call through this engine
+    // instance, mirroring the same "queue, never race" pattern already
+    // used for exactly this class of bug in voice-session.ts's per-session
+    // turn queue.
+    this._queue = Promise.resolve();
   }
 
   async load() {
@@ -312,9 +323,20 @@ export class WakeWordEngine {
    * Feeds one chunk of raw 16kHz mono int16 PCM into the pipeline. If the
    * chunk completes a full pipeline update, runs the wake-word classifier
    * on the latest feature window and fires onDetection when the score
-   * crosses detectionThreshold.
+   * crosses detectionThreshold. Calls are serialized (see the `_queue`
+   * comment in the constructor) -- a caller that fires this from an audio
+   * callback without awaiting the previous call is still safe.
    */
   async processSamples(int16Samples) {
+    const run = this._queue.then(() => this._processSamplesSerialized(int16Samples));
+    // Swallow rejections here so one failed call doesn't permanently wedge
+    // the chain for every future call -- the caller of THIS call still
+    // sees the real rejection via the returned `run` promise.
+    this._queue = run.catch(() => {});
+    return run;
+  }
+
+  async _processSamplesSerialized(int16Samples) {
     if (!this.extractor) return;
     const updated = await this.extractor.processSamples(int16Samples);
     if (!updated) return;
@@ -331,6 +353,26 @@ export class WakeWordEngine {
 
     if (score >= this.detectionThreshold && typeof this.onDetection === "function") {
       this.onDetection(score);
+    }
+  }
+
+  /**
+   * Releases the three ONNX Runtime Web sessions' underlying WASM memory,
+   * which garbage collection alone does NOT reclaim just because the JS
+   * reference is dropped -- without this, repeated enable/disable cycles
+   * of ambient listening would grow the tab's heap indefinitely.
+   */
+  async release() {
+    this.onDetection = null;
+    this.extractor = null;
+    const sessions = [this.melspecSession, this.embeddingSession, this.classifierSession];
+    this.melspecSession = null;
+    this.embeddingSession = null;
+    this.classifierSession = null;
+    for (const session of sessions) {
+      if (session && typeof session.release === "function") {
+        await session.release();
+      }
     }
   }
 }

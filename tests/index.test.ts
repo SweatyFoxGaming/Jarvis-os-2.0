@@ -6514,26 +6514,56 @@ registerTest("OpenWakeWordEngine", "StreamingFeatureExtractor.getFeatures stays 
   }
 });
 
-registerTest("OpenWakeWordEngine", "WakeWordEngine.load throws a clear error when onnxruntime-web isn't present, instead of a cryptic undefined-property crash", async () => {
+registerTest("OpenWakeWordEngine", "WakeWordEngine.load throws a clear error when no `window` global exists at all", async () => {
   const { WakeWordEngine } = await import("../src/interaction/static/openwakeword-engine.js");
   const engine = new WakeWordEngine({ modelBaseUrl: "/vendor/openwakeword/models/", ortWasmPath: "/vendor/onnxruntime-web/" });
   let threw = false;
   let message = "";
   try {
-    // No `window` global exists in this Node test environment, so this
-    // exercises the same "ort not available" guard a real browser would
-    // hit if the <script> tag failed to load -- verifying it's an honest,
-    // named error rather than an opaque "window is not defined"/"Cannot
-    // read properties of undefined" crash deep inside load().
+    // No `window` global exists in this Node test environment by default
+    // -- exercises the "browser-only, no window at all" guard specifically
+    // (verified by NOT installing a fake window below, unlike the next
+    // test), rather than accidentally passing for the wrong reason.
     await engine.load();
   } catch (err: any) {
     threw = true;
     message = err?.message || String(err);
   }
   if (!threw) {
-    throw new Error("OpenWakeWordEngine: expected load() to throw when onnxruntime-web is unavailable");
+    throw new Error("OpenWakeWordEngine: expected load() to throw when there is no `window` global");
   }
-  if (!message.toLowerCase().includes("onnxruntime") && !message.toLowerCase().includes("window")) {
+  if (!message.toLowerCase().includes("window")) {
+    throw new Error(`OpenWakeWordEngine: expected an honest error naming the real cause, got: ${message}`);
+  }
+});
+
+registerTest("OpenWakeWordEngine", "WakeWordEngine.load throws a clear error when `window` exists but onnxruntime-web (window.ort) doesn't", async () => {
+  const { WakeWordEngine } = await import("../src/interaction/static/openwakeword-engine.js");
+  const engine = new WakeWordEngine({ modelBaseUrl: "/vendor/openwakeword/models/", ortWasmPath: "/vendor/onnxruntime-web/" });
+
+  // Install a temporary fake `window` with no `.ort` property -- exercises
+  // the SEPARATE guard for "the <script> tag never loaded onnxruntime-web"
+  // specifically, distinct from the no-window-at-all case above (both
+  // guards exist in load(); each needs its own test, since the previous,
+  // single combined test could pass for either reason and silently miss a
+  // regression in one of them).
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let threw = false;
+  let message = "";
+  try {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+    await engine.load();
+  } catch (err: any) {
+    threw = true;
+    message = err?.message || String(err);
+  } finally {
+    if (savedWindow) Object.defineProperty(globalThis, "window", savedWindow);
+    else delete (globalThis as any).window;
+  }
+  if (!threw) {
+    throw new Error("OpenWakeWordEngine: expected load() to throw when window.ort is unavailable");
+  }
+  if (!message.toLowerCase().includes("onnxruntime")) {
     throw new Error(`OpenWakeWordEngine: expected an honest error naming the real cause, got: ${message}`);
   }
 });
