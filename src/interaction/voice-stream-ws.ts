@@ -16,6 +16,16 @@ const observation = ObservationPlatform.getInstance();
 // user, an unbounded turn is also a trivial resource-exhaustion vector.
 const TURN_TIMEOUT_MS = 60_000;
 
+// Bounds on inbound mic PCM, independent of TURN_TIMEOUT_MS above -- the
+// timeout caps how long a turn can stay open, not how much data a client
+// sends while it's open. At 16kHz mono 16-bit PCM, one second of real audio
+// is 32,000 bytes; MAX_PCM_BYTES_PER_TURN gives a wide margin over what a
+// real 60-second turn could ever legitimately produce (60s * 32,000B/s =
+// ~1.9MB) without letting a malicious/misbehaving client force unbounded
+// base64 allocations or unbounded writes to the daemon socket.
+const MAX_PCM_FRAME_BYTES = 64 * 1024;
+const MAX_PCM_BYTES_PER_TURN = 4 * 1024 * 1024;
+
 /**
  * Handles one already-authenticated /ws/voice-stream connection end to
  * end: opens a fresh per-connection voice session, forwards every inbound
@@ -42,6 +52,7 @@ export function handleVoiceStreamConnection(ws: WebSocket, username: string, soc
   const sessionId = createVoiceSession(socketPath, username);
   let closed = false;
   const audioChunks: Buffer[] = [];
+  let receivedPcmBytes = 0;
 
   let unsubAudioChunk: () => void = () => {};
   let unsubSpeakDone: () => void = () => {};
@@ -94,6 +105,11 @@ export function handleVoiceStreamConnection(ws: WebSocket, username: string, soc
 
   ws.on("message", (data: Buffer, isBinary: boolean) => {
     if (closed || !isBinary) return;
+    if (data.length > MAX_PCM_FRAME_BYTES || receivedPcmBytes + data.length > MAX_PCM_BYTES_PER_TURN) {
+      finish("error", "Ambient voice audio limit exceeded");
+      return;
+    }
+    receivedPcmBytes += data.length;
     sendVoiceSessionAudioChunk(sessionId, data);
   });
 

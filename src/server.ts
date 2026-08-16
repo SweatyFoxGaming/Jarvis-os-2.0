@@ -1672,8 +1672,17 @@ async function gracefulShutdown(signal: string) {
         client.close(1001, "Server shutting down");
       });
       eventsWss.close();
-      console.log("[Server] Closed WebSocket connections.");
     }
+    if (voiceStreamWss) {
+      // Without this, an open /ws/voice-stream connection outlives
+      // httpServer.close() -- its daemon session and socket stay alive,
+      // and the process never exits cleanly on its own.
+      voiceStreamWss.clients.forEach((client: any) => {
+        client.close(1001, "Server shutting down");
+      });
+      voiceStreamWss.close();
+    }
+    console.log("[Server] Closed WebSocket connections.");
   } catch (err) {
     console.error("[Server] Error closing WebSockets:", err);
   }

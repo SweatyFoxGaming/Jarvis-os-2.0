@@ -93,7 +93,17 @@ async function startStreamingTurn() {
     };
 
     source.connect(processor);
-    processor.connect(audioContext.destination);
+    // ScriptProcessorNode only fires onaudioprocess once it's connected to
+    // some destination -- but connecting it straight to
+    // audioContext.destination would route the live microphone signal
+    // audibly out through the user's speakers (feedback/echo, and it could
+    // also bleed into what the mic itself picks up next). Route through a
+    // zero-gain node instead: keeps the graph "live" without making any of
+    // it audible.
+    const mutedSink = audioContext.createGain();
+    mutedSink.gain.value = 0;
+    processor.connect(mutedSink);
+    mutedSink.connect(audioContext.destination);
 
     // The server never sends binary frames back on this connection -- only
     // these two JSON control messages -- so event.data is always a string
