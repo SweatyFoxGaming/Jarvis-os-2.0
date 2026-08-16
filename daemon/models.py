@@ -7,6 +7,7 @@ which is what keeps voice_engine.py's own import graph testable without
 real weights (see tests/test_models.py's injected model_loader).
 """
 import logging
+import os
 import threading
 from typing import Callable, Optional
 
@@ -14,6 +15,8 @@ log = logging.getLogger("voice_engine.models")
 
 WHISPER_MODEL_SIZE = "base"  # CPU-appropriate; this sandbox has no GPU
 KOKORO_VOICE = "af_heart"
+KOKORO_SAMPLE_RATE = 24000  # Kokoro's fixed TTS output sample rate -- see TextToSpeech.synthesize below.
+_AMBIENT_SPEAKER_DEVICE = os.environ.get("AMBIENT_SPEAKER_DEVICE") or None  # None -> sounddevice's system default output device
 
 
 def _load_whisper_model():
@@ -26,6 +29,11 @@ def _load_kokoro_model():
     from kokoro import KPipeline
     log.info("loading Kokoro-82M TTS pipeline (CPU inference)...")
     return KPipeline(lang_code="a")
+
+
+def _load_audio_player_backend():
+    import sounddevice as sd
+    return sd
 
 
 class SpeechToText:
@@ -103,3 +111,32 @@ class TextToSpeech:
         audio_np = np.concatenate(chunks).astype(np.float32)
         pcm16 = (np.clip(audio_np, -1.0, 1.0) * 32767.0).astype(np.int16)
         return pcm16.tobytes()
+
+
+class AudioPlayer:
+    """Plays raw int16 PCM directly out a host audio device -- used only by
+    the ambient host-mic path (Task 3), which has no caller waiting to
+    receive bytes back over the socket, unlike _handle_speak's existing
+    stream-back-to-caller behavior. Lazily imports sounddevice (same
+    reasoning as _load_whisper_model/_load_kokoro_model above) so importing
+    this module never requires PortAudio to be present -- real playback
+    only happens if something actually calls play()."""
+
+    def __init__(self, player_loader: Optional[Callable] = None):
+        self._loader = player_loader or _load_audio_player_backend
+        self._backend = None
+        self._load_lock = threading.Lock()
+
+    def _ensure_loaded(self):
+        if self._backend is None:
+            with self._load_lock:
+                if self._backend is None:
+                    self._backend = self._loader()
+        return self._backend
+
+    def play(self, pcm_bytes: bytes, sample_rate: int) -> None:
+        import numpy as np
+        backend = self._ensure_loaded()
+        audio = np.frombuffer(pcm_bytes, dtype=np.int16)
+        backend.play(audio, samplerate=sample_rate, device=_AMBIENT_SPEAKER_DEVICE)
+        backend.wait()

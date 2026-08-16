@@ -8,7 +8,7 @@ from typing import Set
 
 import numpy as np
 
-from models import SpeechToText, TextToSpeech
+from models import AudioPlayer, SpeechToText, TextToSpeech, KOKORO_SAMPLE_RATE
 from protocol import (
     ProtocolError,
     UtteranceEndDetector,
@@ -27,6 +27,7 @@ MAX_UTTERANCE_BYTES = 2 * 60 * 32000
 
 _stt = SpeechToText()
 _tts = TextToSpeech()
+_player = AudioPlayer()
 
 # Track active client writers so we can gracefully close them on shutdown
 _active_writers: Set[asyncio.StreamWriter] = set()
@@ -269,6 +270,33 @@ async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> N
     await _write_message(writer, {"type": "speak_done"})
 
 
+async def _handle_speak_local(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
+    """Synthesizes and plays text DIRECTLY out the host speaker -- unlike
+    _handle_speak above, there is no caller waiting to receive audio_chunk
+    frames back; this is the ambient host-mic path's reply mechanism (Task
+    3), where the daemon itself owns playback. Still goes through
+    _inference_queue (Kokoro synthesis is exactly as slow/synchronous here
+    as it is for _handle_speak) but AudioPlayer.play() blocks on real
+    playback duration too -- submitted as its own inference-queue job so a
+    long reply's PLAYBACK time doesn't hold the queue open for OTHER
+    connections' STT/TTS calls, only the synthesis step does."""
+    text = msg.get("text", "")
+    future, position = await _inference_queue.submit(_tts.synthesize, text)
+    if position > 0:
+        await _write_message(writer, {"type": "queued", "position": position})
+    try:
+        audio_bytes = await future
+    except Exception:
+        log.exception(f"TTS synthesis failed for {peer} (speak_local)")
+        return
+    try:
+        await asyncio.to_thread(_player.play, audio_bytes, KOKORO_SAMPLE_RATE)
+    except Exception:
+        log.exception(f"Local playback failed for {peer} (speak_local)")
+        return
+    await _write_message(writer, {"type": "speak_local_done"})
+
+
 async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     peer = writer.get_extra_info("peername") or "unix-client"
     log.info(f"connection opened: {peer}")
@@ -292,6 +320,8 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
                 await _handle_audio_data(msg, utterance_buffer, peer)
             elif msg_type == "speak":
                 await _handle_speak(writer, msg, peer)
+            elif msg_type == "speak_local":
+                await _handle_speak_local(writer, msg, peer)
             elif msg_type == "transcribe":
                 await _handle_transcribe(writer, detector, utterance_buffer, peer)
             else:

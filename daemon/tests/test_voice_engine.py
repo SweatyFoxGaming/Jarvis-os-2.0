@@ -485,3 +485,44 @@ def test_second_concurrent_transcription_gets_a_queued_message_with_its_position
                 os.remove(sock_path)
 
     _run(scenario())
+
+
+def test_speak_local_synthesizes_and_plays_without_streaming_audio_chunks_back(monkeypatch):
+    played = []
+
+    def fake_synthesize(text: str) -> bytes:
+        return f"pcm-for-{text}".encode()
+
+    class FakePlayer:
+        def play(self, pcm_bytes, sample_rate):
+            played.append((pcm_bytes, sample_rate))
+
+    monkeypatch.setattr(voice_engine._tts, "synthesize", fake_synthesize)
+    monkeypatch.setattr(voice_engine, "_player", FakePlayer())
+
+    async def scenario():
+        sock_path = tempfile.mktemp(suffix=".sock")
+        voice_engine._inference_queue = voice_engine.InferenceQueue()
+        voice_engine._inference_queue.start()
+        server = await asyncio.start_unix_server(voice_engine.handle_connection, path=sock_path)
+        try:
+            async with server:
+                asyncio.ensure_future(server.serve_forever())
+                reader, writer = await asyncio.open_unix_connection(sock_path)
+                try:
+                    writer.write((json.dumps({"type": "speak_local", "text": "hello sir"}) + "\n").encode())
+                    await writer.drain()
+
+                    line = await asyncio.wait_for(reader.readline(), timeout=5)
+                    msg = json.loads(line.decode())
+                    assert msg == {"type": "speak_local_done"}, (
+                        f"speak_local must send exactly one speak_local_done, no audio_chunk frames, got: {msg}"
+                    )
+                    assert played == [(b"pcm-for-hello sir", voice_engine.KOKORO_SAMPLE_RATE)]
+                finally:
+                    writer.close()
+        finally:
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
+
+    _run(scenario())
