@@ -310,12 +310,27 @@ export class WakeWordEngine {
       ort.env.wasm.wasmPaths = this.ortWasmPath;
     }
 
+    // Promise.all (not allSettled) would reject on the first failed
+    // create() without assigning ANY of the three fields -- silently
+    // orphaning whichever session(s) DID finish loading, since nothing
+    // would then hold a reference for release() to free. allSettled lets
+    // us assign every session that succeeded, then release() them (this
+    // engine instance is unusable either way once load() has failed) before
+    // rethrowing the real error.
     const modelUrl = (name) => `${this.modelBaseUrl}${name}`;
-    [this.melspecSession, this.embeddingSession, this.classifierSession] = await Promise.all([
+    const [melspecResult, embeddingResult, classifierResult] = await Promise.allSettled([
       ort.InferenceSession.create(modelUrl("melspectrogram.onnx")),
       ort.InferenceSession.create(modelUrl("embedding_model.onnx")),
       ort.InferenceSession.create(modelUrl("hey_jarvis_v0.1.onnx")),
     ]);
+    if (melspecResult.status === "fulfilled") this.melspecSession = melspecResult.value;
+    if (embeddingResult.status === "fulfilled") this.embeddingSession = embeddingResult.value;
+    if (classifierResult.status === "fulfilled") this.classifierSession = classifierResult.value;
+    const failed = [melspecResult, embeddingResult, classifierResult].find((r) => r.status === "rejected");
+    if (failed) {
+      await this.release();
+      throw failed.reason;
+    }
 
     const ortModule = ort;
     this.extractor = new StreamingFeatureExtractor({
