@@ -709,6 +709,9 @@
                             </svg>
                             <span id="mic-pulse-dot" class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary animate-ping hidden"></span>
                         </button>
+                        <button onclick="toggleAmbientListening()" id="btn-ambient-toggle" title="Ambient wake-word listening" class="relative p-2 rounded-full text-secondary hover:text-white hover:bg-white/5 transition-all">
+                          <span id="ambient-status-dot" class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary hidden"></span>
+                        </button>
                         <!-- Audio-reactive scanner bars driven by the existing
                              animateWaveform() (see inline script) — real mic
                              levels via analyser/dataArray when the mic is on,
@@ -5388,6 +5391,30 @@
     }
 
     console.log("🧠 Jarvis OS Web Console compiled successfully.");
+</script>
+<script type="module" src="vendor/porcupine/porcupine-web.js"></script>
+<script type="module" src="vendor/porcupine/web-voice-processor.js"></script>
+<script src="wake-word.js"></script>
+<script>
+  let ambientListeningEnabled = false;
+  async function toggleAmbientListening() {
+    const dot = document.getElementById('ambient-status-dot');
+    if (ambientListeningEnabled) {
+      disableAmbientListening();
+      ambientListeningEnabled = false;
+      if (dot) dot.classList.add('hidden');
+      addNotification("Ambient listening disabled.", "warning");
+    } else {
+      try {
+        await enableAmbientListening();
+        ambientListeningEnabled = true;
+        if (dot) dot.classList.remove('hidden');
+        addNotification("Ambient listening enabled — say \"Jarvis\" any time.", "success");
+      } catch (err) {
+        addNotification(`Couldn't enable ambient listening: ${err.message || err}`, "danger");
+      }
+    }
+  }
 </script>
 </body>
 </html>

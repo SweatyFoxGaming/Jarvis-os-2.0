@@ -146,7 +146,15 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+      // 'wasm-unsafe-eval' is required for WebAssembly.instantiate to run
+      // under this CSP at all (Porcupine's wake-word engine is WASM) --
+      // without it, wake-word.js's WASM module load throws a CSP
+      // violation in any browser enforcing this policy strictly. Every
+      // other resource Porcupine needs (its worker script, .wasm binary,
+      // and the "Jarvis" keyword model file) is vendored locally under
+      // src/interaction/static/vendor/porcupine/ and served from 'self',
+      // so no connect-src/worker-src change is needed alongside this.
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "'wasm-unsafe-eval'"],
       // Helmet defaults script-src-attr to 'none' — a SEPARATE CSP directive
       // from script-src that governs inline event handler attributes
       // (onclick=, etc.) specifically. This frontend uses 36+ onclick=
