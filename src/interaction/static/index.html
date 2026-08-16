@@ -5399,21 +5399,29 @@
 
     console.log("🧠 Jarvis OS Web Console compiled successfully.");
 </script>
-<script type="module" src="vendor/porcupine/porcupine-web.js"></script>
-<script type="module" src="vendor/porcupine/web-voice-processor.js"></script>
+<!-- Classic (non-module) UMD bundle -- exposes window.ort, which
+     openwakeword-engine.js's WakeWordEngine.load() reads directly. -->
+<script src="vendor/onnxruntime-web/ort.wasm.min.js"></script>
+<!-- ES module (uses `export class`) -- also assigns window.WakeWordEngine
+     as a bridge for wake-word.js, a classic script, to consume. See that
+     file's own comment for why it isn't a module itself. -->
+<script type="module" src="openwakeword-engine.js"></script>
 <script src="wake-word.js"></script>
 <script>
   let ambientListeningEnabled = false;
   async function toggleAmbientListening() {
     const dot = document.getElementById('ambient-status-dot');
     if (ambientListeningEnabled) {
-      // disableAmbientListening() can throw synchronously (the Porcupine
-      // SDK's unsubscribe()/terminate() are third-party code). If it did,
-      // the reset below would be skipped and the button would stay stuck
+      // disableAmbientListening() is async (it awaits releasing the wake-
+      // word engine's ONNX sessions) and can also reject -- awaiting it
+      // here (not fire-and-forget) is what lets this try/catch actually
+      // catch a failure instead of it becoming an unhandled promise
+      // rejection the UI never finds out about. If it did fail, the reset
+      // below would otherwise be skipped and the button would stay stuck
       // showing "enabled" over a listener that is at best half torn down --
       // so reset the UI either way and surface the failure.
       try {
-        disableAmbientListening();
+        await disableAmbientListening();
         addNotification("Ambient listening disabled.", "warning");
       } catch (err) {
         addNotification(`Ambient listening didn't shut down cleanly: ${err.message || err}`, "danger");
