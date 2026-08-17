@@ -65,6 +65,27 @@ RUN pip install --no-cache-dir -r requirements.txt
 # and there is no supported way to ask it for only one.
 RUN python3 -c "import openwakeword.utils; openwakeword.utils.download_models(['hey_jarvis'])"
 
+# Pre-install spaCy's en_core_web_sm into the image at build time.
+# models.py's _load_kokoro_model() -> kokoro's KPipeline(lang_code="a") ->
+# misaki/en.py's G2P.__init__ unconditionally requires this model: it
+# checks `spacy.util.is_package("en_core_web_sm")` and, if missing, calls
+# spacy.cli.download() -- which itself calls spaCy's remote compatibility
+# API before fetching the model. Live-observed: that compat-table request
+# started returning HTTP 503, and spaCy's own failure path (wasabi's
+# msg.fail()) calls sys.exit(1) rather than raising a normal exception --
+# SystemExit inherits BaseException, not Exception, so it passes straight
+# through _warm_models()'s `except Exception` guard and kills the whole
+# daemon process outright. Docker's restart policy then repeats the same
+# download-503-SystemExit sequence every restart, a permanent crash loop
+# with no automatic recovery. Installing the model wheel directly (not
+# via `spacy download`, which is the same command that's failing) makes
+# `is_package()` true at runtime, so misaki's download branch is never
+# reached at all -- same pre-bake pattern as openWakeWord's models above.
+# 3.8.0 is the model-package version matching installed spaCy 3.8.15
+# (spaCy model releases track spaCy's major.minor, not exact patch).
+RUN pip install --no-cache-dir \
+    https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
 # Only the modules voice_engine.py actually imports at runtime -- not
 # venv/, tests/, or pytest.ini, which are dev-only (see voice_engine.py's
 # own `from protocol import ...` / `from models import ...`).
