@@ -1,0 +1,33 @@
+# Incremental override that enables ambient host-mic listening's HARDWARE
+# access. Layer it on top of the main file, on hosts that actually have a
+# sound card:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ambient.yml up -d
+#
+# It exists as a separate file because Docker resolves `devices:` when the
+# container is created, and a device path that doesn't exist on the host is
+# a hard failure, not a soft skip. Keeping the passthrough in the main
+# docker-compose.yml would therefore break `docker compose up` for the
+# ENTIRE stack on any machine without /dev/snd (cloud VMs, CI runners,
+# headless servers) -- over a subsystem that is optional by design.
+#
+# This file only contains the incremental keys; everything else about the
+# voice-daemon service (build context, volumes, healthcheck, and the
+# AMBIENT_* environment variables) comes from docker-compose.yml, which is
+# also where AMBIENT_LISTENING_ENABLED is read from .env. Layering this
+# file in gives the daemon the ability to reach a mic/speaker; setting
+# AMBIENT_LISTENING_ENABLED=true in .env is what makes it actually try.
+# Both are required.
+services:
+  voice-daemon:
+    # Passes the host's real ALSA audio devices through to the container --
+    # required for the ambient host-mic listener to reach a physical
+    # mic/speaker at all.
+    devices:
+      - "/dev/snd:/dev/snd"
+    # The container's default user must belong to the host's `audio` GID to
+    # open /dev/snd/* -- exact GID varies per host (verify with `getent
+    # group audio` on the real deploy host and adjust if it isn't 29, the
+    # common Debian/Ubuntu default).
+    group_add:
+      - "29"

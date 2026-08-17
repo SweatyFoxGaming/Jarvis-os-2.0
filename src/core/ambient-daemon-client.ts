@@ -68,7 +68,7 @@ export function startAmbientDaemonClient(socketPath: string, defaultUsername: st
       observation.logTelemetry(
         "warn",
         "AmbientDaemonClient",
-        "AMBIENT_DEFAULT_USERNAME is not set -- ambient host-mic listening will connect but every wake-word turn will be dropped by voice-session.ts's own missing-username guard."
+        "AMBIENT_DEFAULT_USERNAME is not set -- ambient host-mic listening will connect to the daemon but will NOT register as the ambient connection, so no wake-word turn can be delivered. Set it to a real registered account to enable the feature."
       );
     }
 
@@ -105,7 +105,20 @@ export function startAmbientDaemonClient(socketPath: string, defaultUsername: st
       // simultaneous connections (per-session ones, one-shot
       // transcribe/synthesize ones, and this one) should receive
       // ambient_transcript pushes.
-      newSocket.write(JSON.stringify({ type: "hello_ambient" }) + "\n");
+      //
+      // Deliberately NOT sent when defaultUsername is empty. With no real
+      // account configured, every wake-word turn would be dropped by
+      // voice-session.ts's missing-username guard anyway -- but the daemon
+      // would still have registered this connection as _ambient_writer,
+      // so its AmbientListener would set _turn_in_progress=True on each
+      // trigger and then wait forever for a speak_local reply that
+      // voice-session.ts never produces, permanently latching ambient
+      // listening off. Skipping the handshake leaves _ambient_writer
+      // unset, so the daemon takes its "no active ambient connection"
+      // branch instead, which correctly re-arms the listener every time.
+      if (defaultUsername) {
+        newSocket.write(JSON.stringify({ type: "hello_ambient" }) + "\n");
+      }
     });
 
     newSocket.on("error", (err: any) => {
