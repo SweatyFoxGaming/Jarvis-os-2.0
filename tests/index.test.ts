@@ -6233,6 +6233,57 @@ registerTest("AmbientDaemonClient", "an ambient_transcript message triggers a re
   }
 });
 
+// The daemon registers whichever connection sends "hello_ambient" as THE
+// ambient one, and from then on expects every ambient turn to come back to
+// it as a "speak_local" reply. With no AMBIENT_DEFAULT_USERNAME configured
+// this client drops every transcript before it ever becomes a turn, so no
+// reply would ever be produced -- and the daemon's AmbientListener would
+// latch _turn_in_progress on the first wake word and silently ignore every
+// one after it. Not sending the handshake at all is what keeps the daemon
+// on its "no active ambient connection" path, which re-arms correctly.
+registerTest("AmbientDaemonClient", "hello_ambient is sent only when a default username is configured", async () => {
+  const net = await import("net");
+  const os = await import("os");
+  const path = await import("path");
+  const { startAmbientDaemonClient } = await import("../src/core/ambient-daemon-client.js");
+
+  const observe = async (username: string): Promise<any[]> => {
+    const sockPath = path.join(os.tmpdir(), `ambient-hello-test-${Date.now()}-${Math.random()}.sock`);
+    const received: any[] = [];
+    const server = net.createServer((socket) => {
+      socket.on("data", (data) => {
+        for (const line of data.toString("utf-8").split("\n").filter(Boolean)) {
+          received.push(JSON.parse(line));
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(sockPath, resolve));
+    const client = startAmbientDaemonClient(sockPath, username);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300)); // connect + any handshake write
+    } finally {
+      client.stop();
+      server.close();
+    }
+    return received;
+  };
+
+  const withUsername = await observe("alice");
+  if (!withUsername.some((m) => m.type === "hello_ambient")) {
+    throw new Error(
+      `AmbientDaemonClient: expected hello_ambient with a configured username, got: ${JSON.stringify(withUsername)}`
+    );
+  }
+
+  const withoutUsername = await observe("");
+  if (withoutUsername.some((m) => m.type === "hello_ambient")) {
+    throw new Error(
+      "AmbientDaemonClient: hello_ambient must NOT be sent with no AMBIENT_DEFAULT_USERNAME -- it would register " +
+        "this connection as the daemon's ambient writer while never producing a reply, latching the listener off"
+    );
+  }
+});
+
 // The "VoiceStreamWs" test category that used to live here was removed
 // along with src/interaction/voice-stream-ws.ts itself: the browser-based
 // ambient wake-word path (PR #154 and its predecessor) is gone entirely,
