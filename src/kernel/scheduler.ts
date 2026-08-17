@@ -95,17 +95,31 @@ export function registerJob(name: string, intervalMs: number, fn: () => Promise<
  * vars in .env), not per-registered-user, so this checks on behalf of "admin" only —
  * consistent with how the rest of the email integration already works.
  */
-let lastSeenEmailUid: number | null = null;
-
-export function startEmailWatchJob(intervalMs = 5 * 60 * 1000): NodeJS.Timeout | null {
+export function startEmailWatchJob(
+  intervalMs = 5 * 60 * 1000,
+  fetchRecentMessages: typeof emailIntegration.fetchRecentMessages = emailIntegration.fetchRecentMessages
+): NodeJS.Timeout | null {
   if (!process.env.IMAP_HOST || !process.env.EMAIL_USER) {
     observation.logTelemetry("info", "Scheduler", "Email watch job not started — IMAP not configured.");
     return null;
   }
+  // Scoped to this job instance (not module-level) so each call to
+  // startEmailWatchJob gets independent state — production only ever calls
+  // this once at boot, so this is purely a testability improvement with no
+  // behavior change there.
+  let lastSeenEmailUid: number | null = null;
   return registerJob("email-watch", intervalMs, async () => {
-    const messages = await emailIntegration.fetchRecentMessages(5);
+    const messages = await fetchRecentMessages(5);
     if (messages.length === 0) return;
-    const newest = messages[messages.length - 1];
+    // fetchRecentMessages (email.ts) returns NEWEST-FIRST (it fetches the
+    // mailbox in ascending IMAP sequence order, oldest to newest, then
+    // reverses the result) -- messages[0] is the newest, not
+    // messages[messages.length - 1]. Reading the last element as "newest"
+    // was a real bug: it pinned lastSeenEmailUid to the OLDEST of each
+    // batch, so the baseline barely advanced and most of the same last-5
+    // messages kept re-triggering "new email" notifications on nearly
+    // every poll, regardless of whether they'd already been seen/read.
+    const newest = messages[0];
     if (lastSeenEmailUid === null) {
       // First run: establish the baseline without notifying about pre-existing mail.
       lastSeenEmailUid = newest.uid;
