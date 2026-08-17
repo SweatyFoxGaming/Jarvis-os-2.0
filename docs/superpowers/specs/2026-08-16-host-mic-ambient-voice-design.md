@@ -45,7 +45,7 @@ New module (e.g. `daemon/ambient_listener.py`), started as an asyncio background
 3. On a score crossing threshold (`AMBIENT_WAKE_WORD_THRESHOLD`, default matching openWakeWord's own recommended default), starts capturing the following utterance using the **existing** `UtteranceEndDetector` (`daemon/protocol.py`) — the exact same silence-duration state machine already used for the browser-streamed path, just fed from the live mic stream instead of socket messages. No new VAD logic.
 4. Once the utterance ends, runs it through the daemon's existing `_stt.transcribe` (already daemon-side, unchanged).
 5. Sends the transcript up to Node over the new persistent ambient connection (see below).
-6. **Guards against re-triggering mid-turn:** wake-word detection continues to run (so a reply can itself be interrupted in a future iteration), but a new utterance is not dispatched while a previous one's turn is still awaiting a reply — mirrors the same guard the browser version had.
+6. **Guards against re-triggering mid-turn:** while a previous utterance's turn is still awaiting a reply, incoming mic frames are dropped entirely — wake-word prediction does not run on them at all, so no new trigger (and no reply interruption) is possible until `turn_complete()` re-arms detection. (This is a stricter mid-turn behavior than "detection keeps running in the background"; see "Explicitly deferred" below — reply interruption/barge-in was never built, and isn't approximated by anything short of this.) Mirrors the same guard the browser version had.
 
 ### Protocol additions (`daemon/protocol.py` / `voice_engine.py`)
 
