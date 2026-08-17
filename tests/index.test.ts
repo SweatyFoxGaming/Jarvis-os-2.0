@@ -13,7 +13,7 @@ import { grantCapability, revokeCapability, hasGrant, listGrants, ALL_CAPABILITI
 import { createUser, ReservedUsernameError, InvalidUsernameError } from "../src/kernel/state/users-repo.js";
 import { executeTool, getAllToolDeclarations, looksTrivial, looksToolShaped } from "../src/capabilities/tools.js";
 import { embedText, remember, recall } from "../src/cognition/memory-store.js";
-import { pushNotification, getNotifications, markAllRead, registerJob, startSelfHealthCheckJob } from "../src/kernel/scheduler.js";
+import { pushNotification, getNotifications, markAllRead, registerJob, startSelfHealthCheckJob, startEmailWatchJob } from "../src/kernel/scheduler.js";
 import { buildIdentityContext, generateProactiveThought, extractSelfReflection, buildPersonalityPromptFragment } from "../src/self/identity.js";
 import { extractAndStore, queryKnowledge } from "../src/cognition/knowledge-graph.js";
 import { reflectAndLearn } from "../src/adaptation/reflection.js";
@@ -1058,6 +1058,99 @@ registerTest("Scheduler", "registerJob ticks on an interval and survives a throw
 
   if (ticks < 2) {
     throw new Error(`Scheduler: expected registerJob to tick at least twice, got ${ticks}`);
+  }
+});
+
+registerTest("Scheduler", "startEmailWatchJob does not re-notify about the same unread mail on every poll, and does notify once for genuinely new mail", async () => {
+  // Regression test for a real bug: fetchRecentMessages (email.ts) returns
+  // NEWEST-FIRST, but the job used to read messages[messages.length - 1] as
+  // "newest" -- actually the OLDEST of the batch. That pinned the
+  // lastSeenEmailUid baseline low, so nearly every poll re-flagged the same
+  // last-5 messages as "new", regardless of whether the user had already
+  // seen them. This test drives the job with a fake mailbox that returns
+  // the SAME 5 messages (newest-first) on every call for several ticks --
+  // a fixed, unread-or-not-doesn't-matter mailbox with no new mail arriving
+  // -- and asserts no notification fires after the initial baseline tick.
+  // Then it adds one genuinely new, higher-UID message and asserts exactly
+  // one correctly-worded notification fires for it.
+  const before = getNotifications("admin").length;
+  const savedImapHost = process.env.IMAP_HOST;
+  const savedEmailUser = process.env.EMAIL_USER;
+  process.env.IMAP_HOST = "imap.example.com";
+  process.env.EMAIL_USER = "test@example.com";
+
+  const staticInbox = [
+    { uid: 105, subject: "Newest of the static 5", from: ["e@x.com"], date: "2026-08-17" },
+    { uid: 104, subject: "Fourth", from: ["d@x.com"], date: "2026-08-16" },
+    { uid: 103, subject: "Third", from: ["c@x.com"], date: "2026-08-15" },
+    { uid: 102, subject: "Second", from: ["b@x.com"], date: "2026-08-14" },
+    { uid: 101, subject: "Oldest of the static 5", from: ["a@x.com"], date: "2026-08-13" },
+  ];
+  const newMailInbox = [
+    { uid: 106, subject: "Genuinely new", from: ["f@x.com"], date: "2026-08-17" },
+    ...staticInbox,
+  ];
+  // Test-controlled switch rather than a tick-count threshold: a live
+  // setInterval's real tick count can't be pinned to an exact value from
+  // the test side (scheduling jitter means "wait until tick >= N" may
+  // already have overshot to N+2 by the time the wait loop notices) --
+  // this flag makes the transition a hard, race-free boundary instead.
+  let newMailArrived = false;
+  let tickCount = 0;
+  const fakeFetch = async (_limit: number) => {
+    tickCount++;
+    return newMailArrived ? newMailInbox : staticInbox;
+  };
+
+  const handle = startEmailWatchJob(15, fakeFetch);
+  try {
+    if (handle === null) {
+      throw new Error("Scheduler: expected startEmailWatchJob to start with IMAP_HOST/EMAIL_USER set");
+    }
+
+    // Let several ticks pass against the SAME static, unread-or-not-doesn't-
+    // matter inbox -- exactly the scenario the bug caused repeated wrong
+    // notifications in. All of these ticks see identical data regardless of
+    // exactly how many fire in the window, so no race here either.
+    const staticTicksDeadline = Date.now() + 1500;
+    while (tickCount < 8 && Date.now() < staticTicksDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+    if (tickCount < 8) {
+      throw new Error(`Scheduler: expected at least 8 ticks of the static inbox within 1.5s, got ${tickCount}`);
+    }
+
+    const afterStaticPhase = getNotifications("admin").slice(before);
+    if (afterStaticPhase.length !== 0) {
+      throw new Error(
+        `Scheduler: expected zero notifications while the mailbox's last 5 messages never changed, got ${afterStaticPhase.length}: ${JSON.stringify(afterStaticPhase.map(n => n.message))}`
+      );
+    }
+
+    // Now let new mail "arrive" and wait for exactly one notification. Even
+    // if several ticks fire against newMailInbox before this settles, only
+    // the first can ever notify -- it advances the baseline past uid 106,
+    // so every tick after that (still seeing the same newMailInbox) computes
+    // zero unseen messages, same as the static phase above.
+    newMailArrived = true;
+    const notifyDeadline = Date.now() + 1500;
+    while (getNotifications("admin").length - before === 0 && Date.now() < notifyDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+
+    const afterNewMail = getNotifications("admin").slice(before);
+    if (afterNewMail.length !== 1) {
+      throw new Error(
+        `Scheduler: expected exactly 1 notification once genuinely new mail arrived, got ${afterNewMail.length}: ${JSON.stringify(afterNewMail.map(n => n.message))}`
+      );
+    }
+    if (!afterNewMail[0].message.includes("Genuinely new")) {
+      throw new Error(`Scheduler: expected the notification to reference the new message's subject, got: ${afterNewMail[0].message}`);
+    }
+  } finally {
+    if (handle !== null) clearInterval(handle);
+    if (savedImapHost === undefined) delete process.env.IMAP_HOST; else process.env.IMAP_HOST = savedImapHost;
+    if (savedEmailUser === undefined) delete process.env.EMAIL_USER; else process.env.EMAIL_USER = savedEmailUser;
   }
 });
 
