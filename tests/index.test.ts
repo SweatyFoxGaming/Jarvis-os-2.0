@@ -4410,6 +4410,65 @@ registerTest("PersonalGmail", "throws a clean PersonalGmailError (never an uncau
   }
 });
 
+registerTest("PersonalGmail", "startPersonalEmailWatchJob notifies only the affected user, does not re-notify unchanged mail, and keeps other users' checks going after one user's fetch fails", async () => {
+  const { startPersonalEmailWatchJob } = await import("../src/capabilities/providers/personal-gmail.js");
+  const beforeAlice = getNotifications("alice_pgw_test").length;
+  const beforeBob = getNotifications("bob_pgw_test").length;
+
+  const aliceStatic = [
+    { id: "a-newest", subject: "Alice newest", from: "x@x.com" },
+    { id: "a-older", subject: "Alice older", from: "y@x.com" },
+  ];
+  const aliceWithNewMail = [{ id: "a-brand-new", subject: "Alice brand new", from: "z@x.com" }, ...aliceStatic];
+  let aliceNewMailArrived = false;
+
+  const fakeFetch = async (username: string, _limit?: number) => {
+    if (username === "alice_pgw_test") return aliceNewMailArrived ? aliceWithNewMail : aliceStatic;
+    if (username === "bob_pgw_test") throw new Error("simulated: Bob's Google token expired");
+    return [];
+  };
+
+  const handle = startPersonalEmailWatchJob(15, {
+    listConnectedUsernames: async () => ["alice_pgw_test", "bob_pgw_test"],
+    fetchPersonalRecentMessages: fakeFetch,
+  });
+  try {
+    // Several ticks with Alice's inbox unchanged and Bob's fetch always
+    // throwing -- proves both "no re-notify on unchanged mail" and "one
+    // user's failure doesn't stop the job (or the other user's checks)".
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    const staticAlice = getNotifications("alice_pgw_test").slice(beforeAlice);
+    if (staticAlice.length !== 0) {
+      throw new Error(`PersonalGmail: expected zero notifications for alice while her mail was unchanged, got ${staticAlice.length}: ${JSON.stringify(staticAlice.map(n => n.message))}`);
+    }
+    const bobNotifications = getNotifications("bob_pgw_test").slice(beforeBob);
+    if (bobNotifications.length !== 0) {
+      throw new Error(`PersonalGmail: expected zero notifications for bob (his fetch always fails), got ${bobNotifications.length}`);
+    }
+
+    aliceNewMailArrived = true;
+    const deadline = Date.now() + 1500;
+    while (getNotifications("alice_pgw_test").length - beforeAlice === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+
+    const afterAlice = getNotifications("alice_pgw_test").slice(beforeAlice);
+    if (afterAlice.length !== 1) {
+      throw new Error(`PersonalGmail: expected exactly 1 notification for alice once her new mail arrived, got ${afterAlice.length}: ${JSON.stringify(afterAlice.map(n => n.message))}`);
+    }
+    if (!afterAlice[0].message.includes("Alice brand new")) {
+      throw new Error(`PersonalGmail: expected alice's notification to reference her new message's subject, got: ${afterAlice[0].message}`);
+    }
+    // Bob's account never got a notification meant for alice, and vice versa.
+    if (getNotifications("bob_pgw_test").slice(beforeBob).length !== 0) {
+      throw new Error("PersonalGmail: bob must never receive alice's email notification");
+    }
+  } finally {
+    clearInterval(handle);
+  }
+});
+
 // ---------- Integrations ----------
 registerTest("Integrations", "DELETE /api/integrations/google degrades cleanly when Postgres isn't reachable", async () => {
   const result = await oauthRepo.deleteTokens("google_calendar", "nonexistent_user");

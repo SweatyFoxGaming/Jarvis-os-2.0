@@ -31,6 +31,7 @@ import { validateApiKey, safeCompare, ADMIN_API_KEY } from "./kernel/auth-middle
 import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "./kernel/egress.js";
 import * as memoryStore from "./cognition/memory-store.js";
 import * as scheduler from "./kernel/scheduler.js";
+import * as personalGmail from "./capabilities/providers/personal-gmail.js";
 import { reflectAndLearn } from "./adaptation/reflection.js";
 import http from "node:http";
 import { WebSocketServer } from "ws";
@@ -1563,6 +1564,11 @@ initDatabase().then(async (ready) => {
   EventBus.getInstance().startCrossInstanceRelay(["system:anomaly"]);
 
   scheduler.startEmailWatchJob();
+  // Per-user counterpart to the shared-admin-mailbox job above -- notifies
+  // each account only about mail arriving in THEIR OWN connected Gmail.
+  // No-ops cleanly (just an empty usernames list every tick) if nobody has
+  // connected a personal Google account yet.
+  personalGmail.startPersonalEmailWatchJob();
   scheduler.startBriefingJob(cognitionRouter);
   scheduler.startSelfReflectionJob(cognitionRouter);
   scheduler.startWellbeingCheckJob();
