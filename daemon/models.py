@@ -16,7 +16,28 @@ log = logging.getLogger("voice_engine.models")
 WHISPER_MODEL_SIZE = "base"  # CPU-appropriate; this sandbox has no GPU
 KOKORO_VOICE = "af_heart"
 KOKORO_SAMPLE_RATE = 24000  # Kokoro's fixed TTS output sample rate -- see TextToSpeech.synthesize below.
-_AMBIENT_SPEAKER_DEVICE = os.environ.get("AMBIENT_SPEAKER_DEVICE") or None  # None -> sounddevice's system default output device
+
+
+def parse_device_env(raw: Optional[str]) -> "Optional[int | str]":
+    """Converts an AMBIENT_MIC_DEVICE/AMBIENT_SPEAKER_DEVICE-style env var
+    string into whatever sounddevice actually expects. sounddevice matches
+    a `str` device argument by SUBSTRING against device *names*, and only
+    treats a real Python `int` as a numeric device index -- passing the
+    string "2" through unchanged (as os.environ.get always returns str)
+    silently fails to match any device by that literal name rather than
+    selecting index 2. .env.example documents this env var as accepting
+    "a device name or index", so this coerces the numeric case for real
+    while leaving anything else (a device name, or unset/blank) alone.
+    """
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
+_AMBIENT_SPEAKER_DEVICE = parse_device_env(os.environ.get("AMBIENT_SPEAKER_DEVICE"))  # None -> sounddevice's system default output device
 
 
 def _load_whisper_model():

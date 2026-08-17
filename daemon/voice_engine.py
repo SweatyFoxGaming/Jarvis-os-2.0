@@ -9,7 +9,7 @@ from typing import Callable, Optional, Set
 import numpy as np
 
 from ambient_listener import AmbientListener, start_mic_capture
-from models import AudioPlayer, SpeechToText, TextToSpeech, KOKORO_SAMPLE_RATE
+from models import AudioPlayer, SpeechToText, TextToSpeech, KOKORO_SAMPLE_RATE, parse_device_env
 from protocol import (
     ProtocolError,
     UtteranceEndDetector,
@@ -26,8 +26,14 @@ SILENCE_RMS_THRESHOLD = 500
 SPEAK_CHUNK_BYTES = 32000
 MAX_UTTERANCE_BYTES = 2 * 60 * 32000
 AMBIENT_LISTENING_ENABLED = os.environ.get("AMBIENT_LISTENING_ENABLED", "false").lower() == "true"
-AMBIENT_MIC_DEVICE = os.environ.get("AMBIENT_MIC_DEVICE") or None
-AMBIENT_WAKE_WORD_THRESHOLD = float(os.environ.get("AMBIENT_WAKE_WORD_THRESHOLD", "0.5"))
+AMBIENT_MIC_DEVICE = parse_device_env(os.environ.get("AMBIENT_MIC_DEVICE"))
+# `.get(key, default)`'s default only applies when the var is entirely
+# UNSET -- if it's set but blank (AMBIENT_WAKE_WORD_THRESHOLD= with nothing
+# after the "="), .get() returns "" (not the default), and float("") raises
+# ValueError at import time, crashing the whole daemon (click-to-talk
+# included) regardless of AMBIENT_LISTENING_ENABLED. `or` falls through on
+# both None (unset) and "" (blank), so this treats both the same.
+AMBIENT_WAKE_WORD_THRESHOLD = float(os.environ.get("AMBIENT_WAKE_WORD_THRESHOLD") or "0.5")
 
 _stt = SpeechToText()
 _tts = TextToSpeech()
@@ -47,6 +53,32 @@ _active_writers: Set[asyncio.StreamWriter] = set()
 # and discarded rather than crashing the listener.
 _ambient_writer: Optional[asyncio.StreamWriter] = None
 _ambient_listener: Optional["AmbientListener"] = None
+# Reference to the asyncio.Task running _ambient_listener.run(), kept for
+# the exact same reason InferenceQueue.start() keeps self._worker_task (see
+# its own docstring): asyncio.create_task's return value is the ONLY strong
+# reference to a running task, so not storing it anywhere leaves the task
+# eligible for garbage collection mid-run, and any unexpected exception it
+# raises would otherwise only ever surface as an unretrieved-task-exception
+# warning at some arbitrary later GC time -- with ambient listening then
+# silently dead and nothing pointing at why.
+_ambient_listener_task: Optional[asyncio.Task] = None
+
+
+def _on_ambient_listener_done(task: asyncio.Task) -> None:
+    """Registered on _ambient_listener_task, mirroring InferenceQueue's
+    _on_worker_done -- if AmbientListener.run() ever exits unexpectedly
+    (it's an infinite loop in normal operation), this is the loud alarm for
+    it instead of a silent, invisible death."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.critical(
+            f"ambient listener task died unexpectedly: {exc!r} -- ambient "
+            "(host-mic) voice is now silently dead until the daemon is "
+            "restarted; click-to-talk STT/TTS is unaffected",
+            exc_info=exc,
+        )
 
 
 async def _dispatch_ambient_transcript(text: str) -> None:
@@ -532,7 +564,7 @@ async def main() -> None:
     asyncio.create_task(_warm_models())
 
     if AMBIENT_LISTENING_ENABLED:
-        global _ambient_listener
+        global _ambient_listener, _ambient_listener_task
         # Held in a local of this coroutine's frame, which stays alive for
         # the daemon's whole lifetime (main() sits on `await
         # stop_event.wait()` below). That reference is what keeps the real
@@ -549,7 +581,8 @@ async def main() -> None:
                 on_transcript=_dispatch_ambient_transcript,
                 threshold=AMBIENT_WAKE_WORD_THRESHOLD,
             )
-            asyncio.create_task(_ambient_listener.run())
+            _ambient_listener_task = asyncio.create_task(_ambient_listener.run())
+            _ambient_listener_task.add_done_callback(_on_ambient_listener_done)
             log.info(f"ambient host-mic listening enabled (device={AMBIENT_MIC_DEVICE or 'default'})")
         except Exception:
             # The mic stream may already be open and pushing frames if the

@@ -745,3 +745,59 @@ def test_ambient_turn_round_trip_rearms_the_listener(monkeypatch):
                 os.remove(sock_path)
 
     _run(scenario())
+
+
+def test_ambient_listener_task_is_retained_and_logs_critical_if_it_dies(monkeypatch):
+    """Regression test for the exact failure mode InferenceQueue's own
+    _on_worker_done guards against (see that class's docstring), now
+    applied to the ambient listener task started in main(): a bare
+    `asyncio.create_task(...)` with no stored reference and no done
+    callback means (a) the task is eligible for GC mid-run, and (b) if
+    AmbientListener.run() ever raises, it's only visible as an
+    unretrieved-task-exception warning at some arbitrary future GC time,
+    with ambient listening silently dead in the meantime. Verifies both
+    halves directly: the module keeps a real reference, and
+    _on_ambient_listener_done logs critical on an unexpected exception but
+    stays silent on a deliberate cancellation."""
+    critical_calls = []
+    monkeypatch.setattr(voice_engine.log, "critical", lambda *a, **kw: critical_calls.append((a, kw)))
+
+    async def scenario():
+        # An unexpected exception must log critical.
+        async def boom():
+            raise RuntimeError("ambient listener blew up")
+
+        task = asyncio.ensure_future(boom())
+        try:
+            await task
+        except RuntimeError:
+            pass
+        voice_engine._on_ambient_listener_done(task)
+        assert len(critical_calls) == 1, "an unexpected exception in the ambient listener task must log critical"
+        assert "ambient listener task died unexpectedly" in critical_calls[0][0][0]
+
+        # A deliberate cancellation must NOT log critical.
+        critical_calls.clear()
+
+        async def hang_forever():
+            await asyncio.Event().wait()
+
+        task2 = asyncio.ensure_future(hang_forever())
+        await asyncio.sleep(0)
+        task2.cancel()
+        try:
+            await task2
+        except asyncio.CancelledError:
+            pass
+        voice_engine._on_ambient_listener_done(task2)
+        assert critical_calls == [], "a deliberate cancellation must never be logged as an unexpected death"
+
+    _run(scenario())
+
+    # main() must store the created task somewhere real, not just fire
+    # asyncio.create_task and drop the reference -- confirmed here by
+    # checking the module actually exposes a slot for it (exercised live in
+    # main() itself; asserting its existence here so a future refactor that
+    # deletes the module-level variable and reverts to a bare
+    # create_task(...) call is caught).
+    assert hasattr(voice_engine, "_ambient_listener_task")

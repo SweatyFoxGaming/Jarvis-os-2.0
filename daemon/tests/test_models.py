@@ -121,6 +121,28 @@ def test_text_to_speech_concurrent_synthesize_loads_model_only_once():
 
     assert load_count["n"] == 1
 
+def test_parse_device_env_numeric_string_becomes_a_real_int():
+    # sounddevice only treats a real Python `int` as a numeric device index
+    # -- a plain string like "2" (which is exactly what os.environ.get
+    # always returns) is instead matched by substring against device
+    # *names*, so AMBIENT_MIC_DEVICE=2 would silently never select device
+    # index 2 unless this conversion happens.
+    from daemon.models import parse_device_env
+    result = parse_device_env("2")
+    assert result == 2
+    assert isinstance(result, int)
+
+def test_parse_device_env_device_name_stays_a_string():
+    from daemon.models import parse_device_env
+    result = parse_device_env("hw:1,0")
+    assert result == "hw:1,0"
+    assert isinstance(result, str)
+
+def test_parse_device_env_blank_or_none_becomes_none():
+    from daemon.models import parse_device_env
+    assert parse_device_env("") is None
+    assert parse_device_env(None) is None
+
 def test_audio_player_calls_the_injected_backend_with_the_right_sample_rate():
     import numpy as np
     from daemon.models import AudioPlayer
