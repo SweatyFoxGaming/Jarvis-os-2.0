@@ -6171,9 +6171,20 @@ registerTest("AmbientDaemonClient", "an ambient_transcript message triggers a re
 
   const sockPath = path.join(os.tmpdir(), `ambient-test-${Date.now()}.sock`);
   const server = net.createServer((socket) => {
+    // A real socket makes no guarantee that one "data" event maps to one
+    // complete newline-delimited JSON message -- a single write can arrive
+    // split across multiple "data" events, or multiple writes can coalesce
+    // into one. Buffer per-connection and only parse complete lines (same
+    // newline-delimited-framing discipline the real ambient-daemon-client.ts
+    // /audio-client.ts modules already apply via readline), keeping any
+    // trailing partial line for the next chunk.
+    let buffer = "";
     socket.on("data", (data) => {
-      const lines = data.toString("utf-8").split("\n").filter(Boolean);
+      buffer += data.toString("utf-8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
       for (const line of lines) {
+        if (!line) continue;
         const msg = JSON.parse(line);
         (server as any)._received = (server as any)._received || [];
         (server as any)._received.push(msg);
