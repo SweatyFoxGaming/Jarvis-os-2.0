@@ -74,8 +74,10 @@ one-line status note as work lands, not by rewriting prose paragraphs.
 
 - [x] Real multi-user accounts — username/password login, not one shared `INTERNAL_API_KEY` for every person
 - [x] Per-user OAuth (Google/Gmail) connections, isolated per account
-- [x] Per-user proactive notifications (email) — admin never sees another user's mail
+- [x] Per-user proactive notifications — the personal Gmail watcher (`personal-gmail.ts`) notifies only the connected account's own username. This coexists with a separate, pre-existing shared IMAP watcher that notifies "admin" about admin's own configured mailbox — the two are independent, not a leak between them.
 - [x] Per-user capability grants
+- [x] Conversational memory recall (`memoryStore.recall`, used by both chat and voice) is username-scoped at the query level (`WHERE username = $1`) — verified directly in `src/cognition/memory-store.ts`
+- [ ] The separate global knowledge-vault/RAG store (`memory_records` table, `searchHybridMemory`/`searchMemory` in `src/kernel/state/hybridRetrieval.ts`/`src/cognition/memory-store.ts`) has no username column and is not scoped per-user — intentional by design (it backs the shared vault/knowledge-graph capabilities, not personal conversation memory) rather than a leak, but worth naming explicitly so it isn't mistaken for private-by-default.
 - [ ] Biometric login (WebAuthn/passkeys) — design spec approved and merged (`docs/superpowers/specs/2026-08-17-biometric-login-design.md`), **implementation not started**
 - [ ] No org/tenant concept anywhere in the schema — one shared Postgres instance, no business-level permission boundary
 - [ ] No shared-vs-private memory model for teams/orgs
