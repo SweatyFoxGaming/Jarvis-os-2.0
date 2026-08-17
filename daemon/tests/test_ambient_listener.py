@@ -108,7 +108,10 @@ def test_turn_that_completes_normally_does_not_later_fire_the_timeout():
     def fake_transcribe(pcm_bytes):
         return "hey jarvis"
 
+    dispatched = asyncio.Event()
+
     async def fake_on_transcript(text):
+        dispatched.set()
         listener.turn_complete()
 
     async def scenario():
@@ -130,10 +133,12 @@ def test_turn_that_completes_normally_does_not_later_fire_the_timeout():
             await queue.put(_silent_chunk().tobytes())  # end-of-utterance silence
             await queue.put(_silent_chunk().tobytes())
 
-            for _ in range(200):
-                if not listener._turn_in_progress:
-                    break
-                await asyncio.sleep(0.01)
+            # Wait for the dispatch itself, not just _turn_in_progress
+            # becoming False -- it starts False by default, so polling it
+            # directly without first confirming dispatch happened could
+            # observe the pre-trigger state and pass vacuously, never
+            # actually exercising the watchdog-cancellation behavior below.
+            await asyncio.wait_for(dispatched.wait(), timeout=2)
 
             assert listener._turn_in_progress is False
             assert listener._turn_timeout_task is None, (
