@@ -42,6 +42,15 @@ export async function getTokens(provider: string, username: string): Promise<Sto
   return { provider: row.provider, username: row.username, access_token: accessToken, refresh_token: refreshToken, expiry: row.expiry };
 }
 
+// Every username with a live token row for this provider — used to fan a
+// per-user job (e.g. personal email watch) out across every connected
+// account, without that job needing to know the user list itself.
+export async function listUsernamesWithTokens(provider: string): Promise<string[]> {
+  const db = getPool();
+  const { rows } = await db.query(`SELECT username FROM oauth_tokens WHERE provider = $1 ORDER BY username`, [provider]);
+  return rows.map((r: any) => r.username);
+}
+
 export async function deleteTokens(provider: string, username: string): Promise<boolean> {
   // Degrades cleanly (false, not a throw) on a DB outage, same read-vs-write
   // split vault-repo.ts's read-side functions use: this backs the

@@ -120,7 +120,110 @@ export async function sendPersonalEmail(username: string, to: string, subject: s
   return { messageId: result.id };
 }
 
-export async function fetchPersonalRecentMessages(username: string, limit = 10): Promise<any[]> {
+export interface PersonalEmailMessage {
+  id: string;
+  subject: string;
+  from: string;
+}
+
+export interface PersonalEmailWatchDeps {
+  listConnectedUsernames: () => Promise<string[]>;
+  fetchPersonalRecentMessages: (username: string, limit?: number) => Promise<PersonalEmailMessage[]>;
+}
+
+const defaultPersonalEmailWatchDeps: PersonalEmailWatchDeps = {
+  listConnectedUsernames: () => oauthRepo.listUsernamesWithTokens(PROVIDER),
+  // Bound via a wrapper (not a bare function reference) so this always
+  // calls the module's CURRENT fetchPersonalRecentMessages, including a
+  // test file's own monkeypatched replacement -- a bare reference captured
+  // here at module-load time would freeze onto whichever implementation
+  // existed first.
+  fetchPersonalRecentMessages: (username: string, limit?: number) => fetchPersonalRecentMessages(username, limit),
+};
+
+/**
+ * Per-user counterpart to scheduler.ts's startEmailWatchJob (which only
+ * ever watches the single shared admin IMAP mailbox). This fans out across
+ * every account that's connected their own Gmail (oauth_tokens rows for
+ * this provider) and notifies EACH one only about THEIR OWN new mail --
+ * admin never sees a personal user's email arrive, and vice versa.
+ *
+ * Implemented here (not in scheduler.ts) specifically to avoid a circular
+ * import: this module already imports scheduler.ts for pushNotification
+ * (see getValidAccessToken's reconnect-needed notification above), so
+ * scheduler.ts importing this module back would create one. server.ts
+ * calls this directly, exactly like it already calls every other
+ * scheduler.start*Job() function.
+ */
+export function startPersonalEmailWatchJob(
+  intervalMs = 5 * 60 * 1000,
+  deps: PersonalEmailWatchDeps = defaultPersonalEmailWatchDeps
+): NodeJS.Timeout {
+  // One baseline per connected user -- a brand-new connection gets its
+  // first poll treated as "establish the baseline," exactly like the
+  // shared-mailbox job's own first-run behavior, so connecting an account
+  // never dumps a backlog of every pre-existing email as "new."
+  const lastSeenByUser = new Map<string, string>();
+  return scheduler.registerJob("personal-email-watch", intervalMs, async () => {
+    const usernames = await deps.listConnectedUsernames();
+    for (const username of usernames) {
+      try {
+        const messages = await deps.fetchPersonalRecentMessages(username, 5);
+        if (messages.length === 0) continue;
+        const newestId = messages[0].id; // fetchPersonalRecentMessages returns newest-first (Gmail's own list order)
+        const lastSeenId = lastSeenByUser.get(username);
+        if (lastSeenId === undefined) {
+          lastSeenByUser.set(username, newestId);
+          continue;
+        }
+        if (newestId === lastSeenId) continue; // no new mail since last check
+        // Gmail message ids are opaque hex strings, not orderable integers
+        // like the shared mailbox's IMAP UIDs -- instead of comparing ids,
+        // find where the previously-seen message now sits in this
+        // newest-first list; everything before it is new. If it's fallen
+        // out of the window entirely (more than 5 arrived since last
+        // check), conservatively treat all 5 as new rather than guessing
+        // a count beyond what was actually fetched.
+        const seenIndex = messages.findIndex(m => m.id === lastSeenId);
+        const unseen = seenIndex === -1 ? messages : messages.slice(0, seenIndex);
+        if (unseen.length > 0) {
+          scheduler.pushNotification(
+            username,
+            unseen.length === 1
+              ? `New email: "${unseen[0].subject}" from ${unseen[0].from}`
+              : `${unseen.length} new emails, most recent: "${messages[0].subject}"`,
+            "info"
+          );
+          lastSeenByUser.set(username, newestId);
+        }
+      } catch (err: any) {
+        // One user's expired/revoked Google connection must never stop the
+        // rest of this poll cycle from checking everyone else.
+        observation.logTelemetry("warn", "Integrations", `Personal email watch failed for "${username}": ${err.message || err}`);
+      }
+    }
+  });
+}
+
+// Gmail's messages.list returns bare {id, threadId} stubs, newest-first
+// (Gmail's own default/documented order for this endpoint, no sort param
+// needed) -- neither subject nor sender is in that response, so each id
+// needs its own messages.get call for the headers a useful notification
+// needs. format=metadata + metadataHeaders scopes that second call to just
+// the two headers wanted, not the full message body.
+export async function fetchPersonalRecentMessages(username: string, limit = 10): Promise<PersonalEmailMessage[]> {
   const list = await gmailRequest(username, `/users/me/messages?maxResults=${limit}`);
-  return list.messages || [];
+  const stubs: Array<{ id: string }> = list.messages || [];
+  const messages: PersonalEmailMessage[] = [];
+  for (const stub of stubs) {
+    const detail = await gmailRequest(
+      username,
+      `/users/me/messages/${stub.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`
+    );
+    const headers: Array<{ name: string; value: string }> = detail.payload?.headers || [];
+    const subject = headers.find(h => h.name === "Subject")?.value || "(no subject)";
+    const from = headers.find(h => h.name === "From")?.value || "unknown";
+    messages.push({ id: stub.id, subject, from });
+  }
+  return messages;
 }
