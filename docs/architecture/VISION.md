@@ -55,11 +55,11 @@ one-line status note as work lands, not by rewriting prose paragraphs.
 - [x] Trust hazard fixed — the local model no longer fabricates fake tool results when it has no tool access; it routes to a real backend first or admits the limitation
 - [ ] **Outcome/trust measurement** — nothing tracks whether an approved action, a piece of advice, or a proposed plan actually turned out well. The per-turn "confidence score" reflects backend health and tool-call success, not decision quality. The vision explicitly says success should be measured by "the decisions it improves" — this loop does not exist yet. Not started.
 
-## One consistent identity across every interface — partially done
+## One consistent identity across every interface — done for text/voice; no other interfaces exist yet
 
-- [x] Text chat builds its system prompt from memory + identity + style context every turn
-- [x] Voice (`src/interaction/voice-session.ts` — the entire pipeline was rebuilt since the last audit; the old `live-voice.ts` this gap was originally filed against no longer exists) now pulls semantic memory recall (`memoryStore.recall`) into its own system prompt, verified directly in the current source
-- [ ] Voice does **not** yet call `identity.buildIdentityContext()` (learned style/self-reflection preferences) the way chat does at `src/server.ts:597` — voice and text are memory-unified but not identity-unified. This is the smallest concrete gap left: `voice-session.ts` already imports `identity.extractSelfReflection` for the write side (learning from the exchange); only the read-side call into the system prompt is missing.
+- [x] Text chat builds its system prompt from memory + identity + style + personality + rapport context every turn
+- [x] Voice (`src/interaction/voice-session.ts` — the entire pipeline was rebuilt since the last audit; the old `live-voice.ts` this gap was originally filed against no longer exists) pulls semantic memory recall (`memoryStore.recall`) into its own system prompt
+- [x] **Closed 2026-08-17**: voice now also calls `identity.buildIdentityContext()`, `identity.buildPersonalityPromptFragment()`, `rapport.buildRapportContext()`, and reads `LongTermLearningEngine`'s style preferences — same functions, same template strings as `/api/chat` (`src/server.ts`). `buildIdentityContext`/`buildRapportContext` are DI-injected (matching `recall`'s existing pattern); style/personality read the same singletons chat reads directly, un-DI'd, matching chat's own convention. Covered by a new regression test (`tests/index.test.ts`, "VoiceSession … the read-side prompt is unified with /api/chat") asserting the injected hooks are called with the real username AND that their content actually reaches the system prompt sent to the model, not just called-and-discarded. Full suite 322/339 (17 pre-existing environment-only failures, unchanged), `tsc` clean. Voice and text are now genuinely one identity, not two personas sharing a name.
 - [ ] No AR/robotics/future-interface surface exists yet — nothing to unify there until one exists
 
 ## Extensible capabilities ("millions of capabilities") — architecture now exists, scale doesn't
@@ -93,4 +93,4 @@ These were evaluated and rejected on purpose — listed here so they don't get r
 
 ## If picking the next concrete item
 
-Smallest, most scoped, and the most direct current contradiction of the vision's own language: finish identity unification — wire `identity.buildIdentityContext()` into `voice-session.ts`'s system prompt construction the same way `memoryStore.recall` was already wired in (see the checklist item above). Everything else outstanding here — outcome tracking, marketplace discovery, multi-tenancy/org support — is a real design project deserving its own brainstorming pass, not a quick fix bolted on.
+Identity unification (the previous smallest/most scoped item) is done as of 2026-08-17. Everything else still outstanding here — outcome/trust measurement, marketplace discovery for third-party capabilities, multi-tenancy/org support — is a real design project deserving its own brainstorming pass, not a quick fix bolted on. Of those, outcome/trust measurement is arguably the highest-leverage next one: the vision explicitly names it ("the decisions it improves") as the actual success metric, and nothing today closes that loop at all.

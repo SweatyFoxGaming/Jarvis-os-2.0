@@ -5952,6 +5952,94 @@ registerTest("VoiceSession", "a successful voice turn writes to session history,
   }
 });
 
+registerTest("VoiceSession", "the read-side prompt is unified with /api/chat: identity, rapport, style, and personality context are all included, not just memory (VISION.md gap)", async () => {
+  // Regression test for the gap VISION.md's checklist named explicitly:
+  // voice pulled memoryStore.recall into its prompt but never
+  // identity.buildIdentityContext/rapport.buildRapportContext, and never
+  // read style/personality settings at all -- so a preference or
+  // self-reflection learned in one interface never informed the other.
+  // Asserts both that the injected identity/rapport hooks are actually
+  // called with the right username, AND that their content (plus the
+  // style/personality context, which aren't DI'd -- same as /api/chat's
+  // own direct, non-DI'd use of them) really ends up in the system
+  // message sent to the model, not just called-and-discarded.
+  const { EventBus } = await import("../src/core/event-bus.js");
+  const voiceSessionModule = await import("../src/interaction/voice-session.js");
+
+  const bus = EventBus.getInstance();
+  let reply: any = null;
+  const unsubscribe = bus.subscribe("voice:reply", (payload) => { reply = payload; });
+
+  let capturedMessages: any[] | null = null;
+  const fakeRouter = {
+    generateWithFallback: async (_username: string, request: any) => {
+      capturedMessages = request.messages;
+      return { choices: [{ message: { content: "Here's my spoken answer.", tool_calls: undefined } }] };
+    },
+  } as any;
+
+  let identityContextCalledWith: string | null = null;
+  let rapportContextCalledWith: string | null = null;
+
+  const handle = voiceSessionModule.startVoiceSession({
+    router: fakeRouter,
+    recall: (async () => []) as any,
+    buildIdentityContext: (async (username: string) => {
+      identityContextCalledWith = username;
+      return "\n\nThings you've genuinely said/believed/committed to recently, for continuity: (fact) test marker for identity unification.";
+    }) as any,
+    buildRapportContext: (async (username: string) => {
+      rapportContextCalledWith = username;
+      return "\n\nHow this user has been coming across in your recent conversations: test marker for rapport unification.";
+    }) as any,
+    // These write-side hooks also call the router internally (e.g. the
+    // real reflectAndLearn judges the exchange via a second
+    // generateWithFallback call) -- faked out as no-ops so the ONLY call
+    // fakeRouter.generateWithFallback sees is voice-session's own prompt
+    // construction, which is what capturedMessages needs to isolate.
+    remember: (async () => true) as any,
+    reflectAndLearn: (async () => {}) as any,
+    extractAndStore: (async () => {}) as any,
+    extractSelfReflection: (async () => {}) as any,
+    extractRapportSignal: (async () => {}) as any,
+  });
+  try {
+    bus.publish("voice:transcript", { text: "how am I doing lately", sessionId: "test-session-unify", username: "voice_unify_test_user" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    if (!reply || !reply.text.includes("spoken answer")) {
+      throw new Error(`VoiceSession: expected a real voice:reply, got: ${JSON.stringify(reply)}`);
+    }
+    if (identityContextCalledWith !== "voice_unify_test_user") {
+      throw new Error(`VoiceSession: expected buildIdentityContext called with the real username, got: ${JSON.stringify(identityContextCalledWith)}`);
+    }
+    if (rapportContextCalledWith !== "voice_unify_test_user") {
+      throw new Error(`VoiceSession: expected buildRapportContext called with the real username, got: ${JSON.stringify(rapportContextCalledWith)}`);
+    }
+
+    const systemContent = capturedMessages?.[0]?.content ?? "";
+    if (typeof systemContent !== "string" || !systemContent.includes("test marker for identity unification")) {
+      throw new Error(`VoiceSession: expected the identity context to appear in the system prompt, got: ${JSON.stringify(systemContent)}`);
+    }
+    if (!systemContent.includes("test marker for rapport unification")) {
+      throw new Error(`VoiceSession: expected the rapport context to appear in the system prompt, got: ${JSON.stringify(systemContent)}`);
+    }
+    // Style/personality aren't DI'd (matching /api/chat's own direct,
+    // non-DI'd use of learningEngine/kernel) -- assert on stable literal
+    // template fragments that don't depend on the current band/preference
+    // values, which other tests in this same process may have mutated.
+    if (!systemContent.includes("architecture, unless the user asks otherwise")) {
+      throw new Error(`VoiceSession: expected style context (naming/indentation/architecture) in the system prompt, got: ${JSON.stringify(systemContent)}`);
+    }
+    if (!systemContent.includes("Adjust your register according to these standing preferences")) {
+      throw new Error(`VoiceSession: expected personality context in the system prompt, got: ${JSON.stringify(systemContent)}`);
+    }
+  } finally {
+    unsubscribe();
+    handle.stop();
+  }
+});
+
 registerTest("VoiceSession", "a pipeline failure still logs the user's message but skips the learning writes (I4)", async () => {
   // The honest error/decline replies must still be persisted to session
   // history (so a real conversation record exists), but the learning
