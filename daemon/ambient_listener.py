@@ -51,6 +51,7 @@ class AmbientListener:
         on_transcript: Callable[[str], Awaitable[None]],
         threshold: float,
         silence_frames_threshold: int = 15,
+        turn_timeout: float = 60.0,
     ):
         self.frame_queue = frame_queue
         self.wake_word_predict = wake_word_predict
@@ -58,11 +59,29 @@ class AmbientListener:
         self.on_transcript = on_transcript
         self.threshold = threshold
         self.silence_frames_threshold = silence_frames_threshold
+        # Upper bound on how long a single turn (on_transcript dispatch --
+        # Node's turn machinery -- TTS -- speak_local coming back) is
+        # allowed to stay in flight before this listener gives up waiting
+        # and re-arms itself. turn_complete() is ALREADY correctly called
+        # on every path that can detect the turn ending (connection close,
+        # speak_local completing -- see voice_engine.py's finally blocks),
+        # but none of those fire if the round trip just hangs forever with
+        # the socket staying open and healthy the whole time (e.g. an LLM
+        # call with no timeout of its own). This is the backstop for that
+        # case specifically -- a dead-man's-switch, not the normal
+        # completion path.
+        self.turn_timeout = turn_timeout
         # True from the instant a wake word triggers until the resulting
         # turn's transcript has been dispatched -- guards against a second
         # trigger (or the tail of the reply itself, once mic capture and
         # playback coexist) starting a second capture mid-turn.
         self._turn_in_progress = False
+        # The scheduled turn-timeout watchdog task for the currently
+        # in-flight turn, if any. Cancelled by turn_complete() when the
+        # turn finishes normally, so a normal completion never leaves a
+        # leaked task around or risks a spurious double turn_complete()
+        # call from the timeout firing afterwards.
+        self._turn_timeout_task: Optional[asyncio.Task] = None
 
     async def run(self) -> None:
         detector: Optional[UtteranceEndDetector] = None
@@ -124,22 +143,58 @@ class AmbientListener:
                 text = await asyncio.to_thread(self.transcribe, pcm_for_utterance)
                 text = text.strip()
                 if text:
+                    # Schedule the timeout watchdog right before dispatching
+                    # -- from here on, turn_complete() must be called (by
+                    # whatever normally re-arms the listener, or by the
+                    # watchdog itself if nothing else ever does) or this
+                    # listener stays latched off forever.
+                    self._turn_timeout_task = asyncio.create_task(self._turn_timeout_watchdog())
                     await self.on_transcript(text)
                 else:
                     self._turn_in_progress = False
             except Exception:
                 log.exception("ambient utterance transcription failed")
                 self._turn_in_progress = False
+                self._cancel_turn_timeout()
+
+    async def _turn_timeout_watchdog(self) -> None:
+        """Backstop for a turn that gets dispatched via on_transcript but
+        then never completes -- not just a dropped connection (already
+        covered elsewhere: turn_complete() is called on connection-close and
+        on speak_local finishing), but the FULL round trip (Node dispatching
+        the turn, the LLM call, TTS, and the reply coming back as
+        speak_local) simply hanging forever while the socket stays open and
+        healthy the whole time -- e.g. an LLM call with no timeout of its
+        own. Cancelled by turn_complete() (via _cancel_turn_timeout) if the
+        turn finishes normally before this fires, so a normal turn never
+        pays for this beyond scheduling+cancelling one task."""
+        try:
+            await asyncio.sleep(self.turn_timeout)
+        except asyncio.CancelledError:
+            return
+        log.warning(
+            f"ambient turn timed out after {self.turn_timeout}s with no turn_complete() "
+            "call -- forcing re-arm so a hung turn doesn't permanently silence wake-word "
+            "detection"
+        )
+        self.turn_complete()
+
+    def _cancel_turn_timeout(self) -> None:
+        task = self._turn_timeout_task
+        self._turn_timeout_task = None
+        if task is not None and not task.done():
+            task.cancel()
 
     def turn_complete(self) -> None:
         """Called once the reply for the current turn has finished (Task 6
         wires this to the daemon receiving speak_local_done back from
         itself) -- re-arms wake-word detection for the next trigger."""
         self._turn_in_progress = False
+        self._cancel_turn_timeout()
 
 
 def start_mic_capture(
-    device: Optional[str], sample_rate: int = SAMPLE_RATE, chunk_samples: int = CHUNK_SAMPLES
+    device: "Optional[int | str]", sample_rate: int = SAMPLE_RATE, chunk_samples: int = CHUNK_SAMPLES
 ) -> "tuple[asyncio.Queue[bytes], object]":
     """Opens a real ALSA input stream and pushes each CHUNK_SAMPLES-sized
     int16 PCM block onto the returned queue. Returns (queue, stream): the

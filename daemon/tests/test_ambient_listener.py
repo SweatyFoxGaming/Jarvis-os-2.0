@@ -92,6 +92,139 @@ def test_wake_word_trigger_captures_the_following_utterance_and_dispatches_its_t
     _run(scenario())
 
 
+def test_turn_that_completes_normally_does_not_later_fire_the_timeout():
+    # on_transcript calls turn_complete() itself almost immediately (as
+    # _dispatch_ambient_transcript does once it has written the message),
+    # well before the short test-only timeout would elapse. If the timeout
+    # task weren't cancelled, it would still fire later and call
+    # turn_complete() again -- harmless on its own (turn_complete() is
+    # idempotent), but this test's real point is proving the watchdog task
+    # is actually cancelled (not just harmless), via listener._turn_timeout_task.
+    scores = iter([0.9])
+
+    def fake_predict(frame):
+        return next(scores, 0.0)
+
+    def fake_transcribe(pcm_bytes):
+        return "hey jarvis"
+
+    async def fake_on_transcript(text):
+        listener.turn_complete()
+
+    async def scenario():
+        nonlocal listener
+        queue = asyncio.Queue()
+        listener = AmbientListener(
+            frame_queue=queue,
+            wake_word_predict=fake_predict,
+            transcribe=fake_transcribe,
+            on_transcript=fake_on_transcript,
+            threshold=0.5,
+            silence_frames_threshold=2,
+            turn_timeout=0.2,
+        )
+        run_task = asyncio.ensure_future(listener.run())
+        try:
+            await queue.put(_speech_chunk().tobytes())  # trigger
+            await queue.put(_speech_chunk().tobytes())  # utterance speech
+            await queue.put(_silent_chunk().tobytes())  # end-of-utterance silence
+            await queue.put(_silent_chunk().tobytes())
+
+            for _ in range(200):
+                if not listener._turn_in_progress:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert listener._turn_in_progress is False
+            assert listener._turn_timeout_task is None, (
+                "turn_complete() firing before the timeout must cancel the watchdog task, "
+                "not just leave it to fire later"
+            )
+
+            # Wait past where the (short) test timeout would have fired if
+            # it hadn't been cancelled, and confirm nothing changed.
+            await asyncio.sleep(0.3)
+            assert listener._turn_in_progress is False
+            assert listener._turn_timeout_task is None
+        finally:
+            run_task.cancel()
+            try:
+                await run_task
+            except asyncio.CancelledError:
+                pass
+
+    listener = None
+    _run(scenario())
+
+
+def test_turn_that_never_completes_eventually_rearms_via_the_timeout():
+    # on_transcript is dispatched but deliberately never calls
+    # turn_complete() -- simulating the full round trip (Node dispatch, LLM
+    # call, TTS, speak_local reply) hanging forever with the socket
+    # otherwise healthy. Only the timeout watchdog should re-arm the
+    # listener here.
+    scores = iter([0.9])
+
+    def fake_predict(frame):
+        return next(scores, 0.0)
+
+    def fake_transcribe(pcm_bytes):
+        return "hey jarvis"
+
+    dispatched = []
+
+    async def fake_on_transcript(text):
+        dispatched.append(text)
+        # Deliberately never call turn_complete() -- this turn hangs forever.
+
+    async def scenario():
+        queue = asyncio.Queue()
+        listener = AmbientListener(
+            frame_queue=queue,
+            wake_word_predict=fake_predict,
+            transcribe=fake_transcribe,
+            on_transcript=fake_on_transcript,
+            threshold=0.5,
+            silence_frames_threshold=2,
+            turn_timeout=0.1,
+        )
+        run_task = asyncio.ensure_future(listener.run())
+        try:
+            await queue.put(_speech_chunk().tobytes())  # trigger
+            await queue.put(_speech_chunk().tobytes())  # utterance speech
+            await queue.put(_silent_chunk().tobytes())  # end-of-utterance silence
+            await queue.put(_silent_chunk().tobytes())
+
+            for _ in range(50):
+                if dispatched:
+                    break
+                await asyncio.sleep(0.01)
+            assert dispatched == ["hey jarvis"]
+
+            # Immediately after dispatch, the turn is still latched (the
+            # timeout hasn't had time to fire yet).
+            assert listener._turn_in_progress is True
+
+            # Wait past turn_timeout -- the watchdog must re-arm on its own.
+            for _ in range(200):
+                if not listener._turn_in_progress:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert listener._turn_in_progress is False, (
+                "a turn that never calls turn_complete() must still eventually re-arm via "
+                "the turn_timeout watchdog"
+            )
+        finally:
+            run_task.cancel()
+            try:
+                await run_task
+            except asyncio.CancelledError:
+                pass
+
+    _run(scenario())
+
+
 def test_no_trigger_below_threshold_never_dispatches():
     def fake_predict(frame):
         return 0.1  # always below threshold
