@@ -47,9 +47,27 @@ RUN pip install --no-cache-dir torch==2.13.0+cpu --index-url https://download.py
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download openWakeWord's model files into the image at build time.
+# The pip package ships NO model weights at all -- openwakeword/resources/
+# models/ is empty after install, and openwakeword.Model(...) resolves
+# hardcoded paths under that directory (see openwakeword/__init__.py's
+# MODELS/FEATURE_MODELS dicts, verified against the actually-installed
+# 0.6.0 wheel). Without this step the first ambient startup would either
+# need to reach GitHub's release assets over the network, or fail at
+# _make_wake_word_predictor() time inside voice_engine.py's broad
+# except-and-log -- i.e. silently, with ambient listening simply never
+# working. download_models(["hey_jarvis"]) is 0.6.0's real, public
+# utility: it fetches melspectrogram + embedding feature models (both
+# .tflite AND .onnx), the silero VAD model, and hey_jarvis_v0.1 in both
+# formats, straight into the package's own resources/models directory.
+# We use the ONNX variants at runtime (see _make_wake_word_predictor's
+# explicit inference_framework="onnx"), but the utility downloads both
+# and there is no supported way to ask it for only one.
+RUN python3 -c "import openwakeword.utils; openwakeword.utils.download_models(['hey_jarvis'])"
+
 # Only the modules voice_engine.py actually imports at runtime -- not
 # venv/, tests/, or pytest.ini, which are dev-only (see voice_engine.py's
 # own `from protocol import ...` / `from models import ...`).
-COPY voice_engine.py models.py protocol.py ./
+COPY voice_engine.py models.py protocol.py ambient_listener.py ./
 
 CMD ["python3", "voice_engine.py"]

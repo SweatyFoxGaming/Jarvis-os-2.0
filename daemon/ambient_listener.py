@@ -22,6 +22,14 @@ log = logging.getLogger("voice_engine.ambient_listener")
 CHUNK_SAMPLES = 1280  # 80ms @ 16kHz -- matches openWakeWord's own required input chunk size
 SAMPLE_RATE = 16000
 SILENCE_RMS_THRESHOLD = 500  # matches voice_engine.SILENCE_RMS_THRESHOLD exactly
+# Upper bound on a single captured utterance, mirroring
+# voice_engine.MAX_UTTERANCE_BYTES's 2-minute convention (that constant is
+# sized for the browser path's 32000 bytes/sec; this path is 16kHz mono
+# int16 = SAMPLE_RATE * 2 bytes/sec). Without a cap, a room with
+# continuous background noise after a wake word would keep
+# utterance_buffer growing for as long as the noise lasts, since the
+# silence-based UtteranceEndDetector never fires.
+AMBIENT_MAX_UTTERANCE_BYTES = 2 * 60 * SAMPLE_RATE * 2
 
 
 def _is_speech_frame(pcm_bytes: bytes) -> bool:
@@ -87,9 +95,21 @@ class AmbientListener:
             # spoken, with no silence padding at either end.
             is_speech = _is_speech_frame(pcm_bytes)
             utterance_ended = detector.feed(is_speech)
-            if not utterance_ended:
-                if is_speech:
-                    utterance_buffer.extend(pcm_bytes)
+            if is_speech and not utterance_ended:
+                utterance_buffer.extend(pcm_bytes)
+
+            # Same force-flush guard voice_engine._handle_audio_chunk
+            # already has: transcribe whatever was captured so far and
+            # reset, rather than letting a continuously noisy room grow
+            # this buffer without bound (the silence-based detector above
+            # would never fire in that case).
+            force_flush = len(utterance_buffer) > AMBIENT_MAX_UTTERANCE_BYTES
+            if force_flush:
+                log.warning(
+                    f"ambient utterance_buffer exceeded AMBIENT_MAX_UTTERANCE_BYTES "
+                    f"({len(utterance_buffer)} bytes); force-flushing"
+                )
+            if not utterance_ended and not force_flush:
                 continue
 
             pcm_for_utterance = bytes(utterance_buffer)
@@ -118,12 +138,22 @@ class AmbientListener:
         self._turn_in_progress = False
 
 
-def start_mic_capture(device: Optional[str], sample_rate: int = SAMPLE_RATE, chunk_samples: int = CHUNK_SAMPLES) -> "asyncio.Queue[bytes]":
+def start_mic_capture(
+    device: Optional[str], sample_rate: int = SAMPLE_RATE, chunk_samples: int = CHUNK_SAMPLES
+) -> "tuple[asyncio.Queue[bytes], object]":
     """Opens a real ALSA input stream and pushes each CHUNK_SAMPLES-sized
-    int16 PCM block onto the returned queue. sounddevice's InputStream
-    callback runs on its own C-managed thread (not the asyncio event loop),
-    so loop.call_soon_threadsafe is required to safely hand data back --
-    calling queue.put_nowait directly from that callback thread would
+    int16 PCM block onto the returned queue. Returns (queue, stream): the
+    caller MUST hold on to the stream for as long as capture should run.
+    Returning only the queue (as this used to) dropped the last reference
+    to a live sounddevice.InputStream, leaving it eligible for garbage
+    collection mid-capture, and left no handle to stop/close the device if
+    the caller's own setup failed afterwards -- which would leak an open
+    mic pushing frames into a queue nobody reads, forever.
+
+    sounddevice's InputStream callback runs on its own C-managed thread
+    (not the asyncio event loop), so loop.call_soon_threadsafe is required
+    to safely hand data back -- calling queue.put_nowait directly from
+    that callback thread would
     corrupt asyncio's internal state. Verify sounddevice's real
     InputStream(callback=...) signature against the actually-installed
     version during this step (same caution as models.py's TextToSpeech
@@ -151,4 +181,4 @@ def start_mic_capture(device: Optional[str], sample_rate: int = SAMPLE_RATE, chu
         callback=callback,
     )
     stream.start()
-    return queue
+    return queue, stream
