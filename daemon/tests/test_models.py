@@ -120,3 +120,50 @@ def test_text_to_speech_concurrent_synthesize_loads_model_only_once():
             f.result()
 
     assert load_count["n"] == 1
+
+def test_parse_device_env_numeric_string_becomes_a_real_int():
+    # sounddevice only treats a real Python `int` as a numeric device index
+    # -- a plain string like "2" (which is exactly what os.environ.get
+    # always returns) is instead matched by substring against device
+    # *names*, so AMBIENT_MIC_DEVICE=2 would silently never select device
+    # index 2 unless this conversion happens.
+    from daemon.models import parse_device_env
+    result = parse_device_env("2")
+    assert result == 2
+    assert isinstance(result, int)
+
+def test_parse_device_env_device_name_stays_a_string():
+    from daemon.models import parse_device_env
+    result = parse_device_env("hw:1,0")
+    assert result == "hw:1,0"
+    assert isinstance(result, str)
+
+def test_parse_device_env_blank_or_none_becomes_none():
+    from daemon.models import parse_device_env
+    assert parse_device_env("") is None
+    assert parse_device_env(None) is None
+
+def test_audio_player_calls_the_injected_backend_with_the_right_sample_rate():
+    import numpy as np
+    from daemon.models import AudioPlayer
+
+    calls = []
+
+    # Matches the real sounddevice-shaped call AudioPlayer.play() makes
+    # below: backend.play(audio_array, samplerate=..., device=...) followed
+    # by backend.wait() -- NOT a (pcm_bytes, sample_rate) positional shape.
+    class FakeBackend:
+        def play(self, data, samplerate=None, device=None):
+            calls.append((data, samplerate, device))
+
+        def wait(self):
+            calls.append("waited")
+
+    player = AudioPlayer(player_loader=lambda: FakeBackend())
+    player.play(b"\x01\x00\x02\x00", 24000)
+
+    assert len(calls) == 2, f"expected one play() call and one wait() call, got: {calls}"
+    data, samplerate, device = calls[0]
+    assert np.array_equal(data, np.array([1, 2], dtype=np.int16)), f"expected the PCM bytes decoded as int16, got: {data}"
+    assert samplerate == 24000
+    assert calls[1] == "waited"

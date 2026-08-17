@@ -105,11 +105,32 @@ services:
   # socket instead of two separate HTTP services. jarvis-os-api reaches it
   # via the voice-socket volume mounted into both containers at
   # /tmp/jarvis-voice (see api's volumes: above and audio-client.ts).
+  #
+  # Ambient host-mic listening needs the host's real ALSA devices passed
+  # into this container, which this file deliberately does NOT do: Docker
+  # resolves `devices:` at container-CREATE time, and a missing device
+  # path is a hard error, so a `devices: ["/dev/snd:/dev/snd"]` entry here
+  # would make `docker compose up` fail outright on any host with no sound
+  # card (a cloud VM, CI, a headless box) -- taking the whole stack down
+  # over an optional subsystem. The passthrough lives in the separate
+  # docker-compose.ambient.yml override instead, which a host that
+  # actually has a mic/speaker layers in:
+  #   docker compose -f docker-compose.yml -f docker-compose.ambient.yml up -d
+  # The AMBIENT_* environment variables below stay in this file
+  # unconditionally -- they're harmless on a host without audio hardware
+  # (AMBIENT_LISTENING_ENABLED defaults to false, and even set to true the
+  # daemon just logs a failure to open the device and carries on serving
+  # click-to-talk), unlike the device passthrough itself.
   voice-daemon:
     build:
       context: ./daemon
     container_name: jarvis-voice-daemon
     restart: unless-stopped
+    environment:
+      - AMBIENT_LISTENING_ENABLED=${AMBIENT_LISTENING_ENABLED:-false}
+      - AMBIENT_MIC_DEVICE=${AMBIENT_MIC_DEVICE:-}
+      - AMBIENT_SPEAKER_DEVICE=${AMBIENT_SPEAKER_DEVICE:-}
+      - AMBIENT_WAKE_WORD_THRESHOLD=${AMBIENT_WAKE_WORD_THRESHOLD:-0.5}
     volumes:
       - voice-socket:/tmp/jarvis-voice
       # Persists faster-whisper/Kokoro-82M model weights (downloaded from

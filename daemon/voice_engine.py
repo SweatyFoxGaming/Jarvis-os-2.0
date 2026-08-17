@@ -4,11 +4,12 @@ import logging
 import os
 import signal
 import sys
-from typing import Set
+from typing import Callable, Optional, Set
 
 import numpy as np
 
-from models import SpeechToText, TextToSpeech
+from ambient_listener import AmbientListener, start_mic_capture
+from models import AudioPlayer, SpeechToText, TextToSpeech, KOKORO_SAMPLE_RATE, parse_device_env
 from protocol import (
     ProtocolError,
     UtteranceEndDetector,
@@ -24,12 +25,69 @@ SOCKET_PATH = os.environ.get("VOICE_DAEMON_SOCKET", "/tmp/jarvis-voice/voice.soc
 SILENCE_RMS_THRESHOLD = 500
 SPEAK_CHUNK_BYTES = 32000
 MAX_UTTERANCE_BYTES = 2 * 60 * 32000
+AMBIENT_LISTENING_ENABLED = os.environ.get("AMBIENT_LISTENING_ENABLED", "false").lower() == "true"
+AMBIENT_MIC_DEVICE = parse_device_env(os.environ.get("AMBIENT_MIC_DEVICE"))
+# `.get(key, default)`'s default only applies when the var is entirely
+# UNSET -- if it's set but blank (AMBIENT_WAKE_WORD_THRESHOLD= with nothing
+# after the "="), .get() returns "" (not the default), and float("") raises
+# ValueError at import time, crashing the whole daemon (click-to-talk
+# included) regardless of AMBIENT_LISTENING_ENABLED. `or` falls through on
+# both None (unset) and "" (blank), so this treats both the same.
+AMBIENT_WAKE_WORD_THRESHOLD = float(os.environ.get("AMBIENT_WAKE_WORD_THRESHOLD") or "0.5")
 
 _stt = SpeechToText()
 _tts = TextToSpeech()
+_player = AudioPlayer()
 
 # Track active client writers so we can gracefully close them on shutdown
 _active_writers: Set[asyncio.StreamWriter] = set()
+
+# Set by handle_connection when the Node ambient client's persistent
+# connection identifies itself via a "hello_ambient" message (see the new
+# dispatch case below and Task 4's ambient-daemon-client.ts, which sends
+# it immediately on connect) -- None until Node connects, and cleared back
+# to None in handle_connection's own finally block when THAT connection
+# closes. AmbientListener's on_transcript callback below writes to
+# whichever writer this currently points at; if it's None when a wake word
+# fires (Node hasn't connected yet, or dropped), the transcript is logged
+# and discarded rather than crashing the listener.
+_ambient_writer: Optional[asyncio.StreamWriter] = None
+_ambient_listener: Optional["AmbientListener"] = None
+# Reference to the asyncio.Task running _ambient_listener.run(), kept for
+# the exact same reason InferenceQueue.start() keeps self._worker_task (see
+# its own docstring): asyncio.create_task's return value is the ONLY strong
+# reference to a running task, so not storing it anywhere leaves the task
+# eligible for garbage collection mid-run, and any unexpected exception it
+# raises would otherwise only ever surface as an unretrieved-task-exception
+# warning at some arbitrary later GC time -- with ambient listening then
+# silently dead and nothing pointing at why.
+_ambient_listener_task: Optional[asyncio.Task] = None
+
+
+def _on_ambient_listener_done(task: asyncio.Task) -> None:
+    """Registered on _ambient_listener_task, mirroring InferenceQueue's
+    _on_worker_done -- if AmbientListener.run() ever exits unexpectedly
+    (it's an infinite loop in normal operation), this is the loud alarm for
+    it instead of a silent, invisible death."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.critical(
+            f"ambient listener task died unexpectedly: {exc!r} -- ambient "
+            "(host-mic) voice is now silently dead until the daemon is "
+            "restarted; click-to-talk STT/TTS is unaffected",
+            exc_info=exc,
+        )
+
+
+async def _dispatch_ambient_transcript(text: str) -> None:
+    if _ambient_writer is None or _ambient_writer.is_closing():
+        log.warning(f"ambient wake word fired but no Node ambient connection is active; discarding transcript: {text!r}")
+        if _ambient_listener is not None:
+            _ambient_listener.turn_complete()
+        return
+    await _write_message(_ambient_writer, {"type": "ambient_transcript", "text": text})
 
 
 class InferenceQueue:
@@ -269,7 +327,57 @@ async def _handle_speak(writer: asyncio.StreamWriter, msg: dict, peer: str) -> N
     await _write_message(writer, {"type": "speak_done"})
 
 
+async def _handle_speak_local(writer: asyncio.StreamWriter, msg: dict, peer: str) -> None:
+    """Synthesizes and plays text DIRECTLY out the host speaker -- unlike
+    _handle_speak above, there is no caller waiting to receive audio_chunk
+    frames back; this is the ambient host-mic path's reply mechanism. The
+    finally block re-arms AmbientListener regardless of success/failure --
+    only the ambient connection ever sends speak_local (Task 4's
+    ambient-daemon-client.ts), so it's always correct to call
+    turn_complete() once this handler is done, whichever way it ends.
+
+    That "only the ambient connection" invariant is now actually ENFORCED
+    (it used to be an unchecked docstring claim): any other peer on this
+    socket -- a per-browser-session audio-client.ts connection, a one-shot
+    transcribe/synthesize connection, or anything else that can reach the
+    Unix socket -- sending speak_local would otherwise be able to make the
+    daemon speak arbitrary text out of the host's physical speaker AND
+    re-arm the ambient listener mid-turn. Rejected loudly and early
+    instead."""
+    if writer is not _ambient_writer:
+        log.warning(
+            f"ignoring speak_local from {peer}: it is not the registered ambient connection "
+            "(only the connection that sent hello_ambient may drive host-speaker playback)"
+        )
+        return
+    text = msg.get("text", "")
+    try:
+        future, position = await _inference_queue.submit(_tts.synthesize, text)
+        if position > 0:
+            await _write_message(writer, {"type": "queued", "position": position})
+        try:
+            audio_bytes = await future
+        except Exception:
+            log.exception(f"TTS synthesis failed for {peer} (speak_local)")
+            return
+        try:
+            await asyncio.to_thread(_player.play, audio_bytes, KOKORO_SAMPLE_RATE)
+        except Exception:
+            log.exception(f"Local playback failed for {peer} (speak_local)")
+            return
+        await _write_message(writer, {"type": "speak_local_done"})
+    finally:
+        if _ambient_listener is not None:
+            _ambient_listener.turn_complete()
+
+
 async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    # Declared once, at the top of the function: Python raises a SyntaxError
+    # ("name '_ambient_writer' is assigned to before global declaration") if
+    # `global _ambient_writer` appears more than once in the same function
+    # body at different points, since the first occurrence already makes
+    # every later reference in this function refer to the module-level name.
+    global _ambient_writer
     peer = writer.get_extra_info("peername") or "unix-client"
     log.info(f"connection opened: {peer}")
     _active_writers.add(writer)
@@ -292,8 +400,36 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
                 await _handle_audio_data(msg, utterance_buffer, peer)
             elif msg_type == "speak":
                 await _handle_speak(writer, msg, peer)
+            elif msg_type == "speak_local":
+                await _handle_speak_local(writer, msg, peer)
             elif msg_type == "transcribe":
                 await _handle_transcribe(writer, detector, utterance_buffer, peer)
+            elif msg_type == "hello_ambient":
+                # Exactly one ambient connection at a time. If a DIFFERENT,
+                # still-open connection already holds that role, refuse
+                # rather than silently redirecting every future
+                # ambient_transcript (and the speak_local authorization
+                # that goes with it, see _handle_speak_local) to whichever
+                # peer spoke last -- that would let any process able to
+                # reach this Unix socket hijack the host-mic turn stream
+                # from the real Node client. A re-handshake from the SAME
+                # writer, or one arriving after the previous ambient
+                # connection has closed (handle_connection's finally
+                # clears _ambient_writer) is accepted normally, so Node's
+                # own reconnect loop is unaffected.
+                if (
+                    _ambient_writer is not None
+                    and _ambient_writer is not writer
+                    and not _ambient_writer.is_closing()
+                ):
+                    log.warning(
+                        f"REFUSING hello_ambient from {peer}: another ambient connection is already "
+                        "active and still open; ignoring this handshake rather than redirecting the "
+                        "ambient transcript stream"
+                    )
+                else:
+                    _ambient_writer = writer
+                    log.info(f"ambient connection identified: {peer}")
             else:
                 log.info(f"received control message: {msg_type}")
     except (ConnectionResetError, BrokenPipeError):
@@ -302,6 +438,22 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         pass
     finally:
         _active_writers.discard(writer)
+        if _ambient_writer is writer:
+            _ambient_writer = None
+            # The ambient connection is going away. If a turn was in
+            # flight on it, its reply (the speak_local that would have
+            # run _handle_speak_local's own re-arming finally) can never
+            # arrive now, so AmbientListener would stay latched with
+            # _turn_in_progress=True forever -- silently ignoring every
+            # subsequent wake word with no error anywhere. Re-arm here
+            # instead. This is the catch-all for every "reply lost"
+            # scenario (Node restarting mid-turn, a reconnect window, the
+            # API container being recreated): they all end with this
+            # socket closing, and this finally always runs when it does.
+            # Harmless when no turn was in flight -- turn_complete() just
+            # sets an already-False flag back to False.
+            if _ambient_listener is not None:
+                _ambient_listener.turn_complete()
         try:
             writer.close()
             await writer.wait_closed()
@@ -371,12 +523,88 @@ async def _warm_models() -> None:
         log.exception("model pre-warm failed; models will still lazy-load on first real request")
 
 
+def _make_wake_word_predictor() -> Callable[[np.ndarray], float]:
+    """Real openWakeWord adapter -- wraps openwakeword.Model's predict()
+    call behind AmbientListener's simple `frame -> float` interface.
+    openWakeWord's real Model.predict(frame) takes a 1D int16 numpy array
+    of exactly CHUNK_SAMPLES (1280) samples and returns a dict of
+    {model_name: score}. Verified live against the actually-installed
+    openwakeword==0.6.0 inside the built daemon image: this function
+    constructs and returns a float score for a 1280-sample int16 frame,
+    entirely offline (the model files are baked into the image, see
+    daemon/Dockerfile). If a future version's API differs, this is the one
+    function that needs to change,
+    everything else in this file is decoupled from openWakeWord's exact
+    shape by AmbientListener's injectable interface.
+    """
+    from openwakeword.model import Model
+    # inference_framework is pinned explicitly: openwakeword 0.6.0's own
+    # default is "tflite" (verified against the installed 0.6.0 wheel's
+    # Model.__init__ signature), which requires the tflite-runtime native
+    # package. ONNX is what this codebase already targets elsewhere, and
+    # onnxruntime is a hard, always-installed dependency of openwakeword
+    # itself -- so "onnx" is the variant guaranteed to exist in this slim
+    # container. daemon/Dockerfile's build-time download step fetches both
+    # the .tflite and .onnx model files (its utility offers no way to pick
+    # one), so the .onnx ones these sessions load are present in the image.
+    model = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+
+    def predict(frame: np.ndarray) -> float:
+        prediction = model.predict(frame)
+        return float(prediction.get("hey_jarvis", 0.0))
+
+    return predict
+
+
 async def main() -> None:
     # Must start from inside this running event loop -- InferenceQueue.start()
     # calls asyncio.create_task, which requires one (unlike the plain
     # Semaphore/Queue construction this replaced, which didn't).
     _inference_queue.start()
     asyncio.create_task(_warm_models())
+
+    if AMBIENT_LISTENING_ENABLED:
+        global _ambient_listener, _ambient_listener_task
+        # Held in a local of this coroutine's frame, which stays alive for
+        # the daemon's whole lifetime (main() sits on `await
+        # stop_event.wait()` below). That reference is what keeps the real
+        # sounddevice.InputStream from being garbage-collected out from
+        # under the still-running capture callback -- start_mic_capture()
+        # used to return only the queue, dropping the stream on the floor.
+        mic_stream = None
+        try:
+            frame_queue, mic_stream = start_mic_capture(AMBIENT_MIC_DEVICE)
+            _ambient_listener = AmbientListener(
+                frame_queue=frame_queue,
+                wake_word_predict=_make_wake_word_predictor(),
+                transcribe=_stt.transcribe,
+                on_transcript=_dispatch_ambient_transcript,
+                threshold=AMBIENT_WAKE_WORD_THRESHOLD,
+            )
+            _ambient_listener_task = asyncio.create_task(_ambient_listener.run())
+            _ambient_listener_task.add_done_callback(_on_ambient_listener_done)
+            log.info(f"ambient host-mic listening enabled (device={AMBIENT_MIC_DEVICE or 'default'})")
+        except Exception:
+            # The mic stream may already be open and pushing frames if the
+            # failure happened AFTER start_mic_capture() succeeded (most
+            # likely in _make_wake_word_predictor(), which loads real
+            # models). Nothing will ever read that queue now, so close the
+            # device rather than leaking an open input stream for the
+            # process's whole lifetime. Its own try/except so a teardown
+            # failure can't mask the original error being logged below.
+            if mic_stream is not None:
+                try:
+                    mic_stream.stop()
+                    mic_stream.close()
+                except Exception:
+                    log.warning("failed to close the ambient mic stream after a startup failure", exc_info=True)
+                mic_stream = None
+            log.exception(
+                "failed to start ambient host-mic listening -- AMBIENT_LISTENING_ENABLED is true but the "
+                "mic device could not be opened; the rest of the daemon (click-to-talk STT/TTS) is unaffected"
+            )
+    else:
+        log.info("ambient host-mic listening disabled (AMBIENT_LISTENING_ENABLED is not 'true')")
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()

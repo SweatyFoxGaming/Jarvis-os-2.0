@@ -2164,82 +2164,12 @@ registerTest("HTTP Boundary", "newly capability-gated routes reject unauthentica
   }
 });
 
-registerTest("HTTP Boundary", "POST /api/voice-stream-ticket requires auth and returns a real ticket for a granted admin", async () => {
-  const port = 3024;
-  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
-
-  try {
-    const noKey = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, { method: "POST" });
-    if (noKey.status !== 401) {
-      throw new Error(`HTTP Boundary: expected 401 with no API key on POST /api/voice-stream-ticket, got ${noKey.status}`);
-    }
-
-    const adminRes = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, {
-      method: "POST",
-      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
-    });
-    if (adminRes.status !== 200) {
-      throw new Error(`HTTP Boundary: expected 200 for an admin request, got ${adminRes.status}`);
-    }
-    const body = await adminRes.json();
-    if (typeof body.ticket !== "string" || body.ticket.length === 0) {
-      throw new Error(`HTTP Boundary: expected a real ticket string, got: ${JSON.stringify(body)}`);
-    }
-  } finally {
-    await stopTestServer(child);
-  }
-});
-
-// The WebSocket-level auth branch for /ws/voice-stream lives inside
-// server.ts's own boot sequence (voiceStreamWss's "connection" handler), not
-// in an independently-importable function -- handleVoiceStreamConnection
-// (covered by the VoiceStreamWs category) starts from an already-known-good
-// username and never sees a ticket. So the only way to exercise the reject
-// path is against a real spawned server, same as the /api/voice-stream-ticket
-// test above. Asserts BOTH halves of the rejection: an error control message
-// is actually sent, and the socket is then closed rather than left hanging
-// (a silently-accepted or hanging unauthenticated connection would be the
-// real bug here).
-registerTest("HTTP Boundary", "WS /ws/voice-stream rejects a connection with no ticket and no valid API key", async () => {
-  const port = 3025; // confirmed free: existing HTTP Boundary tests use 3010, 3012-3024
-  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
-  try {
-    const WebSocketCtor = (await import("ws")).default;
-    const ws = new WebSocketCtor(`ws://127.0.0.1:${port}/ws/voice-stream`);
-
-    let errorMessage: any = null;
-    const closed = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), 10000);
-      ws.on("message", (data: any) => {
-        try {
-          errorMessage = JSON.parse(data.toString());
-        } catch {
-          errorMessage = { raw: data.toString() };
-        }
-      });
-      ws.on("close", () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-      ws.on("error", () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
-
-    if (!errorMessage || errorMessage.type !== "error") {
-      throw new Error(
-        `HTTP Boundary: expected an "error" control message on an unauthenticated /ws/voice-stream connection, got: ${JSON.stringify(errorMessage)}`
-      );
-    }
-    if (!closed) {
-      throw new Error("HTTP Boundary: unauthenticated /ws/voice-stream connection was left open instead of being closed");
-    }
-    try { ws.close(); } catch {}
-  } finally {
-    await stopTestServer(child);
-  }
-});
+// The "POST /api/voice-stream-ticket requires auth..." and "WS
+// /ws/voice-stream rejects a connection with no ticket..." tests that used
+// to live here were removed along with the route/WS themselves -- see the
+// "HTTP Boundary" / "/ws/voice-stream and /api/voice-stream-ticket no
+// longer exist" test (tests/index.test.ts, near the removed VoiceStreamWs
+// category) for their replacement.
 
 // Finding 8b (first half): GET /auth-url used to call issueOAuthStateTicket
 // unconditionally, before calendar.getAuthUrl() had any chance to fail on a
@@ -6230,343 +6160,184 @@ registerTest("VoiceSessionManager", "a full round trip through the shared startV
   }
 });
 
-// ---------- VoiceStreamWs Tests ----------
-registerTest("VoiceStreamWs", "forwards inbound binary frames to the daemon as audio_chunk, and ignores an unrelated session's voice:error", async () => {
+// ---------- AmbientDaemonClient Tests ----------
+registerTest("AmbientDaemonClient", "an ambient_transcript message triggers a real turn and the reply is sent back as speak_local", async () => {
+  const net = await import("net");
   const os = await import("os");
   const path = await import("path");
-  const net = await import("net");
-  const { WebSocketServer, WebSocket } = await import("ws");
   const { EventBus } = await import("../src/core/event-bus.js");
-  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
-
-  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsstream-${Date.now()}.sock`);
-  let receivedByDaemon = "";
-  const fakeDaemon = net.createServer((conn) => {
-    conn.on("data", (data) => { receivedByDaemon += data.toString(); });
-  });
-  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
-
-  const testWss = new WebSocketServer({ port: 0 });
-  const port = (testWss.address() as any).port;
-  testWss.on("connection", (ws) => {
-    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
-  });
-
-  const client = new WebSocket(`ws://127.0.0.1:${port}`);
-  const clientMessages: any[] = [];
-  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
-  let clientClosed = false;
-  client.on("close", () => { clientClosed = true; });
-
-  try {
-    await new Promise<void>((resolve) => client.on("open", () => resolve()));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const pcm = Buffer.from([1, 2, 3]);
-    client.send(pcm);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    const parsed = JSON.parse(receivedByDaemon.trim());
-    if (parsed.type !== "audio_chunk" || parsed.data !== pcm.toString("base64")) {
-      throw new Error(`VoiceStreamWs: expected the frame forwarded as audio_chunk, got: ${receivedByDaemon}`);
-    }
-
-    // This connection's real sessionId is internal (a fresh
-    // crypto.randomUUID() from createVoiceSession) -- there is no public
-    // "list sessions" API by design. The full happy path (matching
-    // sessionId, real turn_complete payload) is proven end to end by the
-    // round-trip test below; this test only proves the session-scoping
-    // guard itself: an event for a sessionId that can't possibly be this
-    // connection's must never affect it.
-    const bus = EventBus.getInstance();
-    bus.publish("voice:error", { message: "not for this connection", sessionId: "definitely-not-this-sessions-id" });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    if (clientClosed) {
-      throw new Error("VoiceStreamWs: an unrelated session's voice:error must not close this connection");
-    }
-  } finally {
-    client.close();
-    testWss.close();
-    fakeDaemon.close();
-  }
-});
-
-registerTest("VoiceStreamWs", "a full round trip: connect, stream audio, daemon transcribes and synthesizes, turn_complete carries a real playable WAV", async () => {
-  const os = await import("os");
-  const path = await import("path");
-  const net = await import("net");
-  const readline = await import("readline");
-  const { WebSocketServer, WebSocket } = await import("ws");
-  const { handleVoiceStreamConnection } = await import("../src/interaction/voice-stream-ws.js");
+  const { startAmbientDaemonClient, AMBIENT_SESSION_ID } = await import("../src/core/ambient-daemon-client.js");
   const { startVoiceSession } = await import("../src/interaction/voice-session.js");
 
-  const daemonSocketPath = path.join(os.tmpdir(), `jarvis-voice-test-wsroundtrip-${Date.now()}.sock`);
-  const fakeReplyPcm = Buffer.from([10, 20, 30, 40]);
-  const fakeDaemon = net.createServer((conn) => {
-    const rl = readline.createInterface({ input: conn });
-    let transcriptSent = false;
-    rl.on("line", (line) => {
-      let msg: any;
-      try { msg = JSON.parse(line); } catch { return; }
-      if (msg.type === "audio_chunk" && !transcriptSent) {
-        // Simulate the real daemon's UtteranceEndDetector firing on the
-        // first chunk of mic audio it receives.
-        transcriptSent = true;
-        conn.write(JSON.stringify({ type: "transcript", text: "what time is it" }) + "\n");
-      } else if (msg.type === "speak") {
-        // Simulate synthesis: one audio_chunk of fake reply PCM, then
-        // speak_done, exactly matching daemon/voice_engine.py's real
-        // _handle_speak sequence.
-        conn.write(JSON.stringify({ type: "audio_chunk", data: fakeReplyPcm.toString("base64") }) + "\n");
-        conn.write(JSON.stringify({ type: "speak_done" }) + "\n");
+  const sockPath = path.join(os.tmpdir(), `ambient-test-${Date.now()}.sock`);
+  const server = net.createServer((socket) => {
+    // A real socket makes no guarantee that one "data" event maps to one
+    // complete newline-delimited JSON message -- a single write can arrive
+    // split across multiple "data" events, or multiple writes can coalesce
+    // into one. Buffer per-connection and only parse complete lines (same
+    // newline-delimited-framing discipline the real ambient-daemon-client.ts
+    // /audio-client.ts modules already apply via readline), keeping any
+    // trailing partial line for the next chunk.
+    let buffer = "";
+    socket.on("data", (data) => {
+      buffer += data.toString("utf-8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        (server as any)._received = (server as any)._received || [];
+        (server as any)._received.push(msg);
       }
     });
+    (server as any)._socket = socket;
   });
-  await new Promise<void>((resolve) => fakeDaemon.listen(daemonSocketPath, resolve));
+  await new Promise<void>((resolve) => server.listen(sockPath, resolve));
 
-  const fakeRouter = {
-    generateWithFallback: async () => ({
-      choices: [{ message: { content: "It's time to build.", tool_calls: undefined } }],
-    }),
-  } as any;
-  const sessionHandle = startVoiceSession({ router: fakeRouter, recall: (async () => []) as any });
-
-  const testWss = new WebSocketServer({ port: 0 });
-  const port = (testWss.address() as any).port;
-  testWss.on("connection", (ws) => {
-    handleVoiceStreamConnection(ws as any, "alice", daemonSocketPath);
+  const bus = EventBus.getInstance();
+  const voiceSession = startVoiceSession({
+    router: {
+      generateWithFallback: async () => ({
+        choices: [{ message: { content: "Hello, sir.", tool_calls: [] } }],
+      }),
+    } as any,
+    getAllToolDeclarations: () => [],
+    toGroqTools: () => [],
+    executeTool: (async () => ({ ok: true, output: "" })) as any,
+    appendMessage: (async () => {}) as any,
+    recall: (async () => []) as any,
+    remember: (async () => {}) as any,
+    reflectAndLearn: (async () => {}) as any,
+    extractAndStore: (async () => {}) as any,
+    extractSelfReflection: (async () => {}) as any,
+    extractRapportSignal: (async () => {}) as any,
   });
 
-  const client = new WebSocket(`ws://127.0.0.1:${port}`);
-  const clientMessages: any[] = [];
-  client.on("message", (data) => { clientMessages.push(JSON.parse(data.toString())); });
-  const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
-
+  const client = startAmbientDaemonClient(sockPath, "alice");
   try {
-    await new Promise<void>((resolve) => client.on("open", () => resolve()));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    client.send(Buffer.from([1, 2, 3, 4]));
+    await new Promise((resolve) => setTimeout(resolve, 300)); // let the client connect
 
-    await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for the connection to close")), 3000))]);
+    const clientSocket = (server as any)._socket as import("net").Socket;
+    clientSocket.write(JSON.stringify({ type: "ambient_transcript", text: "what's the time" }) + "\n");
 
-    const turnComplete = clientMessages.find((m) => m.type === "turn_complete");
-    if (!turnComplete) {
-      throw new Error(`VoiceStreamWs: expected a turn_complete message before close, got: ${JSON.stringify(clientMessages)}`);
+    let received: any[] = [];
+    for (let i = 0; i < 50; i++) {
+      received = (server as any)._received || [];
+      if (received.some((m) => m.type === "speak_local")) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (turnComplete.mimeType !== "audio/wav" || typeof turnComplete.audio !== "string") {
-      throw new Error(`VoiceStreamWs: expected turn_complete to carry a base64 audio/wav payload, got: ${JSON.stringify(turnComplete)}`);
+
+    const speakLocal = received.find((m) => m.type === "speak_local");
+    if (!speakLocal) {
+      throw new Error(`AmbientDaemonClient: expected a speak_local message, got: ${JSON.stringify(received)}`);
     }
-    const wavBytes = Buffer.from(turnComplete.audio, "base64");
-    // A valid minimal WAV: "RIFF" header, "WAVE" format tag, and the raw
-    // PCM bytes present verbatim after the 44-byte header -- proving this
-    // is a real, well-formed container built from the exact bytes the
-    // fake daemon sent, not a stub or an empty buffer.
-    if (wavBytes.toString("ascii", 0, 4) !== "RIFF" || wavBytes.toString("ascii", 8, 12) !== "WAVE") {
-      throw new Error("VoiceStreamWs: turn_complete's audio is not a well-formed WAV file");
+    if (speakLocal.text !== "Hello, sir.") {
+      throw new Error(`AmbientDaemonClient: expected the real turn's reply text, got: ${speakLocal.text}`);
     }
-    if (!wavBytes.subarray(44).equals(fakeReplyPcm)) {
-      throw new Error("VoiceStreamWs: expected the WAV's PCM data to match the fake daemon's exact synthesized bytes");
+    if (AMBIENT_SESSION_ID !== "ambient-host") {
+      throw new Error(`AmbientDaemonClient: expected AMBIENT_SESSION_ID to be "ambient-host", got: ${AMBIENT_SESSION_ID}`);
     }
   } finally {
-    client.close();
-    testWss.close();
-    fakeDaemon.close();
-    sessionHandle.stop();
+    client.stop();
+    voiceSession.stop();
+    server.close();
   }
 });
 
-// ---------- OpenWakeWordEngine Tests ----------
-// This engine's own audio/ONNX pipeline is browser-only and not
-// executable in this Node test harness (same fundamental limitation the
-// Porcupine-based implementation had) -- but unlike that implementation,
-// the buffering/windowing/scoring state machine was deliberately built
-// with injectable predict functions specifically so it CAN be verified
-// here, independent of any real model or microphone, using fake
-// predictors with known, hand-computable outputs.
-registerTest("OpenWakeWordEngine", "module exports StreamingFeatureExtractor and WakeWordEngine", async () => {
-  const mod = await import("../src/interaction/static/openwakeword-engine.js");
-  if (typeof mod.StreamingFeatureExtractor !== "function" || typeof mod.WakeWordEngine !== "function") {
-    throw new Error("OpenWakeWordEngine: expected StreamingFeatureExtractor and WakeWordEngine to be exported");
-  }
-});
+// The daemon registers whichever connection sends "hello_ambient" as THE
+// ambient one, and from then on expects every ambient turn to come back to
+// it as a "speak_local" reply. With no AMBIENT_DEFAULT_USERNAME configured
+// this client drops every transcript before it ever becomes a turn, so no
+// reply would ever be produced -- and the daemon's AmbientListener would
+// latch _turn_in_progress on the first wake word and silently ignore every
+// one after it. Not sending the handshake at all is what keeps the daemon
+// on its "no active ambient connection" path, which re-arms correctly.
+registerTest("AmbientDaemonClient", "hello_ambient is sent only when a default username is configured", async () => {
+  const net = await import("net");
+  const os = await import("os");
+  const path = await import("path");
+  const { startAmbientDaemonClient } = await import("../src/core/ambient-daemon-client.js");
 
-registerTest("OpenWakeWordEngine", "the melspectrogram post-transform is exactly x/10+2, matching the upstream reference implementation", async () => {
-  const { StreamingFeatureExtractor } = await import("../src/interaction/static/openwakeword-engine.js");
-
-  // Drive the real (non-exported) transform indirectly: a fake
-  // melspecPredict returns known raw values, and the mel buffer contents
-  // reaching embeddingPredict must be the transformed (raw/10+2) values --
-  // proving the transform actually runs on the real data path, not just
-  // asserting the arithmetic formula in isolation.
-  const rawFrameValue = 30; // -> expected transformed value: 30/10+2 = 5
-  let capturedWindow = null;
-  const extractor = new StreamingFeatureExtractor({
-    melspecPredict: async (float32Samples) => {
-      const frames = Math.floor(float32Samples.length / 160);
-      return new Float32Array(frames * 32).fill(rawFrameValue);
-    },
-    embeddingPredict: async (melspecWindowFlat) => {
-      if (capturedWindow === null) capturedWindow = melspecWindowFlat;
-      return new Float32Array(96);
-    },
-  });
-
-  for (let i = 0; i < 12; i++) {
-    await extractor.processSamples(new Int16Array(1280));
-  }
-
-  if (capturedWindow === null) {
-    throw new Error("OpenWakeWordEngine: expected embeddingPredict to have been called with real mel data after 12 chunks");
-  }
-  const expected = rawFrameValue / 10 + 2;
-  for (let i = 0; i < capturedWindow.length; i++) {
-    if (Math.abs(capturedWindow[i] - expected) > 1e-6) {
-      throw new Error(`OpenWakeWordEngine: expected every transformed mel value to be ${expected} (raw ${rawFrameValue}/10+2), got ${capturedWindow[i]} at index ${i}`);
+  const observe = async (username: string): Promise<any[]> => {
+    const sockPath = path.join(os.tmpdir(), `ambient-hello-test-${Date.now()}-${Math.random()}.sock`);
+    const received: any[] = [];
+    const server = net.createServer((socket) => {
+      socket.on("data", (data) => {
+        for (const line of data.toString("utf-8").split("\n").filter(Boolean)) {
+          received.push(JSON.parse(line));
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(sockPath, resolve));
+    const client = startAmbientDaemonClient(sockPath, username);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300)); // connect + any handshake write
+    } finally {
+      client.stop();
+      server.close();
     }
+    return received;
+  };
+
+  const withUsername = await observe("alice");
+  if (!withUsername.some((m) => m.type === "hello_ambient")) {
+    throw new Error(
+      `AmbientDaemonClient: expected hello_ambient with a configured username, got: ${JSON.stringify(withUsername)}`
+    );
+  }
+
+  const withoutUsername = await observe("");
+  if (withoutUsername.some((m) => m.type === "hello_ambient")) {
+    throw new Error(
+      "AmbientDaemonClient: hello_ambient must NOT be sent with no AMBIENT_DEFAULT_USERNAME -- it would register " +
+        "this connection as the daemon's ambient writer while never producing a reply, latching the listener off"
+    );
   }
 });
 
-registerTest("OpenWakeWordEngine", "StreamingFeatureExtractor buffers partial (<1280 sample) chunks across calls without losing data", async () => {
-  const { StreamingFeatureExtractor } = await import("../src/interaction/static/openwakeword-engine.js");
+// The "VoiceStreamWs" test category that used to live here was removed
+// along with src/interaction/voice-stream-ws.ts itself: the browser-based
+// ambient wake-word path (PR #154 and its predecessor) is gone entirely,
+// replaced by the host-mic ambient listener
+// (docs/superpowers/specs/2026-08-16-host-mic-ambient-voice-design.md).
+// Its real successor coverage is the "AmbientDaemonClient" category
+// (tests/index.test.ts) plus daemon/tests/test_ambient_listener.py and
+// daemon/tests/test_voice_engine.py's speak_local test -- there is no
+// browser-facing WS route left to test here at all.
 
-  let melspecCalls = 0;
-  let lastMelspecInputLength = 0;
-  const extractor = new StreamingFeatureExtractor({
-    melspecPredict: async (float32Samples) => {
-      melspecCalls++;
-      lastMelspecInputLength = float32Samples.length;
-      // Fake: 1 frame of 32 zeros per 160 input samples (a simple,
-      // deterministic ratio -- not the real model's actual math, which
-      // isn't being tested here; only this class's own bookkeeping is).
-      const frames = Math.floor(float32Samples.length / 160);
-      return new Float32Array(frames * 32);
-    },
-    embeddingPredict: async () => new Float32Array(96),
-  });
-
-  // Feed 500, then 500, then 280 samples (three separate calls) -- exactly
-  // 1280 total, split at arbitrary non-chunk-aligned boundaries. The
-  // completion (a melspecPredict call) must happen on the third call, not
-  // the first two, proving the remainder correctly carries over instead of
-  // being dropped or triggering early.
-  const completed1 = await extractor.processSamples(new Int16Array(500));
-  const completed2 = await extractor.processSamples(new Int16Array(500));
-  if (completed1 || completed2 || melspecCalls !== 0) {
-    throw new Error(`OpenWakeWordEngine: expected no completion before 1280 samples accumulated (melspecCalls=${melspecCalls})`);
-  }
-
-  const completed3 = await extractor.processSamples(new Int16Array(280));
-  if (!completed3 || melspecCalls !== 1) {
-    throw new Error(`OpenWakeWordEngine: expected exactly 1 melspecPredict call once 1280 samples accumulated, got ${melspecCalls} (completed3=${completed3})`);
-  }
-  if (lastMelspecInputLength !== 1280) {
-    throw new Error(`OpenWakeWordEngine: expected the first melspecPredict call to receive exactly 1280 samples (no prior history to look back into), got ${lastMelspecInputLength}`);
-  }
-});
-
-registerTest("OpenWakeWordEngine", "StreamingFeatureExtractor.getFeatures stays null until enough real audio has accumulated, then produces correctly-shaped output", async () => {
-  const { StreamingFeatureExtractor } = await import("../src/interaction/static/openwakeword-engine.js");
-
-  let embeddingCalls = 0;
-  const extractor = new StreamingFeatureExtractor({
-    melspecPredict: async (float32Samples) => new Float32Array(Math.floor(float32Samples.length / 160) * 32),
-    embeddingPredict: async (melspecWindowFlat) => {
-      embeddingCalls++;
-      if (melspecWindowFlat.length !== 76 * 32) {
-        throw new Error(`OpenWakeWordEngine: expected each embedding call to receive a 76x32 window (2432 values), got ${melspecWindowFlat.length}`);
-      }
-      // Distinguishable per-call value so ordering/count can be verified.
-      return new Float32Array(96).fill(embeddingCalls);
-    },
-  });
-
-  // Not enough audio yet for even one 76-frame mel window (76*160 = 12,160
-  // samples needed; one 1280-sample chunk is nowhere close).
-  await extractor.processSamples(new Int16Array(1280));
-  if (extractor.getFeatures(16) !== null) {
-    throw new Error("OpenWakeWordEngine: expected getFeatures to be null before any embedding window is achievable");
-  }
-
-  // Feed enough additional chunks to comfortably clear both the mel-frame
-  // warm-up (76 frames) and the classifier warm-up (16 embedding rows).
-  // 40 chunks of 1280 samples is a generous margin over the ~10 chunks
-  // needed for the mel warm-up alone.
-  for (let i = 0; i < 40; i++) {
-    await extractor.processSamples(new Int16Array(1280));
-  }
-
-  if (embeddingCalls === 0) {
-    throw new Error("OpenWakeWordEngine: expected at least one embedding call after 40 chunks of real audio");
-  }
-
-  const features = extractor.getFeatures(16);
-  if (features === null) {
-    throw new Error("OpenWakeWordEngine: expected getFeatures(16) to succeed after enough real audio accumulated");
-  }
-  if (features.length !== 16 * 96) {
-    throw new Error(`OpenWakeWordEngine: expected getFeatures(16) to return exactly 16*96=1536 values, got ${features.length}`);
-  }
-  // The last row should be the most recent embedding call's fill value --
-  // proves getFeatures returns the newest window, not a stale/misaligned one.
-  const lastRowFirstValue = features[15 * 96];
-  if (lastRowFirstValue !== embeddingCalls) {
-    throw new Error(`OpenWakeWordEngine: expected the last feature row to be the most recent embedding (${embeddingCalls}), got ${lastRowFirstValue}`);
-  }
-});
-
-registerTest("OpenWakeWordEngine", "WakeWordEngine.load throws a clear error when no `window` global exists at all", async () => {
-  const { WakeWordEngine } = await import("../src/interaction/static/openwakeword-engine.js");
-  const engine = new WakeWordEngine({ modelBaseUrl: "/vendor/openwakeword/models/", ortWasmPath: "/vendor/onnxruntime-web/" });
-  let threw = false;
-  let message = "";
+registerTest("HTTP Boundary", "/ws/voice-stream and /api/voice-stream-ticket no longer exist", async () => {
+  const port = 3021;
+  const child = await spawnTestServer(port, { INTERNAL_API_KEY: TEST_ADMIN_API_KEY });
   try {
-    // No `window` global exists in this Node test environment by default
-    // -- exercises the "browser-only, no window at all" guard specifically
-    // (verified by NOT installing a fake window below, unlike the next
-    // test), rather than accidentally passing for the wrong reason.
-    await engine.load();
-  } catch (err: any) {
-    threw = true;
-    message = err?.message || String(err);
-  }
-  if (!threw) {
-    throw new Error("OpenWakeWordEngine: expected load() to throw when there is no `window` global");
-  }
-  if (!message.toLowerCase().includes("window")) {
-    throw new Error(`OpenWakeWordEngine: expected an honest error naming the real cause, got: ${message}`);
-  }
-});
+    const ticketRes = await fetch(`http://127.0.0.1:${port}/api/voice-stream-ticket`, {
+      method: "POST",
+      headers: { "X-API-Key": TEST_ADMIN_API_KEY },
+    });
+    if (ticketRes.status !== 404) {
+      throw new Error(`Expected /api/voice-stream-ticket to be gone (404), got ${ticketRes.status}`);
+    }
 
-registerTest("OpenWakeWordEngine", "WakeWordEngine.load throws a clear error when `window` exists but onnxruntime-web (window.ort) doesn't", async () => {
-  const { WakeWordEngine } = await import("../src/interaction/static/openwakeword-engine.js");
-  const engine = new WakeWordEngine({ modelBaseUrl: "/vendor/openwakeword/models/", ortWasmPath: "/vendor/onnxruntime-web/" });
-
-  // Install a temporary fake `window` with no `.ort` property -- exercises
-  // the SEPARATE guard for "the <script> tag never loaded onnxruntime-web"
-  // specifically, distinct from the no-window-at-all case above (both
-  // guards exist in load(); each needs its own test, since the previous,
-  // single combined test could pass for either reason and silently miss a
-  // regression in one of them).
-  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  let threw = false;
-  let message = "";
-  try {
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
-    await engine.load();
-  } catch (err: any) {
-    threw = true;
-    message = err?.message || String(err);
+    const WebSocketCtor = (await import("ws")).default;
+    const ws = new WebSocketCtor(`ws://127.0.0.1:${port}/ws/voice-stream?ticket=anything`);
+    const closedCleanly = await new Promise<boolean>((resolve) => {
+      ws.on("open", () => resolve(false)); // should never open
+      ws.on("close", () => resolve(true));
+      ws.on("error", () => resolve(true));
+    });
+    if (!closedCleanly) {
+      throw new Error("Expected /ws/voice-stream to be gone -- the shared upgrade dispatcher should reject/destroy it, not accept a connection");
+    }
   } finally {
-    if (savedWindow) Object.defineProperty(globalThis, "window", savedWindow);
-    else delete (globalThis as any).window;
-  }
-  if (!threw) {
-    throw new Error("OpenWakeWordEngine: expected load() to throw when window.ort is unavailable");
-  }
-  if (!message.toLowerCase().includes("onnxruntime")) {
-    throw new Error(`OpenWakeWordEngine: expected an honest error naming the real cause, got: ${message}`);
+    await stopTestServer(child);
   }
 });
+
+// The "OpenWakeWordEngine" test category that used to live here was
+// removed along with src/interaction/static/openwakeword-engine.js and
+// wake-word.js themselves: wake-word detection now runs server-side (see
+// daemon/ambient_listener.py and daemon/tests/test_ambient_listener.py),
+// not in the browser. There is no browser-side wake-word pipeline left to
+// test here at all.
 
 // ---------- HealthWatchdog Tests ----------
 registerTest("HealthWatchdog", "assessSystemHealth reports ok when every dependency is reachable", async () => {

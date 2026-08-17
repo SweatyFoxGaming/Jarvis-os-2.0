@@ -51,12 +51,6 @@ export const ALL_CAPABILITIES = [
   "email.personal.send",
   "email.personal.read",
   "tts.speak",
-  // Gates POST /api/voice-stream-ticket (src/server.ts) -- issuing a
-  // short-lived ticket to open the ambient wake-word /ws/voice-stream
-  // WebSocket. Kept separate from tts.speak (reply playback) since a user
-  // could reasonably be granted one without the other (e.g. click-to-talk
-  // only, no ambient listening).
-  "voice.ambient",
   "executive.plan",
   "calendar.read",
   "calendar.write",
@@ -124,7 +118,6 @@ export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "web.search",
   "news.read",
   "tts.speak",
-  "voice.ambient",
   "knowledge.read",
   "identity.read",
   "hud.read",
@@ -184,9 +177,9 @@ export async function loadGrantsFromDb(): Promise<void> {
   }
 
   // Backfill any DEFAULT_PERSONAL_CAPABILITIES capability a registered
-  // personal user is missing (e.g. voice.ambient, added after they
-  // registered) -- mirrors the admin backfill above exactly, just scoped
-  // to personal accounts instead of ALL_CAPABILITIES. Without this, any
+  // personal user is missing (e.g. a capability added to this list after
+  // they registered) -- mirrors the admin backfill above exactly, just
+  // scoped to personal accounts instead of ALL_CAPABILITIES. Without this, any
   // capability added to DEFAULT_PERSONAL_CAPABILITIES after a user's own
   // registration date silently never reaches them -- registration only
   // grants the list as it existed at signup time, so they'd get 403s

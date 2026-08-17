@@ -35,6 +35,7 @@ if _DAEMON_DIR not in sys.path:
     sys.path.insert(0, _DAEMON_DIR)
 
 import voice_engine  # noqa: E402
+from ambient_listener import AmbientListener, CHUNK_SAMPLES  # noqa: E402
 
 
 def _run(coro):
@@ -485,3 +486,318 @@ def test_second_concurrent_transcription_gets_a_queued_message_with_its_position
                 os.remove(sock_path)
 
     _run(scenario())
+
+
+def test_speak_local_synthesizes_and_plays_without_streaming_audio_chunks_back(monkeypatch):
+    played = []
+
+    def fake_synthesize(text: str) -> bytes:
+        return f"pcm-for-{text}".encode()
+
+    class FakePlayer:
+        def play(self, pcm_bytes, sample_rate):
+            played.append((pcm_bytes, sample_rate))
+
+    monkeypatch.setattr(voice_engine._tts, "synthesize", fake_synthesize)
+    monkeypatch.setattr(voice_engine, "_player", FakePlayer())
+    monkeypatch.setattr(voice_engine, "_ambient_writer", None)
+
+    async def scenario():
+        sock_path = tempfile.mktemp(suffix=".sock")
+        voice_engine._inference_queue = voice_engine.InferenceQueue()
+        voice_engine._inference_queue.start()
+        server = await asyncio.start_unix_server(voice_engine.handle_connection, path=sock_path)
+        try:
+            async with server:
+                asyncio.ensure_future(server.serve_forever())
+                reader, writer = await asyncio.open_unix_connection(sock_path)
+                try:
+                    # speak_local is only honored on the registered ambient
+                    # connection, so this has to identify itself first (as
+                    # the real ambient-daemon-client.ts does on connect).
+                    writer.write((json.dumps({"type": "hello_ambient"}) + "\n").encode())
+                    await writer.drain()
+                    for _ in range(200):
+                        if voice_engine._ambient_writer is not None:
+                            break
+                        await asyncio.sleep(0.01)
+
+                    writer.write((json.dumps({"type": "speak_local", "text": "hello sir"}) + "\n").encode())
+                    await writer.drain()
+
+                    line = await asyncio.wait_for(reader.readline(), timeout=5)
+                    msg = json.loads(line.decode())
+                    assert msg == {"type": "speak_local_done"}, (
+                        f"speak_local must send exactly one speak_local_done, no audio_chunk frames, got: {msg}"
+                    )
+                    assert played == [(b"pcm-for-hello sir", voice_engine.KOKORO_SAMPLE_RATE)]
+                finally:
+                    writer.close()
+        finally:
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
+
+    _run(scenario())
+
+
+def test_speak_local_from_a_non_ambient_connection_is_refused(monkeypatch):
+    """speak_local drives the HOST's physical speaker and re-arms the
+    ambient listener, so it must only ever be honored on the connection
+    that identified itself with hello_ambient. Any other peer able to
+    reach the Unix socket (a per-browser-session audio-client.ts
+    connection, a one-shot transcribe/synthesize one, anything else on the
+    box) must be ignored -- it used to be accepted from all of them."""
+    played = []
+
+    def fake_synthesize(text: str) -> bytes:
+        return f"pcm-for-{text}".encode()
+
+    class FakePlayer:
+        def play(self, pcm_bytes, sample_rate):
+            played.append((pcm_bytes, sample_rate))
+
+    monkeypatch.setattr(voice_engine._tts, "synthesize", fake_synthesize)
+    monkeypatch.setattr(voice_engine, "_player", FakePlayer())
+    monkeypatch.setattr(voice_engine, "_ambient_writer", None)
+
+    async def scenario():
+        sock_path = tempfile.mktemp(suffix=".sock")
+        voice_engine._inference_queue = voice_engine.InferenceQueue()
+        voice_engine._inference_queue.start()
+        server = await asyncio.start_unix_server(voice_engine.handle_connection, path=sock_path)
+        try:
+            async with server:
+                asyncio.ensure_future(server.serve_forever())
+                reader, writer = await asyncio.open_unix_connection(sock_path)
+                try:
+                    # No hello_ambient on this connection.
+                    writer.write((json.dumps({"type": "speak_local", "text": "wake everyone up"}) + "\n").encode())
+                    await writer.drain()
+                    # Then a message that DOES always get a reply, so this
+                    # test observes a real response rather than just
+                    # trusting a timeout: if speak_local had been honored,
+                    # its speak_local_done would arrive first.
+                    writer.write((json.dumps({"type": "transcribe"}) + "\n").encode())
+                    await writer.drain()
+
+                    line = await asyncio.wait_for(reader.readline(), timeout=5)
+                    msg = json.loads(line.decode())
+                    assert msg == {"type": "transcript", "text": ""}, (
+                        f"speak_local from a non-ambient connection must be ignored entirely, got: {msg}"
+                    )
+                    assert played == [], "a non-ambient connection must never reach the host speaker"
+                finally:
+                    writer.close()
+        finally:
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
+
+    _run(scenario())
+
+
+class _RecordingAmbientListener(AmbientListener):
+    """The REAL AmbientListener (real run() loop, real _turn_in_progress
+    handling, real turn_complete()) with a call counter bolted on -- the
+    thing under test here is the actual production state machine, not a
+    stand-in for it. Only the three injected collaborators (wake-word
+    predictor, transcribe, on_transcript) are fakes, exactly as
+    AmbientListener's constructor is designed for."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.turn_complete_calls = 0
+
+    def turn_complete(self) -> None:
+        self.turn_complete_calls += 1
+        super().turn_complete()
+
+
+def _ambient_pcm(rms_level: int) -> bytes:
+    import numpy as np
+    return np.full(CHUNK_SAMPLES, rms_level, dtype=np.int16).tobytes()
+
+
+def test_ambient_turn_round_trip_rearms_the_listener(monkeypatch):
+    """The single most load-bearing behavior on the ambient path, end to
+    end over a real Unix socket: hello_ambient registers the connection ->
+    a wake-word trigger dispatches ambient_transcript to it -> the reply
+    comes back as speak_local -> AmbientListener.turn_complete() actually
+    fires, re-arming wake-word detection.
+
+    Without that last step the listener latches _turn_in_progress=True
+    forever and silently ignores every subsequent wake word, with nothing
+    logged and nothing crashing -- the feature just stops working. The
+    pre-existing test_speak_local_... test cannot catch this: it never sets
+    voice_engine._ambient_listener, so _handle_speak_local's re-arming
+    finally is a verified no-op there, never a real re-arm.
+    """
+    def fake_synthesize(text: str) -> bytes:
+        return f"pcm-for-{text}".encode()
+
+    class FakePlayer:
+        def __init__(self):
+            self.played = []
+
+        def play(self, pcm_bytes, sample_rate):
+            self.played.append((pcm_bytes, sample_rate))
+
+    player = FakePlayer()
+    monkeypatch.setattr(voice_engine._tts, "synthesize", fake_synthesize)
+    monkeypatch.setattr(voice_engine, "_player", player)
+    # Start from a known-clean module state -- monkeypatch restores both
+    # afterwards, so this can't leak into any other test's run either.
+    monkeypatch.setattr(voice_engine, "_ambient_writer", None)
+    monkeypatch.setattr(voice_engine, "_ambient_listener", None)
+
+    # One frame above threshold (the wake word), everything after it below.
+    scores = iter([0.9])
+
+    def fake_predict(frame):
+        return next(scores, 0.0)
+
+    def fake_transcribe(pcm_bytes):
+        return "what time is it"
+
+    async def scenario():
+        frame_queue = asyncio.Queue()
+        listener = _RecordingAmbientListener(
+            frame_queue=frame_queue,
+            wake_word_predict=fake_predict,
+            transcribe=fake_transcribe,
+            # The REAL dispatcher, so the _ambient_writer lookup and socket
+            # write this test exists to prove are the production ones.
+            on_transcript=voice_engine._dispatch_ambient_transcript,
+            threshold=0.5,
+            silence_frames_threshold=2,
+        )
+        monkeypatch.setattr(voice_engine, "_ambient_listener", listener)
+
+        sock_path = tempfile.mktemp(suffix=".sock")
+        voice_engine._inference_queue = voice_engine.InferenceQueue()
+        voice_engine._inference_queue.start()
+        listener_task = asyncio.ensure_future(listener.run())
+        server = await asyncio.start_unix_server(voice_engine.handle_connection, path=sock_path)
+        try:
+            async with server:
+                asyncio.ensure_future(server.serve_forever())
+                reader, writer = await asyncio.open_unix_connection(sock_path)
+                try:
+                    writer.write((json.dumps({"type": "hello_ambient"}) + "\n").encode())
+                    await writer.drain()
+
+                    # Wait for the daemon side to actually register this
+                    # connection before firing the wake word -- otherwise
+                    # the dispatcher would take its "no active ambient
+                    # connection" branch and this test would pass for the
+                    # wrong reason.
+                    for _ in range(200):
+                        if voice_engine._ambient_writer is not None:
+                            break
+                        await asyncio.sleep(0.01)
+                    assert voice_engine._ambient_writer is not None, (
+                        "daemon never registered the hello_ambient connection as _ambient_writer"
+                    )
+
+                    # Wake word, then the utterance, then enough silence to
+                    # close it out.
+                    await frame_queue.put(_ambient_pcm(3000))  # scores 0.9 -> trigger
+                    await frame_queue.put(_ambient_pcm(3000))  # the spoken utterance
+                    await frame_queue.put(_ambient_pcm(0))
+                    await frame_queue.put(_ambient_pcm(0))
+
+                    line = await asyncio.wait_for(reader.readline(), timeout=10)
+                    msg = json.loads(line.decode())
+                    assert msg == {"type": "ambient_transcript", "text": "what time is it"}, (
+                        f"expected the wake-word turn's transcript to be pushed to the ambient connection, got: {msg}"
+                    )
+                    assert listener._turn_in_progress is True, (
+                        "listener must stay latched for the duration of the turn it just dispatched"
+                    )
+                    assert listener.turn_complete_calls == 0
+
+                    # The reply, exactly as ambient-daemon-client.ts sends it.
+                    writer.write((json.dumps({"type": "speak_local", "text": "it is ten past four"}) + "\n").encode())
+                    await writer.drain()
+
+                    line = await asyncio.wait_for(reader.readline(), timeout=10)
+                    msg = json.loads(line.decode())
+                    assert msg == {"type": "speak_local_done"}, f"expected speak_local_done, got: {msg}"
+                    assert player.played == [(b"pcm-for-it is ten past four", voice_engine.KOKORO_SAMPLE_RATE)]
+
+                    # turn_complete() runs in _handle_speak_local's finally,
+                    # which can land just after speak_local_done reaches us.
+                    for _ in range(200):
+                        if listener.turn_complete_calls:
+                            break
+                        await asyncio.sleep(0.01)
+                    assert listener.turn_complete_calls == 1, (
+                        "AmbientListener.turn_complete() was never called for a completed ambient turn -- "
+                        "the listener is now latched and will ignore every future wake word"
+                    )
+                    assert listener._turn_in_progress is False, (
+                        "listener must be re-armed for the next wake word once the reply has been spoken"
+                    )
+                finally:
+                    writer.close()
+        finally:
+            listener_task.cancel()
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
+
+    _run(scenario())
+
+
+def test_ambient_listener_task_is_retained_and_logs_critical_if_it_dies(monkeypatch):
+    """Regression test for the exact failure mode InferenceQueue's own
+    _on_worker_done guards against (see that class's docstring), now
+    applied to the ambient listener task started in main(): a bare
+    `asyncio.create_task(...)` with no stored reference and no done
+    callback means (a) the task is eligible for GC mid-run, and (b) if
+    AmbientListener.run() ever raises, it's only visible as an
+    unretrieved-task-exception warning at some arbitrary future GC time,
+    with ambient listening silently dead in the meantime. Verifies both
+    halves directly: the module keeps a real reference, and
+    _on_ambient_listener_done logs critical on an unexpected exception but
+    stays silent on a deliberate cancellation."""
+    critical_calls = []
+    monkeypatch.setattr(voice_engine.log, "critical", lambda *a, **kw: critical_calls.append((a, kw)))
+
+    async def scenario():
+        # An unexpected exception must log critical.
+        async def boom():
+            raise RuntimeError("ambient listener blew up")
+
+        task = asyncio.ensure_future(boom())
+        try:
+            await task
+        except RuntimeError:
+            pass
+        voice_engine._on_ambient_listener_done(task)
+        assert len(critical_calls) == 1, "an unexpected exception in the ambient listener task must log critical"
+        assert "ambient listener task died unexpectedly" in critical_calls[0][0][0]
+
+        # A deliberate cancellation must NOT log critical.
+        critical_calls.clear()
+
+        async def hang_forever():
+            await asyncio.Event().wait()
+
+        task2 = asyncio.ensure_future(hang_forever())
+        await asyncio.sleep(0)
+        task2.cancel()
+        try:
+            await task2
+        except asyncio.CancelledError:
+            pass
+        voice_engine._on_ambient_listener_done(task2)
+        assert critical_calls == [], "a deliberate cancellation must never be logged as an unexpected death"
+
+    _run(scenario())
+
+    # main() must store the created task somewhere real, not just fire
+    # asyncio.create_task and drop the reference -- confirmed here by
+    # checking the module actually exposes a slot for it (exercised live in
+    # main() itself; asserting its existence here so a future refactor that
+    # deletes the module-level variable and reverts to a bare
+    # create_task(...) call is caught).
+    assert hasattr(voice_engine, "_ambient_listener_task")
