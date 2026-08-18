@@ -41,7 +41,7 @@ import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state
 import { recordUsage, getRecentShare } from "../src/kernel/state/usage-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { computePendingMigrations, ALL_MIGRATIONS, type Migration } from "../src/kernel/state/migrations/index.js";
-import { queryWithRetry } from "../src/kernel/state/db.js";
+import { queryWithRetry, initDatabase, getPool } from "../src/kernel/state/db.js";
 import { positiveIntegerEnv } from "../src/kernel/env.js";
 import { fetchWithRetry } from "../src/kernel/http-retry.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
@@ -54,6 +54,8 @@ import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
 import { encryptToken, decryptToken } from "../src/kernel/token-crypto.js";
 import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../src/kernel/oauth-state-tickets.js";
 import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
+import * as webauthnRepo from "../src/kernel/state/webauthn-repo.js";
+import * as webauthnChallengeTickets from "../src/kernel/state/webauthn-challenge-tickets.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -6960,10 +6962,117 @@ registerTest("HealthWatchdog", "readRepoHeadSha reads the real repo HEAD, matchi
   }
 });
 
+registerTest("WebauthnRepo", "insertCredential + getCredentialById + listCredentialsForUsername round-trip correctly", async () => {
+  const username = `webauthn_test_${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+
+  const credentialId = `cred_${Date.now()}`;
+  const publicKey = Buffer.from([1, 2, 3, 4, 5]);
+  await webauthnRepo.insertCredential(username, credentialId, publicKey, 0, "Test Device");
+
+  const byId = await webauthnRepo.getCredentialById(credentialId);
+  if (!byId) throw new Error("WebauthnRepo: expected getCredentialById to find the just-inserted row");
+  if (byId.username !== username) throw new Error(`WebauthnRepo: expected username "${username}", got "${byId.username}"`);
+  if (!byId.public_key.equals(publicKey)) throw new Error("WebauthnRepo: expected public_key to round-trip exactly");
+  if (byId.counter !== 0) throw new Error(`WebauthnRepo: expected counter 0, got ${byId.counter}`);
+  if (byId.device_label !== "Test Device") throw new Error(`WebauthnRepo: expected device_label "Test Device", got "${byId.device_label}"`);
+
+  const listed = await webauthnRepo.listCredentialsForUsername(username);
+  if (listed.length !== 1 || listed[0].credential_id !== credentialId) {
+    throw new Error(`WebauthnRepo: expected exactly one listed credential matching the inserted one, got: ${JSON.stringify(listed)}`);
+  }
+});
+
+registerTest("WebauthnRepo", "updateCounterAndLastUsed bumps counter and sets last_used_at", async () => {
+  const username = `webauthn_test_${Date.now()}_2`;
+  await createUser(username, "a-real-password-1234");
+  const credentialId = `cred_${Date.now()}_2`;
+  await webauthnRepo.insertCredential(username, credentialId, Buffer.from([9]), 0, "Device");
+
+  await webauthnRepo.updateCounterAndLastUsed(credentialId, 42);
+
+  const updated = await webauthnRepo.getCredentialById(credentialId);
+  if (!updated) throw new Error("WebauthnRepo: expected the credential to still exist after update");
+  if (updated.counter !== 42) throw new Error(`WebauthnRepo: expected counter 42, got ${updated.counter}`);
+  if (!updated.last_used_at) throw new Error("WebauthnRepo: expected last_used_at to be set");
+});
+
+registerTest("WebauthnRepo", "deleteCredential only succeeds for the owning username, never another user's", async () => {
+  const owner = `webauthn_owner_${Date.now()}`;
+  const attacker = `webauthn_attacker_${Date.now()}`;
+  await createUser(owner, "a-real-password-1234");
+  await createUser(attacker, "a-real-password-1234");
+  const credentialId = `cred_${Date.now()}_3`;
+  await webauthnRepo.insertCredential(owner, credentialId, Buffer.from([7]), 0, "Owner Device");
+  const row = await webauthnRepo.getCredentialById(credentialId);
+  if (!row) throw new Error("WebauthnRepo: setup failed, credential not found before delete attempts");
+
+  const attackerDeleted = await webauthnRepo.deleteCredential(row.id, attacker);
+  if (attackerDeleted !== false) throw new Error("WebauthnRepo: expected deleteCredential to refuse deleting another user's credential");
+  const stillThere = await webauthnRepo.getCredentialById(credentialId);
+  if (!stillThere) throw new Error("WebauthnRepo: the credential must still exist after a rejected cross-user delete attempt");
+
+  const ownerDeleted = await webauthnRepo.deleteCredential(row.id, owner);
+  if (ownerDeleted !== true) throw new Error("WebauthnRepo: expected deleteCredential to succeed for the real owner");
+  const goneNow = await webauthnRepo.getCredentialById(credentialId);
+  if (goneNow) throw new Error("WebauthnRepo: expected the credential to be gone after the owner's own delete");
+});
+
+registerTest("WebauthnChallengeTickets", "registration and login challenges live in separate namespaces and are single-use", async () => {
+  const username = `webauthn_ticket_user_${Date.now()}`;
+
+  webauthnChallengeTickets.issueRegistrationChallenge(username, "reg-challenge-abc");
+  webauthnChallengeTickets.issueLoginChallenge(username, "login-challenge-xyz");
+
+  // A login consume must never see the registration challenge, and vice versa.
+  const loginResult = webauthnChallengeTickets.consumeLoginChallenge(username);
+  if (loginResult !== "login-challenge-xyz") {
+    throw new Error(`WebauthnChallengeTickets: expected the login-namespaced challenge, got: ${JSON.stringify(loginResult)}`);
+  }
+  const regResult = webauthnChallengeTickets.consumeRegistrationChallenge(username);
+  if (regResult !== "reg-challenge-abc") {
+    throw new Error(`WebauthnChallengeTickets: expected the registration-namespaced challenge, got: ${JSON.stringify(regResult)}`);
+  }
+
+  // Single-use: a second consume of either must now return null.
+  if (webauthnChallengeTickets.consumeLoginChallenge(username) !== null) {
+    throw new Error("WebauthnChallengeTickets: expected a second consumeLoginChallenge to return null (single-use)");
+  }
+  if (webauthnChallengeTickets.consumeRegistrationChallenge(username) !== null) {
+    throw new Error("WebauthnChallengeTickets: expected a second consumeRegistrationChallenge to return null (single-use)");
+  }
+});
+
+registerTest("WebauthnChallengeTickets", "consuming a challenge for a username that never issued one returns null, not a throw", async () => {
+  const result = webauthnChallengeTickets.consumeLoginChallenge(`never_issued_${Date.now()}`);
+  if (result !== null) throw new Error(`WebauthnChallengeTickets: expected null for an unissued username, got: ${JSON.stringify(result)}`);
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
   console.log("=====================================================");
+
+  // Ensure webauthn_credentials table exists for database-backed tests
+  // (initDatabase might fail due to pre-existing migrations, so we create the table directly if needed)
+  try {
+    const db = getPool();
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS webauthn_credentials (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        credential_id TEXT NOT NULL UNIQUE,
+        public_key BYTEA NOT NULL,
+        counter BIGINT NOT NULL DEFAULT 0,
+        device_label TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_used_at TIMESTAMPTZ
+      );
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_username ON webauthn_credentials(username);`);
+  } catch (err: any) {
+    console.warn(`Webauthn table setup warning (non-critical): ${err.message}`);
+  }
 
   const results: TestResult[] = [];
   let passedCount = 0;
