@@ -5337,11 +5337,37 @@
         const fields = document.getElementById('login-webauthn-fields');
         const submitBtn = document.getElementById('login-webauthn-submit');
         const username = fields.dataset.username;
-        const options = JSON.parse(fields.dataset.optionsJson || '{}');
         errorEl.classList.add('hidden');
         submitBtn.disabled = true;
         submitBtn.textContent = 'WAITING FOR DEVICE...';
         try {
+            // The server's challenge TTL is 2 minutes. attemptWebauthnFirstLogin()'s
+            // page-load options fetch is only good for deciding whether to SHOW
+            // this UI at all — if the login page sits open longer than that
+            // before the user taps unlock, a challenge cached from page load has
+            // already expired, and every subsequent tap would fail identically
+            // until a full reload. So the actual ceremony always fetches its own
+            // fresh options right before starting, using the same remembered
+            // username attemptWebauthnFirstLogin() already resolved.
+            const optionsRes = await fetch('/api/webauthn/login-options', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }),
+            });
+            if (!optionsRes.ok) {
+                const errBody = await optionsRes.json().catch(() => ({}));
+                errorEl.textContent = errBody.error || "That didn't work — try again, or use your password.";
+                errorEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'UNLOCK WITH FACE ID / FINGERPRINT';
+                return;
+            }
+            const options = await optionsRes.json();
+            if (!options.hasCredentials) {
+                errorEl.textContent = "That didn't work — try again, or use your password.";
+                errorEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'UNLOCK WITH FACE ID / FINGERPRINT';
+                return;
+            }
             const assertionResponse = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: options });
             const verifyRes = await fetch('/api/webauthn/login-verify', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },

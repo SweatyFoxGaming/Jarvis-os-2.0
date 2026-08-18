@@ -56,6 +56,7 @@ import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../src/kernel/oa
 import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
 import * as webauthnRepo from "../src/kernel/state/webauthn-repo.js";
 import * as webauthnChallengeTickets from "../src/kernel/state/webauthn-challenge-tickets.js";
+import { ADMIN_API_KEY } from "../src/kernel/auth-middleware.js";
 import express from "express";
 import { createWebauthnRouter } from "../src/interaction/routes/webauthn-routes.js";
 import { spawn, ChildProcess } from "child_process";
@@ -7335,6 +7336,195 @@ registerTest("WebauthnRoutes", "GET /api/webauthn/credentials lists only the cal
     if (ownDeleteRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 when Bob deletes his own device, got ${ownDeleteRes.status}`);
     const goneNow = await webauthnRepo.listCredentialsForUsername(bob);
     if (goneNow.length !== 0) throw new Error("WebauthnRoutes: expected Bob's device gone after his own delete");
+  } finally {
+    await close();
+  }
+});
+
+// Finding C1: currentRpId/currentOrigin used to derive purely from
+// req.hostname/req.protocol+req.get('host'), which never reflects the
+// browser's real origin in the actual deployment (a separate FastAPI
+// gateway strips the incoming Host header before proxying here, and there's
+// no app.set('trust proxy', ...)). The fix prefers process.env.PUBLIC_BASE_URL
+// when set. Tested indirectly through register-options' response, which
+// already surfaces rp.id in its JSON body — no need to export the
+// currentRpId/currentOrigin functions themselves.
+registerTest("WebauthnRoutes", "currentRpId prefers PUBLIC_BASE_URL's hostname over req.hostname when set, and falls back to req.hostname when unset", async () => {
+  const username = `wa_rpid_${Date.now()}`;
+  const apiKey = await createUser(username, "a-real-password-1234");
+
+  let capturedRpId: string | null = null;
+  const router = createWebauthnRouter({
+    generateRegistrationOptions: (async (opts: any) => {
+      capturedRpId = opts.rpID;
+      return { challenge: "c", rp: { id: opts.rpID, name: opts.rpName }, user: { id: "x", name: opts.userName, displayName: opts.userName } };
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  const originalPublicBaseUrl = process.env.PUBLIC_BASE_URL;
+  try {
+    // Unset: falls back to req.hostname, which for a 127.0.0.1 loopback
+    // fetch is literally "127.0.0.1".
+    delete process.env.PUBLIC_BASE_URL;
+    const unsetRes = await fetch(`${baseUrl}/api/webauthn/register-options`, {
+      method: "POST", headers: { "X-API-Key": apiKey },
+    });
+    if (unsetRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 with PUBLIC_BASE_URL unset, got ${unsetRes.status}`);
+    const unsetBody = await unsetRes.json();
+    if (unsetBody.rp.id !== "127.0.0.1" || capturedRpId !== "127.0.0.1") {
+      throw new Error(`WebauthnRoutes: expected rpID "127.0.0.1" (from req.hostname) with PUBLIC_BASE_URL unset, got rp.id=${JSON.stringify(unsetBody.rp.id)}, captured=${JSON.stringify(capturedRpId)}`);
+    }
+
+    // Set: PUBLIC_BASE_URL's own hostname wins, regardless of what req.hostname is.
+    process.env.PUBLIC_BASE_URL = "https://jarvis.example.ts.net";
+    const setRes = await fetch(`${baseUrl}/api/webauthn/register-options`, {
+      method: "POST", headers: { "X-API-Key": apiKey },
+    });
+    if (setRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 with PUBLIC_BASE_URL set, got ${setRes.status}`);
+    const setBody = await setRes.json();
+    if (setBody.rp.id !== "jarvis.example.ts.net" || capturedRpId !== "jarvis.example.ts.net") {
+      throw new Error(`WebauthnRoutes: expected rpID "jarvis.example.ts.net" (from PUBLIC_BASE_URL) with PUBLIC_BASE_URL set, got rp.id=${JSON.stringify(setBody.rp.id)}, captured=${JSON.stringify(capturedRpId)}`);
+    }
+  } finally {
+    if (originalPublicBaseUrl === undefined) delete process.env.PUBLIC_BASE_URL;
+    else process.env.PUBLIC_BASE_URL = originalPublicBaseUrl;
+    await close();
+  }
+});
+
+// Finding C2: "admin" is the synthetic operator identity backed by
+// ADMIN_API_KEY/INTERNAL_API_KEY, never a real row in the `users` table.
+// login-verify used to call usersRepo.getOrCreateApiKey("admin") on
+// success, which INSERTs into `api_keys` (FOREIGN KEY on users(username))
+// and throws a FK violation for admin specifically — caught by the generic
+// catch block and misreported as a 503, even though register-verify (no
+// such FK on webauthn_credentials) had already told admin the device was
+// successfully enrolled. The fix special-cases username === "admin" to
+// return the real ADMIN_API_KEY directly instead of minting a per-user key.
+registerTest("WebauthnRoutes", "login-verify succeeds for username \"admin\", returning the real ADMIN_API_KEY instead of throwing on the api_keys FK", async () => {
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // on the earlier round-trip test — this suite runs against a real,
+  // persistent DB with no per-test rollback.
+  const credId = `admin-login-cred-id-${Date.now()}`;
+  // No createUser("admin", ...) here on purpose — the whole point of this
+  // finding is that "admin" is NEVER a real `users` table row. Only a
+  // webauthn_credentials row is inserted (no FK there), same as a real
+  // admin device enrollment via register-verify would leave behind.
+  await webauthnRepo.insertCredential("admin", credId, Buffer.from([9, 9, 9]), 0, "Admin's Key");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => ({ verified: true, authenticationInfo: { newCounter: 1 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "admin" }),
+    });
+    if (optsRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-options for admin, got ${optsRes.status}`);
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "admin", response: { id: credId } }),
+    });
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-verify for admin (not a 503 from the api_keys FK), got ${verifyRes.status}: ${await verifyRes.text()}`);
+    const body = await verifyRes.json();
+    if (body.username !== "admin" || body.api_key !== ADMIN_API_KEY) {
+      throw new Error(`WebauthnRoutes: expected {username:"admin", api_key: ADMIN_API_KEY}, got: ${JSON.stringify(body)}`);
+    }
+  } finally {
+    await close();
+  }
+});
+
+// Finding I1: @simplewebauthn/server's verifyAuthenticationResponse only
+// RETURNS {verified:false} for a bad signature — every other rejection
+// reason (challenge mismatch, origin mismatch, RP-ID mismatch,
+// user-not-present, user-verification failure, and counter regression,
+// which is specifically how a cloned/replayed authenticator gets caught)
+// THROWS instead. Before this fix, any such throw fell into the same
+// generic catch block as a real DB/infra error and returned the same 503 —
+// this test's fake deliberately throws (instead of returning
+// verified:false) to prove the route now treats that identically to an
+// explicit verified:false: a 401 "Invalid credentials", never a 503, with
+// the rejection still written to the audit log (unlike before, where a
+// thrown verification failure wasn't audited at all).
+registerTest("WebauthnRoutes", "login-verify returns 401 (not 503) and audits the rejection when verifyAuthenticationResponse THROWS instead of returning verified:false", async () => {
+  const username = `wa_verifythrows_${Date.now()}`;
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // on the earlier round-trip test.
+  const credId = `throws-cred-id-${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([1]), 0, "Device");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => {
+      throw new Error("Counter regression detected: possible cloned authenticator");
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+    });
+
+    const obs = ObservationPlatform.getInstance();
+    const auditCountBefore = obs.getAuditLogsForActor(username).length;
+
+    const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: credId } }),
+    });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 (not 503) when verifyAuthenticationResponse throws, got ${res.status}`);
+    const body = await res.json();
+    if (body.error !== "Invalid credentials") {
+      throw new Error(`WebauthnRoutes: expected the same generic "Invalid credentials" message the verified:false path uses, got: ${JSON.stringify(body)}`);
+    }
+
+    const auditLogs = obs.getAuditLogsForActor(username);
+    if (auditLogs.length <= auditCountBefore) {
+      throw new Error("WebauthnRoutes: expected a new audit log entry for the thrown verification failure");
+    }
+    const lastLog = auditLogs[auditLogs.length - 1];
+    if (!lastLog.includes("webauthn-login") || !lastLog.includes("failed")) {
+      throw new Error(`WebauthnRoutes: expected the audit entry to record a failed webauthn-login, got: ${lastLog}`);
+    }
+  } finally {
+    await close();
+  }
+});
+
+// Finding I2: login-options is called automatically on every login-page
+// render (index.html's attemptWebauthnFirstLogin()), so it needs its own,
+// more generous rate-limit budget separate from login-verify's — this just
+// confirms both routes still work under the normal traffic the rest of
+// this suite's own WebauthnRoutes tests already generate (many login-options
+// and login-verify calls across many registerTest() blocks above, all
+// sharing the same module-level limiter instances). If either limiter's
+// default were too tight, one of the earlier tests in this file would
+// already have failed with a 429 instead of getting here.
+registerTest("WebauthnRoutes", "login-options and login-verify remain reachable (not 429) under this suite's own repeated calls", async () => {
+  const username = `wa_ratelimit_${Date.now()}`;
+  const credId = `ratelimit-cred-id-${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([3]), 0, "Device");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => ({ verified: true, authenticationInfo: { newCounter: 1 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+    });
+    if (optsRes.status === 429) throw new Error("WebauthnRoutes: login-options was rate-limited under normal test traffic — its budget is too tight");
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: credId } }),
+    });
+    if (verifyRes.status === 429) throw new Error("WebauthnRoutes: login-verify was rate-limited under normal test traffic — its budget is too tight");
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-verify, got ${verifyRes.status}: ${await verifyRes.text()}`);
   } finally {
     await close();
   }
