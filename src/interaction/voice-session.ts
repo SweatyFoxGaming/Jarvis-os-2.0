@@ -57,7 +57,11 @@ const learningEngine = LongTermLearningEngine.getInstance();
 // voice input is always attached with tools (no "fast path" trivial-message
 // skip here; a spoken utterance is short enough that the token savings
 // aren't worth the added complexity for a first version of this handler).
-const GROQ_MODELS = ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
+// llama-3.3-70b-versatile/llama-3.1-8b-instant were removed from Groq's
+// live catalog entirely; replaced 2026-08-18 with the same live-verified
+// pair server.ts uses for tool-shaped turns — see server.ts's groqModels
+// comment for the full verification history.
+const GROQ_MODELS = ["groq:openai/gpt-oss-120b", "groq:qwen/qwen3.6-27b"];
 
 // Same bound as /api/chat's Groq/Gemini branches' `guard < 3`.
 const MAX_TOOL_CALL_ROUNDS = 3;

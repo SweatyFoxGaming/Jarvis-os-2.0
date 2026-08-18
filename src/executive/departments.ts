@@ -259,7 +259,11 @@ export async function runResearch(objective: string, router: CognitionRouter | n
           content: `Synthesize these raw research findings into a clear, concise report for the objective "${objective}". Findings:\n\n${findings.join("\n\n")}`,
         }],
       },
-      ["groq:llama-3.3-70b-versatile"]
+      // llama-3.3-70b-versatile removed from Groq's live catalog entirely
+      // (live-verified 2026-08-18, see groq-agent-client.ts's DEFAULT_MODELS
+      // comment for the full history). This is a single-shot, no-tools,
+      // no-response_format call, so gpt-oss-120b alone is fine here.
+      ["groq:openai/gpt-oss-120b"]
     );
     return { summary: synthesis.choices[0]?.message?.content || findings.join("\n\n") };
   } catch (err: any) {
@@ -285,7 +289,10 @@ export async function reviewCodeDiff(objective: string, files: DraftedFile[], ro
             `Objective: ${objective}\n\nFiles:\n${filesText}`,
         }],
       },
-      ["groq:llama-3.3-70b-versatile"]
+      // Same removal/replacement as synthesizeResearchFindings above —
+      // single-shot, no tools, no response_format, so gpt-oss-120b alone
+      // is fine here too.
+      ["groq:openai/gpt-oss-120b"]
     );
     return response.choices[0]?.message?.content || "Review completed with no specific feedback.";
   } catch (err: any) {
@@ -343,15 +350,12 @@ export async function reviewTaskDiff(
           json_schema: { name: "task_review", schema: toGroqSchema(TASK_REVIEW_SCHEMA), strict: true },
         },
       },
-      // llama-3.3-70b-versatile (used elsewhere in this file for plain-text
-      // reviews with no response_format) doesn't support Groq's structured-
-      // output mode — live-verified: a real task review against it failed
-      // outright with "This model does not support response format
-      // json_schema." The larger openai/gpt-oss-120b sibling does support
-      // it, but its free-tier rate limit is extremely tight (8,000
-      // tokens/minute — a real coding-agent session hit that ceiling after
-      // only ~34,000 total tokens) — live-verified against this same
-      // account. openai/gpt-oss-20b already proves reliable for structured
+      // gpt-oss-120b (used elsewhere in this file for plain-text reviews
+      // with no response_format) doesn't reliably fit here either — its
+      // free-tier rate limit is extremely tight (8,000 tokens/minute — a
+      // real coding-agent session hit that ceiling after only ~34,000
+      // total tokens) — live-verified against this same account.
+      // openai/gpt-oss-20b already proves reliable for structured
       // output elsewhere in this file (decomposeObjective, the
       // research-lookups call) with no rate-limit issues throughout this
       // session's live testing, so this call uses it too.
