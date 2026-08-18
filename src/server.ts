@@ -906,12 +906,26 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
             // Provider-prefixed ("groq:<model>") since
             // CognitionRouter.generateWithFallback requires it — an
             // unprefixed entry is silently skipped as malformed (see
-            // cognition-router.ts's "expected provider:model" log line),
-            // matching the exact fix applied to groq-agent-client.ts's
-            // DEFAULT_MODELS in commit ce54af0.
+            // cognition-router.ts's "expected provider:model" log line).
+            //
+            // llama-3.3-70b-versatile/llama-3.1-8b-instant were removed
+            // from Groq's live model catalog entirely (live-verified via
+            // GET /openai/v1/models — 404 model_not_found on every call),
+            // which is what silently degraded chat to the fabricated
+            // Simulated fallback. Replaced 2026-08-18, live-verified against
+            // Groq directly (not assumed from docs): openai/gpt-oss-120b
+            // has real multi-turn tool-calling support with no parsing
+            // failures across multiple live-tested exchanges. It also has a
+            // tight free-tier rate limit (8,000 tokens/minute — see
+            // groq-agent-client.ts), so it's paired with qwen/qwen3.6-27b
+            // (a separate model family, separate quota pool, also
+            // live-verified for multi-turn tool-calling) as the fallback
+            // for tool-shaped turns. The fast path carries no tools, so
+            // gpt-oss-20b's documented tool-parsing risk doesn't apply
+            // there — it's used first for its lighter weight/lower latency.
             const groqModels = isFastPath
-              ? ["groq:llama-3.1-8b-instant", "groq:llama-3.3-70b-versatile"]
-              : ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
+              ? ["groq:openai/gpt-oss-20b", "groq:openai/gpt-oss-120b"]
+              : ["groq:openai/gpt-oss-120b", "groq:qwen/qwen3.6-27b"];
 
             let response = await generateGroqWithFallback(
               cognitionRouter,

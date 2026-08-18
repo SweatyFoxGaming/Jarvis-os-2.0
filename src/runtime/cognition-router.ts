@@ -154,7 +154,7 @@ export interface RouterDeps {
  * The cognition router every LLM call in the app is meant to eventually go
  * through. Fallback chain, in order:
  *   1. Cloud providers, one key/model at a time, in the order given in
- *      `models` (provider-prefixed strings like "groq:llama-3.3-70b-versatile").
+ *      `models` (provider-prefixed strings like "groq:openai/gpt-oss-120b").
  *   2. The local LLM endpoint (tools/tool_choice stripped from params).
  *   3. The offline keyword-matching engine (LocalCognitiveEngine), wrapped
  *      into the same OpenAI-compatible response shape every other tier

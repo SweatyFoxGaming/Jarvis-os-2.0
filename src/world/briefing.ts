@@ -173,7 +173,11 @@ export async function synthesizeBriefing(router: CognitionRouter | null, items: 
           },
         ],
       },
-      ["groq:llama-3.3-70b-versatile"]
+      // llama-3.3-70b-versatile removed from Groq's live catalog entirely
+      // (live-verified 2026-08-18, see groq-agent-client.ts's
+      // DEFAULT_MODELS comment for the full history). Single-shot, no
+      // tools, no response_format, so gpt-oss-120b alone is fine here.
+      ["groq:openai/gpt-oss-120b"]
     );
     return response.choices[0]?.message?.content || `Briefing (${items.length} item(s)) — synthesis returned empty, raw items: ${items.map(i => i.summary).join("; ")}`;
   } catch (err: any) {

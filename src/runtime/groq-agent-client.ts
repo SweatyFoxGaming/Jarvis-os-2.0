@@ -27,27 +27,28 @@ import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 //    reasoning output Groq's tool-call parser can't handle once a
 //    conversation has grown past a few turns of tool exchanges, even
 //    though the identical model handles a single-shot structured-output
-//    call fine (see reviewTaskDiff in departments.ts, which still uses it
+//    call fine (see reviewCodeDiff in departments.ts, which still uses it
 //    successfully for exactly that reason).
-// llama-3.3-70b-versatile is what's left, and it's not a guess — it's
-// already this codebase's proven-reliable multi-turn tool-calling
-// workhorse (server.ts's main chat flow drives real tool declarations
-// through it, often across several turns, throughout this entire
-// session's testing with zero parse failures).
 //
-// Live-verified 4th dead end, found the same day this shipped: the coding
-// agent shares this exact model — and therefore its exact per-day token
-// quota — with server.ts's main chat backend, and a single day of this
-// session's own testing (chat traffic + one coding session) was enough to
-// hit Groq's free-tier 100,000 tokens/day cap outright ("Rate limit
-// reached ... on tokens per day (TPD): Limit 100000, Used 99928"). Unlike
-// chat, which already retries through generateWithFallback with a real
-// second model, this had none at all — a single 429 failed the whole
-// coding session with no recovery. llama-3.1-8b-instant is chat's own
-// proven fallback for real tool-calling conversations (its groqModels list
-// puts it second even for tool-shaped messages, not just trivial ones), on
-// a separate quota bucket from the 70b model — so the same list shape is
-// used here via generateWithFallback rather than inventing a new pattern.
+// 4th dead end, found 2026-08-18: llama-3.3-70b-versatile/
+// llama-3.1-8b-instant — chosen at the time as "already this codebase's
+// proven-reliable multi-turn tool-calling workhorse" — were removed from
+// Groq's live model catalog entirely sometime after that (live-verified:
+// GET /openai/v1/models no longer lists either; every call 404s
+// model_not_found). This is what silently broke every Groq-routed call in
+// the app, including chat, and is why chat degraded toward the fabricated
+// Simulated fallback.
+//
+// Landed here instead: openai/gpt-oss-120b primary (dead end #2 above is a
+// real constraint, not disqualifying — 8,000 TPM is tight but survivable
+// for a single coding session if it has a fallback), paired with
+// qwen/qwen3.6-27b as fallback — a separate model family on a separate
+// quota pool from the gpt-oss models, live-verified 2026-08-18 for
+// multi-turn tool-calling with no parsing failures. This does NOT reuse
+// gpt-oss-20b as the fallback despite dead-end #3 predating this pairing:
+// #3's parsing failure is specific to gpt-oss-20b's own multi-turn
+// tool-call output, and pairing it with gpt-oss-120b wouldn't avoid that
+// risk the way a genuinely different model family does.
 // Overridable via JARVIS_CODING_AGENT_MODEL (a single model, no fallback)
 // without a code change if a stronger option proves reliable later — check
 // actual availability, rate limits, and real multi-turn tool-calling
@@ -57,7 +58,7 @@ import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 // (see cognition-router.ts's "expected provider:model" log line), which
 // would degrade every coding-agent session straight to the local engine.
 // JARVIS_CODING_AGENT_MODEL overrides must include the same prefix.
-export const DEFAULT_MODELS = ["groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"];
+export const DEFAULT_MODELS = ["groq:openai/gpt-oss-120b", "groq:qwen/qwen3.6-27b"];
 
 export interface AgentToolCall {
   id: string;

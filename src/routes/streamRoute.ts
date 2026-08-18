@@ -85,9 +85,11 @@ export async function handleChatStream(req: Request, res: Response) {
 
       if (isAborted) return;
 
-      // Secondary Fallback: Groq Llama 3.3 70B
+      // Secondary Fallback: Groq (llama-3.3-70b-versatile removed from
+      // Groq's live catalog entirely — live-verified 2026-08-18, see
+      // groq-agent-client.ts's DEFAULT_MODELS comment for the full history)
       const groqStream = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         messages: [{ role: 'user', content: enrichedPrompt }],
         stream: true,
       });
