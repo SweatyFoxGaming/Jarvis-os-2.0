@@ -14,6 +14,16 @@ jobs:
       POSTGRES_HOST: localhost
       POSTGRES_DB: jarvis_ci_placeholder
       POSTGRES_USER: jarvis_ci_placeholder
+      # tests/index.test.ts now transitively imports kernel/auth-middleware.ts
+      # (via webauthn-routes.ts's top-level import chain, added for biometric
+      # login) -- that module fails fast with process.exit(1) at import time
+      # if neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Nothing in the
+      # main test process needed one before this, so this job's env block
+      # never set one -- HTTP Boundary tests' spawned `tsx src/server.ts`
+      # children pass their own explicit override per-call instead (see
+      # spawnTestServer's TEST_ADMIN_API_KEY usage), which is a separate
+      # process and unaffected by this job-level var either way.
+      ADMIN_API_KEY: jarvis_ci_placeholder_admin_key_do_not_use_in_prod
     steps:
       - uses: actions/checkout@v4
         with:
