@@ -56,6 +56,8 @@ import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../src/kernel/oa
 import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
 import * as webauthnRepo from "../src/kernel/state/webauthn-repo.js";
 import * as webauthnChallengeTickets from "../src/kernel/state/webauthn-challenge-tickets.js";
+import express from "express";
+import { createWebauthnRouter } from "../src/interaction/routes/webauthn-routes.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -2143,6 +2145,30 @@ async function stopTestServer(child: ChildProcess): Promise<void> {
   // A process ignoring SIGTERM (stuck in a blocking call) would otherwise
   // be left running silently — escalate exactly once rather than leaking it.
   if (!exited) child.kill("SIGKILL");
+}
+
+// Lightweight in-process alternative to spawnTestServer for testing a
+// single router with injected fake dependencies — spawnTestServer starts a
+// genuinely separate Node process, so DI overrides (plain JS function
+// references, not env vars) can never reach it. Mounts real
+// validateApiKey/authLimiter middleware (both already real, DB-backed —
+// only the @simplewebauthn/server calls need faking), listens on an
+// ephemeral port, and returns both the base URL and a close() to tear it
+// down.
+async function startRouterOnEphemeralPort(router: express.Router): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const app = express();
+  app.use(express.json());
+  app.use(router);
+  return new Promise((resolve) => {
+    const server = app.listen(0, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      resolve({
+        baseUrl: `http://127.0.0.1:${port}`,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
 }
 
 registerTest("HTTP Boundary", "Express server boots from a cold start and serves /health", async () => {
@@ -7046,6 +7072,102 @@ registerTest("WebauthnChallengeTickets", "registration and login challenges live
 registerTest("WebauthnChallengeTickets", "consuming a challenge for a username that never issued one returns null, not a throw", async () => {
   const result = webauthnChallengeTickets.consumeLoginChallenge(`never_issued_${Date.now()}`);
   if (result !== null) throw new Error(`WebauthnChallengeTickets: expected null for an unissued username, got: ${JSON.stringify(result)}`);
+});
+
+registerTest("WebauthnRoutes", "register-options requires authentication", async () => {
+  const router = createWebauthnRouter();
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const res = await fetch(`${baseUrl}/api/webauthn/register-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 with no API key, got ${res.status}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "register-options returns a real challenge for an authenticated user, and register-verify inserts a credential on a valid response", async () => {
+  // Kept short: USERNAME_FORMAT (users-repo.ts) caps usernames at 32 chars
+  // total, and Date.now() alone contributes 13 digits.
+  const username = `wa_route_user_${Date.now()}`;
+  const apiKey = await createUser(username, "a-real-password-1234");
+  // Unique per run, same reasoning as WebauthnRepo's own tests above
+  // (`cred_${Date.now()}`) — credential_id has a real unique constraint in
+  // Postgres, and this suite runs against a real, persistent database with
+  // no per-test rollback, so a literal fixed id would collide with a row
+  // left behind by an earlier run of this same test.
+  const fakeCredentialId = `fake-credential-id-${Date.now()}`;
+
+  let capturedRegOptsCall: any = null;
+  let capturedVerifyCall: any = null;
+  const router = createWebauthnRouter({
+    generateRegistrationOptions: (async (opts: any) => {
+      capturedRegOptsCall = opts;
+      return { challenge: "fake-challenge-value", rp: { id: opts.rpID, name: opts.rpName }, user: { id: "fake-user-id", name: opts.userName, displayName: opts.userName } };
+    }) as any,
+    verifyRegistrationResponse: (async (opts: any) => {
+      capturedVerifyCall = opts;
+      return {
+        verified: true,
+        registrationInfo: {
+          credential: { id: fakeCredentialId, publicKey: new Uint8Array([1, 2, 3]), counter: 0, transports: ["internal"] },
+        },
+      };
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/register-options`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+    });
+    if (optsRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from register-options, got ${optsRes.status}`);
+    const optsBody = await optsRes.json();
+    if (optsBody.challenge !== "fake-challenge-value") throw new Error(`WebauthnRoutes: expected the generated challenge in the response, got: ${JSON.stringify(optsBody)}`);
+    if (capturedRegOptsCall?.userName !== username) throw new Error(`WebauthnRoutes: expected generateRegistrationOptions called with userName="${username}", got: ${JSON.stringify(capturedRegOptsCall)}`);
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/register-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+      body: JSON.stringify({ response: { id: fakeCredentialId }, deviceLabel: "My Test Phone" }),
+    });
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from register-verify, got ${verifyRes.status}: ${await verifyRes.text()}`);
+    if (capturedVerifyCall?.expectedChallenge !== "fake-challenge-value") {
+      throw new Error(`WebauthnRoutes: expected register-verify to pass the previously-issued challenge to verifyRegistrationResponse, got: ${JSON.stringify(capturedVerifyCall)}`);
+    }
+
+    const stored = await webauthnRepo.getCredentialById(fakeCredentialId);
+    if (!stored) throw new Error("WebauthnRoutes: expected a real webauthn_credentials row after a successful register-verify");
+    if (stored.username !== username) throw new Error(`WebauthnRoutes: expected the stored credential's username to be "${username}", got "${stored.username}"`);
+    if (stored.device_label !== "My Test Phone") throw new Error(`WebauthnRoutes: expected device_label "My Test Phone", got "${stored.device_label}"`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "register-verify returns 400 when verification fails (e.g. expired/mismatched challenge), and inserts nothing", async () => {
+  // Kept short: USERNAME_FORMAT (users-repo.ts) caps usernames at 32 chars
+  // total, and Date.now() alone contributes 13 digits.
+  const username = `wa_route_fail_${Date.now()}`;
+  const apiKey = await createUser(username, "a-real-password-1234");
+
+  const router = createWebauthnRouter({
+    generateRegistrationOptions: (async (opts: any) => ({ challenge: "another-challenge", rp: { id: opts.rpID, name: opts.rpName }, user: { id: "x", name: opts.userName, displayName: opts.userName } })) as any,
+    verifyRegistrationResponse: (async () => ({ verified: false })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/register-options`, { method: "POST", headers: { "X-API-Key": apiKey } });
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/register-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+      body: JSON.stringify({ response: { id: "should-not-be-stored" }, deviceLabel: "Device" }),
+    });
+    if (verifyRes.status !== 400) throw new Error(`WebauthnRoutes: expected 400 on failed verification, got ${verifyRes.status}`);
+    const stored = await webauthnRepo.getCredentialById("should-not-be-stored");
+    if (stored) throw new Error("WebauthnRoutes: expected NO credential row to be inserted after a failed verification");
+  } finally {
+    await close();
+  }
 });
 
 // ---------- Execution Main Block ----------

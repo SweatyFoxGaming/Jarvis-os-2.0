@@ -45,6 +45,7 @@ import * as identityRepo from "./kernel/state/identity-repo.js";
 import * as commandProposalsRepo from "./kernel/state/command-proposals-repo.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
 import { authRouter } from "./interaction/routes/auth-routes.js";
+import { createWebauthnRouter } from "./interaction/routes/webauthn-routes.js";
 import { settingsRouter } from "./interaction/routes/settings-routes.js";
 import { observationRouter } from "./interaction/routes/observation-routes.js";
 import { learningRouter } from "./interaction/routes/learning-routes.js";
@@ -407,6 +408,7 @@ app.get("/api/governance", (req, res) => {
 // Authentication Endpoints (/api/register, /api/login) — see
 // src/interaction/routes/auth-routes.ts, mounted below.
 app.use(authRouter);
+app.use(createWebauthnRouter());
 
 // Status/settings endpoints (/api/status, /api/settings*) — see
 // src/interaction/routes/settings-routes.ts, mounted below.
