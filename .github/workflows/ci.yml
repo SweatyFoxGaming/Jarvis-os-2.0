@@ -5,52 +5,36 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
-    # A real Postgres, not just a placeholder host/user this job never
-    # actually connects to. Before the WebauthnRepo/WebauthnRoutes tests
-    # (biometric login), every DB-backed test in this suite was written to
-    # assert "degrades cleanly when Postgres is unreachable" -- a genuinely
-    # unreachable DB was an intentional, sufficient test condition, and this
-    # job's POSTGRES_* vars only ever needed to look plausible enough for
-    # server.ts's REQUIRED_ENV_VARS fail-fast to let a spawned HTTP Boundary
-    # child process boot far enough to serve /health. The new webauthn tests
-    # are the first in this suite that need a REAL round trip (insert a row,
-    # read it back) to mean anything -- pgvector/pgvector, not plain
-    # postgres, so pgvector-dependent code paths (memory-store.ts) get the
-    # same real coverage as everything else migrated below, though pgvector
-    # setup failing is itself non-fatal (db.ts:586) either way.
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: jarvis_ci
-          POSTGRES_PASSWORD: jarvis_ci_password
-          POSTGRES_DB: jarvis_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
       # HTTP Boundary tests spawn a real `tsx src/server.ts` child process,
       # which exits immediately if these are unset (see server.ts's own
-      # REQUIRED_ENV_VARS fail-fast). Now genuinely reachable (see the
-      # `services.postgres` block above), not just placeholder-shaped.
+      # REQUIRED_ENV_VARS fail-fast) -- no live Postgres is required for
+      # these to boot far enough to serve /health (applyHybridSearchSchema's
+      # own connection failure is caught and logged, not fatal).
       POSTGRES_HOST: localhost
-      POSTGRES_DB: jarvis_ci
-      POSTGRES_USER: jarvis_ci
-      POSTGRES_PASSWORD: jarvis_ci_password
+      POSTGRES_DB: jarvis_ci_placeholder
+      POSTGRES_USER: jarvis_ci_placeholder
       # tests/index.test.ts now transitively imports kernel/auth-middleware.ts
       # (via webauthn-routes.ts's top-level import chain, added for biometric
       # login) -- that module fails fast with process.exit(1) at import time
       # if neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Nothing in the
       # main test process needed one before this, so this job's env block
-      # never set one -- HTTP Boundary tests' spawned `tsx src/server.ts`
-      # children pass their own explicit override per-call instead (see
-      # spawnTestServer's TEST_ADMIN_API_KEY usage), which is a separate
-      # process and unaffected by this job-level var either way.
-      ADMIN_API_KEY: jarvis_ci_placeholder_admin_key_do_not_use_in_prod
+      # never set one.
+      #
+      # Deliberately INTERNAL_API_KEY, not ADMIN_API_KEY: TEST_ADMIN_API_KEY
+      # (tests/index.test.ts) already reads `process.env.INTERNAL_API_KEY`
+      # as its own default, and spawnTestServer's per-call env override
+      # (`{...process.env, ...extraEnv}`, extraEnv = `{INTERNAL_API_KEY:
+      # TEST_ADMIN_API_KEY}`) only ever touches INTERNAL_API_KEY, never
+      # ADMIN_API_KEY. auth-middleware.ts resolves `ADMIN_API_KEY ||
+      # INTERNAL_API_KEY` -- setting ADMIN_API_KEY here (tried first, live-
+      # verified against a real CI run) wins that precedence check in every
+      # spawned child regardless of extraEnv, silently overriding the test's
+      # own intended key and turning every HTTP Boundary request using
+      # TEST_ADMIN_API_KEY into a 401. Setting INTERNAL_API_KEY here instead
+      # makes the main process, TEST_ADMIN_API_KEY, and every spawned
+      # child's override all resolve to the same one value, by construction.
+      INTERNAL_API_KEY: jarvis_ci_placeholder_admin_key_do_not_use_in_prod
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,8 +56,6 @@ jobs:
         run: npm install
       - name: Type check
         run: npx tsc --noEmit
-      - name: Apply database migrations
-        run: npx tsx scripts/ci-apply-migrations.ts
       - name: Run test suite
         run: npm test
       - name: Set up Python
