@@ -94,3 +94,5 @@ These were evaluated and rejected on purpose — listed here so they don't get r
 ## If picking the next concrete item
 
 Identity unification (the previous smallest/most scoped item) is done as of 2026-08-17. Everything else still outstanding here — outcome/trust measurement, marketplace discovery for third-party capabilities, multi-tenancy/org support — is a real design project deserving its own brainstorming pass, not a quick fix bolted on. Of those, outcome/trust measurement is arguably the highest-leverage next one: the vision explicitly names it ("the decisions it improves") as the actual success metric, and nothing today closes that loop at all.
+
+**2026-08-18**: outcome/trust measurement now has a named organizing principle and a proposed system to build it around — see `docs/architecture/AUTONOMY_VISION.md` ("Verified Autonomy"). It's a vision/roadmap document, not an implementation plan; each phase it lists still needs its own brainstorming pass before code, per the line above.
