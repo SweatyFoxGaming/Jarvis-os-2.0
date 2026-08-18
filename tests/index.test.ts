@@ -7193,8 +7193,12 @@ registerTest("WebauthnRoutes", "login-options reports hasCredentials:false for a
 
 registerTest("WebauthnRoutes", "a full login round trip: options scoped to the user's real credential, verify returns {username, api_key}, counter updates", async () => {
   const username = `wa_login_${Date.now()}`;
+  // Suffixed with Date.now(): this suite runs against a real persistent
+  // DB with no per-test rollback, and credential_id has a UNIQUE
+  // constraint — a fixed literal would collide on a second run.
+  const credId = `real-login-cred-id-${Date.now()}`;
   await createUser(username, "a-real-password-1234");
-  await webauthnRepo.insertCredential(username, "real-login-cred-id", Buffer.from([5, 5, 5]), 3, "Laptop");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([5, 5, 5]), 3, "Laptop");
 
   let capturedAllowCredentials: any = null;
   let capturedVerifyDeps: any = null;
@@ -7215,25 +7219,25 @@ registerTest("WebauthnRoutes", "a full login round trip: options scoped to the u
     });
     const optsBody = await optsRes.json();
     if (optsBody.hasCredentials !== true) throw new Error(`WebauthnRoutes: expected hasCredentials:true, got: ${JSON.stringify(optsBody)}`);
-    if (!Array.isArray(capturedAllowCredentials) || capturedAllowCredentials[0]?.id !== "real-login-cred-id") {
+    if (!Array.isArray(capturedAllowCredentials) || capturedAllowCredentials[0]?.id !== credId) {
       throw new Error(`WebauthnRoutes: expected allowCredentials scoped to the user's real credential id, got: ${JSON.stringify(capturedAllowCredentials)}`);
     }
 
     const verifyRes = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, response: { id: "real-login-cred-id" } }),
+      body: JSON.stringify({ username, response: { id: credId } }),
     });
     if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-verify, got ${verifyRes.status}: ${await verifyRes.text()}`);
     const verifyBody = await verifyRes.json();
     if (verifyBody.username !== username || typeof verifyBody.api_key !== "string" || !verifyBody.api_key) {
       throw new Error(`WebauthnRoutes: expected {username, api_key} matching /api/login's shape, got: ${JSON.stringify(verifyBody)}`);
     }
-    if (capturedVerifyDeps?.credential?.id !== "real-login-cred-id" || capturedVerifyDeps?.credential?.counter !== 3) {
+    if (capturedVerifyDeps?.credential?.id !== credId || capturedVerifyDeps?.credential?.counter !== 3) {
       throw new Error(`WebauthnRoutes: expected verifyAuthenticationResponse called with the STORED credential (id + counter 3), got: ${JSON.stringify(capturedVerifyDeps?.credential)}`);
     }
 
-    const updated = await webauthnRepo.getCredentialById("real-login-cred-id");
+    const updated = await webauthnRepo.getCredentialById(credId);
     if (updated?.counter !== 4) throw new Error(`WebauthnRoutes: expected counter updated to 4 after login, got ${updated?.counter}`);
     if (!updated?.last_used_at) throw new Error("WebauthnRoutes: expected last_used_at to be set after login");
   } finally {
@@ -7243,8 +7247,11 @@ registerTest("WebauthnRoutes", "a full login round trip: options scoped to the u
 
 registerTest("WebauthnRoutes", "login-verify returns a generic 401 on a failed verification, revealing nothing specific", async () => {
   const username = `wa_loginfail_${Date.now()}`;
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // in the round-trip test above.
+  const credId = `will-fail-cred-id-${Date.now()}`;
   await createUser(username, "a-real-password-1234");
-  await webauthnRepo.insertCredential(username, "will-fail-cred-id", Buffer.from([1]), 0, "Device");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([1]), 0, "Device");
   const router = createWebauthnRouter({
     generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
     verifyAuthenticationResponse: (async () => ({ verified: false, authenticationInfo: { newCounter: 0 } })) as any,
@@ -7253,7 +7260,7 @@ registerTest("WebauthnRoutes", "login-verify returns a generic 401 on a failed v
   try {
     await fetch(`${baseUrl}/api/webauthn/login-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) });
     const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: "will-fail-cred-id" } }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: credId } }),
     });
     if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 on failed verification, got ${res.status}`);
     const body = await res.json();
@@ -7266,17 +7273,25 @@ registerTest("WebauthnRoutes", "login-verify returns a generic 401 on a failed v
 registerTest("WebauthnRoutes", "login-verify rejects an assertion whose credential id belongs to a DIFFERENT user than the claimed username", async () => {
   const realOwner = `wa_realowner_${Date.now()}`;
   const claimedUsername = `wa_claimed_${Date.now()}`;
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // in the round-trip test above.
+  const credId = `belongs-to-real-owner-${Date.now()}`;
   await createUser(realOwner, "a-real-password-1234");
   await createUser(claimedUsername, "a-real-password-1234");
-  await webauthnRepo.insertCredential(realOwner, "belongs-to-real-owner", Buffer.from([1]), 0, "Device");
+  await webauthnRepo.insertCredential(realOwner, credId, Buffer.from([1]), 0, "Device");
 
   const router = createWebauthnRouter({
     generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
-    // The route's ownership check (storedCredential.username !== username)
-    // must reject BEFORE ever calling verifyAuthenticationResponse — this
-    // fake returning verified:true proves that: if the route incorrectly
-    // called it anyway for a mismatched-owner credential, this test would
-    // wrongly see a 200 instead of the expected 401.
+    // Deliberately returns verified:true. The route always calls
+    // verifyAuthenticationResponse whenever a stored credential is found
+    // at all — including one owned by someone other than the claimed
+    // username — so that the crypto-verification cost is paid on the same
+    // code path regardless of ownership (closes a timing side-channel that
+    // would otherwise let response latency alone reveal whether a
+    // credential_id belongs to a specific username). The final accept
+    // decision requires BOTH result.verified AND ownership to hold, so
+    // this fake proves that ownership is still enforced: if the route
+    // accepted on verified:true alone, this test would wrongly see 200.
     verifyAuthenticationResponse: (async () => ({ verified: true, authenticationInfo: { newCounter: 1 } })) as any,
   });
   const { baseUrl, close } = await startRouterOnEphemeralPort(router);
@@ -7284,7 +7299,7 @@ registerTest("WebauthnRoutes", "login-verify rejects an assertion whose credenti
     await fetch(`${baseUrl}/api/webauthn/login-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: claimedUsername }) });
     const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: claimedUsername, response: { id: "belongs-to-real-owner" } }),
+      body: JSON.stringify({ username: claimedUsername, response: { id: credId } }),
     });
     if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 when the credential belongs to a different user, got ${res.status}`);
   } finally {

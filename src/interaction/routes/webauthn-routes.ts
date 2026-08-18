@@ -158,14 +158,25 @@ export function createWebauthnRouter(depsOverride: Partial<WebauthnRouteDeps> = 
     try {
       const credentialId = response.id;
       const storedCredential = typeof credentialId === "string" ? await webauthnRepo.getCredentialById(credentialId) : null;
-      // The credential must exist AND belong to the exact username this
-      // login-verify call claims — otherwise a signed assertion for
-      // attacker's own enrolled device, replayed with a victim's username
-      // in the request body, would be accepted as the victim logging in.
-      if (!storedCredential || storedCredential.username !== username) {
-        observation.logAuditEvent(username, "webauthn-login", "failed", "No matching credential for this username");
+      // No stored row for this credential id at all — there's nothing to
+      // run cryptographic verification against, so this is the one
+      // legitimate case that skips it. A real WebAuthn credential_id is a
+      // large random value from actual authenticator hardware, not
+      // realistically guessable/enumerable, so this narrow asymmetry is
+      // much lower risk than the wrong-owner case below.
+      if (!storedCredential) {
+        observation.logAuditEvent(username, "webauthn-login", "failed", "No matching credential for this id");
         return res.status(401).json({ error: "Invalid credentials" });
       }
+      // Whenever a stored credential is found at all, verification always
+      // runs against it — on the SAME code path whether its owner matches
+      // the claimed username or not. Ownership is folded into the final
+      // accept decision below rather than short-circuited beforehand, so a
+      // "wrong owner" attempt and a "right owner, bad signature" attempt
+      // both pay the same crypto-verification cost. Otherwise, returning
+      // early on an ownership mismatch would let response timing alone
+      // reveal whether a given credential_id belongs to a specific
+      // username, even though both cases return the identical body.
       const result = await deps.verifyAuthenticationResponse({
         response,
         expectedChallenge,
@@ -177,8 +188,14 @@ export function createWebauthnRouter(depsOverride: Partial<WebauthnRouteDeps> = 
           counter: storedCredential.counter,
         },
       });
-      if (!result.verified) {
-        observation.logAuditEvent(username, "webauthn-login", "failed", "Assertion verification failed");
+      const ownershipMatches = storedCredential.username === username;
+      if (!result.verified || !ownershipMatches) {
+        observation.logAuditEvent(
+          username,
+          "webauthn-login",
+          "failed",
+          ownershipMatches ? "Assertion verification failed" : "No matching credential for this username"
+        );
         return res.status(401).json({ error: "Invalid credentials" });
       }
       await webauthnRepo.updateCounterAndLastUsed(storedCredential.credential_id, result.authenticationInfo.newCounter);
@@ -186,8 +203,17 @@ export function createWebauthnRouter(depsOverride: Partial<WebauthnRouteDeps> = 
       observation.logAuditEvent(username, "webauthn-login", "success", `Signed in via device "${storedCredential.device_label}"`);
       res.json({ username, api_key: apiKey });
     } catch (err: any) {
+      // By construction, this only fires for a genuine thrown exception —
+      // a DB error from getCredentialById/updateCounterAndLastUsed/
+      // getOrCreateApiKey, or verifyAuthenticationResponse itself throwing
+      // (e.g. on a malformed response object) — since a completed
+      // verification that's simply invalid (verified:false or an
+      // ownership mismatch) is already handled explicitly above and never
+      // reaches here. Mirrors /api/login's (auth-routes.ts) wording for
+      // the same infrastructure-failure class, so a real outage isn't
+      // misreported to WebAuthn users as "your credential is invalid."
       observation.logTelemetry("warn", "Webauthn", `login-verify failed for "${username}": ${err.message}`);
-      res.status(401).json({ error: "Invalid credentials" });
+      res.status(503).json({ error: "Login is temporarily unavailable" });
     }
   });
 
