@@ -5,15 +5,42 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A real Postgres, not just a placeholder host/user this job never
+    # actually connects to. Before the WebauthnRepo/WebauthnRoutes tests
+    # (biometric login), every DB-backed test in this suite was written to
+    # assert "degrades cleanly when Postgres is unreachable" -- a genuinely
+    # unreachable DB was an intentional, sufficient test condition, and this
+    # job's POSTGRES_* vars only ever needed to look plausible enough for
+    # server.ts's REQUIRED_ENV_VARS fail-fast to let a spawned HTTP Boundary
+    # child process boot far enough to serve /health. The new webauthn tests
+    # are the first in this suite that need a REAL round trip (insert a row,
+    # read it back) to mean anything -- pgvector/pgvector, not plain
+    # postgres, so pgvector-dependent code paths (memory-store.ts) get the
+    # same real coverage as everything else migrated below, though pgvector
+    # setup failing is itself non-fatal (db.ts:586) either way.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: jarvis_ci
+          POSTGRES_PASSWORD: jarvis_ci_password
+          POSTGRES_DB: jarvis_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       # HTTP Boundary tests spawn a real `tsx src/server.ts` child process,
       # which exits immediately if these are unset (see server.ts's own
-      # REQUIRED_ENV_VARS fail-fast) -- no live Postgres is required for
-      # these to boot far enough to serve /health (applyHybridSearchSchema's
-      # own connection failure is caught and logged, not fatal).
+      # REQUIRED_ENV_VARS fail-fast). Now genuinely reachable (see the
+      # `services.postgres` block above), not just placeholder-shaped.
       POSTGRES_HOST: localhost
-      POSTGRES_DB: jarvis_ci_placeholder
-      POSTGRES_USER: jarvis_ci_placeholder
+      POSTGRES_DB: jarvis_ci
+      POSTGRES_USER: jarvis_ci
+      POSTGRES_PASSWORD: jarvis_ci_password
       # tests/index.test.ts now transitively imports kernel/auth-middleware.ts
       # (via webauthn-routes.ts's top-level import chain, added for biometric
       # login) -- that module fails fast with process.exit(1) at import time
@@ -45,6 +72,8 @@ jobs:
         run: npm install
       - name: Type check
         run: npx tsc --noEmit
+      - name: Apply database migrations
+        run: npx tsx scripts/ci-apply-migrations.ts
       - name: Run test suite
         run: npm test
       - name: Set up Python
