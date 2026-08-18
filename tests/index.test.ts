@@ -41,7 +41,7 @@ import { createPlan, listPlanTasks, updateTaskStatus } from "../src/kernel/state
 import { recordUsage, getRecentShare } from "../src/kernel/state/usage-repo.js";
 import { parseNote, slugify } from "../src/capabilities/providers/obsidian.js";
 import { computePendingMigrations, ALL_MIGRATIONS, type Migration } from "../src/kernel/state/migrations/index.js";
-import { queryWithRetry } from "../src/kernel/state/db.js";
+import { queryWithRetry, initDatabase, getPool } from "../src/kernel/state/db.js";
 import { positiveIntegerEnv } from "../src/kernel/env.js";
 import { fetchWithRetry } from "../src/kernel/http-retry.js";
 import * as objectiveRunsRepo from "../src/kernel/state/objective-runs-repo.js";
@@ -54,6 +54,11 @@ import * as dailyAdaptation from "../src/adaptation/daily-adaptation.js";
 import { encryptToken, decryptToken } from "../src/kernel/token-crypto.js";
 import { issueOAuthStateTicket, consumeOAuthStateTicket } from "../src/kernel/oauth-state-tickets.js";
 import * as oauthRepo from "../src/kernel/state/oauth-repo.js";
+import * as webauthnRepo from "../src/kernel/state/webauthn-repo.js";
+import * as webauthnChallengeTickets from "../src/kernel/state/webauthn-challenge-tickets.js";
+import { ADMIN_API_KEY } from "../src/kernel/auth-middleware.js";
+import express from "express";
+import { createWebauthnRouter } from "../src/interaction/routes/webauthn-routes.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -2141,6 +2146,30 @@ async function stopTestServer(child: ChildProcess): Promise<void> {
   // A process ignoring SIGTERM (stuck in a blocking call) would otherwise
   // be left running silently — escalate exactly once rather than leaking it.
   if (!exited) child.kill("SIGKILL");
+}
+
+// Lightweight in-process alternative to spawnTestServer for testing a
+// single router with injected fake dependencies — spawnTestServer starts a
+// genuinely separate Node process, so DI overrides (plain JS function
+// references, not env vars) can never reach it. Mounts real
+// validateApiKey/authLimiter middleware (both already real, DB-backed —
+// only the @simplewebauthn/server calls need faking), listens on an
+// ephemeral port, and returns both the base URL and a close() to tear it
+// down.
+async function startRouterOnEphemeralPort(router: express.Router): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const app = express();
+  app.use(express.json());
+  app.use(router);
+  return new Promise((resolve) => {
+    const server = app.listen(0, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      resolve({
+        baseUrl: `http://127.0.0.1:${port}`,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
 }
 
 registerTest("HTTP Boundary", "Express server boots from a cold start and serves /health", async () => {
@@ -6957,6 +6986,595 @@ registerTest("HealthWatchdog", "readRepoHeadSha reads the real repo HEAD, matchi
   }
   if (!/^[0-9a-f]{40}$/.test(actual)) {
     throw new Error(`HealthWatchdog: expected a 40-character hex SHA, got: ${actual}`);
+  }
+});
+
+// Every other DB-backed test category in this suite is written the other
+// way around -- "degrades cleanly when Postgres isn't reachable" is itself
+// the thing under test, so a genuinely unreachable DB is a sufficient,
+// intentional test condition and CI has never needed a real Postgres
+// service for them to mean something. The webauthn tests below are the
+// first in this suite that need a REAL round trip (insert a row, read it
+// back) to mean anything -- there's no honest "degrades cleanly" assertion
+// for "did the credential actually get stored." Rather than either (a)
+// silently asserting nothing when unreachable, which would make these
+// look like real coverage that never actually runs, or (b) failing CI
+// outright and forcing a whole-project real-Postgres CI provisioning
+// change (tried, reverted -- it broke the ~20 pre-existing "degrades
+// cleanly" tests' own designed precondition), each DB-backed webauthn test
+// below checks reachability first and SKIPS (passes, with a clear console
+// message) rather than fails when no real Postgres is available. Locally
+// with real POSTGRES_* credentials supplied, every one of these tests
+// genuinely runs and is a real, meaningful check.
+let cachedPostgresReachable: boolean | null = null;
+async function isPostgresReachableForWebauthnTests(): Promise<boolean> {
+  if (cachedPostgresReachable !== null) return cachedPostgresReachable;
+  try {
+    await getPool().query("SELECT 1");
+    cachedPostgresReachable = true;
+  } catch {
+    cachedPostgresReachable = false;
+  }
+  return cachedPostgresReachable;
+}
+async function skipWebauthnTestIfNoRealPostgres(testName: string): Promise<boolean> {
+  if (await isPostgresReachableForWebauthnTests()) return false;
+  console.log(`  ⏭️  SKIPPED (no real Postgres reachable): ${testName}`);
+  return true;
+}
+
+registerTest("WebauthnRepo", "insertCredential + getCredentialById + listCredentialsForUsername round-trip correctly", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRepo insertCredential round-trip")) return;
+  const username = `webauthn_test_${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+
+  const credentialId = `cred_${Date.now()}`;
+  const publicKey = Buffer.from([1, 2, 3, 4, 5]);
+  await webauthnRepo.insertCredential(username, credentialId, publicKey, 0, "Test Device");
+
+  const byId = await webauthnRepo.getCredentialById(credentialId);
+  if (!byId) throw new Error("WebauthnRepo: expected getCredentialById to find the just-inserted row");
+  if (byId.username !== username) throw new Error(`WebauthnRepo: expected username "${username}", got "${byId.username}"`);
+  if (!byId.public_key.equals(publicKey)) throw new Error("WebauthnRepo: expected public_key to round-trip exactly");
+  if (byId.counter !== 0) throw new Error(`WebauthnRepo: expected counter 0, got ${byId.counter}`);
+  if (byId.device_label !== "Test Device") throw new Error(`WebauthnRepo: expected device_label "Test Device", got "${byId.device_label}"`);
+
+  const listed = await webauthnRepo.listCredentialsForUsername(username);
+  if (listed.length !== 1 || listed[0].credential_id !== credentialId) {
+    throw new Error(`WebauthnRepo: expected exactly one listed credential matching the inserted one, got: ${JSON.stringify(listed)}`);
+  }
+});
+
+registerTest("WebauthnRepo", "updateCounterAndLastUsed bumps counter and sets last_used_at", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRepo updateCounterAndLastUsed")) return;
+  const username = `webauthn_test_${Date.now()}_2`;
+  await createUser(username, "a-real-password-1234");
+  const credentialId = `cred_${Date.now()}_2`;
+  await webauthnRepo.insertCredential(username, credentialId, Buffer.from([9]), 0, "Device");
+
+  await webauthnRepo.updateCounterAndLastUsed(credentialId, 42);
+
+  const updated = await webauthnRepo.getCredentialById(credentialId);
+  if (!updated) throw new Error("WebauthnRepo: expected the credential to still exist after update");
+  if (updated.counter !== 42) throw new Error(`WebauthnRepo: expected counter 42, got ${updated.counter}`);
+  if (!updated.last_used_at) throw new Error("WebauthnRepo: expected last_used_at to be set");
+});
+
+registerTest("WebauthnRepo", "deleteCredential only succeeds for the owning username, never another user's", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRepo deleteCredential ownership")) return;
+  const owner = `webauthn_owner_${Date.now()}`;
+  const attacker = `webauthn_attacker_${Date.now()}`;
+  await createUser(owner, "a-real-password-1234");
+  await createUser(attacker, "a-real-password-1234");
+  const credentialId = `cred_${Date.now()}_3`;
+  await webauthnRepo.insertCredential(owner, credentialId, Buffer.from([7]), 0, "Owner Device");
+  const row = await webauthnRepo.getCredentialById(credentialId);
+  if (!row) throw new Error("WebauthnRepo: setup failed, credential not found before delete attempts");
+
+  const attackerDeleted = await webauthnRepo.deleteCredential(row.id, attacker);
+  if (attackerDeleted !== false) throw new Error("WebauthnRepo: expected deleteCredential to refuse deleting another user's credential");
+  const stillThere = await webauthnRepo.getCredentialById(credentialId);
+  if (!stillThere) throw new Error("WebauthnRepo: the credential must still exist after a rejected cross-user delete attempt");
+
+  const ownerDeleted = await webauthnRepo.deleteCredential(row.id, owner);
+  if (ownerDeleted !== true) throw new Error("WebauthnRepo: expected deleteCredential to succeed for the real owner");
+  const goneNow = await webauthnRepo.getCredentialById(credentialId);
+  if (goneNow) throw new Error("WebauthnRepo: expected the credential to be gone after the owner's own delete");
+});
+
+registerTest("WebauthnChallengeTickets", "registration and login challenges live in separate namespaces and are single-use", async () => {
+  const username = `webauthn_ticket_user_${Date.now()}`;
+
+  webauthnChallengeTickets.issueRegistrationChallenge(username, "reg-challenge-abc");
+  webauthnChallengeTickets.issueLoginChallenge(username, "login-challenge-xyz");
+
+  // A login consume must never see the registration challenge, and vice versa.
+  const loginResult = webauthnChallengeTickets.consumeLoginChallenge(username);
+  if (loginResult !== "login-challenge-xyz") {
+    throw new Error(`WebauthnChallengeTickets: expected the login-namespaced challenge, got: ${JSON.stringify(loginResult)}`);
+  }
+  const regResult = webauthnChallengeTickets.consumeRegistrationChallenge(username);
+  if (regResult !== "reg-challenge-abc") {
+    throw new Error(`WebauthnChallengeTickets: expected the registration-namespaced challenge, got: ${JSON.stringify(regResult)}`);
+  }
+
+  // Single-use: a second consume of either must now return null.
+  if (webauthnChallengeTickets.consumeLoginChallenge(username) !== null) {
+    throw new Error("WebauthnChallengeTickets: expected a second consumeLoginChallenge to return null (single-use)");
+  }
+  if (webauthnChallengeTickets.consumeRegistrationChallenge(username) !== null) {
+    throw new Error("WebauthnChallengeTickets: expected a second consumeRegistrationChallenge to return null (single-use)");
+  }
+});
+
+registerTest("WebauthnChallengeTickets", "consuming a challenge for a username that never issued one returns null, not a throw", async () => {
+  const result = webauthnChallengeTickets.consumeLoginChallenge(`never_issued_${Date.now()}`);
+  if (result !== null) throw new Error(`WebauthnChallengeTickets: expected null for an unissued username, got: ${JSON.stringify(result)}`);
+});
+
+registerTest("WebauthnRoutes", "register-options requires authentication", async () => {
+  const router = createWebauthnRouter();
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const res = await fetch(`${baseUrl}/api/webauthn/register-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 with no API key, got ${res.status}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "register-options returns a real challenge for an authenticated user, and register-verify inserts a credential on a valid response", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes register-options/register-verify success")) return;
+  // Kept short: USERNAME_FORMAT (users-repo.ts) caps usernames at 32 chars
+  // total, and Date.now() alone contributes 13 digits.
+  const username = `wa_route_user_${Date.now()}`;
+  const apiKey = await createUser(username, "a-real-password-1234");
+  // Unique per run, same reasoning as WebauthnRepo's own tests above
+  // (`cred_${Date.now()}`) — credential_id has a real unique constraint in
+  // Postgres, and this suite runs against a real, persistent database with
+  // no per-test rollback, so a literal fixed id would collide with a row
+  // left behind by an earlier run of this same test.
+  const fakeCredentialId = `fake-credential-id-${Date.now()}`;
+
+  let capturedRegOptsCall: any = null;
+  let capturedVerifyCall: any = null;
+  const router = createWebauthnRouter({
+    generateRegistrationOptions: (async (opts: any) => {
+      capturedRegOptsCall = opts;
+      return { challenge: "fake-challenge-value", rp: { id: opts.rpID, name: opts.rpName }, user: { id: "fake-user-id", name: opts.userName, displayName: opts.userName } };
+    }) as any,
+    verifyRegistrationResponse: (async (opts: any) => {
+      capturedVerifyCall = opts;
+      return {
+        verified: true,
+        registrationInfo: {
+          credential: { id: fakeCredentialId, publicKey: new Uint8Array([1, 2, 3]), counter: 0, transports: ["internal"] },
+        },
+      };
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/register-options`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+    });
+    if (optsRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from register-options, got ${optsRes.status}`);
+    const optsBody = await optsRes.json();
+    if (optsBody.challenge !== "fake-challenge-value") throw new Error(`WebauthnRoutes: expected the generated challenge in the response, got: ${JSON.stringify(optsBody)}`);
+    if (capturedRegOptsCall?.userName !== username) throw new Error(`WebauthnRoutes: expected generateRegistrationOptions called with userName="${username}", got: ${JSON.stringify(capturedRegOptsCall)}`);
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/register-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+      body: JSON.stringify({ response: { id: fakeCredentialId }, deviceLabel: "My Test Phone" }),
+    });
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from register-verify, got ${verifyRes.status}: ${await verifyRes.text()}`);
+    if (capturedVerifyCall?.expectedChallenge !== "fake-challenge-value") {
+      throw new Error(`WebauthnRoutes: expected register-verify to pass the previously-issued challenge to verifyRegistrationResponse, got: ${JSON.stringify(capturedVerifyCall)}`);
+    }
+
+    const stored = await webauthnRepo.getCredentialById(fakeCredentialId);
+    if (!stored) throw new Error("WebauthnRoutes: expected a real webauthn_credentials row after a successful register-verify");
+    if (stored.username !== username) throw new Error(`WebauthnRoutes: expected the stored credential's username to be "${username}", got "${stored.username}"`);
+    if (stored.device_label !== "My Test Phone") throw new Error(`WebauthnRoutes: expected device_label "My Test Phone", got "${stored.device_label}"`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "register-verify returns 400 when verification fails (e.g. expired/mismatched challenge), and inserts nothing", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes register-verify failure")) return;
+  // Kept short: USERNAME_FORMAT (users-repo.ts) caps usernames at 32 chars
+  // total, and Date.now() alone contributes 13 digits.
+  const username = `wa_route_fail_${Date.now()}`;
+  const apiKey = await createUser(username, "a-real-password-1234");
+
+  const router = createWebauthnRouter({
+    generateRegistrationOptions: (async (opts: any) => ({ challenge: "another-challenge", rp: { id: opts.rpID, name: opts.rpName }, user: { id: "x", name: opts.userName, displayName: opts.userName } })) as any,
+    verifyRegistrationResponse: (async () => ({ verified: false })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/register-options`, { method: "POST", headers: { "X-API-Key": apiKey } });
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/register-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+      body: JSON.stringify({ response: { id: "should-not-be-stored" }, deviceLabel: "Device" }),
+    });
+    if (verifyRes.status !== 400) throw new Error(`WebauthnRoutes: expected 400 on failed verification, got ${verifyRes.status}`);
+    const stored = await webauthnRepo.getCredentialById("should-not-be-stored");
+    if (stored) throw new Error("WebauthnRoutes: expected NO credential row to be inserted after a failed verification");
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "login-options reports hasCredentials:false for a user with none enrolled, without erroring", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes login-options hasCredentials:false")) return;
+  // Kept short: USERNAME_FORMAT (users-repo.ts) caps usernames at 32 chars
+  // total, and Date.now() alone contributes 13 digits.
+  const username = `wa_nocred_${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  const router = createWebauthnRouter();
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const res = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    if (res.status !== 200) throw new Error(`WebauthnRoutes: expected 200 even with zero enrolled credentials, got ${res.status}`);
+    const body = await res.json();
+    if (body.hasCredentials !== false) throw new Error(`WebauthnRoutes: expected hasCredentials:false, got: ${JSON.stringify(body)}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "a full login round trip: options scoped to the user's real credential, verify returns {username, api_key}, counter updates", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes full login round trip")) return;
+  const username = `wa_login_${Date.now()}`;
+  // Suffixed with Date.now(): this suite runs against a real persistent
+  // DB with no per-test rollback, and credential_id has a UNIQUE
+  // constraint — a fixed literal would collide on a second run.
+  const credId = `real-login-cred-id-${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([5, 5, 5]), 3, "Laptop");
+
+  let capturedAllowCredentials: any = null;
+  let capturedVerifyDeps: any = null;
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => {
+      capturedAllowCredentials = opts.allowCredentials;
+      return { challenge: "login-challenge-value", rpId: opts.rpID };
+    }) as any,
+    verifyAuthenticationResponse: (async (opts: any) => {
+      capturedVerifyDeps = opts;
+      return { verified: true, authenticationInfo: { newCounter: 4 } };
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+    });
+    const optsBody = await optsRes.json();
+    if (optsBody.hasCredentials !== true) throw new Error(`WebauthnRoutes: expected hasCredentials:true, got: ${JSON.stringify(optsBody)}`);
+    if (!Array.isArray(capturedAllowCredentials) || capturedAllowCredentials[0]?.id !== credId) {
+      throw new Error(`WebauthnRoutes: expected allowCredentials scoped to the user's real credential id, got: ${JSON.stringify(capturedAllowCredentials)}`);
+    }
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, response: { id: credId } }),
+    });
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-verify, got ${verifyRes.status}: ${await verifyRes.text()}`);
+    const verifyBody = await verifyRes.json();
+    if (verifyBody.username !== username || typeof verifyBody.api_key !== "string" || !verifyBody.api_key) {
+      throw new Error(`WebauthnRoutes: expected {username, api_key} matching /api/login's shape, got: ${JSON.stringify(verifyBody)}`);
+    }
+    if (capturedVerifyDeps?.credential?.id !== credId || capturedVerifyDeps?.credential?.counter !== 3) {
+      throw new Error(`WebauthnRoutes: expected verifyAuthenticationResponse called with the STORED credential (id + counter 3), got: ${JSON.stringify(capturedVerifyDeps?.credential)}`);
+    }
+
+    const updated = await webauthnRepo.getCredentialById(credId);
+    if (updated?.counter !== 4) throw new Error(`WebauthnRoutes: expected counter updated to 4 after login, got ${updated?.counter}`);
+    if (!updated?.last_used_at) throw new Error("WebauthnRoutes: expected last_used_at to be set after login");
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "login-verify returns a generic 401 on a failed verification, revealing nothing specific", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes login-verify generic 401")) return;
+  const username = `wa_loginfail_${Date.now()}`;
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // in the round-trip test above.
+  const credId = `will-fail-cred-id-${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([1]), 0, "Device");
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => ({ verified: false, authenticationInfo: { newCounter: 0 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/login-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) });
+    const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: credId } }),
+    });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 on failed verification, got ${res.status}`);
+    const body = await res.json();
+    if (body.error !== "Invalid credentials") throw new Error(`WebauthnRoutes: expected the same generic "Invalid credentials" message /api/login uses, got: ${JSON.stringify(body)}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "login-verify rejects an assertion whose credential id belongs to a DIFFERENT user than the claimed username", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes login-verify cross-user rejection")) return;
+  const realOwner = `wa_realowner_${Date.now()}`;
+  const claimedUsername = `wa_claimed_${Date.now()}`;
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // in the round-trip test above.
+  const credId = `belongs-to-real-owner-${Date.now()}`;
+  await createUser(realOwner, "a-real-password-1234");
+  await createUser(claimedUsername, "a-real-password-1234");
+  await webauthnRepo.insertCredential(realOwner, credId, Buffer.from([1]), 0, "Device");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    // Deliberately returns verified:true. The route always calls
+    // verifyAuthenticationResponse whenever a stored credential is found
+    // at all — including one owned by someone other than the claimed
+    // username — so that the crypto-verification cost is paid on the same
+    // code path regardless of ownership (closes a timing side-channel that
+    // would otherwise let response latency alone reveal whether a
+    // credential_id belongs to a specific username). The final accept
+    // decision requires BOTH result.verified AND ownership to hold, so
+    // this fake proves that ownership is still enforced: if the route
+    // accepted on verified:true alone, this test would wrongly see 200.
+    verifyAuthenticationResponse: (async () => ({ verified: true, authenticationInfo: { newCounter: 1 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/login-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: claimedUsername }) });
+    const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: claimedUsername, response: { id: credId } }),
+    });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 when the credential belongs to a different user, got ${res.status}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "GET /api/webauthn/credentials lists only the caller's own devices; DELETE is ownership-checked", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes credentials list/delete ownership")) return;
+  const alice = `wa_alice_${Date.now()}`;
+  const bob = `wa_bob_${Date.now()}`;
+  const aliceKey = await createUser(alice, "a-real-password-1234");
+  const bobKey = await createUser(bob, "a-real-password-1234");
+  await webauthnRepo.insertCredential(alice, `alice-cred-${Date.now()}`, Buffer.from([1]), 0, "Alice's Phone");
+  await webauthnRepo.insertCredential(bob, `bob-cred-${Date.now()}`, Buffer.from([2]), 0, "Bob's Phone");
+
+  const router = createWebauthnRouter();
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const listRes = await fetch(`${baseUrl}/api/webauthn/credentials`, { headers: { "X-API-Key": aliceKey } });
+    const listBody = await listRes.json();
+    if (!Array.isArray(listBody) || listBody.length !== 1 || listBody[0].device_label !== "Alice's Phone") {
+      throw new Error(`WebauthnRoutes: expected only Alice's own device listed, got: ${JSON.stringify(listBody)}`);
+    }
+    const bobList = await (await fetch(`${baseUrl}/api/webauthn/credentials`, { headers: { "X-API-Key": bobKey } })).json();
+    const bobsRealId = bobList[0].id;
+
+    const crossDeleteRes = await fetch(`${baseUrl}/api/webauthn/credentials/${bobsRealId}`, { method: "DELETE", headers: { "X-API-Key": aliceKey } });
+    if (crossDeleteRes.status !== 404) throw new Error(`WebauthnRoutes: expected 404 when deleting another user's device, got ${crossDeleteRes.status}`);
+    const stillThere = await webauthnRepo.listCredentialsForUsername(bob);
+    if (stillThere.length !== 1) throw new Error("WebauthnRoutes: Bob's device must still exist after Alice's rejected delete attempt");
+
+    const ownDeleteRes = await fetch(`${baseUrl}/api/webauthn/credentials/${bobsRealId}`, { method: "DELETE", headers: { "X-API-Key": bobKey } });
+    if (ownDeleteRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 when Bob deletes his own device, got ${ownDeleteRes.status}`);
+    const goneNow = await webauthnRepo.listCredentialsForUsername(bob);
+    if (goneNow.length !== 0) throw new Error("WebauthnRoutes: expected Bob's device gone after his own delete");
+  } finally {
+    await close();
+  }
+});
+
+// Finding C1: currentRpId/currentOrigin used to derive purely from
+// req.hostname/req.protocol+req.get('host'), which never reflects the
+// browser's real origin in the actual deployment (a separate FastAPI
+// gateway strips the incoming Host header before proxying here, and there's
+// no app.set('trust proxy', ...)). The fix prefers process.env.PUBLIC_BASE_URL
+// when set. Tested indirectly through register-options' response, which
+// already surfaces rp.id in its JSON body — no need to export the
+// currentRpId/currentOrigin functions themselves.
+registerTest("WebauthnRoutes", "currentRpId prefers PUBLIC_BASE_URL's hostname over req.hostname when set, and falls back to req.hostname when unset", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes currentRpId PUBLIC_BASE_URL")) return;
+  const username = `wa_rpid_${Date.now()}`;
+  const apiKey = await createUser(username, "a-real-password-1234");
+
+  let capturedRpId: string | null = null;
+  const router = createWebauthnRouter({
+    generateRegistrationOptions: (async (opts: any) => {
+      capturedRpId = opts.rpID;
+      return { challenge: "c", rp: { id: opts.rpID, name: opts.rpName }, user: { id: "x", name: opts.userName, displayName: opts.userName } };
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  const originalPublicBaseUrl = process.env.PUBLIC_BASE_URL;
+  try {
+    // Unset: falls back to req.hostname, which for a 127.0.0.1 loopback
+    // fetch is literally "127.0.0.1".
+    delete process.env.PUBLIC_BASE_URL;
+    const unsetRes = await fetch(`${baseUrl}/api/webauthn/register-options`, {
+      method: "POST", headers: { "X-API-Key": apiKey },
+    });
+    if (unsetRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 with PUBLIC_BASE_URL unset, got ${unsetRes.status}`);
+    const unsetBody = await unsetRes.json();
+    if (unsetBody.rp.id !== "127.0.0.1" || capturedRpId !== "127.0.0.1") {
+      throw new Error(`WebauthnRoutes: expected rpID "127.0.0.1" (from req.hostname) with PUBLIC_BASE_URL unset, got rp.id=${JSON.stringify(unsetBody.rp.id)}, captured=${JSON.stringify(capturedRpId)}`);
+    }
+
+    // Set: PUBLIC_BASE_URL's own hostname wins, regardless of what req.hostname is.
+    process.env.PUBLIC_BASE_URL = "https://jarvis.example.ts.net";
+    const setRes = await fetch(`${baseUrl}/api/webauthn/register-options`, {
+      method: "POST", headers: { "X-API-Key": apiKey },
+    });
+    if (setRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 with PUBLIC_BASE_URL set, got ${setRes.status}`);
+    const setBody = await setRes.json();
+    if (setBody.rp.id !== "jarvis.example.ts.net" || capturedRpId !== "jarvis.example.ts.net") {
+      throw new Error(`WebauthnRoutes: expected rpID "jarvis.example.ts.net" (from PUBLIC_BASE_URL) with PUBLIC_BASE_URL set, got rp.id=${JSON.stringify(setBody.rp.id)}, captured=${JSON.stringify(capturedRpId)}`);
+    }
+  } finally {
+    if (originalPublicBaseUrl === undefined) delete process.env.PUBLIC_BASE_URL;
+    else process.env.PUBLIC_BASE_URL = originalPublicBaseUrl;
+    await close();
+  }
+});
+
+// Finding C2: "admin" is the synthetic operator identity backed by
+// ADMIN_API_KEY/INTERNAL_API_KEY, never a real row in the `users` table.
+// login-verify used to call usersRepo.getOrCreateApiKey("admin") on
+// success, which INSERTs into `api_keys` (FOREIGN KEY on users(username))
+// and throws a FK violation for admin specifically — caught by the generic
+// catch block and misreported as a 503, even though register-verify (no
+// such FK on webauthn_credentials) had already told admin the device was
+// successfully enrolled. The fix special-cases username === "admin" to
+// return the real ADMIN_API_KEY directly instead of minting a per-user key.
+registerTest("WebauthnRoutes", "login-verify succeeds for username \"admin\", returning the real ADMIN_API_KEY instead of throwing on the api_keys FK", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes login-verify admin FK avoidance")) return;
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // on the earlier round-trip test — this suite runs against a real,
+  // persistent DB with no per-test rollback.
+  const credId = `admin-login-cred-id-${Date.now()}`;
+  // No createUser("admin", ...) here on purpose — the whole point of this
+  // finding is that "admin" is NEVER a real `users` table row. Only a
+  // webauthn_credentials row is inserted (no FK there), same as a real
+  // admin device enrollment via register-verify would leave behind.
+  await webauthnRepo.insertCredential("admin", credId, Buffer.from([9, 9, 9]), 0, "Admin's Key");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => ({ verified: true, authenticationInfo: { newCounter: 1 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "admin" }),
+    });
+    if (optsRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-options for admin, got ${optsRes.status}`);
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "admin", response: { id: credId } }),
+    });
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-verify for admin (not a 503 from the api_keys FK), got ${verifyRes.status}: ${await verifyRes.text()}`);
+    const body = await verifyRes.json();
+    if (body.username !== "admin" || body.api_key !== ADMIN_API_KEY) {
+      throw new Error(`WebauthnRoutes: expected {username:"admin", api_key: ADMIN_API_KEY}, got: ${JSON.stringify(body)}`);
+    }
+  } finally {
+    await close();
+  }
+});
+
+// Finding I1: @simplewebauthn/server's verifyAuthenticationResponse only
+// RETURNS {verified:false} for a bad signature — every other rejection
+// reason (challenge mismatch, origin mismatch, RP-ID mismatch,
+// user-not-present, user-verification failure, and counter regression,
+// which is specifically how a cloned/replayed authenticator gets caught)
+// THROWS instead. Before this fix, any such throw fell into the same
+// generic catch block as a real DB/infra error and returned the same 503 —
+// this test's fake deliberately throws (instead of returning
+// verified:false) to prove the route now treats that identically to an
+// explicit verified:false: a 401 "Invalid credentials", never a 503, with
+// the rejection still written to the audit log (unlike before, where a
+// thrown verification failure wasn't audited at all).
+registerTest("WebauthnRoutes", "login-verify returns 401 (not 503) and audits the rejection when verifyAuthenticationResponse THROWS instead of returning verified:false", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes login-verify throw-as-401")) return;
+  const username = `wa_verifythrows_${Date.now()}`;
+  // Suffixed with Date.now(): see the credential_id UNIQUE-constraint note
+  // on the earlier round-trip test.
+  const credId = `throws-cred-id-${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([1]), 0, "Device");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => {
+      throw new Error("Counter regression detected: possible cloned authenticator");
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+    });
+
+    const obs = ObservationPlatform.getInstance();
+    const auditCountBefore = obs.getAuditLogsForActor(username).length;
+
+    const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: credId } }),
+    });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 (not 503) when verifyAuthenticationResponse throws, got ${res.status}`);
+    const body = await res.json();
+    if (body.error !== "Invalid credentials") {
+      throw new Error(`WebauthnRoutes: expected the same generic "Invalid credentials" message the verified:false path uses, got: ${JSON.stringify(body)}`);
+    }
+
+    const auditLogs = obs.getAuditLogsForActor(username);
+    if (auditLogs.length <= auditCountBefore) {
+      throw new Error("WebauthnRoutes: expected a new audit log entry for the thrown verification failure");
+    }
+    const lastLog = auditLogs[auditLogs.length - 1];
+    if (!lastLog.includes("webauthn-login") || !lastLog.includes("failed")) {
+      throw new Error(`WebauthnRoutes: expected the audit entry to record a failed webauthn-login, got: ${lastLog}`);
+    }
+  } finally {
+    await close();
+  }
+});
+
+// Finding I2: login-options is called automatically on every login-page
+// render (index.html's attemptWebauthnFirstLogin()), so it needs its own,
+// more generous rate-limit budget separate from login-verify's — this just
+// confirms both routes still work under the normal traffic the rest of
+// this suite's own WebauthnRoutes tests already generate (many login-options
+// and login-verify calls across many registerTest() blocks above, all
+// sharing the same module-level limiter instances). If either limiter's
+// default were too tight, one of the earlier tests in this file would
+// already have failed with a 429 instead of getting here.
+registerTest("WebauthnRoutes", "login-options and login-verify remain reachable (not 429) under this suite's own repeated calls", async () => {
+  if (await skipWebauthnTestIfNoRealPostgres("WebauthnRoutes rate-limit reachability")) return;
+  const username = `wa_ratelimit_${Date.now()}`;
+  const credId = `ratelimit-cred-id-${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, credId, Buffer.from([3]), 0, "Device");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => ({ verified: true, authenticationInfo: { newCounter: 1 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+    });
+    if (optsRes.status === 429) throw new Error("WebauthnRoutes: login-options was rate-limited under normal test traffic — its budget is too tight");
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: credId } }),
+    });
+    if (verifyRes.status === 429) throw new Error("WebauthnRoutes: login-verify was rate-limited under normal test traffic — its budget is too tight");
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-verify, got ${verifyRes.status}: ${await verifyRes.text()}`);
+  } finally {
+    await close();
   }
 });
 

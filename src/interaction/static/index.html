@@ -17,6 +17,7 @@
     <script src="https://unpkg.com/cytoscape@3.28.0/dist/cytoscape.min.js"
         integrity="sha384-X7WMDD1lV+pn8w6J5+gz+4oe1KOb37V6QOOAFoNZHLuFqGfN3gKWUT5N7eiZewEo"
         crossorigin="anonymous"></script>
+    <script src="/vendor/simplewebauthn/index.umd.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
         ::-webkit-scrollbar { width: 3px; height: 3px; }
@@ -1309,6 +1310,13 @@
                 </div>
 
                 <div class="holo-panel rounded-2xl p-5 w-full">
+                    <h3 class="font-display font-semibold text-sm text-white mb-1">Biometric Devices</h3>
+                    <p class="text-sm text-secondary mb-4 max-w-xl">Enroll this device for "Unlock with Face ID / fingerprint" instead of typing your password. Password sign-in always stays available as a fallback.</p>
+                    <button onclick="enrollWebauthnDevice()" id="btn-enroll-webauthn" class="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Add This Device</button>
+                    <div id="webauthn-device-list" class="mt-4 space-y-2"></div>
+                </div>
+
+                <div class="holo-panel rounded-2xl p-5 w-full">
                     <h3 class="font-display font-semibold text-sm text-white mb-1">Notifications</h3>
                     <p class="text-sm text-secondary mb-4 max-w-xl">Install Jarvis as an app on this device and enable push notifications so proactive updates (briefings, security findings, reflections) reach you here even when this tab isn't open — including on your phone, once installed there too.</p>
                     <button onclick="enablePushNotifications()" id="btn-enable-push" class="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm rounded-lg transition-all">Enable notifications on this device</button>
@@ -1449,6 +1457,13 @@
                 <p class="text-[9px] text-secondary/50 font-mono">IDENTITY_VERIFICATION</p>
             </div>
             <span class="text-[10px] font-mono text-primary bg-primary/5 px-2 py-0.5 border border-primary/10 rounded">AUTH</span>
+        </div>
+
+        <div id="login-webauthn-fields" class="hidden space-y-4">
+            <p id="login-webauthn-hint" class="text-xs text-secondary text-center"></p>
+            <button id="login-webauthn-submit" class="w-full py-3 bg-primary/5 hover:bg-primary/10 border border-primary/20 text-primary hover:text-white font-bold tracking-widest uppercase text-xs rounded-xl transition-all font-mono">UNLOCK WITH FACE ID / FINGERPRINT</button>
+            <p id="login-webauthn-error" class="text-[10px] font-mono text-danger hidden"></p>
+            <button id="login-webauthn-use-password" class="w-full text-center text-[9px] font-mono text-secondary/60 hover:text-secondary tracking-wider uppercase transition-all">Use password instead</button>
         </div>
 
         <div id="login-personal-fields" class="space-y-5">
@@ -2790,7 +2805,7 @@
         if (tabId === 'workspace') refreshWorkspaceSnapshot();
         if (tabId === 'memory') loadPendingMemories();
         if (tabId === 'learning') loadLearningDashboard();
-        if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); updateGoogleConnectionStatusUI(); }
+        if (tabId === 'settings') { loadSystemSettings(); updatePushStatusUI(); updateGoogleConnectionStatusUI(); loadWebauthnDevices(); }
         if (tabId === 'calendar') loadCalendarEvents();
         if (tabId === 'vault') loadVaultNotes();
         if (tabId === 'home') loadOrbVaultGraph();
@@ -4680,6 +4695,77 @@
         }
     }
 
+    // ---------- Biometric device enrollment/management ----------
+    async function loadWebauthnDevices() {
+        const listEl = document.getElementById('webauthn-device-list');
+        if (!listEl || !CURRENT_API_KEY) return;
+        try {
+            const res = await authFetch('/api/webauthn/credentials', { headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { listEl.innerHTML = ''; return; }
+            const devices = await res.json();
+            if (devices.length === 0) {
+                listEl.innerHTML = '<p class="text-[11px] text-secondary/60">No devices enrolled yet.</p>';
+                return;
+            }
+            listEl.innerHTML = devices.map(d => `
+                <div class="flex items-center justify-between bg-white/[0.02] border border-white/5 rounded-lg px-3 py-2">
+                    <div>
+                        <p class="text-xs text-white">${escapeHtml(d.device_label)}</p>
+                        <p class="text-[10px] text-secondary/50">${d.last_used_at ? 'Last used ' + new Date(d.last_used_at).toLocaleDateString() : 'Never used'}</p>
+                    </div>
+                    <button onclick="removeWebauthnDevice(${d.id})" class="text-[10px] font-mono text-danger hover:text-danger/80 uppercase tracking-wider">Remove</button>
+                </div>
+            `).join('');
+        } catch (e) {
+            console.warn('Failed to load biometric devices:', e);
+        }
+    }
+
+    async function enrollWebauthnDevice() {
+        if (!CURRENT_API_KEY) { addNotification("Log in first.", "warning"); return; }
+        if (typeof SimpleWebAuthnBrowser === 'undefined' || !SimpleWebAuthnBrowser.browserSupportsWebAuthn()) {
+            addNotification("This browser doesn't support device biometric sign-in.", "warning");
+            return;
+        }
+        const deviceLabel = prompt("Name this device (e.g. \"iPhone\", \"Work laptop\"):", "");
+        if (!deviceLabel || !deviceLabel.trim()) return;
+        try {
+            const optsRes = await authFetch('/api/webauthn/register-options', { method: 'POST', headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!optsRes.ok) { addNotification("Couldn't start device registration.", "danger"); return; }
+            const options = await optsRes.json();
+            const attestationResponse = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: options });
+            const verifyRes = await authFetch('/api/webauthn/register-verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': CURRENT_API_KEY },
+                body: JSON.stringify({ response: attestationResponse, deviceLabel: deviceLabel.trim() }),
+            });
+            if (!verifyRes.ok) {
+                const body = await verifyRes.json().catch(() => ({}));
+                addNotification(body.error || "Couldn't complete device registration.", "danger");
+                return;
+            }
+            addNotification("Device enrolled — you can now unlock with it.", "success");
+            loadWebauthnDevices();
+        } catch (e) {
+            console.warn('WebAuthn registration ceremony did not complete:', e);
+            addNotification("Device registration didn't complete.", "warning");
+        }
+    }
+
+    async function removeWebauthnDevice(id) {
+        if (!CURRENT_API_KEY) return;
+        if (!confirm('Remove this device? You will no longer be able to unlock with it.')) return;
+        try {
+            const res = await authFetch(`/api/webauthn/credentials/${id}`, { method: 'DELETE', headers: { 'X-API-Key': CURRENT_API_KEY } });
+            if (!res.ok) { addNotification("Couldn't remove that device.", "danger"); return; }
+            addNotification("Device removed.", "success");
+            loadWebauthnDevices();
+        } catch (e) {
+            console.warn('Failed to remove biometric device:', e);
+            addNotification("Couldn't remove that device.", "danger");
+        }
+    }
+
     async function loadSystemSettings() {
         if (!CURRENT_API_KEY) return; // not logged in yet — nothing to load
         const headers = { 'X-API-Key': CURRENT_API_KEY };
@@ -5195,6 +5281,7 @@
         const toggle = document.getElementById('login-mode-toggle');
         toggle.addEventListener('click', () => {
             const showingAdmin = !adminFields.classList.contains('hidden');
+            document.getElementById('login-webauthn-fields').classList.add('hidden');
             personalFields.classList.toggle('hidden', !showingAdmin);
             adminFields.classList.toggle('hidden', showingAdmin);
             toggle.textContent = showingAdmin
@@ -5202,6 +5289,110 @@
                 : "Have a personal account? Sign in with username/password instead";
             document.getElementById('login-error').classList.add('hidden');
         });
+
+        document.getElementById('login-webauthn-submit').addEventListener('click', submitWebauthnLogin);
+        document.getElementById('login-webauthn-use-password').addEventListener('click', () => {
+            document.getElementById('login-webauthn-fields').classList.add('hidden');
+            document.getElementById('login-personal-fields').classList.remove('hidden');
+        });
+
+        attemptWebauthnFirstLogin();
+    }
+
+    // Tries the "Unlock with Face ID / fingerprint" path automatically for
+    // a returning user on a device that's both WebAuthn-capable and has a
+    // remembered username with at least one enrolled credential — falls
+    // through to the normal password form otherwise, silently (this is an
+    // expected, common case per the spec, not an error). Guards on
+    // typeof SimpleWebAuthnBrowser so a failed/blocked load of the vendored
+    // script (should be effectively impossible since it's local, not CDN,
+    // but this is the login gate — it must never hard-fail) degrades to
+    // the password form instead of breaking the page.
+    async function attemptWebauthnFirstLogin() {
+        const webauthnFields = document.getElementById('login-webauthn-fields');
+        const personalFields = document.getElementById('login-personal-fields');
+        const rememberedUsername = localStorage.getItem('last_username');
+        if (typeof SimpleWebAuthnBrowser === 'undefined' || !SimpleWebAuthnBrowser.browserSupportsWebAuthn() || !rememberedUsername) {
+            return; // password form (already the default-visible state) stays as-is
+        }
+        try {
+            const res = await fetch('/api/webauthn/login-options', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: rememberedUsername }),
+            });
+            if (!res.ok) return;
+            const options = await res.json();
+            if (!options.hasCredentials) return;
+            document.getElementById('login-webauthn-hint').textContent = `Signing in as ${rememberedUsername}`;
+            webauthnFields.dataset.username = rememberedUsername;
+            webauthnFields.dataset.optionsJson = JSON.stringify(options);
+            webauthnFields.classList.remove('hidden');
+            personalFields.classList.add('hidden');
+        } catch (e) {
+            console.warn('WebAuthn login-options check failed, falling back to password form:', e);
+        }
+    }
+
+    async function submitWebauthnLogin() {
+        const errorEl = document.getElementById('login-webauthn-error');
+        const fields = document.getElementById('login-webauthn-fields');
+        const submitBtn = document.getElementById('login-webauthn-submit');
+        const username = fields.dataset.username;
+        errorEl.classList.add('hidden');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'WAITING FOR DEVICE...';
+        try {
+            // The server's challenge TTL is 2 minutes. attemptWebauthnFirstLogin()'s
+            // page-load options fetch is only good for deciding whether to SHOW
+            // this UI at all — if the login page sits open longer than that
+            // before the user taps unlock, a challenge cached from page load has
+            // already expired, and every subsequent tap would fail identically
+            // until a full reload. So the actual ceremony always fetches its own
+            // fresh options right before starting, using the same remembered
+            // username attemptWebauthnFirstLogin() already resolved.
+            const optionsRes = await fetch('/api/webauthn/login-options', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }),
+            });
+            if (!optionsRes.ok) {
+                const errBody = await optionsRes.json().catch(() => ({}));
+                errorEl.textContent = errBody.error || "That didn't work — try again, or use your password.";
+                errorEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'UNLOCK WITH FACE ID / FINGERPRINT';
+                return;
+            }
+            const options = await optionsRes.json();
+            if (!options.hasCredentials) {
+                errorEl.textContent = "That didn't work — try again, or use your password.";
+                errorEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'UNLOCK WITH FACE ID / FINGERPRINT';
+                return;
+            }
+            const assertionResponse = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: options });
+            const verifyRes = await fetch('/api/webauthn/login-verify', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, response: assertionResponse }),
+            });
+            const data = await verifyRes.json().catch(() => ({}));
+            if (!verifyRes.ok) {
+                errorEl.textContent = data.error || "That didn't work — try again, or use your password.";
+                errorEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'UNLOCK WITH FACE ID / FINGERPRINT';
+                return;
+            }
+            localStorage.setItem('admin_api_key', data.api_key);
+            localStorage.setItem('last_username', data.username);
+            window.location.href = '/';
+        } catch (e) {
+            // The user cancelled the OS prompt, or the device/browser
+            // genuinely can't complete it right now — not a server error,
+            // so this stays quiet and just re-enables the button rather
+            // than showing a scary error for a routine cancellation.
+            console.warn('WebAuthn authentication ceremony did not complete:', e);
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'UNLOCK WITH FACE ID / FINGERPRINT';
+        }
     }
 
     async function submitLogin() {
@@ -5238,6 +5429,7 @@
             // reload so the normal DOMContentLoaded sequence runs fresh with
             // CURRENT_API_KEY already populated.
             localStorage.setItem('admin_api_key', data.api_key);
+            localStorage.setItem('last_username', username);
             window.location.href = '/';
         } catch (err) {
             errorEl.textContent = "Couldn't reach the server. Please try again.";
