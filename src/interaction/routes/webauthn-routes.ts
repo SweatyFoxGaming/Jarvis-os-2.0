@@ -120,5 +120,106 @@ export function createWebauthnRouter(depsOverride: Partial<WebauthnRouteDeps> = 
     }
   });
 
+  router.post("/api/webauthn/login-options", webauthnLoginLimiter, async (req: any, res: any) => {
+    const { username } = req.body || {};
+    if (typeof username !== "string" || !username.trim()) {
+      return res.status(400).json({ error: "Username is required." });
+    }
+    try {
+      const existing = await webauthnRepo.listCredentialsForUsername(username);
+      if (existing.length === 0) {
+        // Not an error — an expected, common case (this account has no
+        // enrolled device yet). The client falls through to the password
+        // form; see the spec's "silently fall through" error-handling rule.
+        return res.json({ hasCredentials: false });
+      }
+      const options = await deps.generateAuthenticationOptions({
+        rpID: currentRpId(req),
+        allowCredentials: existing.map((c) => ({ id: c.credential_id })),
+        userVerification: "preferred",
+      });
+      webauthnChallengeTickets.issueLoginChallenge(username, options.challenge);
+      res.json({ ...options, hasCredentials: true });
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Webauthn", `login-options failed for "${username}": ${err.message}`);
+      res.status(503).json({ error: "Couldn't start sign-in — try again." });
+    }
+  });
+
+  router.post("/api/webauthn/login-verify", webauthnLoginLimiter, async (req: any, res: any) => {
+    const { username, response } = req.body || {};
+    if (typeof username !== "string" || !username.trim() || !response) {
+      return res.status(400).json({ error: "Username and response are required." });
+    }
+    const expectedChallenge = webauthnChallengeTickets.consumeLoginChallenge(username);
+    if (!expectedChallenge) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+    try {
+      const credentialId = response.id;
+      const storedCredential = typeof credentialId === "string" ? await webauthnRepo.getCredentialById(credentialId) : null;
+      // The credential must exist AND belong to the exact username this
+      // login-verify call claims — otherwise a signed assertion for
+      // attacker's own enrolled device, replayed with a victim's username
+      // in the request body, would be accepted as the victim logging in.
+      if (!storedCredential || storedCredential.username !== username) {
+        observation.logAuditEvent(username, "webauthn-login", "failed", "No matching credential for this username");
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+      const result = await deps.verifyAuthenticationResponse({
+        response,
+        expectedChallenge,
+        expectedOrigin: currentOrigin(req),
+        expectedRPID: currentRpId(req),
+        credential: {
+          id: storedCredential.credential_id,
+          publicKey: new Uint8Array(storedCredential.public_key),
+          counter: storedCredential.counter,
+        },
+      });
+      if (!result.verified) {
+        observation.logAuditEvent(username, "webauthn-login", "failed", "Assertion verification failed");
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+      await webauthnRepo.updateCounterAndLastUsed(storedCredential.credential_id, result.authenticationInfo.newCounter);
+      const apiKey = await usersRepo.getOrCreateApiKey(username);
+      observation.logAuditEvent(username, "webauthn-login", "success", `Signed in via device "${storedCredential.device_label}"`);
+      res.json({ username, api_key: apiKey });
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Webauthn", `login-verify failed for "${username}": ${err.message}`);
+      res.status(401).json({ error: "Invalid credentials" });
+    }
+  });
+
+  router.get("/api/webauthn/credentials", validateApiKey, async (req: any, res: any) => {
+    try {
+      const rows = await webauthnRepo.listCredentialsForUsername(req.username);
+      res.json(rows.map((r) => ({ id: r.id, device_label: r.device_label, created_at: r.created_at, last_used_at: r.last_used_at })));
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Webauthn", `Listing credentials failed for "${req.username}": ${err.message}`);
+      res.status(503).json({ error: "Couldn't load your devices — try again." });
+    }
+  });
+
+  router.delete("/api/webauthn/credentials/:id", validateApiKey, async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "Invalid device id." });
+    }
+    try {
+      const deleted = await webauthnRepo.deleteCredential(id, req.username);
+      if (!deleted) {
+        // Never distinguishes "doesn't exist" from "belongs to someone
+        // else" — same reasoning as deleteCredential's own comment.
+        return res.status(404).json({ error: "Device not found." });
+      }
+      observation.logAuditEvent(req.username, "webauthn-revoke", "success", `Removed device id ${id}`);
+      res.json({ ok: true });
+    } catch (err: any) {
+      observation.logTelemetry("warn", "Webauthn", `Deleting credential failed for "${req.username}": ${err.message}`);
+      res.status(503).json({ error: "Couldn't remove that device — try again." });
+    }
+  });
+
   return router;
 }

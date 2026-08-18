@@ -7170,6 +7170,161 @@ registerTest("WebauthnRoutes", "register-verify returns 400 when verification fa
   }
 });
 
+registerTest("WebauthnRoutes", "login-options reports hasCredentials:false for a user with none enrolled, without erroring", async () => {
+  // Kept short: USERNAME_FORMAT (users-repo.ts) caps usernames at 32 chars
+  // total, and Date.now() alone contributes 13 digits.
+  const username = `wa_nocred_${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  const router = createWebauthnRouter();
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const res = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    if (res.status !== 200) throw new Error(`WebauthnRoutes: expected 200 even with zero enrolled credentials, got ${res.status}`);
+    const body = await res.json();
+    if (body.hasCredentials !== false) throw new Error(`WebauthnRoutes: expected hasCredentials:false, got: ${JSON.stringify(body)}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "a full login round trip: options scoped to the user's real credential, verify returns {username, api_key}, counter updates", async () => {
+  const username = `wa_login_${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, "real-login-cred-id", Buffer.from([5, 5, 5]), 3, "Laptop");
+
+  let capturedAllowCredentials: any = null;
+  let capturedVerifyDeps: any = null;
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => {
+      capturedAllowCredentials = opts.allowCredentials;
+      return { challenge: "login-challenge-value", rpId: opts.rpID };
+    }) as any,
+    verifyAuthenticationResponse: (async (opts: any) => {
+      capturedVerifyDeps = opts;
+      return { verified: true, authenticationInfo: { newCounter: 4 } };
+    }) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const optsRes = await fetch(`${baseUrl}/api/webauthn/login-options`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+    });
+    const optsBody = await optsRes.json();
+    if (optsBody.hasCredentials !== true) throw new Error(`WebauthnRoutes: expected hasCredentials:true, got: ${JSON.stringify(optsBody)}`);
+    if (!Array.isArray(capturedAllowCredentials) || capturedAllowCredentials[0]?.id !== "real-login-cred-id") {
+      throw new Error(`WebauthnRoutes: expected allowCredentials scoped to the user's real credential id, got: ${JSON.stringify(capturedAllowCredentials)}`);
+    }
+
+    const verifyRes = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, response: { id: "real-login-cred-id" } }),
+    });
+    if (verifyRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 from login-verify, got ${verifyRes.status}: ${await verifyRes.text()}`);
+    const verifyBody = await verifyRes.json();
+    if (verifyBody.username !== username || typeof verifyBody.api_key !== "string" || !verifyBody.api_key) {
+      throw new Error(`WebauthnRoutes: expected {username, api_key} matching /api/login's shape, got: ${JSON.stringify(verifyBody)}`);
+    }
+    if (capturedVerifyDeps?.credential?.id !== "real-login-cred-id" || capturedVerifyDeps?.credential?.counter !== 3) {
+      throw new Error(`WebauthnRoutes: expected verifyAuthenticationResponse called with the STORED credential (id + counter 3), got: ${JSON.stringify(capturedVerifyDeps?.credential)}`);
+    }
+
+    const updated = await webauthnRepo.getCredentialById("real-login-cred-id");
+    if (updated?.counter !== 4) throw new Error(`WebauthnRoutes: expected counter updated to 4 after login, got ${updated?.counter}`);
+    if (!updated?.last_used_at) throw new Error("WebauthnRoutes: expected last_used_at to be set after login");
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "login-verify returns a generic 401 on a failed verification, revealing nothing specific", async () => {
+  const username = `wa_loginfail_${Date.now()}`;
+  await createUser(username, "a-real-password-1234");
+  await webauthnRepo.insertCredential(username, "will-fail-cred-id", Buffer.from([1]), 0, "Device");
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    verifyAuthenticationResponse: (async () => ({ verified: false, authenticationInfo: { newCounter: 0 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/login-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) });
+    const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, response: { id: "will-fail-cred-id" } }),
+    });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 on failed verification, got ${res.status}`);
+    const body = await res.json();
+    if (body.error !== "Invalid credentials") throw new Error(`WebauthnRoutes: expected the same generic "Invalid credentials" message /api/login uses, got: ${JSON.stringify(body)}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "login-verify rejects an assertion whose credential id belongs to a DIFFERENT user than the claimed username", async () => {
+  const realOwner = `wa_realowner_${Date.now()}`;
+  const claimedUsername = `wa_claimed_${Date.now()}`;
+  await createUser(realOwner, "a-real-password-1234");
+  await createUser(claimedUsername, "a-real-password-1234");
+  await webauthnRepo.insertCredential(realOwner, "belongs-to-real-owner", Buffer.from([1]), 0, "Device");
+
+  const router = createWebauthnRouter({
+    generateAuthenticationOptions: (async (opts: any) => ({ challenge: "c", rpId: opts.rpID })) as any,
+    // The route's ownership check (storedCredential.username !== username)
+    // must reject BEFORE ever calling verifyAuthenticationResponse — this
+    // fake returning verified:true proves that: if the route incorrectly
+    // called it anyway for a mismatched-owner credential, this test would
+    // wrongly see a 200 instead of the expected 401.
+    verifyAuthenticationResponse: (async () => ({ verified: true, authenticationInfo: { newCounter: 1 } })) as any,
+  });
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    await fetch(`${baseUrl}/api/webauthn/login-options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: claimedUsername }) });
+    const res = await fetch(`${baseUrl}/api/webauthn/login-verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: claimedUsername, response: { id: "belongs-to-real-owner" } }),
+    });
+    if (res.status !== 401) throw new Error(`WebauthnRoutes: expected 401 when the credential belongs to a different user, got ${res.status}`);
+  } finally {
+    await close();
+  }
+});
+
+registerTest("WebauthnRoutes", "GET /api/webauthn/credentials lists only the caller's own devices; DELETE is ownership-checked", async () => {
+  const alice = `wa_alice_${Date.now()}`;
+  const bob = `wa_bob_${Date.now()}`;
+  const aliceKey = await createUser(alice, "a-real-password-1234");
+  const bobKey = await createUser(bob, "a-real-password-1234");
+  await webauthnRepo.insertCredential(alice, `alice-cred-${Date.now()}`, Buffer.from([1]), 0, "Alice's Phone");
+  await webauthnRepo.insertCredential(bob, `bob-cred-${Date.now()}`, Buffer.from([2]), 0, "Bob's Phone");
+
+  const router = createWebauthnRouter();
+  const { baseUrl, close } = await startRouterOnEphemeralPort(router);
+  try {
+    const listRes = await fetch(`${baseUrl}/api/webauthn/credentials`, { headers: { "X-API-Key": aliceKey } });
+    const listBody = await listRes.json();
+    if (!Array.isArray(listBody) || listBody.length !== 1 || listBody[0].device_label !== "Alice's Phone") {
+      throw new Error(`WebauthnRoutes: expected only Alice's own device listed, got: ${JSON.stringify(listBody)}`);
+    }
+    const bobList = await (await fetch(`${baseUrl}/api/webauthn/credentials`, { headers: { "X-API-Key": bobKey } })).json();
+    const bobsRealId = bobList[0].id;
+
+    const crossDeleteRes = await fetch(`${baseUrl}/api/webauthn/credentials/${bobsRealId}`, { method: "DELETE", headers: { "X-API-Key": aliceKey } });
+    if (crossDeleteRes.status !== 404) throw new Error(`WebauthnRoutes: expected 404 when deleting another user's device, got ${crossDeleteRes.status}`);
+    const stillThere = await webauthnRepo.listCredentialsForUsername(bob);
+    if (stillThere.length !== 1) throw new Error("WebauthnRoutes: Bob's device must still exist after Alice's rejected delete attempt");
+
+    const ownDeleteRes = await fetch(`${baseUrl}/api/webauthn/credentials/${bobsRealId}`, { method: "DELETE", headers: { "X-API-Key": bobKey } });
+    if (ownDeleteRes.status !== 200) throw new Error(`WebauthnRoutes: expected 200 when Bob deletes his own device, got ${ownDeleteRes.status}`);
+    const goneNow = await webauthnRepo.listCredentialsForUsername(bob);
+    if (goneNow.length !== 0) throw new Error("WebauthnRoutes: expected Bob's device gone after his own delete");
+  } finally {
+    await close();
+  }
+});
+
 // ---------- Execution Main Block ----------
 async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
