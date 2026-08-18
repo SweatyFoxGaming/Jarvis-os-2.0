@@ -4710,7 +4710,7 @@
             listEl.innerHTML = devices.map(d => `
                 <div class="flex items-center justify-between bg-white/[0.02] border border-white/5 rounded-lg px-3 py-2">
                     <div>
-                        <p class="text-xs text-white">${d.device_label}</p>
+                        <p class="text-xs text-white">${escapeHtml(d.device_label)}</p>
                         <p class="text-[10px] text-secondary/50">${d.last_used_at ? 'Last used ' + new Date(d.last_used_at).toLocaleDateString() : 'Never used'}</p>
                     </div>
                     <button onclick="removeWebauthnDevice(${d.id})" class="text-[10px] font-mono text-danger hover:text-danger/80 uppercase tracking-wider">Remove</button>
@@ -5281,6 +5281,7 @@
         const toggle = document.getElementById('login-mode-toggle');
         toggle.addEventListener('click', () => {
             const showingAdmin = !adminFields.classList.contains('hidden');
+            document.getElementById('login-webauthn-fields').classList.add('hidden');
             personalFields.classList.toggle('hidden', !showingAdmin);
             adminFields.classList.toggle('hidden', showingAdmin);
             toggle.textContent = showingAdmin
