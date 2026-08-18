@@ -12,8 +12,14 @@ import { reflectAndLearn as realReflectAndLearn } from "../adaptation/reflection
 import * as knowledgeGraph from "../cognition/knowledge-graph.js";
 import * as identity from "../self/identity.js";
 import * as rapport from "../self/rapport.js";
+import { LongTermLearningEngine } from "../adaptation/long_term_learning.js";
 
 const observation = ObservationPlatform.getInstance();
+// Same singleton /api/chat reads its style preferences off (server.ts) —
+// not injected via VoiceSessionDeps like buildIdentityContext/
+// buildRapportContext below, because it's a synchronous in-memory getter
+// with no DB round trip, matching chat's own direct (non-DI'd) use of it.
+const learningEngine = LongTermLearningEngine.getInstance();
 
 // One-turn text pipeline for the local voice daemon. Deliberately reuses
 // /api/chat's Groq/CognitionRouter tool-calling shape exactly (server.ts,
@@ -35,6 +41,16 @@ const observation = ObservationPlatform.getInstance();
 // disconnected personas — see handleTranscript() below and the now-
 // deleted src/interaction/live-voice.ts's flushTurn() (git history, commit
 // e97ab96^) for the original version of this same pattern.
+//
+// As of this pass, the READ side is also fully unified, not just memory:
+// handleTranscript() builds styleContext/identityContext/
+// personalityContext/rapportContext the same way server.ts does for
+// /api/chat, same template strings and same source functions (see
+// VISION.md's "one consistent intelligence" checklist — this was the one
+// concrete gap it named: voice recalled memory but didn't yet read learned
+// style/self-reflection/personality/tone the way chat does). The write
+// side above (extractSelfReflection/extractRapportSignal) was already
+// unified; this closes the matching read side.
 
 // Mirrors /api/chat's Groq branch's tool-attached model order exactly
 // (server.ts) — the heavier, more reliably tool-capable model first since
@@ -87,6 +103,14 @@ export interface VoiceSessionDeps {
   extractAndStore: typeof knowledgeGraph.extractAndStore;
   extractSelfReflection: typeof identity.extractSelfReflection;
   extractRapportSignal: typeof rapport.extractRapportSignal;
+  // Read side of the same identity/rapport context /api/chat builds every
+  // turn (server.ts) — until now voice only had memory's read side
+  // (recall above), leaving voice and text as two personas sharing a name
+  // rather than one identity reachable through two interfaces (VISION.md's
+  // "one consistent intelligence" gap). Injectable for the same
+  // DI/testability reason as recall/remember above.
+  buildIdentityContext: typeof identity.buildIdentityContext;
+  buildRapportContext: typeof rapport.buildRapportContext;
 }
 
 const defaultInjectableDeps: Pick<
@@ -101,6 +125,8 @@ const defaultInjectableDeps: Pick<
   | "extractAndStore"
   | "extractSelfReflection"
   | "extractRapportSignal"
+  | "buildIdentityContext"
+  | "buildRapportContext"
 > = {
   executeTool: realExecuteTool,
   getAllToolDeclarations: realGetAllToolDeclarations,
@@ -112,6 +138,8 @@ const defaultInjectableDeps: Pick<
   extractAndStore: knowledgeGraph.extractAndStore,
   extractSelfReflection: identity.extractSelfReflection,
   extractRapportSignal: rapport.extractRapportSignal,
+  buildIdentityContext: identity.buildIdentityContext,
+  buildRapportContext: rapport.buildRapportContext,
 };
 
 /**
@@ -239,9 +267,24 @@ async function handleTranscript(text: string, sessionId: string, username: strin
       ? `\n\nRelevant things you remember about this user from past conversations:\n${memoryHits.map(m => `- ${m}`).join("\n")}`
       : "";
 
+    // Read side of the identity/personality/rapport context /api/chat
+    // builds every turn (server.ts) — same functions, same template
+    // strings, so a preference/self-reflection/tone observation learned in
+    // one interface actually informs the other, not just memory recall.
+    const stylePrefs = learningEngine.getStylePreferences();
+    const styleContext = `\n\nWhen writing or discussing code, prefer ${stylePrefs.namingConvention} naming, ${stylePrefs.tabSize}-space indentation, and a ${stylePrefs.architecturePattern} architecture, unless the user asks otherwise.`;
+    const identityContext = await deps.buildIdentityContext(username);
+    const kernel = MindKernel.getInstance();
+    const personalityContext = identity.buildPersonalityPromptFragment({
+      personality_formality: kernel.personalityFormality,
+      personality_humor: kernel.personalityHumor,
+      personality_verbosity: kernel.personalityVerbosity,
+    });
+    const rapportContext = await deps.buildRapportContext(username);
+
     const tools = deps.toGroqTools(deps.getAllToolDeclarations());
     const messages: any[] = [
-      { role: "system", content: VOICE_SYSTEM_INSTRUCTION + memoryContext },
+      { role: "system", content: VOICE_SYSTEM_INSTRUCTION + memoryContext + styleContext + identityContext + personalityContext + rapportContext },
       { role: "user", content: text },
     ];
 
