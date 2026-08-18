@@ -95,8 +95,6 @@ export async function createUser(username: string, password: string): Promise<st
   validateNewUsername(username);
   const db = getPool();
   const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-  const rawKey = generateApiKey();
-  const hashedKey = hashApiKey(rawKey);
   // ON CONFLICT DO NOTHING instead of check-then-insert: two concurrent
   // registrations for the same username used to both pass the earlier
   // SELECT before either committed, so the losing INSERT threw a raw
@@ -104,15 +102,13 @@ export async function createUser(username: string, password: string): Promise<st
   // A single statement closes that window — whichever request's INSERT
   // actually lands gets a row back; the other gets none.
   const { rowCount } = await db.query(
-    "INSERT INTO users (username, password_hash, api_key) VALUES ($1, $2, $3) ON CONFLICT (username) DO NOTHING",
-    [username, hash, hashedKey]
+    "INSERT INTO users (username, password_hash) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING",
+    [username, hash]
   );
   if (!rowCount) {
     throw new UsernameTakenError();
   }
-  // Also insert into api_keys table for compatibility with the separate api_keys lookups
-  await db.query("INSERT INTO api_keys (key, username) VALUES ($1, $2)", [hashedKey, username]);
-  return rawKey;
+  return createApiKey(username);
 }
 
 export async function verifyCredentials(username: string, password: string): Promise<boolean> {

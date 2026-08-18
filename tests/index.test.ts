@@ -7053,27 +7053,6 @@ async function main() {
   console.log("🧪 STARTING JARVIS OS PHASE XIV AUTOMATED TEST SUITE...");
   console.log("=====================================================");
 
-  // Ensure webauthn_credentials table exists for database-backed tests
-  // (initDatabase might fail due to pre-existing migrations, so we create the table directly if needed)
-  try {
-    const db = getPool();
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS webauthn_credentials (
-        id SERIAL PRIMARY KEY,
-        username TEXT NOT NULL,
-        credential_id TEXT NOT NULL UNIQUE,
-        public_key BYTEA NOT NULL,
-        counter BIGINT NOT NULL DEFAULT 0,
-        device_label TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        last_used_at TIMESTAMPTZ
-      );
-    `);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_username ON webauthn_credentials(username);`);
-  } catch (err: any) {
-    console.warn(`Webauthn table setup warning (non-critical): ${err.message}`);
-  }
-
   const results: TestResult[] = [];
   let passedCount = 0;
 

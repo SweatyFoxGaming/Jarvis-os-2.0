@@ -18,6 +18,7 @@ import m010 from "./010_wellbeing_checkins.js";
 import m011 from "./011_multi_user_oauth.js";
 import m012 from "./012_hash_legacy_api_keys.js";
 import m013 from "./013_webauthn_credentials.js";
+import m014 from "./014_drop_legacy_users_api_key_not_null.js";
 
 export { runMigrations, computePendingMigrations } from "./runner.js";
 export type { Migration } from "./runner.js";
@@ -28,4 +29,4 @@ export type { Migration } from "./runner.js";
 // renumber, or remove an id once it's shipped to a real deployment; add a
 // new migration to fix a mistake in an old one, the same way you'd fix any
 // other already-shipped code.
-export const ALL_MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013];
+export const ALL_MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013, m014];
