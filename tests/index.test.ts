@@ -5414,6 +5414,109 @@ registerTest("CognitionRouter", "a huge-but-finite retry-after value (hundreds o
   }
 });
 
+registerTest("CognitionRouter", "__provenance tags which tier actually answered — cloud, local, and offline", async () => {
+  // Verified Autonomy fix (2026-08-18, docs/architecture/AUTONOMY_VISION.md
+  // Phase 1): every response this router returns must carry which tier
+  // actually produced it, so a caller like server.ts can report honestly
+  // instead of assuming "didn't throw" means "the models I asked for
+  // answered." Exercises all three tiers in one router instance to also
+  // confirm the tag doesn't leak across tiers.
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+
+  const cloudKeyPool = new KeyPool({ groq: [uniqueTestKey("gk1")], gemini: [] });
+  const cloudRouter = new CognitionRouter({
+    keyPool: cloudKeyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async () => ({ choices: [{ message: { content: "cloud reply" } }] }),
+  } as any);
+  const cloudResult = await cloudRouter.generateWithFallback("hank", { messages: [] }, ["groq:model-a"]);
+  if (cloudResult.__provenance?.tier !== "cloud" || cloudResult.__provenance?.provider !== "groq" || cloudResult.__provenance?.model !== "model-a") {
+    throw new Error(`CognitionRouter: expected __provenance to tag the cloud tier with provider+model, got: ${JSON.stringify(cloudResult.__provenance)}`);
+  }
+
+  const localKeyPool = new KeyPool({ groq: [], gemini: [] }); // no keys -> cloud tier skipped entirely
+  const localRouter = new CognitionRouter({
+    keyPool: localKeyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://localhost:8080",
+    localModelName: "local-model",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async () => ({ choices: [{ message: { content: "local reply" } }] }),
+  } as any);
+  const localResult = await localRouter.generateWithFallback("hank", { messages: [] }, ["groq:model-a"]);
+  if (localResult.__provenance?.tier !== "local" || localResult.__provenance?.model !== "local-model") {
+    throw new Error(`CognitionRouter: expected __provenance to tag the local tier, got: ${JSON.stringify(localResult.__provenance)}`);
+  }
+
+  const offlineKeyPool = new KeyPool({ groq: [], gemini: [] });
+  const offlineRouter = new CognitionRouter({
+    keyPool: offlineKeyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://localhost:8080",
+    localModelName: "local-model",
+    localEngine: { generateResponse: () => "keyword reply" },
+    transport: async () => {
+      throw new Error("local LLM unreachable");
+    },
+  } as any);
+  const offlineResult = await offlineRouter.generateWithFallback("hank", { messages: [{ role: "user", content: "hi" }] }, ["groq:model-a"]);
+  if (offlineResult.__provenance?.tier !== "offline") {
+    throw new Error(`CognitionRouter: expected __provenance to tag the offline tier, got: ${JSON.stringify(offlineResult.__provenance)}`);
+  }
+});
+
+registerTest("CognitionRouter", "a model_not_found 404 moves to the next model without cooling down the key", async () => {
+  // Verified Autonomy fix (2026-08-18): the 2026-08-18 dead-Groq-model
+  // incident's exact failure shape — a permanently-dead model name should
+  // never cool down a perfectly healthy key. Before this fix, a single
+  // model_not_found 404 cooled the only configured key for
+  // DEFAULT_COOLDOWN_SECONDS, causing every subsequent model in the SAME
+  // request's fallback list to be skipped too ("No available groq key
+  // (pool cooling down/exhausted); skipping model ...") even though they
+  // were never actually tried.
+  const { CognitionRouter } = await import("../src/runtime/cognition-router.js");
+  const gk1 = uniqueTestKey("gk1");
+  const keyPool = new KeyPool({ groq: [gk1], gemini: [] });
+  const modelsTried: string[] = [];
+
+  const router = new CognitionRouter({
+    keyPool,
+    recordUsage: async () => {},
+    getRecentShare: async () => 1.0,
+    localLlmEndpoint: "http://unused:8080",
+    localModelName: "unused",
+    localEngine: { generateResponse: () => "should not be called" },
+    transport: async (config: any, params: any, models: string[]) => {
+      modelsTried.push(models[0]);
+      if (models[0] === "dead-model") {
+        throw new Error(
+          'OpenAI-compatible endpoint returned 404: {"error":{"message":"The model `dead-model` does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}'
+        );
+      }
+      return { choices: [{ message: { content: "reply from live-model" } }] };
+    },
+  } as any);
+
+  const result = await router.generateWithFallback("ivan", { messages: [] }, ["groq:dead-model", "groq:live-model"]);
+
+  if (result.choices[0].message.content !== "reply from live-model") {
+    throw new Error(`CognitionRouter: expected the second model's real reply, got: ${JSON.stringify(result)}`);
+  }
+  if (modelsTried.join(",") !== "dead-model,live-model") {
+    throw new Error(`CognitionRouter: expected exactly one attempt each, dead-model then live-model, got: ${modelsTried.join(",")}`);
+  }
+  const keyAfter = await keyPool.getAvailableKey("groq");
+  if (keyAfter !== gk1) {
+    throw new Error("CognitionRouter: expected the key to remain fully available after a model_not_found 404 — the key was never at fault");
+  }
+});
+
 // ---------- Wellbeing Tests ----------
 registerTest("Wellbeing", "assessWellbeingSignal returns a real message for a high late-hour ratio", async () => {
   const { assessWellbeingSignal } = await import("../src/self/wellbeing.js");
