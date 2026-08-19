@@ -535,6 +535,30 @@ app.post("/api/voice-input", validateApiKey, async (req: any, res: any) => {
   }
 });
 
+// Verified Autonomy fix (2026-08-18, docs/architecture/AUTONOMY_VISION.md
+// Phase 1): CognitionRouter.generateWithFallback can silently fall through
+// internally from the cloud tier it was asked to use down to the local LLM
+// or offline keyword engine — same response shape either way, no error.
+// Before this, the Groq/Gemini branches below unconditionally labeled
+// `succeededStep` after their own name the instant a call returned non-empty
+// text, regardless of which tier actually produced it — a real, live-caught
+// self-narration fabrication (a decision trace could say "Answered via
+// Groq" with an invented-looking latency number while the local model
+// answered). This reads the response's own `__provenance` tag (added by
+// cognition-router.ts at every tier) to report honestly instead. `cloudLabel`
+// is the branch's own name ("Groq"/"Gemini") — correct for a "cloud" tier
+// result, since the cloud tier only ever tries the provider(s) present in
+// the models list that branch passed in.
+function labelForProvenance(response: any, cloudLabel: string): string {
+  const tier = response?.__provenance?.tier;
+  if (tier === "local") return "LocalLLM";
+  if (tier === "offline") return "Simulated";
+  if (tier === "error") return "Error";
+  // "cloud", or no tag at all (e.g. an older mock in a test) — the branch's
+  // own label was already correct in both of those cases.
+  return cloudLabel;
+}
+
 // Chat Streaming Endpoint (SSE)
 app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
   const { message, image } = req.body;
@@ -971,7 +995,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                   res.write("data: [DONE]\n\n");
                   res.end();
                   success = true;
-                  succeededStep = "Groq";
+                  succeededStep = labelForProvenance(response, "Groq");
                   return;
                 }
 
@@ -1002,7 +1026,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 res.write(`data: ${word} \n\n`);
               }
               success = true;
-              succeededStep = "Groq";
+              succeededStep = labelForProvenance(response, "Groq");
             }
           } catch (err: any) {
             observation.logTelemetry("warn", "Cognition", `Groq generation failed: ${err.message || err}`);
@@ -1078,7 +1102,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                   res.write("data: [DONE]\n\n");
                   res.end();
                   success = true;
-                  succeededStep = "Gemini";
+                  succeededStep = labelForProvenance(response, "Gemini");
                   return;
                 }
 
@@ -1109,7 +1133,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
                 res.write(`data: ${word} \n\n`);
               }
               success = true;
-              succeededStep = "Gemini";
+              succeededStep = labelForProvenance(response, "Gemini");
             }
           } catch (err: any) {
             observation.logTelemetry("warn", "Cognition", `Gemini generation failed: ${err.message || err}`);
@@ -1197,7 +1221,11 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       memoryConfidence: memoryHits.length > 0 ? 0.95 : 0.7,
       toolConfidence: toolSuccessRate,
       validationConfidence: success ? 1.0 : 0.4,
-      capabilityConfidence: succeededStep === "Simulated" ? 0.5 : succeededStep ? 0.9 : 0.3,
+      // "Error" (CognitionRouter's own internal catch-all — see
+      // labelForProvenance) means no backend answered at all, a genuine
+      // internal failure masked as a polite apology; that's worse than
+      // Simulated's crude-but-real keyword-matched answer, not equal to it.
+      capabilityConfidence: succeededStep === "Error" ? 0.2 : succeededStep === "Simulated" ? 0.5 : succeededStep ? 0.9 : 0.3,
       environmentConfidence: 1.0,
       ...(recentOutcomeSuccessRate !== null ? { outcomeConfidence: recentOutcomeSuccessRate } : {})
     });

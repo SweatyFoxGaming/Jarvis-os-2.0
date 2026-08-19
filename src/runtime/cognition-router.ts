@@ -90,6 +90,17 @@ function parseRetryAfterSeconds(err: any): number | undefined {
   return Math.min(Math.max(candidate, 1), MAX_RETRY_AFTER_SECONDS);
 }
 
+// The real transport (openai-compatible-client.ts) throws
+// `OpenAI-compatible endpoint returned ${status}: ${body}`, and a Groq
+// model-not-found 404's body contains `"code":"model_not_found"` — checked
+// as a message substring since the error shape is a plain Error, not a
+// structured object with the provider's parsed JSON attached. This is
+// deliberately narrow (this exact code, not "any 404") so an unrelated
+// 404 doesn't get misclassified into skipping the retry-other-keys path.
+function isModelNotFoundError(message: string): boolean {
+  return /model_not_found/i.test(message);
+}
+
 // Prefers the response's own usage.total_tokens when the provider reported
 // it; otherwise falls back to a rough ~4-chars-per-token estimate over the
 // request messages and response content, so recordUsage always gets a
@@ -203,6 +214,7 @@ export class CognitionRouter {
             },
           },
         ],
+        __provenance: { tier: "error", model: null },
       };
     }
   }
@@ -271,12 +283,33 @@ export class CognitionRouter {
           response = await this.transport(config, params, [realModel]);
           this.deps.keyPool.reportSuccess(provider, key);
         } catch (err: any) {
+          const message = err?.message || String(err);
+          if (isModelNotFoundError(message)) {
+            // The model name itself is invalid/removed from the provider's
+            // live catalog — this says nothing about the KEY's health.
+            // Cooling the key down here (the old behavior) needlessly
+            // cascades a bad model name into skipping every other model
+            // still left in `models`, even ones that would have worked —
+            // live-verified failure mode from the 2026-08-18 dead-Groq-
+            // model incident ("No available groq key (pool cooling down/
+            // exhausted); skipping model ...", on the very NEXT model,
+            // purely because this one 404'd on the only configured key).
+            // Retrying other keys for a dead model is equally pointless —
+            // it 404s on every key — so this breaks the key loop straight
+            // to the next model in `models` instead of the next key.
+            observation.logTelemetry(
+              "warn",
+              "Cognition",
+              `Cloud model "${model}" does not exist on ${provider}'s live catalog (model_not_found) — moving to the next model without penalizing this key: ${message}`
+            );
+            break; // next model in `models`, this key stays fully available
+          }
           const retryAfterSeconds = parseRetryAfterSeconds(err);
           await this.deps.keyPool.reportFailure(provider, key, retryAfterSeconds);
           observation.logTelemetry(
             "warn",
             "Cognition",
-            `Cloud model "${model}" failed on one ${provider} key (retrying the next available key for this provider, if any): ${err?.message || err}`
+            `Cloud model "${model}" failed on one ${provider} key (retrying the next available key for this provider, if any): ${message}`
           );
           continue; // next key for the same provider/model
         }
@@ -291,9 +324,22 @@ export class CognitionRouter {
           observation.logTelemetry(
             "warn",
             "Cognition",
-            `recordUsage failed after an already-successful cloud call for "${username}" (response is still returned unchanged): ${usageErr?.message || usageErr}`
+            `recordUsage failed after an already-successful cloud call for "${username}" (response is still returned, only tagged below): ${usageErr?.message || usageErr}`
           );
         }
+        // __provenance tags which tier actually produced this response —
+        // Verified Autonomy's first fix (2026-08-18): callers like
+        // server.ts's succeededStep previously assumed "this call didn't
+        // throw" meant "the models I passed in answered," even though this
+        // same method silently falls through to the local/offline tiers
+        // below on cloud exhaustion. A caller passing only groq: models and
+        // getting a local-tier response back would mislabel its own
+        // decision trace ("Answered via Groq") while a different backend
+        // actually answered — a real, live-caught self-narration
+        // fabrication, not a hypothetical one. Attached by mutation (not a
+        // new object) so callers/tests holding the original reference still
+        // see it — same object, more honestly labeled.
+        response.__provenance = { tier: "cloud", provider, model: realModel };
         return response;
       }
     }
@@ -320,6 +366,8 @@ export class CognitionRouter {
         baseUrl: stripKnownLocalSuffix(normalizedUrl),
       };
       const response = await this.transport(localConfig, localParams, [this.deps.localModelName]);
+      // See the cloud-tier return above for why this tag exists.
+      response.__provenance = { tier: "local", model: this.deps.localModelName };
       return response;
     } catch (err: any) {
       observation.logTelemetry(
@@ -338,6 +386,6 @@ export class CognitionRouter {
     const workspace = new CognitiveWorkspace();
     const systemMetrics = observation.getMetrics().system;
     const content = this.deps.localEngine.generateResponse(lastUserMessage, workspace, systemMetrics);
-    return { choices: [{ message: { content, role: "assistant" } }] };
+    return { choices: [{ message: { content, role: "assistant" } }], __provenance: { tier: "offline", model: "keyword-engine" } };
   }
 }
