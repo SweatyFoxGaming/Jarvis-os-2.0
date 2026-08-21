@@ -851,6 +851,20 @@ registerTest("Tools", "executeTool still returns the unknown-tool error shape af
   }
 });
 
+registerTest("Tools", "record_action_outcome rejects an invalid outcome value", async () => {
+  const result = await executeTool("record_action_outcome", { actionName: "send_email", outcome: "maybe" }, "admin");
+  if (result.ok || !result.error?.includes("must be either")) {
+    throw new Error(`Tools: expected an "outcome must be..." error, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Tools", "record_action_outcome reports no matching action when nothing is open (or no DB is reachable)", async () => {
+  const result = await executeTool("record_action_outcome", { actionName: "send_email", outcome: "worked" }, "admin");
+  if (result.ok || !result.error?.includes("No matching action found")) {
+    throw new Error(`Tools: expected a "No matching action found" error, got: ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("Tools", "view_screen returns a client-action sentinel when nothing is attached yet", async () => {
   const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: false, supportsRoundTrip: true });
   if (result.ok !== false || result.needsClientAction !== "capture_screen") {
