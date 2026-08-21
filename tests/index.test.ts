@@ -1941,7 +1941,7 @@ registerTest("CommandOutcomes", "getRecentOutcomeSuccessRate degrades cleanly wh
 });
 
 // ---------- Outcome Ledger Tests (no live Postgres in this test process) ----------
-import { isConsequentialAction, logAction, recordActionOutcome, getRecentActionSuccessRate } from "../src/kernel/state/outcome-ledger-repo.js";
+import { isConsequentialAction, logAction, recordActionOutcome, getRecentActionSuccessRate, getOpenFollowUps } from "../src/kernel/state/outcome-ledger-repo.js";
 
 registerTest("OutcomeLedger", "isConsequentialAction flags the 8 curated consequential tools", () => {
   const consequential = ["send_email", "send_personal_email", "github_create_issue", "calendar_create_event", "write_file", "write_vault_note", "set_objective", "update_objective_status"];
@@ -1977,6 +1977,13 @@ registerTest("OutcomeLedger", "getRecentActionSuccessRate degrades cleanly when 
   const result = await getRecentActionSuccessRate("test_user");
   if (result !== null) {
     throw new Error(`OutcomeLedger: expected null with no DB, got: ${result}`);
+  }
+});
+
+registerTest("OutcomeLedger", "getOpenFollowUps degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getOpenFollowUps("test_user");
+  if (!Array.isArray(result) || result.length !== 0) {
+    throw new Error(`OutcomeLedger: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
   }
 });
 
