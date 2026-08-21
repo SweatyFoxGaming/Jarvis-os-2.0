@@ -59,6 +59,7 @@ import * as webauthnChallengeTickets from "../src/kernel/state/webauthn-challeng
 import { ADMIN_API_KEY } from "../src/kernel/auth-middleware.js";
 import express from "express";
 import { createWebauthnRouter } from "../src/interaction/routes/webauthn-routes.js";
+import { mergeOutcomeRates } from "../src/kernel/outcome-confidence.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -3123,6 +3124,29 @@ registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully e
   const result = model.calculateOverallConfidence({});
   if (result !== 100) {
     throw new Error(`Confidence: expected 100 for an empty input, got ${result}`);
+  }
+});
+
+registerTest("Confidence", "mergeOutcomeRates returns null when neither rate has data", () => {
+  const result = mergeOutcomeRates(null, null);
+  if (result !== null) {
+    throw new Error(`Confidence: expected null with no data, got: ${result}`);
+  }
+});
+
+registerTest("Confidence", "mergeOutcomeRates uses whichever single rate is present", () => {
+  if (mergeOutcomeRates(0.8, null) !== 0.8) {
+    throw new Error(`Confidence: expected 0.8 with only the first rate present, got: ${mergeOutcomeRates(0.8, null)}`);
+  }
+  if (mergeOutcomeRates(null, 0.6) !== 0.6) {
+    throw new Error(`Confidence: expected 0.6 with only the second rate present, got: ${mergeOutcomeRates(null, 0.6)}`);
+  }
+});
+
+registerTest("Confidence", "mergeOutcomeRates averages both rates when both are present", () => {
+  const result = mergeOutcomeRates(0.8, 0.6);
+  if (result !== 0.7) {
+    throw new Error(`Confidence: expected 0.7 averaging 0.8 and 0.6, got: ${result}`);
   }
 });
 
