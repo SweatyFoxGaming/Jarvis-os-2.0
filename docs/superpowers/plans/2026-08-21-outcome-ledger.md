@@ -28,7 +28,7 @@
 - Test: `tests/index.test.ts` (new `OutcomeLedger` category, appended after the existing `"CommandOutcomes"` tests block, i.e. after line 1912)
 
 **Interfaces:**
-- Produces: `isConsequentialAction(actionName: string): boolean`, `logAction(username: string, actionName: string, actionSummary: string | null, executionOk: boolean): Promise<void>`, `recordActionOutcome(username: string, actionName: string, outcome: "worked" | "not_worked"): Promise<boolean>`, `getRecentActionSuccessRate(): Promise<number | null>` — all exported from `src/kernel/state/outcome-ledger-repo.ts`. Task 2 consumes `isConsequentialAction` and `logAction`. Task 3 consumes `recordActionOutcome`. Task 4 consumes `getRecentActionSuccessRate`.
+- Produces: `isConsequentialAction(actionName: string): boolean`, `logAction(username: string, actionName: string, actionSummary: string | null, executionOk: boolean): Promise<void>`, `recordActionOutcome(username: string, actionName: string, outcome: "worked" | "not_worked"): Promise<boolean>`, `getRecentActionSuccessRate(username: string): Promise<number | null>` — all exported from `src/kernel/state/outcome-ledger-repo.ts`. Task 2 consumes `isConsequentialAction` and `logAction`. Task 3 consumes `recordActionOutcome`. Task 4 consumes `getRecentActionSuccessRate`.
 
 - [ ] **Step 1: Write the migration**
 

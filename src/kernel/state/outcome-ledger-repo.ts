@@ -63,7 +63,7 @@ export async function recordActionOutcome(
          SELECT id FROM outcome_ledger
          WHERE username = $2 AND action_name = $3 AND needs_follow_up AND outcome IS NULL
          ORDER BY executed_at DESC LIMIT 1
-       )`,
+       ) AND outcome IS NULL`,
       [outcome, username, actionName]
     );
     return (rowCount ?? 0) > 0;

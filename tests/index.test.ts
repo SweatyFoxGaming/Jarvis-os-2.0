@@ -1974,7 +1974,7 @@ registerTest("OutcomeLedger", "recordActionOutcome degrades cleanly when Postgre
 });
 
 registerTest("OutcomeLedger", "getRecentActionSuccessRate degrades cleanly when Postgres isn't reachable", async () => {
-  const result = await getRecentActionSuccessRate();
+  const result = await getRecentActionSuccessRate("test_user");
   if (result !== null) {
     throw new Error(`OutcomeLedger: expected null with no DB, got: ${result}`);
   }

@@ -794,25 +794,28 @@ async function executeToolInner(
   }
 }
 
-// Short, per-tool-name human-readable summary of what an action did, for
-// the outcome ledger's action_summary column — falls back to the tool name
-// alone for tools with no natural one-line summary.
-function summarizeAction(name: string, args: Record<string, any>): string {
+// Fixed, per-tool-name human-readable label for the outcome ledger's
+// action_summary column — deliberately never interpolates any argument
+// value (recipient addresses, subjects, file paths, objective text), since
+// this table has no redaction, retention limit, or access control of its
+// own. Falls back to the bare tool name for anything unlisted.
+function summarizeAction(name: string): string {
   switch (name) {
     case "send_email":
     case "send_personal_email":
-      return `to ${args.to}: "${args.subject}"`;
+      return "sent an email";
     case "github_create_issue":
-      return `${args.owner}/${args.repo}: "${args.title}"`;
+      return "created a GitHub issue";
     case "calendar_create_event":
-      return String(args.summary || args.title || "");
+      return "created a calendar event";
     case "write_file":
+      return "wrote a file";
     case "write_vault_note":
-      return String(args.path || args.title || "");
+      return "wrote a vault note";
     case "set_objective":
-      return String(args.description || "");
+      return "set an objective";
     case "update_objective_status":
-      return `objective ${args.objectiveId} -> ${args.status}`;
+      return "updated an objective's status";
     default:
       return name;
   }
@@ -827,7 +830,7 @@ export async function executeTool(
   screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
 ): Promise<ToolCallResult> {
   const result = await executeToolInner(name, args, username, ai, localEndpoint, screenContext);
-  outcomeLedgerRepo.logAction(username, name, summarizeAction(name, args), result.ok).catch(() => {});
+  outcomeLedgerRepo.logAction(username, name, summarizeAction(name), result.ok).catch(() => {});
   return result;
 }
 
