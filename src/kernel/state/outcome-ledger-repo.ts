@@ -99,3 +99,34 @@ export async function getRecentActionSuccessRate(username: string): Promise<numb
     return null;
   }
 }
+
+export interface OpenFollowUp {
+  action_name: string;
+  action_summary: string | null;
+  executed_at: Date;
+}
+
+// Live-verified gap this closes: without a structural nudge, the model does
+// NOT proactively call record_action_outcome even when the user explicitly
+// confirms an action worked — it just replies conversationally. This lets
+// server.ts splice "you have N action(s) awaiting confirmation" into the
+// system instruction the same way it already does for pending build
+// requests (see buildRequestContext), so a genuine confirmation in the next
+// user message actually gets recognized and acted on. Degrades to []
+// (never throws), matching every other read function in this file.
+export async function getOpenFollowUps(username: string, limit = 5): Promise<OpenFollowUp[]> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT action_name, action_summary, executed_at FROM outcome_ledger
+       WHERE username = $1 AND needs_follow_up AND outcome IS NULL
+       ORDER BY executed_at DESC
+       LIMIT $2`,
+      [username, limit]
+    );
+    return rows;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OutcomeLedger", `getOpenFollowUps(${username}) failed: ${err.message}`);
+    return [];
+  }
+}
