@@ -69,6 +69,14 @@ export const ALL_CAPABILITIES = [
   "objectives.write",
   "system.execute",
   "system.mcp_manage",
+  // Deliberately separate from system.execute (record_command_outcome,
+  // which pairs with propose_command — also system.execute, so that pairing
+  // is self-consistent). record_action_outcome pairs with actions gated by
+  // much more widely granted capabilities (email.personal.send,
+  // calendar.write), so it needs its own, more widely grantable capability
+  // or personal users could perform a consequential action but never
+  // confirm its outcome.
+  "outcome.record",
   "vault.read",
   "vault.write",
   "settings.write",
@@ -126,6 +134,7 @@ export const DEFAULT_PERSONAL_CAPABILITIES: readonly string[] = [
   "calendar.read",
   "calendar.write",
   "email.personal.send",
+  "outcome.record",
 ];
 
 export type Capability = (typeof ALL_CAPABILITIES)[number];

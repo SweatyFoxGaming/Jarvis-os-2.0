@@ -88,7 +88,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   list_objectives: "objectives.read",
   update_objective_status: "objectives.write",
   record_command_outcome: "system.execute",
-  record_action_outcome: "system.execute",
+  record_action_outcome: "outcome.record",
   propose_mcp_server: "system.mcp_manage",
   confirm_build_direction: "executive.plan",
   search_vault: "vault.read",
@@ -827,7 +827,7 @@ export async function executeTool(
   screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
 ): Promise<ToolCallResult> {
   const result = await executeToolInner(name, args, username, ai, localEndpoint, screenContext);
-  await outcomeLedgerRepo.logAction(username, name, summarizeAction(name, args), result.ok);
+  outcomeLedgerRepo.logAction(username, name, summarizeAction(name, args), result.ok).catch(() => {});
   return result;
 }
 

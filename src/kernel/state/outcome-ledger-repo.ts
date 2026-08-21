@@ -73,24 +73,29 @@ export async function recordActionOutcome(
   }
 }
 
-// Returns null when zero outcomes have ever been recorded — callers must
-// treat that as "no data yet," never as "0% success." Windowed to the most
-// recent 20 recorded outcomes, mirroring
-// command-proposals-repo.ts's getRecentOutcomeSuccessRate.
-export async function getRecentActionSuccessRate(): Promise<number | null> {
+// Returns null when zero outcomes have ever been recorded for this user —
+// callers must treat that as "no data yet," never as "0% success."
+// Windowed to the most recent 20 recorded outcomes. Scoped to one user
+// (unlike command-proposals-repo.ts's getRecentOutcomeSuccessRate, which is
+// intentionally global because command_proposals is effectively
+// admin-only) — this ledger covers every user's actions, so a global rate
+// would let one user's failures lower the confidence number shown to
+// every other user.
+export async function getRecentActionSuccessRate(username: string): Promise<number | null> {
   try {
     const db = getPool();
     const { rows } = await db.query(
       `SELECT outcome FROM outcome_ledger
-       WHERE outcome IS NOT NULL
+       WHERE username = $1 AND outcome IS NOT NULL
        ORDER BY outcome_recorded_at DESC
-       LIMIT 20`
+       LIMIT 20`,
+      [username]
     );
     if (rows.length === 0) return null;
     const worked = rows.filter((r: { outcome: string }) => r.outcome === "worked").length;
     return worked / rows.length;
   } catch (err: any) {
-    observation.logTelemetry("warn", "OutcomeLedger", `getRecentActionSuccessRate() failed: ${err.message}`);
+    observation.logTelemetry("warn", "OutcomeLedger", `getRecentActionSuccessRate(${username}) failed: ${err.message}`);
     return null;
   }
 }

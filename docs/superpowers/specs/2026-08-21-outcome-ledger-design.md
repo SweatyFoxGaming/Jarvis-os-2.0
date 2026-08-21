@@ -19,7 +19,7 @@ Every tool call gets logged (`execution_ok`), but only a curated subset also get
 
 **Trivial — logged, no follow-up (24):** every read-only tool (`github_get_repo_or_file`, `list_files`, `read_file`, `search_vault`, `get_vault_note`, `get_vault_backlinks`, `query_knowledge_graph`, `calendar_list_events`, `list_objectives`, `get_briefing`, `get_news`, `search_web`, `get_security_status`, `view_screen`, `list_constraints`, `get_rapport_summary`), plus actions with no lasting external effect (`speak_text`, `decompose_plan`, `confirm_build_direction`, `display_content`, `reflect_on_self`), plus sandboxed actions that can't touch the real system (`run_sandbox_command`, `reset_sandbox`, `propose_mcp_server` — the last only ever creates a pending row a human must approve before anything connects).
 
-**Deliberately excluded from the ledger entirely:** `propose_command` and `record_command_outcome`. These already have a complete, working lifecycle in `command_proposals` — logging them into a second table would give the confidence calculation two disagreeing signals for the same underlying events.
+**Logged like every other call, but never counted:** `propose_command` and `record_command_outcome`. These already have a complete, working lifecycle in `command_proposals` — a row is still written to the ledger for each of them, but they are never flagged `needs_follow_up` and therefore never countable toward the success rate. Folding them into the ledger's confidence signal too would give the confidence calculation two disagreeing signals for the same underlying events.
 
 ## Schema
 

@@ -29,6 +29,10 @@ const migration: Migration = {
       CREATE INDEX outcome_ledger_pending_idx ON outcome_ledger(username, action_name)
         WHERE needs_follow_up AND outcome IS NULL;
     `);
+    await client.query(`
+      CREATE INDEX outcome_ledger_recorded_idx ON outcome_ledger(username, outcome_recorded_at DESC)
+        WHERE outcome IS NOT NULL;
+    `);
   },
 };
 

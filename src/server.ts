@@ -1220,7 +1220,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       : toolCallsExecuted.filter(t => t.ok).length / toolCallsExecuted.length;
     const [recentCommandOutcomeSuccessRate, recentActionOutcomeSuccessRate] = await Promise.all([
       commandProposalsRepo.getRecentOutcomeSuccessRate(),
-      outcomeLedgerRepo.getRecentActionSuccessRate(),
+      outcomeLedgerRepo.getRecentActionSuccessRate(req.username),
     ]);
     const recentOutcomeSuccessRate = mergeOutcomeRates(recentCommandOutcomeSuccessRate, recentActionOutcomeSuccessRate);
     const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
