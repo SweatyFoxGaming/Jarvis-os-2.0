@@ -837,6 +837,20 @@ registerTest("Tools", "executeTool rejects unknown tool names", async () => {
   }
 });
 
+registerTest("Tools", "executeTool still resolves normally for an ungated tool after the outcome-ledger write hook is added", async () => {
+  const result = await executeTool("list_constraints", {}, "test_user");
+  if (!result.ok) {
+    throw new Error(`Tools: expected list_constraints to succeed, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Tools", "executeTool still returns the unknown-tool error shape after the outcome-ledger write hook is added", async () => {
+  const result = await executeTool("not_a_real_tool", {}, "test_user");
+  if (result.ok || !result.error?.includes("Unknown tool")) {
+    throw new Error(`Tools: expected an "Unknown tool" error, got: ${JSON.stringify(result)}`);
+  }
+});
+
 registerTest("Tools", "view_screen returns a client-action sentinel when nothing is attached yet", async () => {
   const result = await executeTool("view_screen", {}, "admin", null, null, { alreadyAttached: false, supportsRoundTrip: true });
   if (result.ok !== false || result.needsClientAction !== "capture_screen") {

@@ -18,6 +18,7 @@ import * as news from "./providers/news.js";
 import * as webSearch from "./providers/websearch.js";
 import * as securityRepo from "../kernel/state/security-repo.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
+import * as outcomeLedgerRepo from "../kernel/state/outcome-ledger-repo.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./mcp-registry.js";
@@ -502,7 +503,7 @@ export function getAllToolDeclarations(): FunctionDeclaration[] {
   return [...TOOL_DECLARATIONS, ...mcpDeclarations];
 }
 
-export async function executeTool(
+async function executeToolInner(
   name: string,
   args: Record<string, any>,
   username: string,
@@ -767,6 +768,44 @@ export async function executeTool(
     };
   }
 }
+
+// Short, per-tool-name human-readable summary of what an action did, for
+// the outcome ledger's action_summary column — falls back to the tool name
+// alone for tools with no natural one-line summary.
+function summarizeAction(name: string, args: Record<string, any>): string {
+  switch (name) {
+    case "send_email":
+    case "send_personal_email":
+      return `to ${args.to}: "${args.subject}"`;
+    case "github_create_issue":
+      return `${args.owner}/${args.repo}: "${args.title}"`;
+    case "calendar_create_event":
+      return String(args.summary || args.title || "");
+    case "write_file":
+    case "write_vault_note":
+      return String(args.path || args.title || "");
+    case "set_objective":
+      return String(args.description || "");
+    case "update_objective_status":
+      return `objective ${args.objectiveId} -> ${args.status}`;
+    default:
+      return name;
+  }
+}
+
+export async function executeTool(
+  name: string,
+  args: Record<string, any>,
+  username: string,
+  ai: GoogleGenAI | null = null,
+  localEndpoint: string | null = null,
+  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
+): Promise<ToolCallResult> {
+  const result = await executeToolInner(name, args, username, ai, localEndpoint, screenContext);
+  await outcomeLedgerRepo.logAction(username, name, summarizeAction(name, args), result.ok);
+  return result;
+}
+
 // Keyword triggers per tool, not a single flat list — makes it obvious which
 // tool a match implies. This is a hand-maintained list, deliberately not
 // derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
