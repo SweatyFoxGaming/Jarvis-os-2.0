@@ -15,6 +15,7 @@ import * as vaultRepo from "./state/vault-repo.js";
 import * as sessionRepo from "./state/session-repo.js";
 import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
 import * as evolutionRepo from "./state/evolution-repo.js";
+import * as outcomeLedgerRepo from "./state/outcome-ledger-repo.js";
 import * as wellbeing from "../self/wellbeing.js";
 import * as wellbeingRepo from "./state/wellbeing-repo.js";
 import { assessSystemHealth, type HealthAssessment } from "../self/health-watchdog.js";
@@ -395,25 +396,33 @@ const TRANSCRIPT_RETENTION_DAYS = positiveIntegerEnv(process.env.TRANSCRIPT_RETE
 const SELF_REFLECTION_RETENTION_DAYS = positiveIntegerEnv(process.env.SELF_REFLECTION_RETENTION_DAYS, 180);
 const PROACTIVE_THOUGHT_RETENTION_DAYS = positiveIntegerEnv(process.env.PROACTIVE_THOUGHT_RETENTION_DAYS, 180);
 const EVOLUTION_ANALYSIS_RETENTION_DAYS = positiveIntegerEnv(process.env.EVOLUTION_ANALYSIS_RETENTION_DAYS, 90);
+// Same middle-ground default as evolution analyses: outcome_ledger backs a
+// "recent success rate" signal that's already windowed to the most recent
+// 20 confirmed outcomes, so it doesn't need long retention for that purpose
+// — this default just keeps enough history for a user to review "did that
+// email I sent last month actually go out."
+const OUTCOME_LEDGER_RETENTION_DAYS = positiveIntegerEnv(process.env.OUTCOME_LEDGER_RETENTION_DAYS, 90);
 
 export function startDataRetentionJob(intervalMs = 24 * 60 * 60 * 1000): NodeJS.Timeout {
   return registerJob("data-retention", intervalMs, async () => {
-    const [prunedMessages, prunedTranscripts, prunedReflections, prunedThoughts, prunedAnalyses] = await Promise.all([
+    const [prunedMessages, prunedTranscripts, prunedReflections, prunedThoughts, prunedAnalyses, prunedOutcomes] = await Promise.all([
       sessionRepo.pruneOldMessages(CONVERSATION_RETENTION_DAYS),
       transcriptEventsRepo.pruneOldTranscriptEvents(TRANSCRIPT_RETENTION_DAYS),
       identityRepo.pruneOldSelfReflections(SELF_REFLECTION_RETENTION_DAYS),
       identityRepo.pruneOldProactiveThoughts(PROACTIVE_THOUGHT_RETENTION_DAYS),
       evolutionRepo.pruneOldAnalyses(EVOLUTION_ANALYSIS_RETENTION_DAYS),
+      outcomeLedgerRepo.pruneOldEntries(OUTCOME_LEDGER_RETENTION_DAYS),
     ]);
-    if (prunedMessages > 0 || prunedTranscripts > 0 || prunedReflections > 0 || prunedThoughts > 0 || prunedAnalyses > 0) {
+    if (prunedMessages > 0 || prunedTranscripts > 0 || prunedReflections > 0 || prunedThoughts > 0 || prunedAnalyses > 0 || prunedOutcomes > 0) {
       observation.logTelemetry(
         "info",
         "DataRetention",
         `Pruned ${prunedMessages} conversation message(s) older than ${CONVERSATION_RETENTION_DAYS}d, ` +
           `${prunedTranscripts} transcript event(s) older than ${TRANSCRIPT_RETENTION_DAYS}d, ` +
           `${prunedReflections} self-reflection(s) older than ${SELF_REFLECTION_RETENTION_DAYS}d, ` +
-          `${prunedThoughts} proactive thought(s) older than ${PROACTIVE_THOUGHT_RETENTION_DAYS}d, and ` +
-          `${prunedAnalyses} evolution analysis/analyses older than ${EVOLUTION_ANALYSIS_RETENTION_DAYS}d.`
+          `${prunedThoughts} proactive thought(s) older than ${PROACTIVE_THOUGHT_RETENTION_DAYS}d, ` +
+          `${prunedAnalyses} evolution analysis/analyses older than ${EVOLUTION_ANALYSIS_RETENTION_DAYS}d, and ` +
+          `${prunedOutcomes} outcome ledger entr(y/ies) older than ${OUTCOME_LEDGER_RETENTION_DAYS}d.`
       );
     }
   });
