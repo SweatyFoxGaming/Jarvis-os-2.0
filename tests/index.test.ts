@@ -1911,6 +1911,46 @@ registerTest("CommandOutcomes", "getRecentOutcomeSuccessRate degrades cleanly wh
   }
 });
 
+// ---------- Outcome Ledger Tests (no live Postgres in this test process) ----------
+import { isConsequentialAction, logAction, recordActionOutcome, getRecentActionSuccessRate } from "../src/kernel/state/outcome-ledger-repo.js";
+
+registerTest("OutcomeLedger", "isConsequentialAction flags the 8 curated consequential tools", () => {
+  const consequential = ["send_email", "send_personal_email", "github_create_issue", "calendar_create_event", "write_file", "write_vault_note", "set_objective", "update_objective_status"];
+  for (const name of consequential) {
+    if (!isConsequentialAction(name)) {
+      throw new Error(`OutcomeLedger: expected "${name}" to be consequential`);
+    }
+  }
+});
+
+registerTest("OutcomeLedger", "isConsequentialAction does not flag read-only or excluded tools", () => {
+  const trivial = ["list_files", "read_file", "search_web", "get_briefing", "list_objectives", "propose_command", "record_command_outcome"];
+  for (const name of trivial) {
+    if (isConsequentialAction(name)) {
+      throw new Error(`OutcomeLedger: expected "${name}" not to be consequential`);
+    }
+  }
+});
+
+registerTest("OutcomeLedger", "logAction never throws when Postgres isn't reachable", async () => {
+  await logAction("test_user", "send_email", "to test@example.com", true);
+  // Reaching this line without an unhandled rejection is the assertion.
+});
+
+registerTest("OutcomeLedger", "recordActionOutcome degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await recordActionOutcome("test_user", "send_email", "worked");
+  if (result !== false) {
+    throw new Error(`OutcomeLedger: expected false with no DB, got: ${result}`);
+  }
+});
+
+registerTest("OutcomeLedger", "getRecentActionSuccessRate degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getRecentActionSuccessRate();
+  if (result !== null) {
+    throw new Error(`OutcomeLedger: expected null with no DB, got: ${result}`);
+  }
+});
+
 // ---------- Identity (Continuity of Self) Tests ----------
 registerTest("Identity", "buildIdentityContext degrades cleanly when Postgres isn't reachable", async () => {
   // This test process never calls initDatabase(), so there's no live
