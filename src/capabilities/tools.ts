@@ -449,6 +449,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       properties: {
         actionName: { type: Type.STRING, description: "The tool name of the action being confirmed, e.g. \"send_email\" or \"write_file\"" },
         outcome: { type: Type.STRING, description: "Either \"worked\" or \"not_worked\", based on what the user said" },
+        ledgerId: { type: Type.NUMBER, description: "The numeric id of this specific action, if you have it from your list of actions awaiting confirmation. Supply this when the same action type has more than one action awaiting confirmation, so the right one gets updated — omit it if you only have one." },
       },
       required: ["actionName", "outcome"],
     },
@@ -711,7 +712,7 @@ async function executeToolInner(
         if (args.outcome !== "worked" && args.outcome !== "not_worked") {
           return { name, ok: false, error: "outcome must be either \"worked\" or \"not_worked\"." };
         }
-        const recorded = await outcomeLedgerRepo.recordActionOutcome(username, args.actionName, args.outcome);
+        const recorded = await outcomeLedgerRepo.recordActionOutcome(username, args.actionName, args.outcome, args.ledgerId);
         if (!recorded) {
           return { name, ok: false, error: "No matching action found awaiting an outcome for that action name." };
         }

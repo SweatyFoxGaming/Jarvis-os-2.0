@@ -671,11 +671,14 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // outstanding so a genuine confirmation in the next message gets
     // recognized and acted on instead of just acknowledged.
     const openFollowUps = await outcomeLedgerRepo.getOpenFollowUps(req.username);
+    // "recent" rather than a bare count: getOpenFollowUps caps at 5, so
+    // stating that number as a total would be wrong whenever more are open.
     const outcomeFollowUpContext = openFollowUps.length > 0
-      ? `\n\nYou have ${openFollowUps.length} action(s) awaiting outcome confirmation: ` +
-        openFollowUps.map(f => `${f.action_name} (${f.action_summary || f.action_name})`).join(", ") +
+      ? `\n\nYou have these recent action(s) awaiting outcome confirmation: ` +
+        openFollowUps.map(f => `[id ${f.id}] ${f.action_name} (${f.action_summary || f.action_name})`).join(", ") +
         `. If the user's next message confirms or denies whether one of these worked, call record_action_outcome ` +
-        `with that action's name and the outcome — don't just acknowledge it conversationally.`
+        `with that action's name and outcome. If more than one listed here shares the same action name, also pass ` +
+        `its id so the right one gets updated — don't just acknowledge it conversationally.`
       : "";
 
     const baseSystemInstruction =

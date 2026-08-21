@@ -44,28 +44,39 @@ export async function logAction(
   }
 }
 
-// Resolves against the most recent still-open row for this (username,
-// actionName) rather than an id, so the model never has to remember an
-// opaque identifier across a conversation that might get compacted — "the
-// most recent still-open thing of this type" survives that. A repeat call
-// or the user answering twice is a safe no-op, the same guarantee
+// When ledgerId is given (the model read it off an OpenFollowUp in its
+// system context), resolves that exact row — still scoped to username so
+// one user can never confirm another's action. This disambiguates the case
+// CodeRabbit flagged on PR #169: two open rows for the same action_name
+// used to always resolve to "most recent," which could silently confirm
+// the wrong one. Without ledgerId (e.g. a stale conversation whose context
+// no longer shows the open-follow-ups list), falls back to that same
+// most-recent-open heuristic — a repeat call or the user answering twice is
+// still a safe no-op either way, the same guarantee
 // command-proposals-repo.ts's recordCommandOutcome gives today.
 export async function recordActionOutcome(
   username: string,
   actionName: string,
-  outcome: "worked" | "not_worked"
+  outcome: "worked" | "not_worked",
+  ledgerId?: number
 ): Promise<boolean> {
   try {
     const db = getPool();
-    const { rowCount } = await db.query(
-      `UPDATE outcome_ledger SET outcome = $1, outcome_recorded_at = now()
-       WHERE id = (
-         SELECT id FROM outcome_ledger
-         WHERE username = $2 AND action_name = $3 AND needs_follow_up AND outcome IS NULL
-         ORDER BY executed_at DESC LIMIT 1
-       ) AND outcome IS NULL`,
-      [outcome, username, actionName]
-    );
+    const { rowCount } = ledgerId !== undefined
+      ? await db.query(
+          `UPDATE outcome_ledger SET outcome = $1, outcome_recorded_at = now()
+           WHERE id = $2 AND username = $3 AND action_name = $4 AND needs_follow_up AND outcome IS NULL`,
+          [outcome, ledgerId, username, actionName]
+        )
+      : await db.query(
+          `UPDATE outcome_ledger SET outcome = $1, outcome_recorded_at = now()
+           WHERE id = (
+             SELECT id FROM outcome_ledger
+             WHERE username = $2 AND action_name = $3 AND needs_follow_up AND outcome IS NULL
+             ORDER BY executed_at DESC LIMIT 1
+           ) AND outcome IS NULL`,
+          [outcome, username, actionName]
+        );
     return (rowCount ?? 0) > 0;
   } catch (err: any) {
     observation.logTelemetry("warn", "OutcomeLedger", `recordActionOutcome(${username}, ${actionName}, ${outcome}) failed: ${err.message}`);
@@ -101,6 +112,7 @@ export async function getRecentActionSuccessRate(username: string): Promise<numb
 }
 
 export interface OpenFollowUp {
+  id: number;
   action_name: string;
   action_summary: string | null;
   executed_at: Date;
@@ -112,13 +124,18 @@ export interface OpenFollowUp {
 // server.ts splice "you have N action(s) awaiting confirmation" into the
 // system instruction the same way it already does for pending build
 // requests (see buildRequestContext), so a genuine confirmation in the next
-// user message actually gets recognized and acted on. Degrades to []
-// (never throws), matching every other read function in this file.
+// user message actually gets recognized and acted on. Exposes `id` so the
+// model can disambiguate two open rows for the same action_name (see
+// recordActionOutcome's ledgerId parameter) instead of always resolving to
+// "most recent." Degrades to [] (never throws), matching every other read
+// function in this file. Callers must not present `rows.length` as a total
+// count — it's capped at `limit`, so a fuller phrasing ("N most recent") is
+// the caller's responsibility, not this function's.
 export async function getOpenFollowUps(username: string, limit = 5): Promise<OpenFollowUp[]> {
   try {
     const db = getPool();
     const { rows } = await db.query(
-      `SELECT action_name, action_summary, executed_at FROM outcome_ledger
+      `SELECT id, action_name, action_summary, executed_at FROM outcome_ledger
        WHERE username = $1 AND needs_follow_up AND outcome IS NULL
        ORDER BY executed_at DESC
        LIMIT $2`,
