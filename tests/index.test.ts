@@ -60,6 +60,7 @@ import { ADMIN_API_KEY } from "../src/kernel/auth-middleware.js";
 import express from "express";
 import { createWebauthnRouter } from "../src/interaction/routes/webauthn-routes.js";
 import { mergeOutcomeRates } from "../src/kernel/outcome-confidence.js";
+import { formatRelativeTime } from "../src/kernel/format-relative-time.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -3154,6 +3155,25 @@ registerTest("Confidence", "mergeOutcomeRates averages both rates when both are 
   const result = mergeOutcomeRates(0.8, 0.6);
   if (result !== 0.7) {
     throw new Error(`Confidence: expected 0.7 averaging 0.8 and 0.6, got: ${result}`);
+  }
+});
+
+registerTest("Confidence", "formatRelativeTime buckets elapsed time into minutes/hours/days", () => {
+  const now = Date.parse("2026-08-21T12:00:00.000Z");
+  const cases: [string, string][] = [
+    ["2026-08-21T11:59:45.000Z", "moments ago"],
+    ["2026-08-21T11:59:00.000Z", "1 minute ago"],
+    ["2026-08-21T11:45:00.000Z", "15 minutes ago"],
+    ["2026-08-21T11:00:00.000Z", "1 hour ago"],
+    ["2026-08-21T09:00:00.000Z", "3 hours ago"],
+    ["2026-08-20T12:00:00.000Z", "1 day ago"],
+    ["2026-08-18T12:00:00.000Z", "3 days ago"],
+  ];
+  for (const [iso, expected] of cases) {
+    const result = formatRelativeTime(new Date(iso), now);
+    if (result !== expected) {
+      throw new Error(`Confidence: expected "${expected}" for ${iso}, got: "${result}"`);
+    }
   }
 });
 
