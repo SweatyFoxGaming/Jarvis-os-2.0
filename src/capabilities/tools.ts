@@ -18,6 +18,7 @@ import * as news from "./providers/news.js";
 import * as webSearch from "./providers/websearch.js";
 import * as securityRepo from "../kernel/state/security-repo.js";
 import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
+import * as outcomeLedgerRepo from "../kernel/state/outcome-ledger-repo.js";
 import * as objectivesRepo from "../kernel/state/objectives-repo.js";
 import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
 import * as mcpRegistry from "./mcp-registry.js";
@@ -87,6 +88,7 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   list_objectives: "objectives.read",
   update_objective_status: "objectives.write",
   record_command_outcome: "system.execute",
+  record_action_outcome: "outcome.record",
   propose_mcp_server: "system.mcp_manage",
   confirm_build_direction: "executive.plan",
   search_vault: "vault.read",
@@ -439,6 +441,19 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "record_action_outcome",
+    description:
+      "Record whether a previously taken action (like sending an email or saving a note) actually worked, based on what the user told you. Call this only when the user has explicitly said whether it worked — never speculatively.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        actionName: { type: Type.STRING, description: "The tool name of the action being confirmed, e.g. \"send_email\" or \"write_file\"" },
+        outcome: { type: Type.STRING, description: "Either \"worked\" or \"not_worked\", based on what the user said" },
+      },
+      required: ["actionName", "outcome"],
+    },
+  },
+  {
     name: "propose_mcp_server",
     description:
       "Propose a new MCP (Model Context Protocol) server as a new source of capabilities. This ONLY creates a pending registration for the user to review and approve — it never connects to or trusts the server automatically. Only call this when the user has given you a specific server name and URL and clearly wants it registered.",
@@ -502,7 +517,7 @@ export function getAllToolDeclarations(): FunctionDeclaration[] {
   return [...TOOL_DECLARATIONS, ...mcpDeclarations];
 }
 
-export async function executeTool(
+async function executeToolInner(
   name: string,
   args: Record<string, any>,
   username: string,
@@ -692,6 +707,17 @@ export async function executeTool(
         output = { recorded: true };
         break;
       }
+      case "record_action_outcome": {
+        if (args.outcome !== "worked" && args.outcome !== "not_worked") {
+          return { name, ok: false, error: "outcome must be either \"worked\" or \"not_worked\"." };
+        }
+        const recorded = await outcomeLedgerRepo.recordActionOutcome(username, args.actionName, args.outcome);
+        if (!recorded) {
+          return { name, ok: false, error: "No matching action found awaiting an outcome for that action name." };
+        }
+        output = { recorded: true };
+        break;
+      }
       case "view_screen": {
         if (screenContext.alreadyAttached) {
           output = "A screenshot is already attached to this message — describe what's visible in it directly, no need to look again.";
@@ -767,14 +793,56 @@ export async function executeTool(
     };
   }
 }
+
+// Fixed, per-tool-name human-readable label for the outcome ledger's
+// action_summary column — deliberately never interpolates any argument
+// value (recipient addresses, subjects, file paths, objective text), since
+// this table has no redaction, retention limit, or access control of its
+// own. Falls back to the bare tool name for anything unlisted.
+function summarizeAction(name: string): string {
+  switch (name) {
+    case "send_email":
+    case "send_personal_email":
+      return "sent an email";
+    case "github_create_issue":
+      return "created a GitHub issue";
+    case "calendar_create_event":
+      return "created a calendar event";
+    case "write_file":
+      return "wrote a file";
+    case "write_vault_note":
+      return "wrote a vault note";
+    case "set_objective":
+      return "set an objective";
+    case "update_objective_status":
+      return "updated an objective's status";
+    default:
+      return name;
+  }
+}
+
+export async function executeTool(
+  name: string,
+  args: Record<string, any>,
+  username: string,
+  ai: GoogleGenAI | null = null,
+  localEndpoint: string | null = null,
+  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
+): Promise<ToolCallResult> {
+  const result = await executeToolInner(name, args, username, ai, localEndpoint, screenContext);
+  outcomeLedgerRepo.logAction(username, name, summarizeAction(name), result.ok).catch(() => {});
+  return result;
+}
+
 // Keyword triggers per tool, not a single flat list — makes it obvious which
 // tool a match implies. This is a hand-maintained list, deliberately not
 // derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
 // display_content, update_objective_status, record_command_outcome,
-// confirm_build_direction) are intentionally absent because they should only
-// ever be invoked as a model-driven follow-up, never routed to directly by
-// keyword match. If you add a tool that SHOULD be keyword-routable, add its
-// entry here too — nothing enforces the two staying in sync.
+// record_action_outcome, confirm_build_direction) are intentionally absent
+// because they should only ever be invoked as a model-driven follow-up,
+// never routed to directly by keyword match. If you add a tool that SHOULD
+// be keyword-routable, add its entry here too — nothing enforces the two
+// staying in sync.
 const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
   github_create_issue: ["github", "issue", "repo", "repository"],

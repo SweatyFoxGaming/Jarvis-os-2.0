@@ -43,6 +43,8 @@ import * as identity from "./self/identity.js";
 import * as rapport from "./self/rapport.js";
 import * as identityRepo from "./kernel/state/identity-repo.js";
 import * as commandProposalsRepo from "./kernel/state/command-proposals-repo.js";
+import * as outcomeLedgerRepo from "./kernel/state/outcome-ledger-repo.js";
+import { mergeOutcomeRates } from "./kernel/outcome-confidence.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
 import { authRouter } from "./interaction/routes/auth-routes.js";
 import { createWebauthnRouter } from "./interaction/routes/webauthn-routes.js";
@@ -1216,7 +1218,11 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     const toolSuccessRate = toolCallsExecuted.length === 0
       ? 1.0
       : toolCallsExecuted.filter(t => t.ok).length / toolCallsExecuted.length;
-    const recentOutcomeSuccessRate = await commandProposalsRepo.getRecentOutcomeSuccessRate();
+    const [recentCommandOutcomeSuccessRate, recentActionOutcomeSuccessRate] = await Promise.all([
+      commandProposalsRepo.getRecentOutcomeSuccessRate(),
+      outcomeLedgerRepo.getRecentActionSuccessRate(req.username),
+    ]);
+    const recentOutcomeSuccessRate = mergeOutcomeRates(recentCommandOutcomeSuccessRate, recentActionOutcomeSuccessRate);
     const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
       memoryConfidence: memoryHits.length > 0 ? 0.95 : 0.7,
       toolConfidence: toolSuccessRate,

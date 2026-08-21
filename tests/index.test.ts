@@ -59,6 +59,7 @@ import * as webauthnChallengeTickets from "../src/kernel/state/webauthn-challeng
 import { ADMIN_API_KEY } from "../src/kernel/auth-middleware.js";
 import express from "express";
 import { createWebauthnRouter } from "../src/interaction/routes/webauthn-routes.js";
+import { mergeOutcomeRates } from "../src/kernel/outcome-confidence.js";
 import { spawn, ChildProcess } from "child_process";
 import net from "net";
 import path from "path";
@@ -834,6 +835,34 @@ registerTest("Tools", "executeTool rejects unknown tool names", async () => {
   const result = await executeTool("not_a_real_tool", {}, "admin");
   if (result.ok !== false) {
     throw new Error("Tools: executeTool should reject an unrecognized tool name");
+  }
+});
+
+registerTest("Tools", "executeTool still resolves normally for an ungated tool after the outcome-ledger write hook is added", async () => {
+  const result = await executeTool("list_constraints", {}, "test_user");
+  if (!result.ok) {
+    throw new Error(`Tools: expected list_constraints to succeed, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Tools", "executeTool still returns the unknown-tool error shape after the outcome-ledger write hook is added", async () => {
+  const result = await executeTool("not_a_real_tool", {}, "test_user");
+  if (result.ok || !result.error?.includes("Unknown tool")) {
+    throw new Error(`Tools: expected an "Unknown tool" error, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Tools", "record_action_outcome rejects an invalid outcome value", async () => {
+  const result = await executeTool("record_action_outcome", { actionName: "send_email", outcome: "maybe" }, "admin");
+  if (result.ok || !result.error?.includes("must be either")) {
+    throw new Error(`Tools: expected an "outcome must be..." error, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("Tools", "record_action_outcome reports no matching action when nothing is open (or no DB is reachable)", async () => {
+  const result = await executeTool("record_action_outcome", { actionName: "send_email", outcome: "worked" }, "admin");
+  if (result.ok || !result.error?.includes("No matching action found")) {
+    throw new Error(`Tools: expected a "No matching action found" error, got: ${JSON.stringify(result)}`);
   }
 });
 
@@ -1908,6 +1937,46 @@ registerTest("CommandOutcomes", "getRecentOutcomeSuccessRate degrades cleanly wh
   const result = await getRecentOutcomeSuccessRate();
   if (result !== null) {
     throw new Error(`CommandOutcomes: expected null with no DB, got: ${result}`);
+  }
+});
+
+// ---------- Outcome Ledger Tests (no live Postgres in this test process) ----------
+import { isConsequentialAction, logAction, recordActionOutcome, getRecentActionSuccessRate } from "../src/kernel/state/outcome-ledger-repo.js";
+
+registerTest("OutcomeLedger", "isConsequentialAction flags the 8 curated consequential tools", () => {
+  const consequential = ["send_email", "send_personal_email", "github_create_issue", "calendar_create_event", "write_file", "write_vault_note", "set_objective", "update_objective_status"];
+  for (const name of consequential) {
+    if (!isConsequentialAction(name)) {
+      throw new Error(`OutcomeLedger: expected "${name}" to be consequential`);
+    }
+  }
+});
+
+registerTest("OutcomeLedger", "isConsequentialAction does not flag read-only or excluded tools", () => {
+  const trivial = ["list_files", "read_file", "search_web", "get_briefing", "list_objectives", "propose_command", "record_command_outcome"];
+  for (const name of trivial) {
+    if (isConsequentialAction(name)) {
+      throw new Error(`OutcomeLedger: expected "${name}" not to be consequential`);
+    }
+  }
+});
+
+registerTest("OutcomeLedger", "logAction never throws when Postgres isn't reachable", async () => {
+  await logAction("test_user", "send_email", "to test@example.com", true);
+  // Reaching this line without an unhandled rejection is the assertion.
+});
+
+registerTest("OutcomeLedger", "recordActionOutcome degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await recordActionOutcome("test_user", "send_email", "worked");
+  if (result !== false) {
+    throw new Error(`OutcomeLedger: expected false with no DB, got: ${result}`);
+  }
+});
+
+registerTest("OutcomeLedger", "getRecentActionSuccessRate degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await getRecentActionSuccessRate("test_user");
+  if (result !== null) {
+    throw new Error(`OutcomeLedger: expected null with no DB, got: ${result}`);
   }
 });
 
@@ -3055,6 +3124,29 @@ registerTest("Confidence", "calculateOverallConfidence returns 100 for a fully e
   const result = model.calculateOverallConfidence({});
   if (result !== 100) {
     throw new Error(`Confidence: expected 100 for an empty input, got ${result}`);
+  }
+});
+
+registerTest("Confidence", "mergeOutcomeRates returns null when neither rate has data", () => {
+  const result = mergeOutcomeRates(null, null);
+  if (result !== null) {
+    throw new Error(`Confidence: expected null with no data, got: ${result}`);
+  }
+});
+
+registerTest("Confidence", "mergeOutcomeRates uses whichever single rate is present", () => {
+  if (mergeOutcomeRates(0.8, null) !== 0.8) {
+    throw new Error(`Confidence: expected 0.8 with only the first rate present, got: ${mergeOutcomeRates(0.8, null)}`);
+  }
+  if (mergeOutcomeRates(null, 0.6) !== 0.6) {
+    throw new Error(`Confidence: expected 0.6 with only the second rate present, got: ${mergeOutcomeRates(null, 0.6)}`);
+  }
+});
+
+registerTest("Confidence", "mergeOutcomeRates averages both rates when both are present", () => {
+  const result = mergeOutcomeRates(0.8, 0.6);
+  if (result !== 0.7) {
+    throw new Error(`Confidence: expected 0.7 averaging 0.8 and 0.6, got: ${result}`);
   }
 });
 
