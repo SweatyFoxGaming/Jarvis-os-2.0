@@ -147,3 +147,26 @@ export async function getOpenFollowUps(username: string, limit = 5): Promise<Ope
     return [];
   }
 }
+
+// Retention, not access control: this table has no HTTP route exposing it
+// to anyone — the only reads are the two aggregate/internal functions
+// above, both already scoped to the calling user's own username. If a
+// route ever surfaces raw ledger rows (e.g. a "your action history" view),
+// it must filter by username the same way; there is nothing to lock down
+// today because nothing is exposed. Wired into scheduler.ts's existing
+// startDataRetentionJob alongside conversation messages, transcripts,
+// self-reflections, and evolution analyses — same pattern, same
+// degrade-cleanly contract as pruneOldAnalyses in evolution-repo.ts.
+export async function pruneOldEntries(retentionDays: number): Promise<number> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `DELETE FROM outcome_ledger WHERE executed_at < now() - ($1 * interval '1 day')`,
+      [retentionDays]
+    );
+    return rowCount ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OutcomeLedger", `pruneOldEntries(${retentionDays}) failed: ${err.message}`);
+    return 0;
+  }
+}

@@ -1942,7 +1942,7 @@ registerTest("CommandOutcomes", "getRecentOutcomeSuccessRate degrades cleanly wh
 });
 
 // ---------- Outcome Ledger Tests (no live Postgres in this test process) ----------
-import { isConsequentialAction, logAction, recordActionOutcome, getRecentActionSuccessRate, getOpenFollowUps } from "../src/kernel/state/outcome-ledger-repo.js";
+import { isConsequentialAction, logAction, recordActionOutcome, getRecentActionSuccessRate, getOpenFollowUps, pruneOldEntries } from "../src/kernel/state/outcome-ledger-repo.js";
 
 registerTest("OutcomeLedger", "isConsequentialAction flags the 8 curated consequential tools", () => {
   const consequential = ["send_email", "send_personal_email", "github_create_issue", "calendar_create_event", "write_file", "write_vault_note", "set_objective", "update_objective_status"];
@@ -1985,6 +1985,13 @@ registerTest("OutcomeLedger", "getOpenFollowUps degrades cleanly when Postgres i
   const result = await getOpenFollowUps("test_user");
   if (!Array.isArray(result) || result.length !== 0) {
     throw new Error(`OutcomeLedger: expected an empty array with no DB, got: ${JSON.stringify(result)}`);
+  }
+});
+
+registerTest("OutcomeLedger", "pruneOldEntries degrades cleanly when Postgres isn't reachable", async () => {
+  const result = await pruneOldEntries(90);
+  if (result !== 0) {
+    throw new Error(`OutcomeLedger: expected 0 with no DB, got: ${result}`);
   }
 });
 
