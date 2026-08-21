@@ -45,6 +45,7 @@ import * as identityRepo from "./kernel/state/identity-repo.js";
 import * as commandProposalsRepo from "./kernel/state/command-proposals-repo.js";
 import * as outcomeLedgerRepo from "./kernel/state/outcome-ledger-repo.js";
 import { mergeOutcomeRates } from "./kernel/outcome-confidence.js";
+import { formatRelativeTime } from "./kernel/format-relative-time.js";
 import * as buildRequestsRepo from "./kernel/state/build-requests-repo.js";
 import { authRouter } from "./interaction/routes/auth-routes.js";
 import { createWebauthnRouter } from "./interaction/routes/webauthn-routes.js";
@@ -675,10 +676,11 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // stating that number as a total would be wrong whenever more are open.
     const outcomeFollowUpContext = openFollowUps.length > 0
       ? `\n\nYou have these recent action(s) awaiting outcome confirmation: ` +
-        openFollowUps.map(f => `[id ${f.id}] ${f.action_name} (${f.action_summary || f.action_name})`).join(", ") +
+        openFollowUps.map(f => `[id ${f.id}] ${f.action_name} (${f.action_summary || f.action_name}), executed ${formatRelativeTime(f.executed_at)}`).join("; ") +
         `. If the user's next message confirms or denies whether one of these worked, call record_action_outcome ` +
-        `with that action's name and outcome. If more than one listed here shares the same action name, also pass ` +
-        `its id so the right one gets updated — don't just acknowledge it conversationally.`
+        `with that action's name and outcome. If more than one listed here shares the same action name, use the ` +
+        `timing to tell them apart and pass the matching id so the right one gets updated — don't just acknowledge ` +
+        `it conversationally.`
       : "";
 
     const baseSystemInstruction =
