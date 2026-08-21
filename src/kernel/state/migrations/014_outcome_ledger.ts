@@ -20,7 +20,7 @@ const migration: Migration = {
         executed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         execution_ok BOOLEAN NOT NULL,
         needs_follow_up BOOLEAN NOT NULL,
-        outcome TEXT,
+        outcome TEXT CHECK (outcome IN ('worked', 'not_worked')),
         outcome_recorded_at TIMESTAMPTZ
       );
     `);
