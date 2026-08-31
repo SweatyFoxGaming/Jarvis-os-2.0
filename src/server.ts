@@ -234,7 +234,7 @@ try {
   // WellbeingRepo etc. tests), so crashing here on the same failure would be
   // the one place that doesn't. Hybrid search's schema just won't be applied
   // until the next successful boot with Postgres reachable.
-  await applyHybridSearchSchema();
+(async () => { await applyHybridSearchSchema(); })().catch(console.error);
 } catch (err: any) {
   console.error(`[Startup] applyHybridSearchSchema failed (Postgres unreachable?), continuing without it: ${err?.message || err}`);
 }

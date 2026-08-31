@@ -33,7 +33,7 @@ import WebSocket from "ws";
 // isn't available for free the way it would be under CommonJS, so it's
 // derived from import.meta.url instead, same as any other ESM module that
 // needs to locate a file next to its own compiled output.
-const __filename = fileURLToPath(import.meta.url);
+const _filename = typeof __filename !== 'undefined' ? __filename : '';
 const __dirname = path.dirname(__filename);
 
 const EVENTS_WS_URL = process.env.JARVIS_EVENTS_WS_URL || "ws://localhost:3000/ws/events";
