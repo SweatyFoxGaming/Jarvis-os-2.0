@@ -115,7 +115,7 @@ export class AgentOrchestrator {
         subTaskId: `${planId}_sub_default`,
         description: `Default CAD design task for: ${directive}`,
         domain: 'CAD',
-        cadModel: { type: 'CUBE', dimensions: [20, 20, 20] }
+        cadModel: { operation: 'UNION', children: [{ type: 'CUBE', dimensions: [20, 20, 20] }] }
       });
     }
 
