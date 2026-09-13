@@ -16,7 +16,7 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
   private latestTelemetry: TelemetryPacket = {
     timestamp: Date.now(),
     batteryPercentage: 100,
-    systemStatus: 'STANDBY',
+    systemStatus: 'IDLE',
     latitude: 0,
     longitude: 0,
     altitude: 0,
@@ -70,10 +70,11 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
       this.socket.bind(0);
 
       this.connected = true;
-      this.latestTelemetry.systemStatus = 'CONNECTED';
+      this.latestTelemetry.systemStatus = 'IDLE';
       return true;
     } catch (err) {
       this.connected = false;
+      this.latestTelemetry.systemStatus = 'ERROR';
       return false;
     }
   }
@@ -84,17 +85,16 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
       this.socket = null;
     }
     this.connected = false;
-    this.latestTelemetry.systemStatus = 'DISCONNECTED';
+    this.latestTelemetry.systemStatus = 'IDLE';
   }
 
   private handleIncomingPacket(msg: Buffer): void {
     if (msg.length < 8 || msg[0] !== 0xFE) return;
     const msgId = msg[5];
 
-    // Decode Telemetry Packets (e.g., HEARTBEAT #0 or SYS_STATUS #1)
     this.latestTelemetry.timestamp = Date.now();
     if (msgId === 0) {
-      this.latestTelemetry.systemStatus = 'ACTIVE';
+      this.latestTelemetry.systemStatus = 'EXECUTING';
     } else if (msgId === 1 && msg.length >= 14) {
       this.latestTelemetry.batteryPercentage = msg.readUInt16LE(14) / 10;
     }
@@ -106,45 +106,50 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
     }
 
     let commandId = 0;
-    const paramBuffer = Buffer.alloc(28); // 7 float32 parameters (MAV_CMD)
+    const paramBuffer = Buffer.alloc(28);
 
     switch (cmd.action.toUpperCase()) {
       case 'ARM':
-        commandId = 400; // MAV_CMD_COMPONENT_ARM_DISARM
-        paramBuffer.writeFloatLE(1, 0); // Arm = 1
+        commandId = 400;
+        paramBuffer.writeFloatLE(1, 0);
+        this.latestTelemetry.systemStatus = 'ARMED';
         break;
       case 'DISARM':
         commandId = 400;
-        paramBuffer.writeFloatLE(0, 0); // Disarm = 0
+        paramBuffer.writeFloatLE(0, 0);
+        this.latestTelemetry.systemStatus = 'DISARMED';
         break;
       case 'TAKEOFF':
-        commandId = 22; // MAV_CMD_NAV_TAKEOFF
-        paramBuffer.writeFloatLE(cmd.parameters?.altitude || 5.0, 24); // Pitch/Alt
+        commandId = 22;
+        paramBuffer.writeFloatLE(cmd.parameters?.altitude || 5.0, 24);
+        this.latestTelemetry.systemStatus = 'EXECUTING';
         break;
       case 'LAND':
-        commandId = 21; // MAV_CMD_NAV_LAND
+        commandId = 21;
+        this.latestTelemetry.systemStatus = 'EXECUTING';
         break;
       case 'HOLD':
       default:
-        commandId = 19; // MAV_CMD_NAV_LOITER_UNLIM
+        commandId = 19;
+        this.latestTelemetry.systemStatus = 'EXECUTING';
         break;
     }
 
     const payload = Buffer.alloc(33);
     paramBuffer.copy(payload, 0);
-    payload.writeUInt16LE(commandId, 28); // command ID
-    payload[30] = 1; // target system
-    payload[31] = 1; // target component
-    payload[32] = 0; // confirmation
+    payload.writeUInt16LE(commandId, 28);
+    payload[30] = 1;
+    payload[31] = 1;
+    payload[32] = 0;
 
-    const packet = this.buildPacket(76, payload); // COMMAND_LONG (#76)
+    const packet = this.buildPacket(76, payload);
 
     return new Promise((resolve) => {
       this.socket!.send(packet, this.targetPort, this.targetHost, (err) => {
         if (err) {
+          this.latestTelemetry.systemStatus = 'ERROR';
           resolve({ success: false, message: `MAVLink send error: ${err.message}` });
         } else {
-          this.latestTelemetry.systemStatus = `EXECUTED_${cmd.action}`;
           resolve({ success: true, message: `MAVLink packet #${commandId} dispatched to ${this.targetHost}:${this.targetPort}` });
         }
       });
