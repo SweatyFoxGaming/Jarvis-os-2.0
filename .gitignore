@@ -80,3 +80,6 @@ node_modules/
 *.mp3
 *.wav
 .aider*
+
+# Dynamic runtime workspace
+jarvis-workspace/
