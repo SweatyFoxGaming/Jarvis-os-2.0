@@ -31,18 +31,30 @@ export function createOrchestratorRouter(): Router {
     selfModEngine
   );
 
+  // Single explicit task handler
   router.post('/task', async (req: Request, res: Response) => {
     try {
       const taskRequest: TaskRequest = req.body;
-
       if (!taskRequest.taskId || !taskRequest.description || !taskRequest.targetDomain) {
-        res.status(400).json({
-          error: 'Missing required task fields: taskId, description, targetDomain'
-        });
+        res.status(400).json({ error: 'Missing required task fields: taskId, description, targetDomain' });
         return;
       }
-
       const result = await orchestrator.processTask(taskRequest);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // High-level directive task decomposition handler
+  router.post('/directive', async (req: Request, res: Response) => {
+    try {
+      const { directive } = req.body;
+      if (!directive || typeof directive !== 'string') {
+        res.status(400).json({ error: 'Missing or invalid field: directive (string)' });
+        return;
+      }
+      const result = await orchestrator.processDirective(directive);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
