@@ -1,3 +1,4 @@
+import { createOrchestratorRouter } from './interaction/routes/orchestrator-routes.js';
 import 'dotenv/config';
 import express from "express";
 import helmet from "helmet";
@@ -1719,3 +1720,7 @@ app.post("/api/shutdown", validateApiKey, (req, res) => {
   res.json({ status: "shutdown initiated" });
   gracefulShutdown("HTTP_API");
 });
+// Mount AgentOrchestrator Task Endpoint
+if (typeof app !== 'undefined') {
+  app.use('/api/orchestrator', createOrchestratorRouter());
+}
