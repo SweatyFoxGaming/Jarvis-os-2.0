@@ -5,51 +5,64 @@ import { createRequire } from 'node:module';
 import * as tsModule from 'typescript';
 import tsDefault from 'typescript';
 
-function getTsCompiler(): any {
-  const visited = new Set<any>();
+function resolveTsCompiler(): any {
+  // 1. Try createRequire with deterministic root package paths (bypasses ESM/tsx interop wrappers)
+  const requirePaths = [
+    path.resolve(process.cwd(), 'package.json'),
+    path.resolve(__dirname, 'package.json')
+  ];
 
-  function search(target: any): any {
-    if (!target || (typeof target !== 'object' && typeof target !== 'function')) {
-      return null;
+  for (const reqPath of requirePaths) {
+    try {
+      const req = createRequire(reqPath);
+      const cjsTs = req('typescript');
+      if (cjsTs && typeof cjsTs.transpileModule === 'function') {
+        return cjsTs;
+      }
+      if (cjsTs?.default && typeof cjsTs.default.transpileModule === 'function') {
+        return cjsTs.default;
+      }
+    } catch {
+      // Ignore resolution failures
     }
-    if (visited.has(target)) return null;
-    visited.add(target);
+  }
 
-    if (typeof target.transpileModule === 'function') {
-      return target;
-    }
-
-    const keysToTry = ['default', 'ts', ...Object.keys(target)];
-    for (const key of keysToTry) {
-      try {
-        const val = target[key];
-        if (val) {
-          const found = search(val);
-          if (found) return found;
-        }
-      } catch {
-        // Ignore getter access errors
+  // 2. Fallback to import.meta.url if valid
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.url) {
+      const req = createRequire(import.meta.url);
+      const cjsTs = req('typescript');
+      if (cjsTs && typeof cjsTs.transpileModule === 'function') {
+        return cjsTs;
+      }
+      if (cjsTs?.default && typeof cjsTs.default.transpileModule === 'function') {
+        return cjsTs.default;
       }
     }
-    return null;
-  }
-
-  let compiler = search(tsModule) || search(tsDefault);
-  if (compiler) return compiler;
-
-  try {
-    const req = createRequire(import.meta.url);
-    const cjsTs = req('typescript');
-    compiler = search(cjsTs);
-    if (compiler) return compiler;
   } catch {
-    // Ignore require resolution errors
+    // Ignore
   }
 
-  return tsModule || tsDefault;
+  // 3. Fallback to static ESM imports
+  const esmCandidates = [
+    tsModule,
+    (tsModule as any)?.default,
+    (tsModule as any)?.default?.default,
+    tsDefault,
+    (tsDefault as any)?.default,
+    (tsDefault as any)?.default?.default
+  ];
+
+  for (const candidate of esmCandidates) {
+    if (candidate && typeof candidate.transpileModule === 'function') {
+      return candidate;
+    }
+  }
+
+  return (tsModule as any)?.default || tsModule || tsDefault;
 }
 
-const ts = getTsCompiler();
+const ts = resolveTsCompiler();
 
 export class ToolSandbox {
   /**
