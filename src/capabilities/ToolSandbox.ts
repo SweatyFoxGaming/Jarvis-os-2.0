@@ -4,41 +4,73 @@ import * as path from 'path';
 import { createRequire } from 'node:module';
 import * as tsModule from 'typescript';
 
-function resolveTsCompiler(): any {
-  // Helper to safely obtain a working CJS require function
-  const getRequire = (): NodeRequire => {
-    if (typeof require === 'function') {
-      return require;
+function unwrapTs(candidate: any): any {
+  let current = candidate;
+  let depth = 0;
+  while (current && depth < 10) {
+    if (typeof current.transpileModule === 'function') {
+      return current;
     }
-    return createRequire(path.resolve(process.cwd(), 'package.json'));
-  };
-
-  // 1. Direct native CJS module load (bypasses tsx ESM synthetic wrapper)
-  try {
-    const req = getRequire();
-    const loaded = req('typescript');
-    if (loaded && typeof loaded.transpileModule === 'function') return loaded;
-    if (loaded?.default && typeof loaded.default.transpileModule === 'function') return loaded.default;
-  } catch {
-    // Fall through to secondary attempts
+    if (current.default) {
+      current = current.default;
+      depth++;
+    } else {
+      break;
+    }
   }
+  return null;
+}
 
-  // 2. Direct absolute path resolution to node_modules
+function findCompiler(root: any): any {
+  if (!root) return null;
+
+  // 1. Unroll default wrappers recursively
+  const unwrapped = unwrapTs(root);
+  if (unwrapped) return unwrapped;
+
+  // 2. Scan top-level keys if wrapped in a secondary namespace
+  if (typeof root === 'object' || typeof root === 'function') {
+    for (const key of Object.keys(root)) {
+      try {
+        const found = unwrapTs((root as Record<string, any>)[key]);
+        if (found) return found;
+      } catch {
+        // ignore getter errors
+      }
+    }
+  }
+  return null;
+}
+
+function resolveTsCompiler(): any {
+  // 1. Try static ESM import namespace
+  const fromImport = findCompiler(tsModule);
+  if (fromImport) return fromImport;
+
+  // 2. Try native require
   try {
-    const req = getRequire();
+    if (typeof require === 'function') {
+      const fromReq = findCompiler(require('typescript'));
+      if (fromReq) return fromReq;
+    }
+  } catch {}
+
+  // 3. Try createRequire from working directory
+  try {
+    const req = createRequire(path.resolve(process.cwd(), 'package.json'));
+    const fromCreateReq = findCompiler(req('typescript'));
+    if (fromCreateReq) return fromCreateReq;
+  } catch {}
+
+  // 4. Direct load from node_modules lib
+  try {
+    const req = typeof require === 'function' ? require : createRequire(path.resolve(process.cwd(), 'package.json'));
     const libPath = path.resolve(process.cwd(), 'node_modules', 'typescript', 'lib', 'typescript.js');
     if (fs.existsSync(libPath)) {
-      const loadedLib = req(libPath);
-      if (loadedLib && typeof loadedLib.transpileModule === 'function') return loadedLib;
-      if (loadedLib?.default && typeof loadedLib.default.transpileModule === 'function') return loadedLib.default;
+      const fromLib = findCompiler(req(libPath));
+      if (fromLib) return fromLib;
     }
-  } catch {
-    // Fall through
-  }
-
-  // 3. Fallback to tsModule inspection
-  if (typeof (tsModule as any)?.transpileModule === 'function') return tsModule;
-  if (typeof (tsModule as any)?.default?.transpileModule === 'function') return (tsModule as any).default;
+  } catch {}
 
   return tsModule;
 }
