@@ -1,5 +1,4 @@
 import * as path from 'path';
-import * as fs from 'fs/promises';
 import { MAVLinkHardwareDriver } from '../src/hardware/MAVLinkHardwareDriver.js';
 import { UniversalCADEngine } from '../src/cad/UniversalCADEngine.js';
 import { SVGExporter } from '../src/cad/SVGExporter.js';
@@ -51,7 +50,7 @@ async function testAllUpgrades() {
   console.log(`✓ SVG Export generated at: ${svgResult.outputFilePath}`);
   console.log(`✓ STL Export generated at: ${stlResult.outputFilePath}`);
 
-  // --- UPGRADE 3: Context-Aware Dynamic Tool Synthesizer & Directive Execution ---
+  // --- UPGRADE 3: Context-Aware Dynamic Code Synthesis & Directive Orchestrator ---
   console.log('\n[UPGRADE 3] Testing Context-Aware Dynamic Code Synthesis & Directive Orchestrator...');
   const hwEngine = new UniversalHardwareEngine();
   hwEngine.registerDriver(mavlinkDriver);
@@ -66,21 +65,19 @@ async function testAllUpgrades() {
   );
 
   const directive = 'Design drone mounting chassis frame in SVG and STL, synthesize a telemetry monitor tool, and run flight test on hardware';
-  const result = await orchestrator.processDirective(directive);
+  const plan = orchestrator.decomposeDirective(directive);
+  const result = await orchestrator.processDirective(directive, plan);
   
   console.log(`[Orchestration Directive Execution]: ${result.status}`);
   console.log(`[Generated Subtask Count]: ${result.subTaskResults.length}`);
 
-  // Dynamically load generated tool
-  const synthResult = result.subTaskResults.find(r => r.domain === 'SYNTHESIS');
-  if (synthResult) {
-    const synthSubtask = orchestrator.decomposeDirective(directive).subTasks.find(s => s.domain === 'SYNTHESIS');
-    if (synthSubtask?.toolCode) {
-      const toolFilePath = path.join(process.cwd(), 'jarvis-workspace/capabilities', `${synthSubtask.toolCode.toolId}.ts`);
-      const loadedModule = await import(`file://${toolFilePath}`);
-      const output = loadedModule.processTelemetry({ battery: 95 });
-      console.log(`✓ Dynamically loaded tool "${synthSubtask.toolCode.toolId}". Execution output:`, output);
-    }
+  // Dynamically load generated tool using the original plan subtask toolId
+  const synthSubtask = plan.subTasks.find(s => s.domain === 'SYNTHESIS');
+  if (synthSubtask?.toolCode) {
+    const toolFilePath = path.join(process.cwd(), 'jarvis-workspace/capabilities', `${synthSubtask.toolCode.toolId}.ts`);
+    const loadedModule = await import(`file://${toolFilePath}`);
+    const output = loadedModule.processTelemetry({ battery: 95 });
+    console.log(`✓ Dynamically loaded tool "${synthSubtask.toolCode.toolId}". Execution output:`, output);
   }
 
   console.log('\n====================================================');

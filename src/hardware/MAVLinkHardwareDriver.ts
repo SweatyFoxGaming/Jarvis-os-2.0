@@ -16,11 +16,7 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
   private latestTelemetry: TelemetryPacket = {
     timestamp: Date.now(),
     batteryPercentage: 100,
-    systemStatus: 'IDLE',
-    latitude: 0,
-    longitude: 0,
-    altitude: 0,
-    heading: 0
+    systemStatus: 'IDLE'
   };
 
   /**
