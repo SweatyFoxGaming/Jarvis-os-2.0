@@ -1,59 +1,6 @@
 import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as vm from 'vm';
-
-// Cache the pristine compiler instance to avoid re-evaluating the VM context
-let pristineTsCompiler: any = null;
-
-function transpileTsCode(sourceCode: string): string {
-  if (!pristineTsCompiler) {
-    const tsPath = path.resolve(process.cwd(), 'node_modules', 'typescript', 'lib', 'typescript.js');
-    if (!fs.existsSync(tsPath)) {
-      throw new Error(`Critical Sandbox Error: typescript library not found at ${tsPath}`);
-    }
-
-    // Read the raw compiler file, bypassing all module hooks and ESM/CJS interop
-    const code = fs.readFileSync(tsPath, 'utf8');
-    
-    // Create a sterile execution environment
-    const sandbox: any = {
-      module: { exports: {} },
-      exports: {},
-      process,
-      console,
-      Buffer,
-      setTimeout,
-      clearTimeout,
-      require // Allows TS to require built-in node modules like 'os'
-    };
-    
-    // Execute TypeScript compiler source inside the isolated VM
-    vm.createContext(sandbox);
-    vm.runInContext(code, sandbox);
-    
-    // Extract the raw compiler object
-    if (sandbox.ts && typeof sandbox.ts.transpileModule === 'function') {
-      pristineTsCompiler = sandbox.ts;
-    } else if (sandbox.module.exports && typeof sandbox.module.exports.transpileModule === 'function') {
-      pristineTsCompiler = sandbox.module.exports;
-    } else {
-      throw new Error('Failed to extract transpileModule from isolated VM sandbox.');
-    }
-  }
-
-  // Use raw enum values: ModuleKind.CommonJS = 1, ScriptTarget.ES2022 = 9
-  const result = pristineTsCompiler.transpileModule(sourceCode, {
-    compilerOptions: {
-      module: 1,
-      target: 9,
-      esModuleInterop: true,
-      allowSyntheticDefaultImports: true
-    }
-  });
-  
-  return result.outputText;
-}
 
 export class ToolSandbox {
   /**
@@ -70,30 +17,26 @@ export class ToolSandbox {
         return reject(new Error(`Tool file not found: ${absFilePath}`));
       }
 
-      let transpiledCode: string;
-      try {
-        const sourceCode = fs.readFileSync(absFilePath, 'utf8');
-        transpiledCode = transpileTsCode(sourceCode);
-      } catch (err: any) {
-        return reject(new Error(`TypeScript Transpilation Error: ${err.message || err}`));
-      }
-
+      // We no longer manually transpile. The worker thread inherits the 'tsx' loader 
+      // from the main process and compiles the .ts file natively on import.
       const workerCode = `
         const { parentPort, workerData } = require('worker_threads');
-        const { createRequire } = require('module');
-
+        
         (async () => {
           try {
-            const customRequire = createRequire(workerData.absFilePath);
-            const module = { exports: {} };
-            const exports = module.exports;
-
-            const fn = new Function('module', 'exports', 'require', '__filename', '__dirname', workerData.transpiledCode);
-            fn(module, exports, customRequire, workerData.absFilePath, workerData.dirName);
-
-            const mod = module.exports;
+            // Format path safely for the file:// protocol (works across Linux/Windows)
+            const formattedPath = workerData.absFilePath.replace(/\\\\/g, '/');
+            const fileUrl = formattedPath.startsWith('/') ? 'file://' + formattedPath : 'file:///' + formattedPath;
             
-            // Handle multiple export shapes safely (default, exported const, module.exports)
+            let mod;
+            try {
+              // Prefer ESM dynamic import, which correctly hooks into modern tsx loaders
+              mod = await import(fileUrl);
+            } catch (importErr) {
+              // Fallback for older CJS environments
+              mod = require(workerData.absFilePath);
+            }
+            
             let func = typeof mod === 'function' ? mod : null;
             if (!func && mod && typeof mod.default === 'function') func = mod.default;
             if (!func && mod) func = Object.values(mod).find(v => typeof v === 'function');
@@ -114,10 +57,9 @@ export class ToolSandbox {
 
       const worker = new Worker(workerCode, {
         eval: true,
+        execArgv: process.execArgv, // Inherit the loader arguments from the main process
         workerData: {
-          transpiledCode,
           absFilePath,
-          dirName: path.dirname(absFilePath),
           inputData
         }
       });
