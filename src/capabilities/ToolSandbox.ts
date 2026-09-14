@@ -2,63 +2,27 @@ import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import * as tsModule from 'typescript';
 
-function unwrapCompiler(obj: any): any {
-  if (!obj) return null;
-  let curr = obj;
-  const visited = new Set();
-  while (curr && (typeof curr === 'object' || typeof curr === 'function') && !visited.has(curr)) {
-    visited.add(curr);
-    if (typeof curr.transpileModule === 'function') {
-      return curr;
-    }
-    if (curr.default) {
-      curr = curr.default;
-    } else {
-      break;
-    }
-  }
-  return null;
-}
-
 function resolveTsCompiler(): any {
-  // 1. Direct ESM module unwrap
-  const esmUnwrapped = unwrapCompiler(tsModule);
-  if (esmUnwrapped) return esmUnwrapped;
-
-  // 2. Try createRequire resolution relative to CWD package.json
-  const searchPaths: string[] = [path.resolve(process.cwd(), 'package.json')];
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta.url) {
-      searchPaths.unshift(fileURLToPath(import.meta.url));
-    }
-  } catch {
-    // ignore
+  // 1. Direct namespace match
+  if (typeof (tsModule as any).transpileModule === 'function') {
+    return tsModule;
   }
 
-  for (const searchPath of searchPaths) {
-    try {
-      const req = createRequire(searchPath);
-      
-      // Try direct lib requirement
-      try {
-        const libPath = path.resolve(process.cwd(), 'node_modules', 'typescript', 'lib', 'typescript.js');
-        const libLoaded = req(libPath);
-        const libUnwrapped = unwrapCompiler(libLoaded);
-        if (libUnwrapped) return libUnwrapped;
-      } catch {
-        // ignore
-      }
+  // 2. tsx synthetic default wrapper match
+  if (typeof (tsModule as any).default?.transpileModule === 'function') {
+    return (tsModule as any).default;
+  }
 
-      // Try module string resolution
-      const cjsLoaded = req('typescript');
-      const cjsUnwrapped = unwrapCompiler(cjsLoaded);
-      if (cjsUnwrapped) return cjsUnwrapped;
-    } catch {
-      // ignore
-    }
+  // 3. Fallback: Pure CJS require via node:module
+  try {
+    const req = createRequire(import.meta.url);
+    const cjsTs = req('typescript');
+    if (typeof cjsTs?.transpileModule === 'function') return cjsTs;
+    if (typeof cjsTs?.default?.transpileModule === 'function') return cjsTs.default;
+  } catch {
+    // Ignore fallback errors
   }
 
   return tsModule;
