@@ -4,70 +4,66 @@ import * as path from 'path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import * as tsModule from 'typescript';
-import tsDefault from 'typescript';
-
-function unwrapCompiler(candidate: any): any {
-  let curr = candidate;
-  const visited = new Set();
-  while (curr && (typeof curr === 'object' || typeof curr === 'function') && !visited.has(curr)) {
-    visited.add(curr);
-    if (typeof curr.transpileModule === 'function') {
-      return curr;
-    }
-    if (curr.default) {
-      curr = curr.default;
-    } else {
-      break;
-    }
-  }
-  return null;
-}
 
 function resolveTsCompiler(): any {
-  // 1. Try unwrapping direct ESM imports
-  const directCandidates = [tsModule, tsDefault];
-  for (const cand of directCandidates) {
-    const unwrapped = unwrapCompiler(cand);
-    if (unwrapped) return unwrapped;
-  }
+  // 1. Primary: Direct CommonJS require from node_modules to bypass tsx/ESM synthetic wrappers
+  const cwd = process.cwd();
+  const requireTargets = [
+    path.resolve(cwd, 'node_modules', 'typescript', 'lib', 'typescript.js'),
+    'typescript'
+  ];
 
-  // 2. Try property search on ESM imports
-  for (const cand of directCandidates) {
-    if (cand && typeof cand === 'object') {
-      for (const key of Object.keys(cand)) {
-        try {
-          const unwrapped = unwrapCompiler(cand[key]);
-          if (unwrapped) return unwrapped;
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }
-
-  // 3. Fallback to createRequire resolution with file URL / path fallbacks
-  const requirePaths: string[] = [];
+  const searchContexts: string[] = [];
   try {
     if (typeof import.meta !== 'undefined' && import.meta.url) {
-      requirePaths.push(fileURLToPath(import.meta.url));
+      searchContexts.push(fileURLToPath(import.meta.url));
     }
   } catch {
     // ignore
   }
-  requirePaths.push(path.resolve(process.cwd(), 'package.json'));
+  searchContexts.push(path.resolve(cwd, 'package.json'));
 
-  for (const reqPath of requirePaths) {
+  for (const ctx of searchContexts) {
     try {
-      const req = createRequire(reqPath);
-      const cjsTs = req('typescript');
-      const unwrapped = unwrapCompiler(cjsTs);
-      if (unwrapped) return unwrapped;
+      const req = createRequire(ctx);
+      for (const target of requireTargets) {
+        try {
+          const loaded = req(target);
+          if (loaded && typeof loaded.transpileModule === 'function') {
+            return loaded;
+          }
+          if (loaded?.default && typeof loaded.default.transpileModule === 'function') {
+            return loaded.default;
+          }
+        } catch {
+          // ignore
+        }
+      }
     } catch {
       // ignore
     }
   }
 
-  return tsModule?.default || tsModule || tsDefault;
+  // 2. Secondary: Inspect ESM module objects with explicit Record<string, any> type casting (avoids TS7053)
+  const esmCandidates: any[] = [tsModule, (tsModule as any)?.default];
+  for (const cand of esmCandidates) {
+    if (!cand || (typeof cand !== 'object' && typeof cand !== 'function')) continue;
+    if (typeof cand.transpileModule === 'function') return cand;
+    if (cand.default && typeof cand.default.transpileModule === 'function') return cand.default;
+
+    const record = cand as Record<string, any>;
+    for (const key of Object.keys(record)) {
+      try {
+        const sub = record[key];
+        if (sub && typeof sub.transpileModule === 'function') return sub;
+        if (sub?.default && typeof sub.default.transpileModule === 'function') return sub.default;
+      } catch {
+        // ignore getter errors
+      }
+    }
+  }
+
+  return tsModule;
 }
 
 const ts = resolveTsCompiler();
