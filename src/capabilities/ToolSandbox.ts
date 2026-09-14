@@ -6,74 +6,68 @@ import { fileURLToPath } from 'node:url';
 import * as tsModule from 'typescript';
 import tsDefault from 'typescript';
 
-function resolveTsCompiler(): any {
-  // Safe ESM directory resolution without bare __dirname
-  let currentDir = process.cwd();
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta.url) {
-      currentDir = path.dirname(fileURLToPath(import.meta.url));
+function unwrapCompiler(candidate: any): any {
+  let curr = candidate;
+  const visited = new Set();
+  while (curr && (typeof curr === 'object' || typeof curr === 'function') && !visited.has(curr)) {
+    visited.add(curr);
+    if (typeof curr.transpileModule === 'function') {
+      return curr;
     }
-  } catch {
-    // Fallback to process.cwd()
+    if (curr.default) {
+      curr = curr.default;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
+
+function resolveTsCompiler(): any {
+  // 1. Try unwrapping direct ESM imports
+  const directCandidates = [tsModule, tsDefault];
+  for (const cand of directCandidates) {
+    const unwrapped = unwrapCompiler(cand);
+    if (unwrapped) return unwrapped;
   }
 
-  // 1. Try createRequire with deterministic root package paths (bypasses ESM/tsx interop wrappers)
-  const requirePaths = [
-    path.resolve(process.cwd(), 'package.json'),
-    path.resolve(currentDir, 'package.json')
-  ];
+  // 2. Try property search on ESM imports
+  for (const cand of directCandidates) {
+    if (cand && typeof cand === 'object') {
+      for (const key of Object.keys(cand)) {
+        try {
+          const unwrapped = unwrapCompiler(cand[key]);
+          if (unwrapped) return unwrapped;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  // 3. Fallback to createRequire resolution with file URL / path fallbacks
+  const requirePaths: string[] = [];
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.url) {
+      requirePaths.push(fileURLToPath(import.meta.url));
+    }
+  } catch {
+    // ignore
+  }
+  requirePaths.push(path.resolve(process.cwd(), 'package.json'));
 
   for (const reqPath of requirePaths) {
     try {
       const req = createRequire(reqPath);
       const cjsTs = req('typescript');
-      if (cjsTs && typeof cjsTs.transpileModule === 'function') {
-        return cjsTs;
-      }
-      if (cjsTs?.default && typeof cjsTs.default.transpileModule === 'function') {
-        return cjsTs.default;
-      }
+      const unwrapped = unwrapCompiler(cjsTs);
+      if (unwrapped) return unwrapped;
     } catch {
-      // Ignore resolution failures
+      // ignore
     }
   }
 
-  // 2. Direct property inspection on imported ts modules
-  const candidates = [
-    tsModule,
-    (tsModule as any)?.default,
-    (tsModule as any)?.default?.default,
-    tsDefault,
-    (tsDefault as any)?.default,
-    (tsDefault as any)?.default?.default
-  ];
-
-  for (const candidate of candidates) {
-    if (candidate && typeof candidate.transpileModule === 'function') {
-      return candidate;
-    }
-  }
-
-  // 3. Deep recursive search fallback for nested interop objects
-  const visited = new Set<any>();
-  function deepSearch(obj: any): any {
-    if (!obj || (typeof obj !== 'object' && typeof obj !== 'function') || visited.has(obj)) {
-      return null;
-    }
-    visited.add(obj);
-    if (typeof obj.transpileModule === 'function') return obj;
-    for (const key of Object.keys(obj)) {
-      try {
-        const found = deepSearch(obj[key]);
-        if (found) return found;
-      } catch {
-        // Ignore getter errors
-      }
-    }
-    return null;
-  }
-
-  return deepSearch(tsModule) || deepSearch(tsDefault) || tsModule || tsDefault;
+  return tsModule?.default || tsModule || tsDefault;
 }
 
 const ts = resolveTsCompiler();
@@ -93,8 +87,10 @@ export class ToolSandbox {
         return reject(new Error(`Tool file not found: ${absFilePath}`));
       }
 
-      if (!ts || typeof ts.transpileModule !== 'function') {
-        const availableKeys = ts ? Object.keys(ts).join(', ') : 'null';
+      const activeTs = typeof ts?.transpileModule === 'function' ? ts : resolveTsCompiler();
+
+      if (!activeTs || typeof activeTs.transpileModule !== 'function') {
+        const availableKeys = activeTs ? Object.keys(activeTs).join(', ') : 'null';
         return reject(
           new Error(
             `TypeScript Compiler Error: transpileModule not found. Available keys: ${availableKeys}`
@@ -105,10 +101,10 @@ export class ToolSandbox {
       let transpiledCode: string;
       try {
         const sourceCode = fs.readFileSync(absFilePath, 'utf8');
-        const result = ts.transpileModule(sourceCode, {
+        const result = activeTs.transpileModule(sourceCode, {
           compilerOptions: {
-            module: ts.ModuleKind?.CommonJS ?? 1,
-            target: ts.ScriptTarget?.ES2022 ?? 9,
+            module: activeTs.ModuleKind?.CommonJS ?? 1,
+            target: activeTs.ScriptTarget?.ES2022 ?? 9,
             esModuleInterop: true,
             allowSyntheticDefaultImports: true
           }
