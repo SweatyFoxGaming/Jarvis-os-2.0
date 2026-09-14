@@ -1,5 +1,7 @@
 import { Worker } from 'worker_threads';
+import * as fs from 'fs';
 import * as path from 'path';
+import * as ts from 'typescript';
 
 export class ToolSandbox {
   /**
@@ -12,30 +14,45 @@ export class ToolSandbox {
     return new Promise((resolve, reject) => {
       const absFilePath = path.resolve(toolFilePath);
 
+      if (!fs.existsSync(absFilePath)) {
+        return reject(new Error(`Tool file not found: ${absFilePath}`));
+      }
+
+      let transpiledCode: string;
+      try {
+        const sourceCode = fs.readFileSync(absFilePath, 'utf8');
+        const result = ts.transpileModule(sourceCode, {
+          compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2022,
+            esModuleInterop: true,
+            allowSyntheticDefaultImports: true
+          }
+        });
+        transpiledCode = result.outputText;
+      } catch (err: any) {
+        return reject(new Error(`TypeScript Transpilation Error: ${err.message || err}`));
+      }
+
       const workerCode = `
         const { parentPort, workerData } = require('worker_threads');
-        
-        try {
-          require('tsx/cjs');
-        } catch (e) {}
+        const { createRequire } = require('module');
 
         (async () => {
           try {
-            let mod;
-            try {
-              mod = require(workerData.absFilePath);
-            } catch (err) {
-              const { register } = require('node:module');
-              const { pathToFileURL } = require('node:url');
-              register('tsx', pathToFileURL(__filename));
-              mod = await import(pathToFileURL(workerData.absFilePath).href);
-            }
-            
+            const customRequire = createRequire(workerData.absFilePath);
+            const module = { exports: {} };
+            const exports = module.exports;
+
+            const fn = new Function('module', 'exports', 'require', '__filename', '__dirname', workerData.transpiledCode);
+            fn(module, exports, customRequire, workerData.absFilePath, workerData.dirName);
+
+            const mod = module.exports;
             const func = Object.values(mod).find(v => typeof v === 'function');
             if (!func) {
               throw new Error('No exported function found in generated tool.');
             }
-            
+
             const result = await func(workerData.inputData);
             parentPort.postMessage({ success: true, result });
           } catch (err) {
@@ -44,17 +61,16 @@ export class ToolSandbox {
         })();
       `;
 
-      const execArgv = [...process.execArgv];
-      if (!execArgv.some(arg => arg.includes('tsx') || arg.includes('import'))) {
-        execArgv.push('--import', 'tsx');
-      }
-
       let settled = false;
 
       const worker = new Worker(workerCode, {
         eval: true,
-        workerData: { absFilePath, inputData },
-        execArgv
+        workerData: {
+          transpiledCode,
+          absFilePath,
+          dirName: path.dirname(absFilePath),
+          inputData
+        }
       });
 
       const timeoutId = setTimeout(() => {
