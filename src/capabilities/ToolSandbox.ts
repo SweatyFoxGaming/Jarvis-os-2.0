@@ -2,80 +2,41 @@ import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'node:module';
-import * as tsModule from 'typescript';
 
-function unwrapTs(candidate: any): any {
-  let current = candidate;
-  let depth = 0;
-  while (current && depth < 10) {
-    if (typeof current.transpileModule === 'function') {
-      return current;
+function transpileTsCode(sourceCode: string): string {
+  const req = typeof require === 'function' ? require : createRequire(path.resolve(process.cwd(), 'package.json'));
+
+  // 1. Primary Engine: esbuild (installed with tsx)
+  try {
+    const esbuild = req('esbuild');
+    if (typeof esbuild?.transformSync === 'function') {
+      const res = esbuild.transformSync(sourceCode, {
+        loader: 'ts',
+        format: 'cjs',
+        target: 'es2022'
+      });
+      return res.code;
     }
-    if (current.default) {
-      current = current.default;
-      depth++;
-    } else {
-      break;
-    }
+  } catch {
+    // Fall through
   }
-  return null;
-}
 
-function findCompiler(root: any): any {
-  if (!root) return null;
-
-  // 1. Unroll default wrappers recursively
-  const unwrapped = unwrapTs(root);
-  if (unwrapped) return unwrapped;
-
-  // 2. Scan top-level keys if wrapped in a secondary namespace
-  if (typeof root === 'object' || typeof root === 'function') {
-    for (const key of Object.keys(root)) {
-      try {
-        const found = unwrapTs((root as Record<string, any>)[key]);
-        if (found) return found;
-      } catch {
-        // ignore getter errors
-      }
+  // 2. Secondary Engine: @swc/core fallback
+  try {
+    const swc = req('@swc/core');
+    if (typeof swc?.transformSync === 'function') {
+      const res = swc.transformSync(sourceCode, {
+        jsc: { parser: { syntax: 'typescript' }, target: 'es2022' },
+        module: { type: 'commonjs' }
+      });
+      return res.code;
     }
+  } catch {
+    // Fall through
   }
-  return null;
+
+  throw new Error('Tool Sandbox Engine Error: No valid TS transpiler (esbuild / swc) found in node_modules.');
 }
-
-function resolveTsCompiler(): any {
-  // 1. Try static ESM import namespace
-  const fromImport = findCompiler(tsModule);
-  if (fromImport) return fromImport;
-
-  // 2. Try native require
-  try {
-    if (typeof require === 'function') {
-      const fromReq = findCompiler(require('typescript'));
-      if (fromReq) return fromReq;
-    }
-  } catch {}
-
-  // 3. Try createRequire from working directory
-  try {
-    const req = createRequire(path.resolve(process.cwd(), 'package.json'));
-    const fromCreateReq = findCompiler(req('typescript'));
-    if (fromCreateReq) return fromCreateReq;
-  } catch {}
-
-  // 4. Direct load from node_modules lib
-  try {
-    const req = typeof require === 'function' ? require : createRequire(path.resolve(process.cwd(), 'package.json'));
-    const libPath = path.resolve(process.cwd(), 'node_modules', 'typescript', 'lib', 'typescript.js');
-    if (fs.existsSync(libPath)) {
-      const fromLib = findCompiler(req(libPath));
-      if (fromLib) return fromLib;
-    }
-  } catch {}
-
-  return tsModule;
-}
-
-const ts = resolveTsCompiler();
 
 export class ToolSandbox {
   /**
@@ -92,29 +53,10 @@ export class ToolSandbox {
         return reject(new Error(`Tool file not found: ${absFilePath}`));
       }
 
-      const activeTs = typeof ts?.transpileModule === 'function' ? ts : resolveTsCompiler();
-
-      if (!activeTs || typeof activeTs.transpileModule !== 'function') {
-        const availableKeys = activeTs ? Object.keys(activeTs).join(', ') : 'null';
-        return reject(
-          new Error(
-            `TypeScript Compiler Error: transpileModule not found. Available keys: ${availableKeys}`
-          )
-        );
-      }
-
       let transpiledCode: string;
       try {
         const sourceCode = fs.readFileSync(absFilePath, 'utf8');
-        const result = activeTs.transpileModule(sourceCode, {
-          compilerOptions: {
-            module: activeTs.ModuleKind?.CommonJS ?? 1,
-            target: activeTs.ScriptTarget?.ES2022 ?? 9,
-            esModuleInterop: true,
-            allowSyntheticDefaultImports: true
-          }
-        });
-        transpiledCode = result.outputText;
+        transpiledCode = transpileTsCode(sourceCode);
       } catch (err: any) {
         return reject(new Error(`TypeScript Transpilation Error: ${err.message || err}`));
       }
