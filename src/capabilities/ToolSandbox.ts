@@ -21,33 +21,19 @@ export class ToolSandbox {
       let transpiledCode: string;
       try {
         const sourceCode = fs.readFileSync(absFilePath, 'utf8');
+        const req = typeof require !== 'undefined' ? require : createRequire(path.join(process.cwd(), 'dummy.js'));
         
-        // Create a universal CommonJS require function that operates safely in strict ESM mode
-        const req = typeof require !== 'undefined' 
-          ? require 
-          : createRequire(path.join(process.cwd(), 'dummy.js'));
-        
-        // This guarantees we load the full compiler object, bypassing ESM import limitations
-        const tsRaw = req('typescript');
-        
-        const transpileModule = tsRaw.transpileModule 
-                             || tsRaw.default?.transpileModule 
-                             || tsRaw.default?.default?.transpileModule;
-
-        if (typeof transpileModule !== 'function') {
-          throw new Error("Could not find transpileModule. Keys found: " + Object.keys(tsRaw).join(', '));
-        }
-
-        // Transpile to plain JavaScript safely in the main thread
-        const result = transpileModule(sourceCode, {
-          compilerOptions: { 
-            module: 1, // CommonJS 
-            target: 9, // ES2022 
-            esModuleInterop: true, 
-            allowSyntheticDefaultImports: true 
-          }
+        // Use tsx's internal transform sync or simple regex/babel/esbuild fallback, 
+        // or typescript compiler API if available. Let's use standard node evaluation fallback:
+        // Actually, tsx registers a require hook! We can require tsx/cjs/api or transpile using simple tsx support.
+        // Let's use esbuild if available, or fallback to tsx transform.
+        const esbuild = req('esbuild');
+        const result = esbuild.transformSync(sourceCode, {
+          loader: 'ts',
+          format: 'cjs',
+          target: 'es2022'
         });
-        transpiledCode = result.outputText;
+        transpiledCode = result.code;
       } catch (err: any) {
         return reject(new Error(`TypeScript Transpilation Error: ${err.message || err}`));
       }
@@ -62,13 +48,11 @@ export class ToolSandbox {
             const module = { exports: {} };
             const exports = module.exports;
 
-            // Execute the transpiled JS cleanly
+            // Execute the compiled CommonJS string in isolated function context
             const fn = new Function('module', 'exports', 'require', '__filename', '__dirname', workerData.transpiledCode);
             fn(module, exports, customRequire, workerData.absFilePath, workerData.dirName);
 
             const mod = module.exports;
-            
-            // Safely locate the exported tool function
             let func = typeof mod === 'function' ? mod : null;
             if (!func && mod && typeof mod.default === 'function') func = mod.default;
             if (!func && mod) func = Object.values(mod).find(v => typeof v === 'function');
