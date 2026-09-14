@@ -9,7 +9,6 @@ export class ToolSandbox {
    */
   public async executeTool(toolFilePath: string, inputData: any, timeoutMs: number = 2000): Promise<any> {
     return new Promise((resolve, reject) => {
-      // Inline worker script allows dynamic import without complex file resolution
       const workerCode = `
         const { parentPort, workerData } = require('worker_threads');
         (async () => {
@@ -30,11 +29,16 @@ export class ToolSandbox {
         })();
       `;
 
-      // Pass execArgv to ensure the worker inherits 'tsx' loaders for TypeScript
+      // Guarantee tsx loader is active in worker thread execArgv for TS support
+      const execArgv = [...process.execArgv];
+      if (!execArgv.some(arg => arg.includes('tsx') || arg.includes('import'))) {
+        execArgv.push('--import', 'tsx');
+      }
+
       const worker = new Worker(workerCode, {
         eval: true,
         workerData: { toolFilePath: `file://${toolFilePath}`, inputData },
-        execArgv: process.execArgv 
+        execArgv
       });
 
       const timeoutId = setTimeout(() => {

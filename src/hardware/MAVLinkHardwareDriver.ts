@@ -121,7 +121,7 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
     }
 
     // 2. Critical Battery Level Failsafe (<15%)
-    if (isActive && this.latestTelemetry.batteryPercentage < 15) {
+    if (isActive && (this.latestTelemetry.batteryPercentage ?? 100) < 15) {
       await this.triggerFailsafe(`Critical low battery (${this.latestTelemetry.batteryPercentage}%)`);
       return;
     }
