@@ -3,10 +3,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'node:module';
 
-// Resolve CJS TypeScript module across both default-wrapped and named export contexts
 const cjsRequire = createRequire(import.meta.url);
-const rawTs = cjsRequire('typescript');
-const ts = rawTs.default && typeof rawTs.default.transpileModule === 'function' ? rawTs.default : rawTs;
+
+function loadTypeScriptCompiler(): any {
+  let raw: any;
+  try {
+    raw = cjsRequire('typescript/lib/typescript.js');
+  } catch {
+    raw = cjsRequire('typescript');
+  }
+
+  let current = raw;
+  while (current && typeof current.transpileModule !== 'function' && current.default) {
+    current = current.default;
+  }
+  return current;
+}
+
+const ts = loadTypeScriptCompiler();
 
 export class ToolSandbox {
   /**
@@ -21,6 +35,14 @@ export class ToolSandbox {
 
       if (!fs.existsSync(absFilePath)) {
         return reject(new Error(`Tool file not found: ${absFilePath}`));
+      }
+
+      if (!ts || typeof ts.transpileModule !== 'function') {
+        return reject(
+          new Error(
+            `TypeScript Compiler Error: transpileModule not found. Export keys: ${Object.keys(ts || {}).join(', ')}`
+          )
+        );
       }
 
       let transpiledCode: string;
