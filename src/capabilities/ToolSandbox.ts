@@ -1,41 +1,58 @@
 import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
-import { createRequire } from 'node:module';
+import * as vm from 'vm';
+
+// Cache the pristine compiler instance to avoid re-evaluating the VM context
+let pristineTsCompiler: any = null;
 
 function transpileTsCode(sourceCode: string): string {
-  const req = typeof require === 'function' ? require : createRequire(path.resolve(process.cwd(), 'package.json'));
-
-  // 1. Primary Engine: esbuild (installed with tsx)
-  try {
-    const esbuild = req('esbuild');
-    if (typeof esbuild?.transformSync === 'function') {
-      const res = esbuild.transformSync(sourceCode, {
-        loader: 'ts',
-        format: 'cjs',
-        target: 'es2022'
-      });
-      return res.code;
+  if (!pristineTsCompiler) {
+    const tsPath = path.resolve(process.cwd(), 'node_modules', 'typescript', 'lib', 'typescript.js');
+    if (!fs.existsSync(tsPath)) {
+      throw new Error(`Critical Sandbox Error: typescript library not found at ${tsPath}`);
     }
-  } catch {
-    // Fall through
+
+    // Read the raw compiler file, bypassing all module hooks and ESM/CJS interop
+    const code = fs.readFileSync(tsPath, 'utf8');
+    
+    // Create a sterile execution environment
+    const sandbox: any = {
+      module: { exports: {} },
+      exports: {},
+      process,
+      console,
+      Buffer,
+      setTimeout,
+      clearTimeout,
+      require // Allows TS to require built-in node modules like 'os'
+    };
+    
+    // Execute TypeScript compiler source inside the isolated VM
+    vm.createContext(sandbox);
+    vm.runInContext(code, sandbox);
+    
+    // Extract the raw compiler object
+    if (sandbox.ts && typeof sandbox.ts.transpileModule === 'function') {
+      pristineTsCompiler = sandbox.ts;
+    } else if (sandbox.module.exports && typeof sandbox.module.exports.transpileModule === 'function') {
+      pristineTsCompiler = sandbox.module.exports;
+    } else {
+      throw new Error('Failed to extract transpileModule from isolated VM sandbox.');
+    }
   }
 
-  // 2. Secondary Engine: @swc/core fallback
-  try {
-    const swc = req('@swc/core');
-    if (typeof swc?.transformSync === 'function') {
-      const res = swc.transformSync(sourceCode, {
-        jsc: { parser: { syntax: 'typescript' }, target: 'es2022' },
-        module: { type: 'commonjs' }
-      });
-      return res.code;
+  // Use raw enum values: ModuleKind.CommonJS = 1, ScriptTarget.ES2022 = 9
+  const result = pristineTsCompiler.transpileModule(sourceCode, {
+    compilerOptions: {
+      module: 1,
+      target: 9,
+      esModuleInterop: true,
+      allowSyntheticDefaultImports: true
     }
-  } catch {
-    // Fall through
-  }
-
-  throw new Error('Tool Sandbox Engine Error: No valid TS transpiler (esbuild / swc) found in node_modules.');
+  });
+  
+  return result.outputText;
 }
 
 export class ToolSandbox {
@@ -75,7 +92,12 @@ export class ToolSandbox {
             fn(module, exports, customRequire, workerData.absFilePath, workerData.dirName);
 
             const mod = module.exports;
-            const func = Object.values(mod).find(v => typeof v === 'function');
+            
+            // Handle multiple export shapes safely (default, exported const, module.exports)
+            let func = typeof mod === 'function' ? mod : null;
+            if (!func && mod && typeof mod.default === 'function') func = mod.default;
+            if (!func && mod) func = Object.values(mod).find(v => typeof v === 'function');
+            
             if (!func) {
               throw new Error('No exported function found in generated tool.');
             }
