@@ -1,4 +1,5 @@
 import { Worker } from 'worker_threads';
+import * as path from 'path';
 
 export class ToolSandbox {
   /**
@@ -9,13 +10,27 @@ export class ToolSandbox {
    */
   public async executeTool(toolFilePath: string, inputData: any, timeoutMs: number = 2000): Promise<any> {
     return new Promise((resolve, reject) => {
+      const absFilePath = path.resolve(toolFilePath);
+
       const workerCode = `
         const { parentPort, workerData } = require('worker_threads');
+        
+        try {
+          require('tsx/cjs');
+        } catch (e) {}
+
         (async () => {
           try {
-            const mod = await import(workerData.toolFilePath);
+            let mod;
+            try {
+              mod = require(workerData.absFilePath);
+            } catch (err) {
+              const { register } = require('node:module');
+              const { pathToFileURL } = require('node:url');
+              register('tsx', pathToFileURL(__filename));
+              mod = await import(pathToFileURL(workerData.absFilePath).href);
+            }
             
-            // Automatically find the first exported function
             const func = Object.values(mod).find(v => typeof v === 'function');
             if (!func) {
               throw new Error('No exported function found in generated tool.');
@@ -29,35 +44,44 @@ export class ToolSandbox {
         })();
       `;
 
-      // Guarantee tsx loader is active in worker thread execArgv for TS support
       const execArgv = [...process.execArgv];
       if (!execArgv.some(arg => arg.includes('tsx') || arg.includes('import'))) {
         execArgv.push('--import', 'tsx');
       }
 
+      let settled = false;
+
       const worker = new Worker(workerCode, {
         eval: true,
-        workerData: { toolFilePath: `file://${toolFilePath}`, inputData },
+        workerData: { absFilePath, inputData },
         execArgv
       });
 
       const timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
         worker.terminate();
         reject(new Error(`Sandbox Security Timeout: Tool execution exceeded ${timeoutMs}ms`));
       }, timeoutMs);
 
       worker.on('message', (msg) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeoutId);
         if (msg.success) resolve(msg.result);
         else reject(new Error(`Tool Execution Error: ${msg.error}`));
       });
 
       worker.on('error', (err) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeoutId);
         reject(err);
       });
 
       worker.on('exit', (code) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeoutId);
         if (code !== 0) reject(new Error(`Sandbox thread crashed with exit code ${code}`));
       });
