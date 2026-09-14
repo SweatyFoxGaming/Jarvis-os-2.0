@@ -5,61 +5,59 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import * as tsModule from 'typescript';
 
-function resolveTsCompiler(): any {
-  // 1. Primary: Direct CommonJS require from node_modules to bypass tsx/ESM synthetic wrappers
-  const cwd = process.cwd();
-  const requireTargets = [
-    path.resolve(cwd, 'node_modules', 'typescript', 'lib', 'typescript.js'),
-    'typescript'
-  ];
+function unwrapCompiler(obj: any): any {
+  if (!obj) return null;
+  let curr = obj;
+  const visited = new Set();
+  while (curr && (typeof curr === 'object' || typeof curr === 'function') && !visited.has(curr)) {
+    visited.add(curr);
+    if (typeof curr.transpileModule === 'function') {
+      return curr;
+    }
+    if (curr.default) {
+      curr = curr.default;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
 
-  const searchContexts: string[] = [];
+function resolveTsCompiler(): any {
+  // 1. Direct ESM module unwrap
+  const esmUnwrapped = unwrapCompiler(tsModule);
+  if (esmUnwrapped) return esmUnwrapped;
+
+  // 2. Try createRequire resolution relative to CWD package.json
+  const searchPaths: string[] = [path.resolve(process.cwd(), 'package.json')];
   try {
     if (typeof import.meta !== 'undefined' && import.meta.url) {
-      searchContexts.push(fileURLToPath(import.meta.url));
+      searchPaths.unshift(fileURLToPath(import.meta.url));
     }
   } catch {
     // ignore
   }
-  searchContexts.push(path.resolve(cwd, 'package.json'));
 
-  for (const ctx of searchContexts) {
+  for (const searchPath of searchPaths) {
     try {
-      const req = createRequire(ctx);
-      for (const target of requireTargets) {
-        try {
-          const loaded = req(target);
-          if (loaded && typeof loaded.transpileModule === 'function') {
-            return loaded;
-          }
-          if (loaded?.default && typeof loaded.default.transpileModule === 'function') {
-            return loaded.default;
-          }
-        } catch {
-          // ignore
-        }
+      const req = createRequire(searchPath);
+      
+      // Try direct lib requirement
+      try {
+        const libPath = path.resolve(process.cwd(), 'node_modules', 'typescript', 'lib', 'typescript.js');
+        const libLoaded = req(libPath);
+        const libUnwrapped = unwrapCompiler(libLoaded);
+        if (libUnwrapped) return libUnwrapped;
+      } catch {
+        // ignore
       }
+
+      // Try module string resolution
+      const cjsLoaded = req('typescript');
+      const cjsUnwrapped = unwrapCompiler(cjsLoaded);
+      if (cjsUnwrapped) return cjsUnwrapped;
     } catch {
       // ignore
-    }
-  }
-
-  // 2. Secondary: Inspect ESM module objects with explicit Record<string, any> type casting (avoids TS7053)
-  const esmCandidates: any[] = [tsModule, (tsModule as any)?.default];
-  for (const cand of esmCandidates) {
-    if (!cand || (typeof cand !== 'object' && typeof cand !== 'function')) continue;
-    if (typeof cand.transpileModule === 'function') return cand;
-    if (cand.default && typeof cand.default.transpileModule === 'function') return cand.default;
-
-    const record = cand as Record<string, any>;
-    for (const key of Object.keys(record)) {
-      try {
-        const sub = record[key];
-        if (sub && typeof sub.transpileModule === 'function') return sub;
-        if (sub?.default && typeof sub.default.transpileModule === 'function') return sub.default;
-      } catch {
-        // ignore getter errors
-      }
     }
   }
 
