@@ -3,7 +3,7 @@ import { IHardwareDriver, HardwareCommand, TelemetryPacket } from './UniversalHa
 
 export class MAVLinkHardwareDriver implements IHardwareDriver {
   public driverId = 'mavlink_udp_v1';
-  public supportedActions = ['TAKEOFF', 'LAND', 'ARM', 'DISARM', 'HOLD', 'GOTO'];
+  public supportedActions = ['TAKEOFF', 'LAND', 'ARM', 'DISARM', 'HOLD', 'GOTO', 'RTL'];
 
   private socket: dgram.Socket | null = null;
   private targetHost: string = '127.0.0.1';
@@ -12,6 +12,12 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
   private connected: boolean = false;
   private systemId: number = 1;
   private componentId: number = 1;
+
+  private lastHeartbeat: number = Date.now();
+  private failsafeTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimeoutMs: number = 3000;
+  public failsafeTriggered: boolean = false;
+  public lastFailsafeReason: string | null = null;
 
   private latestTelemetry: TelemetryPacket = {
     timestamp: Date.now(),
@@ -66,7 +72,12 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
       this.socket.bind(0);
 
       this.connected = true;
+      this.lastHeartbeat = Date.now();
       this.latestTelemetry.systemStatus = 'IDLE';
+      this.failsafeTriggered = false;
+      this.lastFailsafeReason = null;
+
+      this.startFailsafeMonitor();
       return true;
     } catch (err) {
       this.connected = false;
@@ -76,6 +87,7 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
   }
 
   public async disconnect(): Promise<void> {
+    this.stopFailsafeMonitor();
     if (this.socket) {
       this.socket.close();
       this.socket = null;
@@ -84,13 +96,56 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
     this.latestTelemetry.systemStatus = 'IDLE';
   }
 
+  private startFailsafeMonitor(): void {
+    this.stopFailsafeMonitor();
+    this.failsafeTimer = setInterval(() => this.checkFailsafeConditions(), 500);
+  }
+
+  private stopFailsafeMonitor(): void {
+    if (this.failsafeTimer) {
+      clearInterval(this.failsafeTimer);
+      this.failsafeTimer = null;
+    }
+  }
+
+  private async checkFailsafeConditions(): Promise<void> {
+    if (!this.connected || this.failsafeTriggered) return;
+
+    const timeSinceHeartbeat = Date.now() - this.lastHeartbeat;
+    const isActive = this.latestTelemetry.systemStatus === 'ARMED' || this.latestTelemetry.systemStatus === 'EXECUTING';
+
+    // 1. Telemetry Drop Timeout Failsafe (>3000ms)
+    if (isActive && timeSinceHeartbeat > this.heartbeatTimeoutMs) {
+      await this.triggerFailsafe(`Telemetry drop detected (${timeSinceHeartbeat}ms without heartbeat)`);
+      return;
+    }
+
+    // 2. Critical Battery Level Failsafe (<15%)
+    if (isActive && this.latestTelemetry.batteryPercentage < 15) {
+      await this.triggerFailsafe(`Critical low battery (${this.latestTelemetry.batteryPercentage}%)`);
+      return;
+    }
+  }
+
+  private async triggerFailsafe(reason: string): Promise<void> {
+    this.failsafeTriggered = true;
+    this.lastFailsafeReason = reason;
+    this.latestTelemetry.systemStatus = 'ERROR';
+    console.warn(`[MAVLink FAILSAFE TRIGGERED]: ${reason} -> Issuing Emergency HOLD/RTL`);
+    
+    // Auto-dispatch emergency HOLD packet
+    await this.sendCommand({ action: 'HOLD' });
+  }
+
   private handleIncomingPacket(msg: Buffer): void {
     if (msg.length < 8 || msg[0] !== 0xFE) return;
     const msgId = msg[5];
 
-    this.latestTelemetry.timestamp = Date.now();
+    this.lastHeartbeat = Date.now();
+    this.latestTelemetry.timestamp = this.lastHeartbeat;
+
     if (msgId === 0) {
-      this.latestTelemetry.systemStatus = 'EXECUTING';
+      if (!this.failsafeTriggered) this.latestTelemetry.systemStatus = 'EXECUTING';
     } else if (msgId === 1 && msg.length >= 14) {
       this.latestTelemetry.batteryPercentage = msg.readUInt16LE(14) / 10;
     }
@@ -108,26 +163,28 @@ export class MAVLinkHardwareDriver implements IHardwareDriver {
       case 'ARM':
         commandId = 400;
         paramBuffer.writeFloatLE(1, 0);
-        this.latestTelemetry.systemStatus = 'ARMED';
+        if (!this.failsafeTriggered) this.latestTelemetry.systemStatus = 'ARMED';
         break;
       case 'DISARM':
         commandId = 400;
         paramBuffer.writeFloatLE(0, 0);
-        this.latestTelemetry.systemStatus = 'DISARMED';
+        if (!this.failsafeTriggered) this.latestTelemetry.systemStatus = 'DISARMED';
         break;
       case 'TAKEOFF':
         commandId = 22;
         paramBuffer.writeFloatLE(cmd.parameters?.altitude || 5.0, 24);
-        this.latestTelemetry.systemStatus = 'EXECUTING';
+        if (!this.failsafeTriggered) this.latestTelemetry.systemStatus = 'EXECUTING';
         break;
       case 'LAND':
         commandId = 21;
-        this.latestTelemetry.systemStatus = 'EXECUTING';
+        if (!this.failsafeTriggered) this.latestTelemetry.systemStatus = 'EXECUTING';
+        break;
+      case 'RTL':
+        commandId = 20;
         break;
       case 'HOLD':
       default:
         commandId = 19;
-        this.latestTelemetry.systemStatus = 'EXECUTING';
         break;
     }
 
