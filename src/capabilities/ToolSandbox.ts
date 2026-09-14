@@ -4,25 +4,43 @@ import * as path from 'path';
 import { createRequire } from 'node:module';
 import * as tsModule from 'typescript';
 
+function getCompilerObj(obj: any): any {
+  if (!obj) return null;
+  let curr = obj;
+  for (let i = 0; i < 5; i++) {
+    if (!curr || (typeof curr !== 'object' && typeof curr !== 'function')) break;
+    if (typeof curr.transpileModule === 'function') return curr;
+    if (curr.default) {
+      curr = curr.default;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
+
 function resolveTsCompiler(): any {
-  // 1. Direct namespace match
-  if (typeof (tsModule as any).transpileModule === 'function') {
-    return tsModule;
-  }
+  // 1. Direct or nested default unwrap on ESM namespace import
+  const esmUnwrapped = getCompilerObj(tsModule);
+  if (esmUnwrapped) return esmUnwrapped;
 
-  // 2. tsx synthetic default wrapper match
-  if (typeof (tsModule as any).default?.transpileModule === 'function') {
-    return (tsModule as any).default;
-  }
-
-  // 3. Fallback: Pure CJS require via node:module
+  // 2. Node.js CJS createRequire fallback
   try {
     const req = createRequire(import.meta.url);
-    const cjsTs = req('typescript');
-    if (typeof cjsTs?.transpileModule === 'function') return cjsTs;
-    if (typeof cjsTs?.default?.transpileModule === 'function') return cjsTs.default;
+    const cjs = req('typescript');
+    const cjsUnwrapped = getCompilerObj(cjs);
+    if (cjsUnwrapped) return cjsUnwrapped;
   } catch {
-    // Ignore fallback errors
+    // ignore
+  }
+
+  // 3. Fallback search through namespace keys with safe type casting (prevents TS7053)
+  if (tsModule && typeof tsModule === 'object') {
+    const record = tsModule as Record<string, any>;
+    for (const key of Object.keys(record)) {
+      const candidate = getCompilerObj(record[key]);
+      if (candidate) return candidate;
+    }
   }
 
   return tsModule;
