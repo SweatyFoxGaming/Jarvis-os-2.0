@@ -4,44 +4,41 @@ import * as path from 'path';
 import { createRequire } from 'node:module';
 import * as tsModule from 'typescript';
 
-function getCompilerObj(obj: any): any {
-  if (!obj) return null;
-  let curr = obj;
-  for (let i = 0; i < 5; i++) {
-    if (!curr || (typeof curr !== 'object' && typeof curr !== 'function')) break;
-    if (typeof curr.transpileModule === 'function') return curr;
-    if (curr.default) {
-      curr = curr.default;
-    } else {
-      break;
-    }
-  }
-  return null;
-}
-
 function resolveTsCompiler(): any {
-  // 1. Direct or nested default unwrap on ESM namespace import
-  const esmUnwrapped = getCompilerObj(tsModule);
-  if (esmUnwrapped) return esmUnwrapped;
-
-  // 2. Node.js CJS createRequire fallback
-  try {
-    const req = createRequire(import.meta.url);
-    const cjs = req('typescript');
-    const cjsUnwrapped = getCompilerObj(cjs);
-    if (cjsUnwrapped) return cjsUnwrapped;
-  } catch {
-    // ignore
-  }
-
-  // 3. Fallback search through namespace keys with safe type casting (prevents TS7053)
-  if (tsModule && typeof tsModule === 'object') {
-    const record = tsModule as Record<string, any>;
-    for (const key of Object.keys(record)) {
-      const candidate = getCompilerObj(record[key]);
-      if (candidate) return candidate;
+  // Helper to safely obtain a working CJS require function
+  const getRequire = (): NodeRequire => {
+    if (typeof require === 'function') {
+      return require;
     }
+    return createRequire(path.resolve(process.cwd(), 'package.json'));
+  };
+
+  // 1. Direct native CJS module load (bypasses tsx ESM synthetic wrapper)
+  try {
+    const req = getRequire();
+    const loaded = req('typescript');
+    if (loaded && typeof loaded.transpileModule === 'function') return loaded;
+    if (loaded?.default && typeof loaded.default.transpileModule === 'function') return loaded.default;
+  } catch {
+    // Fall through to secondary attempts
   }
+
+  // 2. Direct absolute path resolution to node_modules
+  try {
+    const req = getRequire();
+    const libPath = path.resolve(process.cwd(), 'node_modules', 'typescript', 'lib', 'typescript.js');
+    if (fs.existsSync(libPath)) {
+      const loadedLib = req(libPath);
+      if (loadedLib && typeof loadedLib.transpileModule === 'function') return loadedLib;
+      if (loadedLib?.default && typeof loadedLib.default.transpileModule === 'function') return loadedLib.default;
+    }
+  } catch {
+    // Fall through
+  }
+
+  // 3. Fallback to tsModule inspection
+  if (typeof (tsModule as any)?.transpileModule === 'function') return tsModule;
+  if (typeof (tsModule as any)?.default?.transpileModule === 'function') return (tsModule as any).default;
 
   return tsModule;
 }
