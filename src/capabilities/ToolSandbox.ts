@@ -5,36 +5,43 @@ import { createRequire } from 'node:module';
 import * as tsModule from 'typescript';
 import tsDefault from 'typescript';
 
-function resolveTsCompiler(): any {
-  const candidates = [
-    tsModule,
-    tsDefault,
-    (tsModule as any)?.default,
-    (tsDefault as any)?.default,
-    (tsModule as any)?.ts,
-    (tsDefault as any)?.ts
-  ];
+function getTsCompiler(): any {
+  const visited = new Set<any>();
 
-  for (const candidate of candidates) {
-    if (candidate && typeof candidate.transpileModule === 'function') {
-      return candidate;
+  function search(target: any): any {
+    if (!target || (typeof target !== 'object' && typeof target !== 'function')) {
+      return null;
     }
+    if (visited.has(target)) return null;
+    visited.add(target);
+
+    if (typeof target.transpileModule === 'function') {
+      return target;
+    }
+
+    const keysToTry = ['default', 'ts', ...Object.keys(target)];
+    for (const key of keysToTry) {
+      try {
+        const val = target[key];
+        if (val) {
+          const found = search(val);
+          if (found) return found;
+        }
+      } catch {
+        // Ignore getter access errors
+      }
+    }
+    return null;
   }
+
+  let compiler = search(tsModule) || search(tsDefault);
+  if (compiler) return compiler;
 
   try {
     const req = createRequire(import.meta.url);
     const cjsTs = req('typescript');
-    const cjsCandidates = [
-      cjsTs,
-      cjsTs?.default,
-      cjsTs?.default?.default,
-      cjsTs?.ts
-    ];
-    for (const candidate of cjsCandidates) {
-      if (candidate && typeof candidate.transpileModule === 'function') {
-        return candidate;
-      }
-    }
+    compiler = search(cjsTs);
+    if (compiler) return compiler;
   } catch {
     // Ignore require resolution errors
   }
@@ -42,7 +49,7 @@ function resolveTsCompiler(): any {
   return tsModule || tsDefault;
 }
 
-const ts = resolveTsCompiler();
+const ts = getTsCompiler();
 
 export class ToolSandbox {
   /**
