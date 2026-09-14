@@ -1,6 +1,7 @@
 import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'module';
 
 export class ToolSandbox {
   /**
@@ -10,44 +11,47 @@ export class ToolSandbox {
    * @param timeoutMs Hard timeout to terminate the thread (default 2000ms)
    */
   public async executeTool(toolFilePath: string, inputData: any, timeoutMs: number = 2000): Promise<any> {
-    const absFilePath = path.resolve(toolFilePath);
+    return new Promise((resolve, reject) => {
+      const absFilePath = path.resolve(toolFilePath);
 
-    if (!fs.existsSync(absFilePath)) {
-      throw new Error(`Tool file not found: ${absFilePath}`);
-    }
-
-    let transpiledCode: string;
-    try {
-      const sourceCode = fs.readFileSync(absFilePath, 'utf8');
-      
-      // 1. Use ESM dynamic import instead of CJS require
-      const tsRaw = await import('typescript');
-      
-      // 2. Safely bypass synthetic wrappers
-      const transpileModule = tsRaw.transpileModule 
-                           || tsRaw.default?.transpileModule 
-                           || tsRaw.default?.default?.transpileModule;
-
-      if (typeof transpileModule !== 'function') {
-        throw new Error("Could not find transpileModule. Keys found: " + Object.keys(tsRaw).join(', '));
+      if (!fs.existsSync(absFilePath)) {
+        return reject(new Error(`Tool file not found: ${absFilePath}`));
       }
 
-      // 3. Transpile to plain JavaScript
-      const result = transpileModule(sourceCode, {
-        compilerOptions: { 
-          module: 1, // CommonJS 
-          target: 9, // ES2022 
-          esModuleInterop: true, 
-          allowSyntheticDefaultImports: true 
-        }
-      });
-      transpiledCode = result.outputText;
-    } catch (err: any) {
-      throw new Error(`TypeScript Transpilation Error: ${err.message || err}`);
-    }
+      let transpiledCode: string;
+      try {
+        const sourceCode = fs.readFileSync(absFilePath, 'utf8');
+        
+        // Create a universal CommonJS require function that operates safely in strict ESM mode
+        const req = typeof require !== 'undefined' 
+          ? require 
+          : createRequire(path.join(process.cwd(), 'dummy.js'));
+        
+        // This guarantees we load the full compiler object, bypassing ESM import limitations
+        const tsRaw = req('typescript');
+        
+        const transpileModule = tsRaw.transpileModule 
+                             || tsRaw.default?.transpileModule 
+                             || tsRaw.default?.default?.transpileModule;
 
-    // 4. Execute the pure JavaScript string in the isolated sandbox
-    return new Promise((resolve, reject) => {
+        if (typeof transpileModule !== 'function') {
+          throw new Error("Could not find transpileModule. Keys found: " + Object.keys(tsRaw).join(', '));
+        }
+
+        // Transpile to plain JavaScript safely in the main thread
+        const result = transpileModule(sourceCode, {
+          compilerOptions: { 
+            module: 1, // CommonJS 
+            target: 9, // ES2022 
+            esModuleInterop: true, 
+            allowSyntheticDefaultImports: true 
+          }
+        });
+        transpiledCode = result.outputText;
+      } catch (err: any) {
+        return reject(new Error(`TypeScript Transpilation Error: ${err.message || err}`));
+      }
+
       const workerCode = `
         const { parentPort, workerData } = require('worker_threads');
         const { createRequire } = require('module');
@@ -58,7 +62,7 @@ export class ToolSandbox {
             const module = { exports: {} };
             const exports = module.exports;
 
-            // Execute the transpiled JS
+            // Execute the transpiled JS cleanly
             const fn = new Function('module', 'exports', 'require', '__filename', '__dirname', workerData.transpiledCode);
             fn(module, exports, customRequire, workerData.absFilePath, workerData.dirName);
 
