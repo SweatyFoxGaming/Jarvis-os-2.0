@@ -2,14 +2,25 @@ import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import * as tsModule from 'typescript';
 import tsDefault from 'typescript';
 
 function resolveTsCompiler(): any {
+  // Safe ESM directory resolution without bare __dirname
+  let currentDir = process.cwd();
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.url) {
+      currentDir = path.dirname(fileURLToPath(import.meta.url));
+    }
+  } catch {
+    // Fallback to process.cwd()
+  }
+
   // 1. Try createRequire with deterministic root package paths (bypasses ESM/tsx interop wrappers)
   const requirePaths = [
     path.resolve(process.cwd(), 'package.json'),
-    path.resolve(__dirname, 'package.json')
+    path.resolve(currentDir, 'package.json')
   ];
 
   for (const reqPath of requirePaths) {
@@ -27,24 +38,8 @@ function resolveTsCompiler(): any {
     }
   }
 
-  // 2. Fallback to import.meta.url if valid
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta.url) {
-      const req = createRequire(import.meta.url);
-      const cjsTs = req('typescript');
-      if (cjsTs && typeof cjsTs.transpileModule === 'function') {
-        return cjsTs;
-      }
-      if (cjsTs?.default && typeof cjsTs.default.transpileModule === 'function') {
-        return cjsTs.default;
-      }
-    }
-  } catch {
-    // Ignore
-  }
-
-  // 3. Fallback to static ESM imports
-  const esmCandidates = [
+  // 2. Direct property inspection on imported ts modules
+  const candidates = [
     tsModule,
     (tsModule as any)?.default,
     (tsModule as any)?.default?.default,
@@ -53,13 +48,32 @@ function resolveTsCompiler(): any {
     (tsDefault as any)?.default?.default
   ];
 
-  for (const candidate of esmCandidates) {
+  for (const candidate of candidates) {
     if (candidate && typeof candidate.transpileModule === 'function') {
       return candidate;
     }
   }
 
-  return (tsModule as any)?.default || tsModule || tsDefault;
+  // 3. Deep recursive search fallback for nested interop objects
+  const visited = new Set<any>();
+  function deepSearch(obj: any): any {
+    if (!obj || (typeof obj !== 'object' && typeof obj !== 'function') || visited.has(obj)) {
+      return null;
+    }
+    visited.add(obj);
+    if (typeof obj.transpileModule === 'function') return obj;
+    for (const key of Object.keys(obj)) {
+      try {
+        const found = deepSearch(obj[key]);
+        if (found) return found;
+      } catch {
+        // Ignore getter errors
+      }
+    }
+    return null;
+  }
+
+  return deepSearch(tsModule) || deepSearch(tsDefault) || tsModule || tsDefault;
 }
 
 const ts = resolveTsCompiler();
