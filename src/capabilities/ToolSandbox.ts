@@ -1,9 +1,11 @@
 import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'node:module';
 
-// Load typescript via CJS require to bypass module resolution/declaration collisions with tsc
-const ts = require('typescript');
+// Construct CJS require in ESM scope to import TypeScript runtime compiler
+const cjsRequire = createRequire(import.meta.url);
+const ts = cjsRequire('typescript');
 
 export class ToolSandbox {
   /**
