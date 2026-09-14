@@ -2,25 +2,47 @@ import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'node:module';
+import * as tsModule from 'typescript';
+import tsDefault from 'typescript';
 
-const cjsRequire = createRequire(import.meta.url);
+function resolveTsCompiler(): any {
+  const candidates = [
+    tsModule,
+    tsDefault,
+    (tsModule as any)?.default,
+    (tsDefault as any)?.default,
+    (tsModule as any)?.ts,
+    (tsDefault as any)?.ts
+  ];
 
-function loadTypeScriptCompiler(): any {
-  let raw: any;
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate.transpileModule === 'function') {
+      return candidate;
+    }
+  }
+
   try {
-    raw = cjsRequire('typescript/lib/typescript.js');
+    const req = createRequire(import.meta.url);
+    const cjsTs = req('typescript');
+    const cjsCandidates = [
+      cjsTs,
+      cjsTs?.default,
+      cjsTs?.default?.default,
+      cjsTs?.ts
+    ];
+    for (const candidate of cjsCandidates) {
+      if (candidate && typeof candidate.transpileModule === 'function') {
+        return candidate;
+      }
+    }
   } catch {
-    raw = cjsRequire('typescript');
+    // Ignore require resolution errors
   }
 
-  let current = raw;
-  while (current && typeof current.transpileModule !== 'function' && current.default) {
-    current = current.default;
-  }
-  return current;
+  return tsModule || tsDefault;
 }
 
-const ts = loadTypeScriptCompiler();
+const ts = resolveTsCompiler();
 
 export class ToolSandbox {
   /**
@@ -38,9 +60,10 @@ export class ToolSandbox {
       }
 
       if (!ts || typeof ts.transpileModule !== 'function') {
+        const availableKeys = ts ? Object.keys(ts).join(', ') : 'null';
         return reject(
           new Error(
-            `TypeScript Compiler Error: transpileModule not found. Export keys: ${Object.keys(ts || {}).join(', ')}`
+            `TypeScript Compiler Error: transpileModule not found. Available keys: ${availableKeys}`
           )
         );
       }
