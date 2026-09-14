@@ -1,7 +1,9 @@
 import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as ts from 'typescript';
+
+// Load typescript via CJS require to bypass module resolution/declaration collisions with tsc
+const ts = require('typescript');
 
 export class ToolSandbox {
   /**
@@ -23,8 +25,8 @@ export class ToolSandbox {
         const sourceCode = fs.readFileSync(absFilePath, 'utf8');
         const result = ts.transpileModule(sourceCode, {
           compilerOptions: {
-            module: ts.ModuleKind.CommonJS,
-            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind?.CommonJS ?? 1,
+            target: ts.ScriptTarget?.ES2022 ?? 9,
             esModuleInterop: true,
             allowSyntheticDefaultImports: true
           }
