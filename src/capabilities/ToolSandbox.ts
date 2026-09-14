@@ -3,9 +3,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'node:module';
 
-// Construct CJS require in ESM scope to import TypeScript runtime compiler
+// Resolve CJS TypeScript module across both default-wrapped and named export contexts
 const cjsRequire = createRequire(import.meta.url);
-const ts = cjsRequire('typescript');
+const rawTs = cjsRequire('typescript');
+const ts = rawTs.default && typeof rawTs.default.transpileModule === 'function' ? rawTs.default : rawTs;
 
 export class ToolSandbox {
   /**
