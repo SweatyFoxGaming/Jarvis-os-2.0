@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { ToolSandbox } from '../src/capabilities/ToolSandbox.js';
 import { MAVLinkHardwareDriver } from '../src/hardware/MAVLinkHardwareDriver.js';
 import { UniversalCADEngine } from '../src/cad/UniversalCADEngine.js';
 import { SVGExporter } from '../src/cad/SVGExporter.js';
@@ -75,8 +76,8 @@ async function testAllUpgrades() {
   const synthSubtask = plan.subTasks.find(s => s.domain === 'SYNTHESIS');
   if (synthSubtask?.toolCode) {
     const toolFilePath = path.join(process.cwd(), 'jarvis-workspace/capabilities', `${synthSubtask.toolCode.toolId}.ts`);
-    const loadedModule = await import(`file://${toolFilePath}`);
-    const output = loadedModule.processTelemetry({ battery: 95 });
+    const sandbox = new ToolSandbox();
+    const output = await sandbox.executeTool(toolFilePath, { battery: 95 }, 3000);
     console.log(`✓ Dynamically loaded tool "${synthSubtask.toolCode.toolId}". Execution output:`, output);
   }
 
