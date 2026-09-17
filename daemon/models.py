@@ -10,6 +10,10 @@ import logging
 import os
 import threading
 from typing import Callable, Optional
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Dict, Optional
+from pydantic import BaseModel, Field
 
 log = logging.getLogger("voice_engine.models")
 
@@ -163,3 +167,20 @@ class AudioPlayer:
         with self._play_lock:
             backend.play(audio, samplerate=sample_rate, device=_AMBIENT_SPEAKER_DEVICE)
             backend.wait()
+class EventType(str, Enum):
+    SYSTEM_PING = "system.ping"
+    SYSTEM_PONG = "system.pong"
+    VOICE_STATE = "voice.state"
+    COMMAND_EXECUTE = "command.execute"
+    COMMAND_RESULT = "command.result"
+    ERROR = "system.error"
+
+
+class EventEnvelope(BaseModel):
+    event_type: EventType
+    correlation_id: str = Field(..., description="UUID linking requests to responses")
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    error: Optional[Dict[str, Any]] = None

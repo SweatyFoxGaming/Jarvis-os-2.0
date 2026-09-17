@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=JARVIS
+Comment=Self-Improving Cognitive Engine for Phoenix OS
+Exec=/usr/local/bin/JARVIS
+Icon=system-run
+Terminal=false
+Categories=Utility;Development;

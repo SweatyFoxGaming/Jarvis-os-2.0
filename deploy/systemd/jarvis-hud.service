@@ -1,0 +1,15 @@
+[Unit]
+Description=Jarvis OS HUD Client
+Requires=jarvis-daemon.service
+After=jarvis-daemon.service sound.target
+
+[Service]
+Type=simple
+User=%U
+WorkingDirectory=/mnt/jarvis_home/llm
+ExecStart=/usr/bin/npm --prefix desktop-electron run start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

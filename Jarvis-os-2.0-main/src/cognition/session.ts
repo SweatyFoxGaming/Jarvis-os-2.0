@@ -1,0 +1,137 @@
+import { MindStateTracker, type MindState } from "../self/state.js";
+import { AttentionEngine } from "../self/attention.js";
+import { ThoughtEngine } from "../self/thought.js";
+import { ConfidenceModel } from "../self/confidence.js";
+import { ExecutiveStateTracker, ExecutiveStatus } from "../self/executive_state.js";
+import { InternalDialogue } from "../self/dialogue.js";
+import { SynchronizationEngine } from "../self/synchronization.js";
+import { CognitiveWorkspace } from "./workspace.js";
+import { ObservationPlatform } from "../kernel/observation.js";
+import * as sessionRepo from "../kernel/state/session-repo.js";
+
+const observation = ObservationPlatform.getInstance();
+
+/**
+ * Per-user working state: the "what is Jarvis thinking about right now, for
+ * this conversation" half of the old MindKernel/CognitiveWorkspace globals.
+ * Everything here used to be a single process-wide singleton shared by every
+ * authenticated caller — two people chatting at once would interleave into
+ * the same thought/attention/dialogue state. This class is instantiated once
+ * per username (see getSession below) instead.
+ *
+ * What deliberately stays global, not here: MindKernel's persisted settings
+ * (which LLM backend to use — a deployment-wide choice, not a per-user one),
+ * LongTermLearningEngine (Jarvis's own learned style/skills — one intelligence,
+ * not split per user), and ObservationPlatform (system-wide operational
+ * telemetry for admins).
+ *
+ * NOT cross-instance: unlike KeyPool and EventBus, SessionState is held
+ * entirely in process memory and has no Redis-backed path. It was
+ * deliberately left out of the Redis migration because it holds 7
+ * non-serializable engine class instances (workspace, stateTracker, etc.)
+ * -- see docs/superpowers/plans/2026-08-10-shared-state-multi-tenant-infra.md
+ * for the reasoning. A deployment behind a load balancer must route a given
+ * user's requests to the same instance, or session state will appear to
+ * reset.
+ */
+export class SessionState {
+  public workspace = new CognitiveWorkspace();
+  public stateTracker = new MindStateTracker();
+  public attentionEngine = new AttentionEngine();
+  public thoughtEngine = new ThoughtEngine();
+  public confidenceModel = new ConfidenceModel();
+  public executiveTracker = new ExecutiveStateTracker();
+  public dialogue = new InternalDialogue();
+  public synchronizer = new SynchronizationEngine();
+  public lastActiveAt = Date.now();
+
+  public getState(): MindState {
+    return this.stateTracker.getState();
+  }
+
+  public updateState(changes: Partial<MindState>, observation: ObservationPlatform): MindState {
+    this.lastActiveAt = Date.now();
+    const prevState = this.stateTracker.getState();
+    const newState = this.stateTracker.update(changes);
+
+    if (changes.currentThought) {
+      this.thoughtEngine.setStage(changes.currentThought);
+    }
+    if (changes.executiveStatus) {
+      this.executiveTracker.setStatus(changes.executiveStatus as ExecutiveStatus);
+    }
+
+    observation.logAuditEvent(
+      "MindKernel",
+      "MindStateUpdated",
+      "success",
+      `Cognitive State transitioned from "${prevState.executiveStatus}" to "${newState.executiveStatus}"`
+    );
+
+    this.synchronizer.synchronize(newState, this.workspace, observation);
+    return newState;
+  }
+}
+
+// A restart still clears the "live" compartments (currentThought, plan,
+// attention target, etc.) — those are a per-turn narration of what Jarvis is
+// doing right now, not information a user would notice or want restored.
+// Conversation history is different: losing it mid-conversation because the
+// process happened to restart is a real, noticeable regression, so it's the
+// one piece of session state persisted to Postgres and rehydrated below.
+const SESSION_IDLE_TTL_MS = 1000 * 60 * 60 * 4; // 4 hours
+const sessions = new Map<string, SessionState>();
+const sessionPromises = new Map<string, Promise<SessionState>>();
+
+export async function getSession(username: string): Promise<SessionState> {
+  let session = sessions.get(username);
+  if (!session) {
+    const pending = sessionPromises.get(username);
+    if (pending) {
+      session = await pending;
+    } else {
+      const promise = createSession(username);
+      sessionPromises.set(username, promise);
+      try {
+        session = await promise;
+      } finally {
+        sessionPromises.delete(username);
+      }
+      sessions.set(username, session);
+    }
+  }
+  session.lastActiveAt = Date.now();
+  return session;
+}
+
+async function createSession(username: string): Promise<SessionState> {
+  const session = new SessionState();
+  try {
+    const history = await sessionRepo.loadRecentHistory(username);
+    if (history.length > 0) {
+      session.workspace.userContext.history = history;
+      observation.logTelemetry("info", "Session", `Rehydrated ${history.length} conversation message(s) for "${username}" from Postgres.`);
+    }
+  } catch (err: any) {
+    observation.logTelemetry("warn", "Session", `Conversation history rehydration failed for "${username}": ${err.message}`);
+  }
+  return session;
+}
+
+export function pruneIdleSessions(): number {
+  const now = Date.now();
+  let pruned = 0;
+  for (const [username, session] of sessions.entries()) {
+    if (now - session.lastActiveAt > SESSION_IDLE_TTL_MS) {
+      sessions.delete(username);
+      pruned++;
+    }
+  }
+  return pruned;
+}
+
+export function getActiveSessionCount(): number {
+  return sessions.size;
+}
+
+export { ExecutiveStatus };

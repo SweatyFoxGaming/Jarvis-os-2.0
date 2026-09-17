@@ -1,0 +1,172 @@
+import { getPool } from "./db.js";
+import { ObservationPlatform } from "../observation.js";
+
+const observation = ObservationPlatform.getInstance();
+
+// Actions that mutate something outside Jarvis's own head — where being
+// wrong costs the user something they have to notice or undo. Everything
+// else still gets logged (execution_ok), just never flagged for a
+// "did that work?" follow-up. propose_command/record_command_outcome are
+// deliberately absent — command_proposals already has their full lifecycle;
+// see docs/superpowers/specs/2026-08-21-outcome-ledger-design.md.
+const CONSEQUENTIAL_ACTIONS = new Set([
+  "send_email",
+  "send_personal_email",
+  "github_create_issue",
+  "calendar_create_event",
+  "write_file",
+  "write_vault_note",
+  "set_objective",
+  "update_objective_status",
+]);
+
+export function isConsequentialAction(actionName: string): boolean {
+  return CONSEQUENTIAL_ACTIONS.has(actionName);
+}
+
+// Never throws — a logging failure must never break the tool call it's
+// logging. Fire-and-forget from the caller's perspective.
+export async function logAction(
+  username: string,
+  actionName: string,
+  actionSummary: string | null,
+  executionOk: boolean
+): Promise<void> {
+  try {
+    const db = getPool();
+    await db.query(
+      `INSERT INTO outcome_ledger (username, action_name, action_summary, execution_ok, needs_follow_up)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [username, actionName, actionSummary, executionOk, isConsequentialAction(actionName)]
+    );
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OutcomeLedger", `logAction(${username}, ${actionName}) failed: ${err.message}`);
+  }
+}
+
+// When ledgerId is given (the model read it off an OpenFollowUp in its
+// system context), resolves that exact row — still scoped to username so
+// one user can never confirm another's action. This disambiguates the case
+// CodeRabbit flagged on PR #169: two open rows for the same action_name
+// used to always resolve to "most recent," which could silently confirm
+// the wrong one. Without ledgerId (e.g. a stale conversation whose context
+// no longer shows the open-follow-ups list), falls back to that same
+// most-recent-open heuristic — a repeat call or the user answering twice is
+// still a safe no-op either way, the same guarantee
+// command-proposals-repo.ts's recordCommandOutcome gives today.
+export async function recordActionOutcome(
+  username: string,
+  actionName: string,
+  outcome: "worked" | "not_worked",
+  ledgerId?: number
+): Promise<boolean> {
+  try {
+    const db = getPool();
+    const { rowCount } = ledgerId !== undefined
+      ? await db.query(
+          `UPDATE outcome_ledger SET outcome = $1, outcome_recorded_at = now()
+           WHERE id = $2 AND username = $3 AND action_name = $4 AND needs_follow_up AND outcome IS NULL`,
+          [outcome, ledgerId, username, actionName]
+        )
+      : await db.query(
+          `UPDATE outcome_ledger SET outcome = $1, outcome_recorded_at = now()
+           WHERE id = (
+             SELECT id FROM outcome_ledger
+             WHERE username = $2 AND action_name = $3 AND needs_follow_up AND outcome IS NULL
+             ORDER BY executed_at DESC LIMIT 1
+           ) AND outcome IS NULL`,
+          [outcome, username, actionName]
+        );
+    return (rowCount ?? 0) > 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OutcomeLedger", `recordActionOutcome(${username}, ${actionName}, ${outcome}) failed: ${err.message}`);
+    return false;
+  }
+}
+
+// Returns null when zero outcomes have ever been recorded for this user —
+// callers must treat that as "no data yet," never as "0% success."
+// Windowed to the most recent 20 recorded outcomes. Scoped to one user
+// (unlike command-proposals-repo.ts's getRecentOutcomeSuccessRate, which is
+// intentionally global because command_proposals is effectively
+// admin-only) — this ledger covers every user's actions, so a global rate
+// would let one user's failures lower the confidence number shown to
+// every other user.
+export async function getRecentActionSuccessRate(username: string): Promise<number | null> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT outcome FROM outcome_ledger
+       WHERE username = $1 AND outcome IS NOT NULL
+       ORDER BY outcome_recorded_at DESC
+       LIMIT 20`,
+      [username]
+    );
+    if (rows.length === 0) return null;
+    const worked = rows.filter((r: { outcome: string }) => r.outcome === "worked").length;
+    return worked / rows.length;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OutcomeLedger", `getRecentActionSuccessRate(${username}) failed: ${err.message}`);
+    return null;
+  }
+}
+
+export interface OpenFollowUp {
+  id: number;
+  action_name: string;
+  action_summary: string | null;
+  executed_at: Date;
+}
+
+// Live-verified gap this closes: without a structural nudge, the model does
+// NOT proactively call record_action_outcome even when the user explicitly
+// confirms an action worked — it just replies conversationally. This lets
+// server.ts splice "you have N action(s) awaiting confirmation" into the
+// system instruction the same way it already does for pending build
+// requests (see buildRequestContext), so a genuine confirmation in the next
+// user message actually gets recognized and acted on. Exposes `id` so the
+// model can disambiguate two open rows for the same action_name (see
+// recordActionOutcome's ledgerId parameter) instead of always resolving to
+// "most recent." Degrades to [] (never throws), matching every other read
+// function in this file. Callers must not present `rows.length` as a total
+// count — it's capped at `limit`, so a fuller phrasing ("N most recent") is
+// the caller's responsibility, not this function's.
+export async function getOpenFollowUps(username: string, limit = 5): Promise<OpenFollowUp[]> {
+  try {
+    const db = getPool();
+    const { rows } = await db.query(
+      `SELECT id, action_name, action_summary, executed_at FROM outcome_ledger
+       WHERE username = $1 AND needs_follow_up AND outcome IS NULL
+       ORDER BY executed_at DESC
+       LIMIT $2`,
+      [username, limit]
+    );
+    return rows;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OutcomeLedger", `getOpenFollowUps(${username}) failed: ${err.message}`);
+    return [];
+  }
+}
+
+// Retention, not access control: this table has no HTTP route exposing it
+// to anyone — the only reads are the two aggregate/internal functions
+// above, both already scoped to the calling user's own username. If a
+// route ever surfaces raw ledger rows (e.g. a "your action history" view),
+// it must filter by username the same way; there is nothing to lock down
+// today because nothing is exposed. Wired into scheduler.ts's existing
+// startDataRetentionJob alongside conversation messages, transcripts,
+// self-reflections, and evolution analyses — same pattern, same
+// degrade-cleanly contract as pruneOldAnalyses in evolution-repo.ts.
+export async function pruneOldEntries(retentionDays: number): Promise<number> {
+  try {
+    const db = getPool();
+    const { rowCount } = await db.query(
+      `DELETE FROM outcome_ledger WHERE executed_at < now() - ($1 * interval '1 day')`,
+      [retentionDays]
+    );
+    return rowCount ?? 0;
+  } catch (err: any) {
+    observation.logTelemetry("warn", "OutcomeLedger", `pruneOldEntries(${retentionDays}) failed: ${err.message}`);
+    return 0;
+  }
+}

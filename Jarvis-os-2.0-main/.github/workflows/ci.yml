@@ -1,0 +1,79 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # HTTP Boundary tests spawn a real `tsx src/server.ts` child process,
+      # which exits immediately if these are unset (see server.ts's own
+      # REQUIRED_ENV_VARS fail-fast) -- no live Postgres is required for
+      # these to boot far enough to serve /health (applyHybridSearchSchema's
+      # own connection failure is caught and logged, not fatal).
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: jarvis_ci_placeholder
+      POSTGRES_USER: jarvis_ci_placeholder
+      # tests/index.test.ts now transitively imports kernel/auth-middleware.ts
+      # (via webauthn-routes.ts's top-level import chain, added for biometric
+      # login) -- that module fails fast with process.exit(1) at import time
+      # if neither ADMIN_API_KEY nor INTERNAL_API_KEY is set. Nothing in the
+      # main test process needed one before this, so this job's env block
+      # never set one.
+      #
+      # Deliberately INTERNAL_API_KEY, not ADMIN_API_KEY: TEST_ADMIN_API_KEY
+      # (tests/index.test.ts) already reads `process.env.INTERNAL_API_KEY`
+      # as its own default, and spawnTestServer's per-call env override
+      # (`{...process.env, ...extraEnv}`, extraEnv = `{INTERNAL_API_KEY:
+      # TEST_ADMIN_API_KEY}`) only ever touches INTERNAL_API_KEY, never
+      # ADMIN_API_KEY. auth-middleware.ts resolves `ADMIN_API_KEY ||
+      # INTERNAL_API_KEY` -- setting ADMIN_API_KEY here (tried first, live-
+      # verified against a real CI run) wins that precedence check in every
+      # spawned child regardless of extraEnv, silently overriding the test's
+      # own intended key and turning every HTTP Boundary request using
+      # TEST_ADMIN_API_KEY into a 401. Setting INTERNAL_API_KEY here instead
+      # makes the main process, TEST_ADMIN_API_KEY, and every spawned
+      # child's override all resolve to the same one value, by construction.
+      INTERNAL_API_KEY: jarvis_ci_placeholder_admin_key_do_not_use_in_prod
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # No later step in this job needs authenticated git operations
+          # (no push, no fetch beyond the initial checkout) -- persisting
+          # the GITHUB_TOKEN in local git config for the rest of the job
+          # would be an unused credential sitting around for every
+          # dependency-install/test step (npm install, pip install, pytest)
+          # to potentially read.
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install dependencies
+        run: npm install
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Run test suite
+        run: npm test
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Python gateway tests
+        run: |
+          pip install -r requirements.txt
+          pytest tests/test_api_gateway.py daemon/tests/test_protocol.py -v
+      - name: Check README/docs accuracy
+        run: bash scripts/check-docs-accuracy.sh
+      - name: Install jarvis-builder dependencies
+        run: npm install
+        working-directory: jarvis-builder
+      - name: Type check jarvis-builder
+        run: npx tsc --noEmit
+        working-directory: jarvis-builder
+      - name: Run jarvis-builder test suite
+        run: npm test
+        working-directory: jarvis-builder

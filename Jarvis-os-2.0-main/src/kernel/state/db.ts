@@ -1,0 +1,607 @@
+import pg from "pg";
+import { ObservationPlatform } from "../observation.js";
+import { runMigrations, ALL_MIGRATIONS } from "./migrations/index.js";
+
+const observation = ObservationPlatform.getInstance();
+
+let pool: pg.Pool | null = null;
+let healthPool: pg.Pool | null = null;
+
+const PING_TIMEOUT_MS = 5_000;
+
+// A separate, dedicated, tiny pool used only by pingDatabase() below — never
+// shared with application traffic. Three earlier attempts at bounding a
+// health-check query all ran into the same root problem: trying to bound a
+// connection/query borrowed from the *shared* pool client-side, which either
+// leaked an abandoned-but-eventually-resolving connection (a raced
+// pool.connect() that's given up on client-side still checks out a real
+// client once it resolves — nothing ever released it), left the first
+// bootstrapping statement unbounded (a manually-issued
+// "SET statement_timeout" is itself a query that can hang before it ever
+// takes effect), or risked leaking a non-default timeout onto whatever
+// unrelated query borrowed that connection next. A dedicated pool sidesteps
+// all three: statement_timeout/connectionTimeoutMillis are baked into its
+// config from creation (applied by pg during its own internal per-connection
+// setup, before any query of ours runs), it's never touched by other repos
+// so there's nothing to leak a timeout onto, and pool.query() (rather than a
+// manually checked-out client) means node-postgres handles releasing its own
+// internally-acquired connection once its promise settles — regardless of
+// whether pingDatabase() is still waiting on it.
+function getHealthPool(): pg.Pool {
+  if (!healthPool) {
+    healthPool = new pg.Pool({
+      host: process.env.POSTGRES_HOST || "postgres",
+      port: Number(process.env.POSTGRES_PORT) || 5432,
+      user: process.env.POSTGRES_USER,
+      password: process.env.POSTGRES_PASSWORD,
+      database: process.env.POSTGRES_DB,
+      max: 2,
+      statement_timeout: PING_TIMEOUT_MS,
+      connectionTimeoutMillis: PING_TIMEOUT_MS,
+      idleTimeoutMillis: 10_000,
+    });
+    healthPool.on("error", (err) => {
+      observation.logTelemetry("warn", "Database", `Unexpected health-check pool error: ${err.message}`);
+    });
+  }
+  return healthPool;
+}
+
+// Live connectivity check for /health — server.ts's startup never actually
+// checked initDatabase()'s result before calling app.listen() regardless,
+// and /health used to report Gemini-key presence and a hardcoded
+// "local_store: operational" string instead of anything about Postgres. A
+// deployment where Postgres never came up (or a migration threw) could
+// report itself fully healthy while registration/login/persisted memory all
+// silently failed, with no orchestrator able to tell.
+//
+// Always pings live, deliberately not gated behind "did initDatabase()
+// succeed at boot": a one-way boot flag would mean a Postgres that recovers
+// after a failed startup gets permanently reported as down until the whole
+// process restarts — the opposite of what a health check polled repeatedly
+// over the process's lifetime needs to do.
+//
+// The outer Promise.race here is safe in a way a race around a manually
+// checked-out client isn't (see getHealthPool()'s comment): pool.query()
+// always releases its own internally-acquired connection once ITS promise
+// settles, whether or not this race is still listening for the result — so
+// giving up early here can't leak a connection. This exists specifically
+// because connectionTimeoutMillis/statement_timeout, live-verified in this
+// codebase's own test environment, don't reliably bound a slow/queued DNS
+// lookup under load on their own — pingDatabase() previously hung 120s+
+// despite both being configured.
+export async function pingDatabase(): Promise<boolean> {
+  try {
+    await Promise.race([
+      getHealthPool().query("SELECT 1"),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ping timed out")), PING_TIMEOUT_MS)),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getPool(): pg.Pool {
+  if (!pool) {
+    pool = new pg.Pool({
+      host: process.env.POSTGRES_HOST || "postgres",
+      port: Number(process.env.POSTGRES_PORT) || 5432,
+      user: process.env.POSTGRES_USER,
+      password: process.env.POSTGRES_PASSWORD,
+      database: process.env.POSTGRES_DB,
+      connectionString: process.env.DATABASE_URL,
+      max: 10,
+      idleTimeoutMillis: 30_000,     // Close idle connections after 30s
+      connectionTimeoutMillis: 5_000, // Return error after 5s if pool full
+      statement_timeout: 10_000,
+    });
+    // Prevent idle client errors from crashing Node process
+    pool.on("error", (err) => {
+      console.error("[Database Pool Error] Idle client exception:", err.message);
+    });
+  }
+  return pool;
+}
+
+// The exact error pg-pool throws when connectionTimeoutMillis (getPool()'s
+// own 5s config above) is exceeded while waiting for an available client --
+// verified against this project's installed pg-pool version (see
+// node_modules/pg-pool/index.js's own `new Error('timeout exceeded when
+// trying to connect')`). Matched by substring, not by a dedicated error
+// class, because node-postgres doesn't expose one for this case.
+const POOL_EXHAUSTION_ERROR_MESSAGE = "timeout exceeded when trying to connect";
+
+/**
+ * Retries ONLY pool-exhaustion errors (a connection burst hitting getPool()'s
+ * max:10 cap) with exponential backoff, instead of failing on the first 5s
+ * timeout. Any other error (a real query error, a constraint violation,
+ * etc.) is never retried -- retrying those would be silently wrong (e.g. a
+ * duplicate-key insert retried blindly could mask a real bug). queryFn is
+ * injectable for tests (see tests/index.test.ts) that need to simulate
+ * pool exhaustion deterministically without a real burst of concurrent
+ * connections.
+ */
+export async function queryWithRetry<T extends pg.QueryResultRow = any>(
+  text: string,
+  params?: any[],
+  opts: {
+    maxRetries?: number;
+    baseDelayMs?: number;
+    queryFn?: (text: string, params?: any[]) => Promise<pg.QueryResult<T>>;
+  } = {}
+): Promise<pg.QueryResult<T>> {
+  const maxRetries = opts.maxRetries ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 200;
+  const run = opts.queryFn ?? ((queryText: string, queryParams?: any[]) => getPool().query<T>(queryText, queryParams));
+
+  let lastErr: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await run(text, params);
+    } catch (err: any) {
+      lastErr = err;
+      const isPoolExhaustion = typeof err?.message === "string" && err.message.includes(POOL_EXHAUSTION_ERROR_MESSAGE);
+      if (!isPoolExhaustion || attempt === maxRetries) {
+        throw err;
+      }
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      observation.logTelemetry(
+        "warn",
+        "Database",
+        `Connection pool exhausted (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms.`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastErr;
+}
+
+// FROZEN BASELINE — every fresh install and every existing deployment
+// already has exactly this schema (createSchema's own idempotent
+// CREATE TABLE IF NOT EXISTS / ALTER ... IF NOT EXISTS calls are what make
+// that safe to re-run on every boot). Do NOT add a new table, column, or
+// index here. Every schema change from this point forward is a new file in
+// ./migrations/ instead — see migrations/runner.ts for why: an ALTER TABLE
+// added here with no record of when it ran, applied on every single boot
+// with no way to know if it's new or ancient, is exactly the "no version
+// tracking, no rollback path" gap that pattern existed to close.
+async function createSchema(): Promise<void> {
+  const db = getPool();
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      username TEXT PRIMARY KEY,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS api_keys (
+      key TEXT PRIMARY KEY,
+      username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS memory_records (
+      uuid TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      source TEXT NOT NULL,
+      importance INTEGER NOT NULL DEFAULT 5,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS capability_grants (
+      username TEXT NOT NULL,
+      capability TEXT NOT NULL,
+      granted_by TEXT NOT NULL,
+      granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (username, capability)
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS conversation_history (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS conversation_history_username_idx ON conversation_history(username, created_at);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS oauth_tokens (
+      provider TEXT PRIMARY KEY,
+      access_token TEXT NOT NULL,
+      refresh_token TEXT NOT NULL,
+      expiry TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS briefings (
+      id SERIAL PRIMARY KEY,
+      content TEXT NOT NULL,
+      item_count INTEGER NOT NULL DEFAULT 0,
+      items JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS objectives (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      description TEXT NOT NULL,
+      target_date DATE,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_checked_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS objectives_username_status_idx ON objectives(username, status);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS evolution_analyses (
+      id SERIAL PRIMARY KEY,
+      analysis_type TEXT NOT NULL,
+      score INTEGER NOT NULL,
+      issues JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS evolution_analyses_type_idx ON evolution_analyses(analysis_type, created_at);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS evolution_goals (
+      id SERIAL PRIMARY KEY,
+      metric TEXT NOT NULL,
+      target_value DOUBLE PRECISION NOT NULL,
+      comparator TEXT NOT NULL DEFAULT 'lte',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kg_entities (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (name, entity_type)
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kg_facts (
+      id SERIAL PRIMARY KEY,
+      entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+      fact TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS kg_relationships (
+      id SERIAL PRIMARY KEY,
+      from_entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+      to_entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+      relationship TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS kg_entities_name_idx ON kg_entities(name);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS kg_facts_entity_idx ON kg_facts(entity_id);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS self_reflections (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      source_excerpt TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS self_reflections_created_idx ON self_reflections(created_at);`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS proactive_thoughts (
+      id SERIAL PRIMARY KEY,
+      content TEXT NOT NULL,
+      based_on_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  // Jarvis never writes or executes code itself — when a user asks for a
+  // capability that doesn't exist, it researches feasibility (real web
+  // search) and, only once the user explicitly approves building it, queues
+  // the request here for a human developer to actually implement. This
+  // table is that queue — the bridge between "asked for in chat" and
+  // "built in a real, reviewed dev session."
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS feature_requests (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      research_notes TEXT,
+      proposed_plan TEXT,
+      status TEXT NOT NULL DEFAULT 'queued',
+      requested_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS feature_requests_status_idx ON feature_requests(status);`);
+
+  // Human-gated security ops — Jarvis observes and proposes, never applies.
+  // network_devices is populated by a host-side arp-scan run outside Docker
+  // (see scripts/security/network_scan.sh) — the api container stays on its
+  // isolated bridge network with no new privileges; only the scanner script,
+  // which has no chat/tool-calling exposure, ever touches the real LAN.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS network_devices (
+      mac_address TEXT PRIMARY KEY,
+      ip_address TEXT NOT NULL,
+      hostname TEXT,
+      vendor TEXT,
+      is_known BOOLEAN NOT NULL DEFAULT false,
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS security_findings (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS security_findings_status_idx ON security_findings(status);`);
+  // proposed_command is stored purely for transparency (shown to the user
+  // verbatim) — nothing in this codebase ever executes it. Approving a
+  // proposal only changes its status; running the actual command, if the
+  // user wants to, is a manual step they take themselves.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS remediation_proposals (
+      id SERIAL PRIMARY KEY,
+      finding_id INTEGER REFERENCES security_findings(id) ON DELETE CASCADE,
+      proposed_action TEXT NOT NULL,
+      proposed_command TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS remediation_proposals_status_idx ON remediation_proposals(status);`);
+
+  // Real command execution on the actual host — the single most consequential
+  // capability in this codebase, built only after an explicit conversation
+  // with the user about what "you have final say" means mechanically. Every
+  // row requires the user's own fresh approval (no standing/blanket trust,
+  // no auto-approval of anything) before scripts/security/command_executor.sh
+  // (a HOST-side script, never the chat-facing api container) will run it.
+  // 'approved' -> 'running' is an atomic claim (see claimApprovedCommand in
+  // command-proposals-repo.ts) so an overlapping executor run can't double-run
+  // the same command.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS command_proposals (
+      id SERIAL PRIMARY KEY,
+      command TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      requested_by TEXT NOT NULL,
+      output TEXT,
+      exit_code INTEGER,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      approved_at TIMESTAMPTZ,
+      executed_at TIMESTAMPTZ,
+      outcome TEXT,
+      outcome_recorded_at TIMESTAMPTZ
+    );
+  `);
+  // command_proposals is NOT a new table (unlike objectives in Phase 2) — it
+  // already exists on every live deployment, so CREATE TABLE IF NOT EXISTS
+  // above is a no-op there and would never actually add these two columns.
+  // These ALTER statements are what makes the migration work on an existing
+  // database; they're also safe no-ops on a fresh one where the columns
+  // above already declared them.
+  await db.query(`ALTER TABLE command_proposals ADD COLUMN IF NOT EXISTS outcome TEXT;`);
+  await db.query(`ALTER TABLE command_proposals ADD COLUMN IF NOT EXISTS outcome_recorded_at TIMESTAMPTZ;`);
+  await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_status_idx ON command_proposals(status);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS command_proposals_outcome_idx ON command_proposals(outcome_recorded_at) WHERE outcome IS NOT NULL;`);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      registered_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      approved_at TIMESTAMPTZ,
+      last_connected_at TIMESTAMPTZ,
+      last_error TEXT
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS mcp_servers_status_idx ON mcp_servers(status);`);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS build_requests (
+      id SERIAL PRIMARY KEY,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'researching',
+      requested_by TEXT NOT NULL,
+      research_summary TEXT,
+      direction_notes TEXT,
+      code_summary TEXT,
+      proposed_files JSONB,
+      pr_url TEXT,
+      pr_number INTEGER,
+      qa_summary TEXT,
+      error_detail TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS build_requests_status_idx ON build_requests(status);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS build_requests_requested_by_idx ON build_requests(requested_by, status);`);
+
+  // One row per run_shell_command call the agentic coding loop makes,
+  // in call order — the "View Activity" panel's data source. Cascades on
+  // build_requests delete since a transcript is meaningless without its
+  // parent build request.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS transcript_events (
+      id SERIAL PRIMARY KEY,
+      build_request_id INTEGER NOT NULL REFERENCES build_requests(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      command TEXT NOT NULL,
+      stdout TEXT NOT NULL,
+      stderr TEXT NOT NULL,
+      exit_code INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS transcript_events_build_request_idx ON transcript_events(build_request_id, seq);`);
+
+  // The task breakdown the coding loop proposes before executing anything —
+  // the "View Plan" panel's data source. One row per task, status updated
+  // in place as the loop progresses (pending -> in_progress -> done, or
+  // needs_fixes/failed on a bad review). Cascades on build_requests delete
+  // for the same reason transcript_events does.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS coding_plan_tasks (
+      id SERIAL PRIMARY KEY,
+      build_request_id INTEGER NOT NULL REFERENCES build_requests(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  // UNIQUE, not a plain index — currently unreachable in practice (a build
+  // request can't re-enter the coding loop once past 'coding'), but makes
+  // that invariant structural rather than relying on caller discipline.
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS coding_plan_tasks_build_request_idx ON coding_plan_tasks(build_request_id, seq);`);
+
+  // Browser Push API subscriptions — one row per device/browser that's
+  // opted in, keyed by the endpoint URL itself (unique per subscription,
+  // not per user) since one user can have several devices subscribed at once.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS push_subscriptions_username_idx ON push_subscriptions(username);`);
+
+  // The parsed, linked view of the user's real Obsidian vault — kept up to
+  // date by scheduler.ts's startVaultSyncJob. path is the vault-relative
+  // path (e.g. "Research/quantum-physics.md"), the natural primary key
+  // since it's exactly what Obsidian itself uses to identify a note.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS vault_notes (
+      path TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      frontmatter JSONB NOT NULL DEFAULT '{}',
+      tags TEXT[] NOT NULL DEFAULT '{}',
+      content_hash TEXT NOT NULL,
+      last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  // to_path_raw is kept as the literal wikilink target text (e.g. "Note
+  // Name" or "Note Name#Heading") — it may not resolve to a real note yet,
+  // since Obsidian itself allows linking to a note that doesn't exist yet.
+  // Resolution against vault_notes happens at query time (getBacklinks),
+  // not parse time.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS vault_links (
+      id SERIAL PRIMARY KEY,
+      from_path TEXT NOT NULL REFERENCES vault_notes(path) ON DELETE CASCADE,
+      to_path_raw TEXT NOT NULL,
+      link_type TEXT NOT NULL DEFAULT 'wikilink',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS vault_links_from_idx ON vault_links(from_path);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS vault_links_to_idx ON vault_links(to_path_raw);`);
+}
+
+// Kept separate from createSchema(): the pgvector extension requires a
+// privilege the connecting role might not have (depends on how Postgres was
+// provisioned), and semantic memory failing to initialize shouldn't block
+// users/api_keys/memory_records, which don't need it.
+let vectorReady = false;
+
+async function createVectorSchema(): Promise<void> {
+  const db = getPool();
+  await db.query(`CREATE EXTENSION IF NOT EXISTS vector;`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS memory_embeddings (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      content TEXT NOT NULL,
+      embedding vector(768),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS memory_embeddings_username_idx ON memory_embeddings(username);`);
+  vectorReady = true;
+}
+
+export function isVectorReady(): boolean {
+  return vectorReady;
+}
+
+/**
+ * Retries because the "postgres" container may still be accepting connections
+ * when this process starts, even with depends_on in docker-compose.yml
+ * (depends_on only waits for container start, not readiness).
+ */
+export async function initDatabase(retries = 5, delayMs = 2000): Promise<boolean> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await createSchema();
+      observation.logTelemetry("info", "Database", "Postgres schema verified/initialized.");
+      // Runs after createSchema (some migrations reference tables it owns,
+      // e.g. objective_runs -> build_requests) and before pgvector, whose
+      // own failure is already handled separately and shouldn't block
+      // migrations from being recorded as applied.
+      await runMigrations(getPool(), ALL_MIGRATIONS);
+      try {
+        await createVectorSchema();
+        observation.logTelemetry("info", "Database", "pgvector schema ready — semantic memory enabled.");
+      } catch (vecErr: any) {
+        observation.logTelemetry(
+          "warn",
+          "Database",
+          `pgvector setup failed (${vecErr.message}) — semantic memory disabled, everything else unaffected.`
+        );
+      }
+      return true;
+    } catch (err: any) {
+      observation.logTelemetry(
+        "warn",
+        "Database",
+        `Postgres init attempt ${attempt}/${retries} failed: ${err.message}`
+      );
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  observation.logTelemetry(
+    "warn",
+    "Database",
+    "Postgres unavailable after retries — registration/login/persisted memory will fail until it recovers."
+  );
+  return false;
+}

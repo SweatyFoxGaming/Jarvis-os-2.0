@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jarvis OS</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; background: #04060f; color: #F1F5F9;
+    font-family: 'JetBrains Mono', 'Space Grotesk', monospace, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .panel { text-align: center; max-width: 420px; padding: 32px; }
+  .dot {
+    width: 12px; height: 12px; border-radius: 50%; background: #38BDF8;
+    display: inline-block; margin-bottom: 20px;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+  h1 { font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; color: #38BDF8; margin: 0 0 12px; }
+  p { font-size: 12px; color: #94a3b8; line-height: 1.6; margin: 0; }
+  #error { display: none; }
+  #error p { color: #F87171; }
+  code { background: #10172A; padding: 2px 6px; border-radius: 4px; color: #818CF8; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div id="waiting">
+      <div class="dot"></div>
+      <h1>Connecting to Jarvis OS</h1>
+      <p>Waiting for the local Docker stack at <code>localhost:3000</code>&hellip;</p>
+    </div>
+    <div id="error">
+      <h1>Jarvis OS isn't reachable</h1>
+      <p>
+        The Docker stack doesn't seem to be running.<br><br>
+        From the project directory, run:<br>
+        <code>docker compose up -d</code><br><br>
+        Then reopen this app.
+      </p>
+    </div>
+  </div>
+  <script>
+    // main.js swaps #waiting/#error visibility via executeJavaScript;
+    // this file is otherwise static, no bundler needed for something this small.
+  </script>
+</body>
+</html>

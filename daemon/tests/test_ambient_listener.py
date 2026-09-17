@@ -1,6 +1,8 @@
 import asyncio
 import os
+import pytest
 import sys
+from daemon.ambient_listener import ResilientAmbientListener
 
 import numpy as np
 
@@ -265,3 +267,17 @@ def test_no_trigger_below_threshold_never_dispatches():
                 pass
 
     _run(scenario())
+
+@pytest.mark.asyncio
+async def test_ambient_listener_lifecycle():
+    listener = ResilientAmbientListener()
+    assert not listener.is_running
+    
+    await listener._push_chunk(b"\x00" * 2048)
+    assert listener._audio_queue.qsize() == 1
+    
+    chunk = await listener._audio_queue.get()
+    assert len(chunk) == 2048
+
+    listener.stop()
+    assert not listener.is_running

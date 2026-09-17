@@ -79,6 +79,108 @@ import { startShadowVerifier } from "./executive/shadow-verifier.js";
 import { startVoiceSession } from "./interaction/voice-session.js";
 import { startAmbientDaemonClient } from "./core/ambient-daemon-client.js";
 import type { Request, Response, NextFunction } from 'express';
+import asyncio
+import json
+import logging
+import uuid
+from typing import Set
+import websockets
+from websockets.server import WebSocketServerProtocol
+
+from models import EventEnvelope, EventType
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("jarvis.daemon")
+
+
+class CoreDaemonServer:
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765):
+        self.host = host
+        self.port = port
+        self.active_connections: Set[WebSocketServerProtocol] = set()
+
+    async def register(self, websocket: WebSocketServerProtocol):
+        self.active_connections.add(websocket)
+        logger.info(
+            f"Client connected: {websocket.remote_address}. Total clients: {len(self.active_connections)}"
+        )
+
+    async def unregister(self, websocket: WebSocketServerProtocol):
+        self.active_connections.remove(websocket)
+        logger.info(
+            f"Client disconnected: {websocket.remote_address}. Remaining clients: {len(self.active_connections)}"
+        )
+
+    async def handle_message(
+        self, websocket: WebSocketServerProtocol, raw_data: str
+    ):
+        try:
+            raw_json = json.loads(raw_data)
+            envelope = EventEnvelope.model_validate(raw_json)
+        except Exception as err:
+            logger.warning(
+                f"Malformed payload from {websocket.remote_address}: {err}"
+            )
+            err_response = EventEnvelope(
+                event_type=EventType.ERROR,
+                correlation_id=str(uuid.uuid4()),
+                error={
+                    "code": "INVALID_PAYLOAD",
+                    "message": "Payload failed strict schema validation",
+                },
+            )
+            await websocket.send(err_response.model_dump_json())
+            return
+
+        # Route validated commands
+        await self.route_event(websocket, envelope)
+
+    async def route_event(
+        self, websocket: WebSocketServerProtocol, envelope: EventEnvelope
+    ):
+        if envelope.event_type == EventType.SYSTEM_PING:
+            pong = EventEnvelope(
+                event_type=EventType.SYSTEM_PONG,
+                correlation_id=envelope.correlation_id,
+                payload={"status": "healthy"},
+            )
+            await websocket.send(pong.model_dump_json())
+            return
+
+        # Add additional route handlers here without blocking the main loop
+        logger.info(
+            f"Received valid event: {envelope.event_type} [{envelope.correlation_id}]"
+        )
+
+    async def client_handler(
+        self, websocket: WebSocketServerProtocol, path: str
+    ):
+        await self.register(websocket)
+        try:
+            async for message in websocket:
+                await self.handle_message(websocket, message)
+        except websockets.ConnectionClosedError:
+            logger.warning(
+                f"Connection lost abruptly with {websocket.remote_address}"
+            )
+        finally:
+            await self.unregister(websocket)
+
+    async def start(self):
+        async with websockets.serve(self.client_handler, self.host, self.port):
+            logger.info(
+                f"Jarvis OS Daemon running on ws://{self.host}:{self.port}"
+            )
+            await asyncio.Future()  # Keep server alive
+
+
+if __name__ == "__main__":
+    daemon = CoreDaemonServer()
+    try:
+        asyncio.run(daemon.start())
+    except KeyboardInterrupt:
+        logger.info("Daemon shutdown gracefully.")
 
 let httpServer: http.Server | undefined;
 let eventsWss: WebSocketServer | undefined;

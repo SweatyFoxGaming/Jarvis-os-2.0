@@ -1,6 +1,9 @@
 import base64
 import pytest
+import uuid
 from daemon.protocol import parse_control_message, encode_audio_chunk, decode_audio_chunk, ProtocolError, UtteranceEndDetector
+from pydantic import ValidationError
+from daemon.models import EventEnvelope, EventType
 
 def test_parse_control_message_valid():
     msg = parse_control_message('{"type": "reply", "text": "hello"}')
@@ -104,3 +107,54 @@ def test_decode_audio_chunk_exceeds_max_size_raises_protocol_error():
     oversized_b64 = "A" * (8 * 1024 * 1024)
     with pytest.raises(ProtocolError, match="exceeds maximum size limit"):
         decode_audio_chunk(oversized_b64)
+
+def test_valid_envelope_creation():
+    correlation_id = str(uuid.uuid4())
+    envelope = EventEnvelope(
+        event_type=EventType.COMMAND_EXECUTE,
+        correlation_id=correlation_id,
+        payload={"command": "system_status"},
+    )
+
+    assert envelope.event_type == EventType.COMMAND_EXECUTE
+    assert envelope.correlation_id == correlation_id
+    assert envelope.payload == {"command": "system_status"}
+    assert envelope.error is None
+
+
+def test_invalid_event_type():
+    with pytest.raises(ValidationError):
+        EventEnvelope(
+            event_type="invalid.event.name",
+            correlation_id=str(uuid.uuid4()),
+            payload={},
+        )
+
+
+def test_missing_required_fields():
+    with pytest.raises(ValidationError):
+        # Missing correlation_id
+        EventEnvelope.model_validate({"event_type": "system.ping"})
+
+
+def test_json_deserialization_and_validation():
+    raw_json = {
+        "event_type": "system.ping",
+        "correlation_id": str(uuid.uuid4()),
+        "payload": {},
+        "timestamp": "2026-09-14T12:00:00Z",
+    }
+    envelope = EventEnvelope.model_validate(raw_json)
+    assert envelope.event_type == EventType.SYSTEM_PING
+
+
+def test_error_payload_formatting():
+    envelope = EventEnvelope(
+        event_type=EventType.ERROR,
+        correlation_id=str(uuid.uuid4()),
+        error={
+            "code": "DEVICE_NOT_FOUND",
+            "message": "Microphone array disconnected",
+        },
+    )
+    assert envelope.error["code"] == "DEVICE_NOT_FOUND"

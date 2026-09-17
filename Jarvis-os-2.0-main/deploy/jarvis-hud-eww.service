@@ -1,0 +1,29 @@
+[Unit]
+Description=Eww daemon for the Jarvis desktop HUD
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# GDK auto-selects its Wayland backend whenever WAYLAND_DISPLAY is set, but
+# eww here is built with the x11 feature only (GNOME's Wayland compositor
+# doesn't implement wlr-layer-shell, which eww's native Wayland backend
+# needs for overlay positioning) — without this forced, eww fails to open
+# its window at all ("Failed to get x11 window for gtk window").
+Environment=GDK_BACKEND=x11
+# No --config flag anywhere in this file, nor in the adapter's `eww update`
+# calls: eww derives its IPC socket path from a hash of the config
+# directory, so the daemon and every `eww update`/`eww open` call must
+# resolve to the IDENTICAL config path (an explicit --config here plus a
+# flagless `eww update` in the adapter talk to two different sockets,
+# neither reaching the other — live-verified). deploy-hud.sh installs the
+# yuck/scss into eww's own conventional default location
+# (~/.config/eww) specifically so every eww invocation, everywhere,
+# agrees on the same path without needing to pass it explicitly anywhere.
+ExecStart=%h/.local/bin/eww daemon --no-daemonize
+ExecStartPost=/bin/sh -c 'sleep 1; GDK_BACKEND=x11 %h/.local/bin/eww open jarvis-hud'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

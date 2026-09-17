@@ -1,0 +1,56 @@
+{
+  "name": "jarvis-os",
+  "version": "1.0.0",
+  "description": "Jarvis OS · The Living Mind",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx --env-file=.env src/server.ts",
+    "build": "tsc",
+    "lint": "tsc --noEmit",
+    "test": "tsx tests/index.test.ts",
+    "test:db": "tsx tests/db-integration.test.ts",
+    "install-desktop": "bash scripts/install-desktop.sh",
+    "build:css": "tailwindcss -c tailwind.index.config.js -i ./src/interaction/static/css/tailwind-input.css -o ./src/interaction/static/css/tailwind-index.css --minify && tailwindcss -c tailwind.admin.config.js -i ./src/interaction/static/css/tailwind-input.css -o ./src/interaction/static/css/tailwind-admin.css --minify"
+  },
+  "dependencies": {
+    "@google/genai": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.2",
+    "bcryptjs": "^2.4.3",
+    "chokidar": "^5.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "groq-sdk": "^1.5.0",
+    "helmet": "^8.3.0",
+    "imapflow": "^1.0.164",
+    "ioredis": "^5.4.1",
+    "js-yaml": "^5.2.2",
+    "nodemailer": "^9.0.3",
+    "pg": "^8.23.0",
+    "pgvector": "^0.3.0",
+    "web-push": "^3.6.7",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.7",
+    "@types/nodemailer": "^7.0.12",
+    "@types/pg": "^8.23.1",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.5.12",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

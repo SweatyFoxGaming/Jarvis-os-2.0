@@ -1,0 +1,16 @@
+[Unit]
+Description=Jarvis OS Core Daemon
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=%U
+WorkingDirectory=/mnt/jarvis_home/llm
+ExecStart=/mnt/jarvis_home/llm/.venv/bin/python3 daemon/server.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/mnt/jarvis_home/llm
+
+[Install]
+WantedBy=default.target

@@ -11,11 +11,18 @@ plan's Global Constraints. It only ever produces plain transcript text.
 """
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, Optional
+from typing import AsyncGenerator, Optional
 
 import numpy as np
 
-from protocol import UtteranceEndDetector
+from daemon.protocol import UtteranceEndDetector
+
+import os
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+
+logger = logging.getLogger("jarvis.ambient")
 
 log = logging.getLogger("voice_engine.ambient_listener")
 
@@ -41,6 +48,96 @@ def _is_speech_frame(pcm_bytes: bytes) -> bool:
     rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
     return rms > SILENCE_RMS_THRESHOLD
 
+class ResilientAmbientListener:
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        chunk_size: int = 1024,
+        max_reconnect_delay: float = 30.0,
+    ):
+        self.sample_rate = sample_rate
+        self.chunk_size = chunk_size
+        self.max_reconnect_delay = max_reconnect_delay
+        self.is_running = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
+
+    async def start(self) -> AsyncGenerator[bytes, None]:
+        """Async generator emitting audio chunks. Automatically recovers from stream crashes."""
+        self.is_running = True
+        self._loop = asyncio.get_running_loop()
+        
+        reconnect_delay = 1.0
+
+        while self.is_running:
+            try:
+                logger.info("Initializing audio input stream...")
+                # Run the blocking PyAudio/SoundDevice stream capture loop in a executor thread
+                await self._loop.run_in_executor(None, self._capture_loop)
+            except Exception as err:
+                if not self.is_running:
+                    break
+
+                logger.error(f"[Audio Engine] Input stream dropped: {err}. Reconnecting in {reconnect_delay}s...")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, self.max_reconnect_delay)
+            else:
+                # Reset delay on successful clean run
+                reconnect_delay = 1.0
+
+            # Yield queued audio frames to the daemon caller
+            while not self._audio_queue.empty():
+                yield await self._audio_queue.get()
+
+    def _capture_loop(self):
+        """Blocking PyAudio capture loop executed in a separate worker thread."""
+        import pyaudio
+
+        p = pyaudio.PyAudio()
+        stream = None
+
+        try:
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size,
+            )
+            logger.info("[Audio Engine] Input stream active.")
+
+            while self.is_running:
+                try:
+                    # Read PCM frames (exception_on_overflow=False keeps stream alive during high CPU load)
+                    data = stream.read(self.chunk_size, exception_on_overflow=False)
+                    if data and self._loop:
+                        # Thread-safe dispatch back to asyncio Queue
+                        asyncio.run_coroutine_threadsafe(
+                            self._push_chunk(data), self._loop
+                        )
+                except IOError as e:
+                    # Log driver warning but don't break thread immediately unless critical
+                    logger.warning(f"[Audio Engine] Read warning: {e}")
+                    time.sleep(0.01)
+
+        finally:
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            p.terminate()
+
+    async def _push_chunk(self, data: bytes):
+        if self._audio_queue.full():
+            try:
+                self._audio_queue.get_nowait()  # Drop oldest frame if client falls behind
+            except asyncio.QueueEmpty:
+                pass
+        await self._audio_queue.put(data)
+
+    def stop(self):
+        """Gracefully signal listener to drop audio streams and release hardware handles."""
+        logger.info("Stopping ambient audio listener...")
+        self.is_running = False
 
 class AmbientListener:
     def __init__(

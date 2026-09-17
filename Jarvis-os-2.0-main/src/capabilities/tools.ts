@@ -1,0 +1,928 @@
+import type { FunctionDeclaration, GoogleGenAI } from "@google/genai";
+import { Type } from "@google/genai";
+import * as memoryStore from "../cognition/memory-store.js";
+import * as github from "./providers/github.js";
+import * as emailIntegration from "./providers/email.js";
+import * as tts from "../interaction/tts.js";
+import { hasGrant } from "../kernel/security.js";
+import { MindKernel } from "../self/kernel.js";
+import { ObservationPlatform } from "../kernel/observation.js";
+import { AutonomousExecutive } from "../executive/autonomous_executive.js";
+import { getSession } from "../cognition/session.js";
+import * as calendar from "./providers/calendar.js";
+import * as personalGmail from "./providers/personal-gmail.js";
+import * as briefing from "../world/briefing.js";
+import * as files from "./providers/files.js";
+import * as knowledgeGraph from "../cognition/knowledge-graph.js";
+import * as identity from "../self/identity.js";
+import * as news from "./providers/news.js";
+import * as webSearch from "./providers/websearch.js";
+import * as securityRepo from "../kernel/state/security-repo.js";
+import * as commandProposalsRepo from "../kernel/state/command-proposals-repo.js";
+import * as outcomeLedgerRepo from "../kernel/state/outcome-ledger-repo.js";
+import * as objectivesRepo from "../kernel/state/objectives-repo.js";
+import * as mcpServersRepo from "../kernel/state/mcp-servers-repo.js";
+import * as mcpRegistry from "./mcp-registry.js";
+import * as vaultRepo from "../kernel/state/vault-repo.js";
+import * as obsidian from "./providers/obsidian.js";
+import * as builderClient from "../kernel/builder-client.js";
+import { listConstraints } from "../self/constraints.js";
+import * as rapport from "../self/rapport.js";
+
+const observation = ObservationPlatform.getInstance();
+
+export interface ToolCallResult {
+  name: string;
+  ok: boolean;
+  output?: any;
+  error?: string;
+  // Set when a tool can't execute server-side and needs the connected
+  // client to do something first (currently only view_screen) — see
+  // Task 2 in docs/superpowers/plans/2026-07-20-view-screen-tool.md.
+  needsClientAction?: "capture_screen";
+  // Set by display_content — relayed to the client as a "display: " SSE
+  // frame by /api/chat. See Task 1 in
+  // docs/superpowers/plans/2026-07-20-display-content-panel.md.
+  displayDirective?: { type: string; title: string; content: any };
+  // Set by speak_text — relayed to the client as an "audio: " SSE frame by
+  // /api/chat, the same way displayDirective is. Without this, the audio
+  // synthesizeSpeech() actually produced was computed and then discarded:
+  // the tool reported {synthesized: true} back to the model as if the user
+  // had heard something, but the bytes never left the server. Not read on
+  // the local voice-daemon pipeline (src/interaction/voice-session.ts) —
+  // its tool loop only consumes result.ok/output/error, and that path's
+  // TTS happens once, over the daemon's socket, on the final assistant
+  // text (see audio-client.ts's voice:reply subscriber), not per
+  // speak_text call mid-turn. (Formerly worded around the removed
+  // live-voice.ts/Gemini-Live path, which had the same non-consumption for
+  // a different reason — no client channel at all, since Gemini's Live API
+  // spoke directly.)
+  audioDirective?: { mimeType: string; base64: string };
+}
+
+const PERMISSION_BY_TOOL: Record<string, string> = {
+  github_get_repo_or_file: "github.read",
+  github_create_issue: "github.issues.create",
+  send_email: "email.send",
+  // Distinct from send_email's "email.send" (shared admin SMTP mailbox) —
+  // this gates the user's own connected Gmail account, and is auto-granted
+  // to every invited user (see DEFAULT_PERSONAL_CAPABILITIES in security.ts),
+  // whereas "email.send" is deliberately admin-only. See final-review
+  // finding C1.
+  send_personal_email: "email.personal.send",
+  speak_text: "tts.speak",
+  decompose_plan: "executive.plan",
+  calendar_list_events: "calendar.read",
+  calendar_create_event: "calendar.write",
+  get_briefing: "briefing.read",
+  list_files: "files.read",
+  read_file: "files.read",
+  write_file: "files.write",
+  query_knowledge_graph: "knowledge.read",
+  reflect_on_self: "identity.read",
+  get_news: "news.read",
+  search_web: "web.search",
+  get_security_status: "security.read",
+  propose_command: "system.execute",
+  view_screen: "screen.view",
+  set_objective: "objectives.write",
+  list_objectives: "objectives.read",
+  update_objective_status: "objectives.write",
+  record_command_outcome: "system.execute",
+  record_action_outcome: "outcome.record",
+  propose_mcp_server: "system.mcp_manage",
+  confirm_build_direction: "executive.plan",
+  search_vault: "vault.read",
+  get_vault_note: "vault.read",
+  get_vault_backlinks: "vault.read",
+  write_vault_note: "vault.write",
+  run_sandbox_command: "system.sandbox_execute",
+  reset_sandbox: "system.sandbox_execute",
+};
+
+export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
+  {
+    name: "github_get_repo_or_file",
+    description: "Get metadata about a GitHub repository, or the contents of a specific file/directory within it.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        owner: { type: Type.STRING, description: "Repository owner or organization" },
+        repo: { type: Type.STRING, description: "Repository name" },
+        path: { type: Type.STRING, description: "Optional file or directory path within the repo" },
+      },
+      required: ["owner", "repo"],
+    },
+  },
+  {
+    name: "github_create_issue",
+    description: "Create a new issue on a GitHub repository.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        owner: { type: Type.STRING },
+        repo: { type: Type.STRING },
+        title: { type: Type.STRING },
+        body: { type: Type.STRING, description: "Optional issue body/description" },
+      },
+      required: ["owner", "repo", "title"],
+    },
+  },
+  {
+    name: "send_email",
+    description: "Send an email via the configured SMTP account.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        to: { type: Type.STRING },
+        subject: { type: Type.STRING },
+        text: { type: Type.STRING },
+      },
+      required: ["to", "subject", "text"],
+    },
+  },
+  {
+    name: "send_personal_email",
+    description: "Send an email from the user's own connected Google account (via Gmail), not the shared admin SMTP account. Requires the user to have connected their Google account first.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        to: { type: Type.STRING },
+        subject: { type: Type.STRING },
+        text: { type: Type.STRING },
+      },
+      required: ["to", "subject", "text"],
+    },
+  },
+  {
+    name: "speak_text",
+    description: "Synthesize the given text as speech through the text-to-speech service.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        text: { type: Type.STRING },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "decompose_plan",
+    description:
+      "Break a complex, multi-step objective down into a sequence of concrete plan steps. Use this when the user asks to plan, break down, or map out how to accomplish something non-trivial. This produces a plan only — it does not write code, execute commands, or perform any of the plan's steps itself.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        objective: { type: Type.STRING, description: "The high-level objective to decompose into steps" },
+      },
+      required: ["objective"],
+    },
+  },
+  {
+    name: "confirm_build_direction",
+    description:
+      "Call this ONLY when the user has explicitly confirmed the direction for something you researched and discussed with them (not just a casual 'sounds interesting') — this locks in the direction and starts drafting real code. Never call this speculatively or before a genuine research-and-discussion exchange about a build request.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        directionNotes: { type: Type.STRING, description: "A clear summary of the direction the user confirmed — what to build, key choices discussed (stack, scope, style)" },
+      },
+      required: ["directionNotes"],
+    },
+  },
+  {
+    name: "calendar_list_events",
+    description: "List upcoming events on the user's Google Calendar within an optional time range.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        timeMinISO: { type: Type.STRING, description: "Optional ISO 8601 start of range; defaults to now" },
+        timeMaxISO: { type: Type.STRING, description: "Optional ISO 8601 end of range" },
+      },
+    },
+  },
+  {
+    name: "calendar_create_event",
+    description: "Create a new event on the user's Google Calendar.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        summary: { type: Type.STRING, description: "Event title" },
+        startISO: { type: Type.STRING, description: "ISO 8601 start datetime" },
+        endISO: { type: Type.STRING, description: "ISO 8601 end datetime" },
+        description: { type: Type.STRING, description: "Optional event description" },
+      },
+      required: ["summary", "startISO", "endISO"],
+    },
+  },
+  {
+    name: "get_briefing",
+    description: "Get a real, up-to-date briefing synthesized from connected sources (unread email, GitHub notifications) right now. Use this when the user asks what's new, what needs their attention, or for a status update.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "list_files",
+    description: "List files and folders in the user's dedicated Jarvis notes folder (or a subfolder within it).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative subfolder path, or omit for the top-level folder" },
+      },
+    },
+  },
+  {
+    name: "read_file",
+    description: "Read the contents of a text file in the user's dedicated Jarvis notes folder.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative path to the file within the notes folder" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_file",
+    description: "Write (create or overwrite) a text file in the user's dedicated Jarvis notes folder.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Relative path to the file within the notes folder" },
+        content: { type: Type.STRING, description: "The full text content to write" },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    name: "search_vault",
+    description: "Search the user's real Obsidian vault by note title or tag. Use this to find relevant existing notes before answering a question about something that might already be written down, or before creating a new note that might duplicate one.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "A title fragment or tag to search for" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_vault_note",
+    description: "Read the full contents of one note in the user's Obsidian vault by its vault-relative path (e.g. \"Research/quantum-physics.md\").",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "The note's vault-relative path" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "get_vault_backlinks",
+    description: "Find every note in the vault that links to a given note — what points at this, not what this points to.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "The target note's vault-relative path" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_vault_note",
+    description: "Create or overwrite a note in the user's real Obsidian vault — same full read/write trust as the Jarvis notes folder tools above.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: "Vault-relative path for the note" },
+        content: { type: Type.STRING, description: "The full note content (Markdown, may include [[wikilinks]] and #tags)" },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    name: "query_knowledge_graph",
+    description: "Reliably look up what's actually been recorded about a specific named person, project, tool, or decision from past conversations — a precise lookup by name, not a fuzzy search. Use this when the user asks 'what do we know about X' or references something discussed before by name.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "The name (or partial name) of the entity to look up" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "reflect_on_self",
+    description: "Recall genuine things you (Jarvis) have said, believed, or committed to in past conversations — real self-reflection, not fabricated introspection. Use this when the user asks what you've been thinking about, what you believe, or references something you said before.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "Optional topic to search within past self-reflections; omit for the most recent ones" },
+      },
+    },
+  },
+  {
+    name: "get_news",
+    description: "Get real current news headlines, optionally on a specific topic. Use this when the user asks what's happening in the news, for a topic-specific news search, or current events.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "Optional topic/keyword to search news for; omit for general top headlines" },
+        category: { type: Type.STRING, description: "Optional category for top headlines: business, entertainment, general, health, science, sports, technology" },
+      },
+    },
+  },
+  {
+    name: "search_web",
+    description: "Search the live web for real, current results — use this for anything requiring up-to-date information you wouldn't already know (current events, prices, recent releases, documentation, anything time-sensitive).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: { type: Type.STRING, description: "The search query" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_security_status",
+    description: "Get the real current network/system security status: unrecognized devices on the network, open security findings, and pending remediation proposals awaiting approval. Use this when the user asks about network security, unknown devices, or vulnerabilities.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "propose_command",
+    description:
+      "Propose a specific shell command to run on the user's machine. This ONLY creates a proposal for the user to review in the dashboard — it never executes anything. Only call this when you have a concrete, specific command in mind and have explained to the user what it does and why; never propose a command the user hasn't discussed or wouldn't recognize.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        command: { type: Type.STRING, description: "The exact shell command to propose" },
+        reason: { type: Type.STRING, description: "Why this command, in plain terms the user can judge before approving" },
+      },
+      required: ["command", "reason"],
+    },
+  },
+  {
+    name: "view_screen",
+    description: "Look at what's currently on the user's screen. Only call this when screen content would genuinely help answer the question (e.g. \"what am I looking at\", \"help me with this error\", \"what does this say\") — not for every message.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "display_content",
+    description: "Show something in the dashboard's display panel — use this whenever a reply has something genuinely better shown than said: an image, a code/text snippet, a simple chart, or a web page. Don't call this for plain conversational replies with nothing visual to show.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        type: { type: Type.STRING, description: "One of: image, code, chart, webpage" },
+        title: { type: Type.STRING, description: "Short title shown at the top of the panel" },
+        content: {
+          type: Type.OBJECT,
+          description: "Shape depends on type. image: {url} or {base64}. code: {code, language}. chart: {labels: string[], values: number[]}. webpage: {url}.",
+          properties: {
+            url: { type: Type.STRING },
+            base64: { type: Type.STRING },
+            code: { type: Type.STRING },
+            language: { type: Type.STRING },
+            labels: { type: Type.ARRAY, items: { type: Type.STRING } },
+            values: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+          },
+        },
+      },
+      required: ["type", "title", "content"],
+    },
+  },
+  {
+    name: "set_objective",
+    description: "Record a standing goal the user wants Jarvis to track and proactively follow up on over time (e.g. \"help me train for a marathon by October\", \"I want to get better at guitar\"). Only call this for something the user actually wants tracked across future conversations, not a one-off question.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        description: { type: Type.STRING, description: "A clear, short description of the goal" },
+        targetDateISO: { type: Type.STRING, description: "Optional ISO 8601 date (YYYY-MM-DD) the user wants to hit, if they mentioned one" },
+      },
+      required: ["description"],
+    },
+  },
+  {
+    name: "list_objectives",
+    description: "List the user's currently active standing objectives. Use this when the user asks what goals they're tracking, or before calling update_objective_status if you don't already know the objective's id from earlier in this conversation.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "update_objective_status",
+    description: "Mark a standing objective as completed or abandoned. Call list_objectives first if you don't already know the objective's numeric id.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        objectiveId: { type: Type.NUMBER, description: "The objective's id, from list_objectives" },
+        status: { type: Type.STRING, description: "Either \"completed\" or \"abandoned\"" },
+      },
+      required: ["objectiveId", "status"],
+    },
+  },
+  {
+    name: "record_command_outcome",
+    description:
+      "Record whether a previously-executed command actually fixed the user's problem. Call this when the user answers a question about whether an executed command worked (e.g. after Jarvis asked \"did that fix it?\"), using the command's numeric id from the conversation. Never call this speculatively — only when the user has actually told you whether it worked.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        commandId: { type: Type.NUMBER, description: "The command proposal's numeric id, from the notification or earlier conversation" },
+        outcome: { type: Type.STRING, description: "Either \"worked\" or \"not_worked\", based on what the user said" },
+      },
+      required: ["commandId", "outcome"],
+    },
+  },
+  {
+    name: "record_action_outcome",
+    description:
+      "Record whether a previously taken action (like sending an email or saving a note) actually worked, based on what the user told you. Call this only when the user has explicitly said whether it worked — never speculatively.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        actionName: { type: Type.STRING, description: "The tool name of the action being confirmed, e.g. \"send_email\" or \"write_file\"" },
+        outcome: { type: Type.STRING, description: "Either \"worked\" or \"not_worked\", based on what the user said" },
+        ledgerId: { type: Type.NUMBER, description: "The numeric id of this specific action, if you have it from your list of actions awaiting confirmation. Supply this when the same action type has more than one action awaiting confirmation, so the right one gets updated — omit it if you only have one." },
+      },
+      required: ["actionName", "outcome"],
+    },
+  },
+  {
+    name: "propose_mcp_server",
+    description:
+      "Propose a new MCP (Model Context Protocol) server as a new source of capabilities. This ONLY creates a pending registration for the user to review and approve — it never connects to or trusts the server automatically. Only call this when the user has given you a specific server name and URL and clearly wants it registered.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING, description: "A short, unique name for this server (used in capability names, e.g. \"github-mcp\")" },
+        url: { type: Type.STRING, description: "The server's MCP endpoint URL" },
+      },
+      required: ["name", "url"],
+    },
+  },
+  {
+    name: "run_sandbox_command",
+    description:
+      "Run a shell command in your own isolated sandbox — a real, persistent Linux container scoped just to you, with a full clone of this codebase, network access for package installs, but no credentials, no access to production data or other services, and no path outside itself. Nothing here needs approval. Use it freely to explore, inspect files, test snippets, or run small scripts. Files you create and packages you install persist across calls in the same conversation, but the sandbox is recycled after a period of inactivity — don't rely on it for anything that needs to last.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        command: { type: Type.STRING, description: "The shell command to run." },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "reset_sandbox",
+    description: "Destroy your current sandbox and start fresh on the next command. Use this if the sandbox gets into a broken state you can't recover from.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "list_constraints",
+    description: "List Jarvis's explicit, auditable safety constraints — the hard limits on what autonomous actions Jarvis will take without human approval, and where each is enforced in the codebase.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "get_rapport_summary",
+    description: "Get an honest summary of how this user has been coming across in recent conversations — their real, observed communication tone and formality, not a fabricated first impression. Use this when the user asks how they've seemed lately, whether Jarvis has noticed anything about their mood, or similar self-reflective questions about the relationship.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+];
+
+// Static declarations plus whatever MCP servers are currently approved and
+// reachable — called fresh each time a chat turn builds its Gemini
+// function-calling request, so a newly-approved server's tools appear
+// without a restart, and a disabled/unreachable one's disappear.
+export function getAllToolDeclarations(): FunctionDeclaration[] {
+  const mcpDeclarations: FunctionDeclaration[] = mcpRegistry.getCachedMcpTools().map(t => ({
+    name: `mcp.${t.serverName}.${t.toolName}`,
+    description: t.description,
+    parameters: t.inputSchema as any
+  }));
+  return [...TOOL_DECLARATIONS, ...mcpDeclarations];
+}
+
+async function executeToolInner(
+  name: string,
+  args: Record<string, any>,
+  username: string,
+  ai: GoogleGenAI | null = null,
+  localEndpoint: string | null = null,
+  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
+): Promise<ToolCallResult> {
+  // display_content has no real-world side effect or access to anything
+  // private beyond what the conversation already contains, so it's the one
+  // tool deliberately left out of PERMISSION_BY_TOOL/ALL_CAPABILITIES rather
+  // than gated behind a grant every user would need to be given anyway.
+  // list_constraints is ungated for a different reason: per this codebase's
+  // safety-constraint registry (src/self/constraints.ts), any authenticated
+  // user must be able to ask what Jarvis's hard limits are — gating that
+  // behind a capability grant would mean a user could be denied visibility
+  // into the very boundaries meant to protect them.
+  // get_rapport_summary is ungated for the same kind of reason: it only
+  // ever reflects the calling user's own recorded tone signals back to
+  // them (src/self/rapport.ts) — there's no other user's data reachable
+  // and nothing gated would meaningfully protect anyone by requiring a grant.
+  const UNGATED_TOOLS = new Set(["display_content", "list_constraints", "get_rapport_summary"]);
+  const requiredGrant = PERMISSION_BY_TOOL[name];
+
+  // Not a static tool — check whether it's a currently-cached MCP tool
+  // before concluding it's genuinely unknown.
+  const mcpTool = !requiredGrant && !UNGATED_TOOLS.has(name)
+    ? mcpRegistry.getCachedMcpTools().find(t => `mcp.${t.serverName}.${t.toolName}` === name)
+    : undefined;
+
+  if (!requiredGrant && !UNGATED_TOOLS.has(name) && !mcpTool) {
+    return { name, ok: false, error: `Unknown tool "${name}"` };
+  }
+
+  const mcpCapability = mcpTool ? `mcp.${mcpTool.serverName}.${mcpTool.toolName}` : undefined;
+  const effectiveRequiredGrant = requiredGrant || mcpCapability;
+  if (effectiveRequiredGrant && !hasGrant(username, effectiveRequiredGrant)) {
+    observation.logAuditEvent(username, "tool_call_denied", "failed", `Missing grant "${effectiveRequiredGrant}" for tool "${name}"`);
+    return { name, ok: false, error: `Missing capability grant "${effectiveRequiredGrant}"` };
+  }
+
+  // Offline mode must be an execution property, not merely a prompt hint.
+  // Network-backed tools are rejected at the last mile so a local model cannot
+  // accidentally turn "offline" into a hidden network request.
+  const OFFLINE_NETWORK_TOOLS = new Set([
+    "github_get_repo_or_file", "github_create_issue", "send_email",
+    "send_personal_email", "calendar_list_events", "calendar_create_event",
+    "get_news", "search_web", "get_briefing", "propose_mcp_server"
+  ]);
+  if (MindKernel.getInstance().offlineMode && (OFFLINE_NETWORK_TOOLS.has(name) || !!mcpTool)) {
+    observation.logAuditEvent(username, "tool_call_denied", "failed", `Offline mode blocks network-backed tool "${name}"`);
+    return { name, ok: false, error: `Tool "${name}" is unavailable while Jarvis is in strict offline mode.` };
+  }
+
+  if (mcpTool) {
+    const result = await mcpRegistry.callMcpTool(mcpTool.serverId, mcpTool.toolName, args);
+    if (!result.ok) {
+      observation.logAuditEvent(username, "tool_call", "failed", `${name}(${JSON.stringify(args)}): ${result.error}`);
+      return { name, ok: false, error: result.error };
+    }
+    observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
+    return { name, ok: true, output: result.content };
+  }
+
+  try {
+    let output: any;
+    let displayDirective: ToolCallResult["displayDirective"];
+    let audioDirective: ToolCallResult["audioDirective"];
+    switch (name) {
+      case "github_get_repo_or_file":
+        output = args.path
+          ? await github.getFileContent(args.owner, args.repo, args.path)
+          : await github.getRepo(args.owner, args.repo);
+        break;
+      case "github_create_issue": {
+        const issue = await github.createIssue(args.owner, args.repo, args.title, args.body);
+        output = { number: issue.number, url: issue.html_url };
+        break;
+      }
+      case "send_email":
+        output = await emailIntegration.sendEmail(args.to, args.subject, args.text);
+        break;
+      case "send_personal_email":
+        output = await personalGmail.sendPersonalEmail(username, args.to, args.subject, args.text);
+        break;
+      case "speak_text": {
+        const { audio, contentType } = await tts.synthesizeSpeech(args.text);
+        audioDirective = { mimeType: contentType, base64: audio.toString("base64") };
+        output = { synthesized: true, bytes: audio.length };
+        break;
+      }
+      case "decompose_plan": {
+        const session = await getSession(username);
+        output = await AutonomousExecutive.getInstance().executeObjective(args.objective, session, username);
+        break;
+      }
+      case "confirm_build_direction": {
+        const result = await AutonomousExecutive.getInstance().confirmDirection(username, args.directionNotes);
+        if (!result.ok) {
+          return { name, ok: false, error: result.message };
+        }
+        output = { message: result.message };
+        break;
+      }
+      case "calendar_list_events":
+        output = await calendar.listEvents(username, args.timeMinISO, args.timeMaxISO);
+        break;
+      case "calendar_create_event":
+        output = await calendar.createEvent(username, args.summary, args.startISO, args.endISO, args.description);
+        break;
+      case "get_briefing": {
+        const result = await briefing.generateBriefing(briefing.getConfiguredGroq(), username);
+        output = { text: result.text, itemCount: result.itemCount };
+        break;
+      }
+      case "list_files":
+        output = await files.listFiles(args.path);
+        break;
+      case "read_file":
+        output = { content: await files.readFile(args.path) };
+        break;
+      case "write_file":
+        output = await files.writeFile(args.path, args.content);
+        break;
+      case "search_vault":
+        output = { results: await vaultRepo.searchNotes(args.query) };
+        break;
+      case "get_vault_note": {
+        const note = await vaultRepo.getNoteByPath(args.path);
+        if (!note) {
+          return { name, ok: false, error: `No indexed note at "${args.path}" — it may not exist, or the vault sync job hasn't run since it was created.` };
+        }
+        output = { content: await obsidian.readNote(args.path), frontmatter: note.frontmatter, tags: note.tags };
+        break;
+      }
+      case "get_vault_backlinks":
+        output = { backlinks: await vaultRepo.getBacklinks(args.path) };
+        break;
+      case "write_vault_note":
+        output = await obsidian.createNote(args.path, args.content);
+        break;
+      case "query_knowledge_graph":
+        output = { results: await knowledgeGraph.queryKnowledge(username, args.query) };
+        break;
+      case "reflect_on_self":
+        output = { reflections: await identity.reflectOnSelf(username, args.query) };
+        break;
+      case "get_news": {
+        const articles = args.query
+          ? await news.searchNews(args.query)
+          : await news.getTopHeadlines({ category: args.category });
+        output = { articles };
+        break;
+      }
+      case "search_web": {
+        const results = await webSearch.webSearch(args.query);
+        output = { results };
+        // Store the actual findings, not just a truncated mention that
+        // research happened — the automatic per-exchange memory capture in
+        // server.ts only keeps the first 500 chars of Jarvis's final reply,
+        // which loses most of what a real research result contains. Fire
+        // -and-forget: memoryStore already logs its own failures, and this
+        // must never block the tool response the user is waiting on.
+        if (results.length > 0) {
+          const summary = results
+            .map((r) => `- ${r.title} (${r.url})${r.description ? `: ${r.description}` : ""}`)
+            .join("\n");
+          memoryStore
+            .remember(username, `Research on "${args.query}":\n${summary}`, ai, localEndpoint)
+            .catch(() => {});
+        }
+        break;
+      }
+      case "get_security_status": {
+        const [devices, findings, proposals] = await Promise.all([
+          securityRepo.getNetworkDevices(),
+          securityRepo.getFindings("open"),
+          securityRepo.getProposals("pending"),
+        ]);
+        output = {
+          unrecognizedDevices: devices.filter(d => !d.is_known).map(d => ({ mac: d.mac_address, ip: d.ip_address, vendor: d.vendor })),
+          openFindings: findings.map(f => ({ id: f.id, severity: f.severity, title: f.title })),
+          pendingProposals: proposals.map(p => ({ id: p.id, action: p.proposed_action })),
+        };
+        break;
+      }
+      case "propose_command": {
+        const proposed = await commandProposalsRepo.addCommandProposal(args.command, args.reason, username);
+        observation.logAuditEvent(username, "command_proposed", "success", `"${args.command}" (id ${proposed.id})`);
+        output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval in the dashboard. Nothing runs until you approve it." };
+        break;
+      }
+      case "record_command_outcome": {
+        if (args.outcome !== "worked" && args.outcome !== "not_worked") {
+          return { name, ok: false, error: "outcome must be either \"worked\" or \"not_worked\"." };
+        }
+        const recorded = await commandProposalsRepo.recordCommandOutcome(args.commandId, args.outcome);
+        if (!recorded) {
+          return { name, ok: false, error: "No matching executed command found awaiting an outcome for that id." };
+        }
+        output = { recorded: true };
+        break;
+      }
+      case "record_action_outcome": {
+        if (args.outcome !== "worked" && args.outcome !== "not_worked") {
+          return { name, ok: false, error: "outcome must be either \"worked\" or \"not_worked\"." };
+        }
+        const recorded = await outcomeLedgerRepo.recordActionOutcome(username, args.actionName, args.outcome, args.ledgerId);
+        if (!recorded) {
+          return { name, ok: false, error: "No matching action found awaiting an outcome for that action name." };
+        }
+        output = { recorded: true };
+        break;
+      }
+      case "view_screen": {
+        if (screenContext.alreadyAttached) {
+          output = "A screenshot is already attached to this message — describe what's visible in it directly, no need to look again.";
+          break;
+        }
+        if (!screenContext.supportsRoundTrip) {
+          return { name, ok: false, error: "Screen viewing isn't available in this mode yet — ask via text chat instead." };
+        }
+        return { name, ok: false, error: "Screen capture requested", needsClientAction: "capture_screen" };
+      }
+      case "set_objective":
+        output = await objectivesRepo.createObjective(username, args.description, args.targetDateISO || null);
+        break;
+      case "list_objectives":
+        output = { objectives: await objectivesRepo.listActiveObjectives(username) };
+        break;
+      case "update_objective_status": {
+        if (args.status !== "completed" && args.status !== "abandoned") {
+          return { name, ok: false, error: "status must be either \"completed\" or \"abandoned\"." };
+        }
+        const updated = await objectivesRepo.updateObjectiveStatus(username, args.objectiveId, args.status);
+        if (!updated) {
+          return { name, ok: false, error: "No matching active objective found for that id." };
+        }
+        output = { updated: true };
+        break;
+      }
+      case "propose_mcp_server": {
+        const proposed = await mcpServersRepo.proposeMcpServer(args.name, args.url, username);
+        observation.logAuditEvent(username, "mcp_server_proposed", "success", `"${args.name}" (${args.url}, id ${proposed.id})`);
+        output = { id: proposed.id, status: proposed.status, message: "Proposed — awaiting your review and approval. Nothing connects until you approve it." };
+        break;
+      }
+      case "run_sandbox_command": {
+        const result = await builderClient.execInChatSandbox(username, args.command);
+        observation.logAuditEvent(username, "sandbox_command", result.exitCode === 0 ? "success" : "failed", args.command);
+        output = result;
+        break;
+      }
+      case "reset_sandbox": {
+        await builderClient.destroyChatSandbox(username);
+        observation.logAuditEvent(username, "sandbox_reset", "success", "");
+        output = { reset: true };
+        break;
+      }
+      case "display_content": {
+        displayDirective = { type: args.type, title: args.title, content: args.content };
+        output = `Displayed ${args.type} "${args.title}" in the display panel.`;
+        break;
+      }
+      case "list_constraints":
+        output = { constraints: listConstraints() };
+        break;
+      case "get_rapport_summary":
+        output = { summary: await rapport.buildRapportContext(username) };
+        break;
+      default:
+        return { name, ok: false, error: `Unhandled tool "${name}"` };
+    }
+    observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
+  return {
+      name,
+      ok: true,
+      output,
+      ...(displayDirective ? { displayDirective } : {}),
+      ...(audioDirective ? { audioDirective } : {}),
+    };
+  } catch (err: any) {
+    return {
+      name,
+      ok: false,
+      output: `Tool execution failed: ${err?.message || String(err)}`,
+    };
+  }
+}
+
+// Fixed, per-tool-name human-readable label for the outcome ledger's
+// action_summary column — deliberately never interpolates any argument
+// value (recipient addresses, subjects, file paths, objective text), since
+// this table has no redaction, retention limit, or access control of its
+// own. Falls back to the bare tool name for anything unlisted.
+function summarizeAction(name: string): string {
+  switch (name) {
+    case "send_email":
+    case "send_personal_email":
+      return "sent an email";
+    case "github_create_issue":
+      return "created a GitHub issue";
+    case "calendar_create_event":
+      return "created a calendar event";
+    case "write_file":
+      return "wrote a file";
+    case "write_vault_note":
+      return "wrote a vault note";
+    case "set_objective":
+      return "set an objective";
+    case "update_objective_status":
+      return "updated an objective's status";
+    default:
+      return name;
+  }
+}
+
+export async function executeTool(
+  name: string,
+  args: Record<string, any>,
+  username: string,
+  ai: GoogleGenAI | null = null,
+  localEndpoint: string | null = null,
+  screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
+): Promise<ToolCallResult> {
+  const result = await executeToolInner(name, args, username, ai, localEndpoint, screenContext);
+  outcomeLedgerRepo.logAction(username, name, summarizeAction(name), result.ok).catch(() => {});
+  return result;
+}
+
+// Keyword triggers per tool, not a single flat list — makes it obvious which
+// tool a match implies. This is a hand-maintained list, deliberately not
+// derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
+// display_content, update_objective_status, record_command_outcome,
+// record_action_outcome, confirm_build_direction) are intentionally absent
+// because they should only ever be invoked as a model-driven follow-up,
+// never routed to directly by keyword match. If you add a tool that SHOULD
+// be keyword-routable, add its entry here too — nothing enforces the two
+// staying in sync.
+const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
+  github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
+  github_create_issue: ["github", "issue", "repo", "repository"],
+  send_email: ["email", "e-mail", "send mail", "inbox"],
+  send_personal_email: ["email", "e-mail", "send mail", "from my gmail", "from my google account"],
+  speak_text: ["speak", "say it out loud", "read that aloud", "text-to-speech", "text to speech"],
+  decompose_plan: ["break this down", "break down", "decompose", "make a plan", "create a plan", "step-by-step plan", "step by step plan", "plan out"],
+  calendar_list_events: ["calendar", "schedule", "my agenda", "upcoming events", "what's on my"],
+  calendar_create_event: ["calendar", "schedule a", "book a", "add an event", "set up a meeting"],
+  get_briefing: ["briefing", "what's new", "whats new", "what do i need to know", "catch me up", "status update", "anything i need to know"],
+  list_files: ["my notes", "my files", "list files", "what files"],
+  read_file: ["read my", "open my note", "read the file", "read that note"],
+  write_file: ["save this", "write this down", "save a note", "create a note", "write a note", "jot this down"],
+  query_knowledge_graph: ["what do we know about", "what do you know about", "remind me about", "what did we decide about", "what have we discussed about"],
+  reflect_on_self: ["what have you been thinking", "what do you think about", "what do you believe", "have you thought about", "your opinion on", "what did you say about"],
+  get_news: ["news", "headlines", "what's happening in", "current events", "latest on"],
+  search_web: ["search the web", "search for", "look up", "google", "find out about", "what's the latest"],
+  get_security_status: ["network security", "unknown device", "unrecognized device", "vulnerabilit", "security findings", "is my network safe"],
+  view_screen: ["what's on my screen", "whats on my screen", "look at my screen", "what am i looking at", "help me with this error", "what does this say"],
+  set_objective: ["help me", "i want to", "track this goal", "keep me accountable", "my goal is"],
+  list_objectives: ["what am i tracking", "my goals", "my objectives", "what are my goals"],
+  search_vault: ["in my vault", "in my notes", "search my vault", "find in my vault"],
+  get_vault_note: ["read my note", "open my note", "what does my note say"],
+  get_vault_backlinks: ["what links to", "backlinks for", "what references"],
+  write_vault_note: ["add this to my vault", "save this to my vault", "create a vault note"],
+  list_constraints: ["what are your limits", "what won't you do", "what will you not do", "what are your safety constraints", "what are your hard limits"],
+  get_rapport_summary: ["how have i been coming across", "how have i seemed", "noticed anything about my mood", "how do i seem lately", "what have you noticed about me"],
+};
+
+/**
+ * Heuristic only — used to decide *routing* (prefer a backend that can
+ * actually fulfill the request), never to decide whether to execute a tool.
+ * Real execution always goes through Gemini's own function-calling decision
+ * plus the permission grant in executeTool(); this just avoids sending an
+ * obviously tool-shaped request to a backend (the local model) that's known
+ * to fabricate an answer instead of admitting it has no tool access.
+ */
+export function looksToolShaped(message: string): boolean {
+  const lower = message.toLowerCase();
+  return Object.values(TOOL_TRIGGER_WORDS).some(words => words.some(w => lower.includes(w)));
+}
+
+/**
+ * Narrower and stricter than looksToolShaped on purpose: that heuristic only
+ * ever affects which backend is tried first (the LLM still decides
+ * everything for itself), so a substring match anywhere in the message is
+ * an acceptable false-positive rate. This one controls whether tools are
+ * attached to the request AT ALL for a Groq turn — a false positive here
+ * would silently remove real tool capability from a substantive request, so
+ * it requires the trivial phrase to be the message's actual content (exact
+ * match, or the message's first word(s) followed by a space), not merely
+ * present somewhere inside a longer message, and caps message length
+ * so a genuine multi-part request can never qualify no matter how it opens.
+ */
+const TRIVIAL_PHRASES = [
+  "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+  "thanks", "thank you", "ok", "okay", "sounds good", "got it", "cool",
+  "nice", "great", "perfect", "awesome", "yes", "no", "yep", "nope", "sure",
+];
+const TRIVIAL_MAX_LENGTH = 50;
+
+export function looksTrivial(message: string): boolean {
+  const trimmed = message.trim();
+  if (trimmed.length > TRIVIAL_MAX_LENGTH) return false;
+  // Strip trailing punctuation to handle cases like "thanks!" or "good morning?"
+  const stripped = trimmed.replace(/[!?.,:;-]+$/, '').toLowerCase();
+  return TRIVIAL_PHRASES.some(p => stripped === p || stripped.startsWith(p + " "));
+}

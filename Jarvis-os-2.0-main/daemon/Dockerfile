@@ -1,0 +1,94 @@
+# Matches the daemon's own dev venv (see daemon/venv), which was built
+# against Python 3.11.
+FROM python:3.11-slim
+
+# espeak-ng: improves TTS quality for out-of-dictionary English words.
+# models.py's _load_kokoro_model() calls KPipeline(lang_code="a") (hardcoded
+# American English). In the installed kokoro package, pipeline.py's
+# __init__ wraps espeak.EspeakFallback(...) in try/except for lang_code in
+# 'ab' -- without espeak-ng that just logs "EspeakFallback not Enabled: OOD
+# words will be skipped" and proceeds with fallback=None, it does not raise.
+# (The unconditional, raising espeak.EspeakG2P(...) call only fires for
+# lang_code in 'efhip' -- Spanish/French/Hindi/Italian/Portuguese -- none of
+# which this daemon uses.) So this is a quality/robustness improvement, not
+# a hard runtime dependency for synthesize() to succeed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    espeak-ng \
+    libportaudio2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# CPU-only torch, installed explicitly and first: kokoro (below) depends on
+# torch but doesn't pin it, and plain PyPI's default "torch" wheel is the
+# CUDA/GPU build -- it drags in several GB of nvidia-*/triton CUDA toolkit
+# packages (nvidia-cudnn, nvidia-cublas, nvidia-nccl, etc.) that this
+# container has no use for: it runs faster-whisper/Kokoro CPU inference
+# only, and this stack has no GPU (confirmed at this plan's own research
+# phase -- no nvidia-smi). Live-verified (Task 9): pulling from PyPI's
+# default index resolved the GPU build and made `docker compose build`
+# exceed an hour before being canceled mid-download; pointing pip at
+# PyTorch's own CPU wheel index instead resolves torch==<version>+cpu with
+# zero nvidia-* packages, verified via `pip install --dry-run`. This must
+# run as its own step, before installing requirements.txt below, so pip
+# already has a satisfying "torch" installed by the time kokoro's unpinned
+# dependency on it is resolved -- once satisfied, pip won't reach back to
+# PyPI's default index and pull the GPU build.
+# Pinned exactly (not left floating) for the same reason kokoro is pinned
+# exactly in requirements.txt (I10): an unpinned install could resolve a
+# newer torch on a future rebuild with no guarantee kokoro's actually-
+# installed 0.9.4 stays compatible with it. 2.13.0+cpu is the version
+# `pip install --dry-run --ignore-installed torch --index-url
+# https://download.pytorch.org/whl/cpu` actually resolved when this pin
+# was verified (live-checked against this daemon's own dev venv).
+RUN pip install --no-cache-dir torch==2.13.0+cpu --index-url https://download.pytorch.org/whl/cpu
+
+# Copy dependency manifest first to leverage Docker layer caching.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download openWakeWord's model files into the image at build time.
+# The pip package ships NO model weights at all -- openwakeword/resources/
+# models/ is empty after install, and openwakeword.Model(...) resolves
+# hardcoded paths under that directory (see openwakeword/__init__.py's
+# MODELS/FEATURE_MODELS dicts, verified against the actually-installed
+# 0.6.0 wheel). Without this step the first ambient startup would either
+# need to reach GitHub's release assets over the network, or fail at
+# _make_wake_word_predictor() time inside voice_engine.py's broad
+# except-and-log -- i.e. silently, with ambient listening simply never
+# working. download_models(["hey_jarvis"]) is 0.6.0's real, public
+# utility: it fetches melspectrogram + embedding feature models (both
+# .tflite AND .onnx), the silero VAD model, and hey_jarvis_v0.1 in both
+# formats, straight into the package's own resources/models directory.
+# We use the ONNX variants at runtime (see _make_wake_word_predictor's
+# explicit inference_framework="onnx"), but the utility downloads both
+# and there is no supported way to ask it for only one.
+RUN python3 -c "import openwakeword.utils; openwakeword.utils.download_models(['hey_jarvis'])"
+
+# Pre-install spaCy's en_core_web_sm into the image at build time.
+# models.py's _load_kokoro_model() -> kokoro's KPipeline(lang_code="a") ->
+# misaki/en.py's G2P.__init__ unconditionally requires this model: it
+# checks `spacy.util.is_package("en_core_web_sm")` and, if missing, calls
+# spacy.cli.download() -- which itself calls spaCy's remote compatibility
+# API before fetching the model. Live-observed: that compat-table request
+# started returning HTTP 503, and spaCy's own failure path (wasabi's
+# msg.fail()) calls sys.exit(1) rather than raising a normal exception --
+# SystemExit inherits BaseException, not Exception, so it passes straight
+# through _warm_models()'s `except Exception` guard and kills the whole
+# daemon process outright. Docker's restart policy then repeats the same
+# download-503-SystemExit sequence every restart, a permanent crash loop
+# with no automatic recovery. Installing the model wheel directly (not
+# via `spacy download`, which is the same command that's failing) makes
+# `is_package()` true at runtime, so misaki's download branch is never
+# reached at all -- same pre-bake pattern as openWakeWord's models above.
+# 3.8.0 is the model-package version matching installed spaCy 3.8.15
+# (spaCy model releases track spaCy's major.minor, not exact patch).
+RUN pip install --no-cache-dir \
+    https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
+# Only the modules voice_engine.py actually imports at runtime -- not
+# venv/, tests/, or pytest.ini, which are dev-only (see voice_engine.py's
+# own `from protocol import ...` / `from models import ...`).
+COPY voice_engine.py models.py protocol.py ambient_listener.py ./
+
+CMD ["python3", "voice_engine.py"]
