@@ -1,0 +1,1060 @@
+--- .env.example	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/.env.example	2026-09-17 10:37:08.389781059 +0000
+@@ -29,10 +29,17 @@
+ TZ=
+ 
+ # ---------- Local LLM (offline-first) ----------
+-# Used by the "llama-cpp" service in docker-compose.yml — bind-mounts
+-# HOST_MODEL_DIR (read-only) and serves LOCAL_MODEL_FILE from it over an
+-# OpenAI-compatible API at http://llama-cpp:8080 inside the Docker network.
+-# Point this at a directory containing a .gguf model you already have.
++# Primary topology: Ollama can run on another trusted machine (for example,
++# a laptop with the GPU) while Jarvis runs here. Use the laptop's LAN IP.
++# Ollama's OpenAI-compatible integration base is /v1.
++JARVIS_LOCAL_LLM_ENDPOINT=http://192.168.1.50:11434/v1
++JARVIS_LOCAL_LLM_MODEL=qwen3
++JARVIS_LOCAL_LLM_API_KEY=
++# Keep enabled so the local Ollama model can call Jarvis capabilities.
++LOCAL_TOOL_CALLING=true
++
++# Optional: bundled llama.cpp remains available, but is no longer started by
++# the normal Compose stack. Launch it explicitly with the `bundled-llm` profile.
+ HOST_MODEL_DIR=./models
+ LOCAL_MODEL_FILE=your-model.Q4_K_M.gguf
+ 
+@@ -80,6 +87,13 @@
+ JARVIS_REPO_HOST_PATH=/mnt/jarvis_home/llm
+ 
+ # ---------- LLM ----------
++# Force strict no-network runtime behaviour. The local model/DB/filesystem remain available.
++JARVIS_OFFLINE_MODE=true
++# Enable persistent objectives to execute without a chat turn.
++JARVIS_AUTONOMY_ENABLED=true
++AUTONOMY_INTERVAL_MS=60000
++# Keep the emergency canned keyword engine disabled in real deployments.
++ALLOW_KEYWORD_FALLBACK=false
+ # Optional cloud fallback — chat already works locally via the llama-cpp
+ # service above by default (see the Settings panel / localLlmEndpoint). Only
+ # set this if you want a cloud model available when the local one is down.
+@@ -166,6 +180,10 @@
+ IMAP_HOST=
+ IMAP_PORT=
+ 
++# Optional local semantic-memory embedding service. Leave blank to use the
++# database-backed lexical recall path without probing llama.cpp as Ollama.
++LOCAL_EMBEDDING_ENDPOINT=
++
+ # ---------- Speech-to-Text / Text-to-Speech (local voice daemon) ----------
+ # Used by src/interaction/whisper.ts (STT) and src/interaction/tts.ts (TTS)
+ # as the offline path for /api/voice-input and speak_text/TTS notifications
+@@ -233,6 +251,8 @@
+ # (the Docker network service name) and 5432, which is correct for the
+ # bundled docker-compose.yml as-is. Only set these if you're pointing at a
+ # Postgres instance outside this compose stack.
++# In Docker Compose this must remain blank so db.ts uses the service name
++# `postgres`. Host-native deployments can set an explicit hostname.
+ POSTGRES_HOST=
+ POSTGRES_PORT=
+ # Optional overrides for the scheduler's daily data-retention job
+
+--- docker-compose.yml	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/docker-compose.yml	2026-09-17 10:37:11.299385323 +0000
+@@ -46,10 +46,10 @@
+       # daemon process -- both containers must mount the same named volume
+       # at the same path for the socket file to be visible to both sides.
+       - voice-socket:/tmp/jarvis-voice
+-    # Lets the container reach services on the host (e.g. a local Ollama instance
+-    # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
+-    extra_hosts:
+-      - "host.docker.internal:host-gateway"
++    # Ollama may live on a separate machine on the trusted LAN. The endpoint is
++    # configured with JARVIS_LOCAL_LLM_ENDPOINT and is intentionally not routed
++    # through host.docker.internal. Strict offline mode blocks internet-backed
++    # capabilities, but permits the explicitly configured local-model endpoint.
+     restart: unless-stopped
+     # The long (mapping) form is used for every entry, even though only
+     # start-order (the default condition) is needed for any of them now --
+@@ -58,8 +58,6 @@
+     depends_on:
+       postgres:
+         condition: service_started
+-      llama-cpp:
+-        condition: service_started
+       jarvis-builder:
+         condition: service_started
+       # Deliberately `service_started`, NOT `service_healthy`, even though
+@@ -92,6 +90,7 @@
+   # no host-networking/bind-address dependency the way a host-run Ollama has
+   # (see README's "Local LLM chat" note). Gemini stays fully optional.
+   llama-cpp:
++    profiles: ["bundled-llm"]
+     image: ghcr.io/ggml-org/llama.cpp:server
+     container_name: jarvis-llama-cpp
+     volumes:
+
+--- daemon/server.py	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/daemon/server.py	2026-09-17 10:37:09.774650911 +0000
+@@ -55,13 +55,13 @@
+     if action == "PERCEPTION_SCREEN":
+         return capture_screen_base64()
+ 
+-    if action_type == "VOICE_LISTEN":
+-    timeout = payload.get("timeout", 10)
+-    recognized_text = listen_once(timeout_seconds=timeout)
+-    return {
+-        "success": True,
+-        "text": recognized_text
+-    }
++    if action == "VOICE_LISTEN":
++        timeout = payload.get("timeout", 10)
++        recognized_text = listen_once(timeout_seconds=timeout)
++        return {
++            "success": True,
++            "text": recognized_text
++        }
+ 
+     raise ProtocolError(f"Unsupported action type: '{action}'")
+ 
+
+--- jarvis-builder/workspace.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/jarvis-builder/workspace.ts	2026-09-17 10:37:08.411580709 +0000
+@@ -345,34 +345,17 @@
+       "--name", container,
+       "--cpus", "1",
+       "--memory", "1g",
+-      // Network access stays on deliberately — package-registry access
+-      // (npm/pip/etc. during the coding phase) is an accepted, explicit
+-      // exception per this feature's design spec, not an oversight.
++      ...(process.env.JARVIS_OFFLINE_MODE === "true" ? ["--network", "none"] : []),
++      // Strict offline deployments disable all sandbox networking. Online
++      // coding mode keeps Docker's normal bridge so package registries remain
++      // available when the operator explicitly disables JARVIS_OFFLINE_MODE.
+       //
+-      // Investigated as part of a later security review (no --network flag
+-      // needed): no explicit --network is passed here, so this container
+-      // lands on Docker's plain default `bridge` network — a different,
+-      // non-routed network from `jarvis-os_default`, the compose-generated
+-      // network postgres/jarvis-builder/llama-cpp/whisper-cpp actually run
+-      // on (none of those publish a port to the host). Live-verified: a
+-      // container on the default bridge cannot reach jarvis-postgres at
+-      // all (connection times out). This is Compose-network isolation
+-      // specifically, not deployment-wide unreachability, though: `api`
+-      // and `tts` DO publish ports to the host (docker-compose.yml's
+-      // `ports:` entries), so they remain reachable from the default
+-      // bridge via the host's own gateway IP — live-verified the same way.
+-      // Reaching `api` this way still requires a valid X-API-Key the
+-      // sandbox has no way to obtain (it starts with a clean environment,
+-      // no credentials, by this same file's own design above), so this
+-      // isn't an open path to the main app, just a narrower isolation
+-      // boundary than "every other service" would suggest. Unrestricted
+-      // internet egress (DNS and raw IP both work fine) remains the one
+-      // risk still genuinely open. Closing that needs either --network
+-      // none (which breaks the npm/pip access above) or a real
+-      // allowlisting egress proxy — new infrastructure (a forward proxy, a
+-      // curated domain allowlist, careful verification that legitimate
+-      // coding-agent traffic still works) deliberately out of scope here,
+-      // not a flag this call can set safely on its own.
++      // In offline mode there is no route to package registries, the host, or
++      // the Compose services from the coding sandbox.
++      //
++      // In online mode this container uses Docker's default bridge, which is
++      // isolated from the Compose network. Strict offline mode adds
++      // `--network none`, removing even internet egress.
+       //
+       // What these cap-drop/security-opt/pids-limit flags remove is
+       // privilege this "free reign" shell never legitimately needs
+@@ -724,12 +707,12 @@
+       "--name", container,
+       "--cpus", "1",
+       "--memory", "1g",
+-      // Network access stays on deliberately, same as the build sandbox —
+-      // package-registry access during exploration is an accepted,
+-      // explicit exception, not an oversight. No explicit --network flag,
+-      // so this lands on Docker's plain default bridge network, the same
+-      // isolation boundary createWorkspace's own extensive comment above
+-      // already documents (no route to postgres/jarvis-builder/etc.).
++      ...(process.env.JARVIS_OFFLINE_MODE === "true" ? ["--network", "none"] : []),
++      // Strict offline deployments disable all chat-sandbox networking.
++      // Online mode deliberately keeps the default bridge for package access.
++      // The conditional --network flag above is the actual enforcement point.
++      // In offline mode this lands on Docker's none network; otherwise it uses
++      // the plain default bridge and cannot reach Compose-only services.
+       "--cap-drop", "ALL",
+       "--security-opt", "no-new-privileges:true",
+       "--pids-limit", "512",
+
+--- src/capabilities/tools.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/capabilities/tools.ts	2026-09-17 10:37:08.421067621 +0000
+@@ -5,6 +5,7 @@
+ import * as emailIntegration from "./providers/email.js";
+ import * as tts from "../interaction/tts.js";
+ import { hasGrant } from "../kernel/security.js";
++import { MindKernel } from "../self/kernel.js";
+ import { ObservationPlatform } from "../kernel/observation.js";
+ import { AutonomousExecutive } from "../executive/autonomous_executive.js";
+ import { getSession } from "../cognition/session.js";
+@@ -559,6 +560,19 @@
+     return { name, ok: false, error: `Missing capability grant "${effectiveRequiredGrant}"` };
+   }
+ 
++  // Offline mode must be an execution property, not merely a prompt hint.
++  // Network-backed tools are rejected at the last mile so a local model cannot
++  // accidentally turn "offline" into a hidden network request.
++  const OFFLINE_NETWORK_TOOLS = new Set([
++    "github_get_repo_or_file", "github_create_issue", "send_email",
++    "send_personal_email", "calendar_list_events", "calendar_create_event",
++    "get_news", "search_web", "get_briefing", "propose_mcp_server"
++  ]);
++  if (MindKernel.getInstance().offlineMode && (OFFLINE_NETWORK_TOOLS.has(name) || !!mcpTool)) {
++    observation.logAuditEvent(username, "tool_call_denied", "failed", `Offline mode blocks network-backed tool "${name}"`);
++    return { name, ok: false, error: `Tool "${name}" is unavailable while Jarvis is in strict offline mode.` };
++  }
++
+   if (mcpTool) {
+     const result = await mcpRegistry.callMcpTool(mcpTool.serverId, mcpTool.toolName, args);
+     if (!result.ok) {
+
+--- src/cognition/memory-store.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/cognition/memory-store.ts	2026-09-17 10:37:08.430496624 +0000
+@@ -33,9 +33,14 @@
+     }
+   }
+ 
+-  if (localEndpoint) {
++  // The bundled local cognition server is llama.cpp, not Ollama. Do not
++  // probe its HTTP endpoint as if it were an Ollama embedding server on every
++  // memory operation; that creates avoidable 8s delays in strict offline mode.
++  // A dedicated embedding endpoint can be configured when desired.
++  const embeddingEndpoint = process.env.LOCAL_EMBEDDING_ENDPOINT || null;
++  if (localEndpoint && embeddingEndpoint) {
+     try {
+-      const origin = new URL(localEndpoint).origin;
++      const origin = new URL(embeddingEndpoint).origin;
+       const res = await fetch(`${origin}/api/embeddings`, {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+@@ -54,7 +59,7 @@
+         observation.logTelemetry(
+           "warn",
+           "Memory",
+-          `Local embedding request failed (${res.status}): ${body}. Try "ollama pull nomic-embed-text" on the host.`
++          `Local embedding request failed (${res.status}): ${body}. Verify LOCAL_EMBEDDING_ENDPOINT and its embedding model.`
+         );
+       }
+     } catch (err: any) {
+@@ -80,15 +85,23 @@
+   ai: GoogleGenAI | null,
+   localEndpoint: string | null
+ ): Promise<boolean> {
+-  if (!isVectorReady()) return false;
+-  const embedding = await embedText(content, ai, localEndpoint);
+-  if (!embedding) return false;
++  // The content store remains useful when the embedding backend is absent
++  // (for example, a strict offline install using only llama.cpp). Store the
++  // memory with a NULL vector and let recall() use lexical matching below.
+   try {
+     const db = getPool();
+-    await db.query(
+-      "INSERT INTO memory_embeddings (username, content, embedding) VALUES ($1, $2, $3::vector)",
+-      [username, content, toVectorLiteral(embedding)]
+-    );
++    const embedding = isVectorReady() ? await embedText(content, ai, localEndpoint) : null;
++    if (embedding) {
++      await db.query(
++        "INSERT INTO memory_embeddings (username, content, embedding) VALUES ($1, $2, $3::vector)",
++        [username, content, toVectorLiteral(embedding)]
++      );
++    } else {
++      await db.query(
++        "INSERT INTO memory_embeddings (username, content, embedding) VALUES ($1, $2, NULL)",
++        [username, content]
++      );
++    }
+     return true;
+   } catch (err: any) {
+     observation.logTelemetry("warn", "Memory", `Failed to store memory embedding: ${err.message}`);
+@@ -123,14 +136,30 @@
+   localEndpoint: string | null,
+   limit = 4
+ ): Promise<string[]> {
+-  if (!isVectorReady()) return [];
+-  const embedding = await embedText(query, ai, localEndpoint);
+-  if (!embedding) return [];
++  const embedding = isVectorReady() ? await embedText(query, ai, localEndpoint) : null;
+   try {
+     const db = getPool();
++    if (embedding) {
++      const { rows } = await db.query(
++        `SELECT content FROM memory_embeddings WHERE username = $1 AND embedding IS NOT NULL ORDER BY embedding <=> $2::vector LIMIT $3`,
++        [username, toVectorLiteral(embedding), limit]
++      );
++      return rows.map((r: any) => r.content);
++    }
++
++    // Strict-offline fallback: rank by how many query tokens appear in the
++    // stored memory. It is not pretending to be semantic similarity; it is a
++    // deterministic local recall path that keeps memory alive without a
++    // second model service.
++    const tokens = [...new Set((query.toLowerCase().match(/[a-z0-9]{3,}/g) || []).slice(0, 12))];
++    if (tokens.length === 0) return [];
++    const clauses = tokens.map((_, i) => `LOWER(content) LIKE $${i + 2}`).join(" OR ");
++    const params: any[] = [username, ...tokens.map((t) => `%${t}%`), limit];
+     const { rows } = await db.query(
+-      `SELECT content FROM memory_embeddings WHERE username = $1 ORDER BY embedding <=> $2::vector LIMIT $3`,
+-      [username, toVectorLiteral(embedding), limit]
++      `SELECT content, (${tokens.map((_, i) => `(CASE WHEN LOWER(content) LIKE $${i + 2} THEN 1 ELSE 0 END)`).join(" + ")}) AS match_score
++       FROM memory_embeddings WHERE username = $1 AND (${clauses})
++       ORDER BY match_score DESC, created_at DESC LIMIT $${tokens.length + 2}`,
++      params
+     );
+     return rows.map((r: any) => r.content);
+   } catch (err: any) {
+
+--- src/executive/departments.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/executive/departments.ts	2026-09-17 10:37:08.439866559 +0000
+@@ -1,4 +1,5 @@
+ import { Type } from "@google/genai";
++import { MindKernel } from "../self/kernel.js";
+ import { toGroqSchema } from "../runtime/groq-client.js";
+ import type { CognitionRouter } from "../runtime/cognition-router.js";
+ import { ObservationPlatform } from "../kernel/observation.js";
+@@ -179,6 +180,13 @@
+ 
+   const findings: string[] = [];
+ 
++  if (MindKernel.getInstance().offlineMode) {
++    observation.logTelemetry("info", "Departments", "Offline mode: skipping web search during research planning.");
++    webQueries = [];
++    wikipediaQuery = "";
++    checkThisRepo = false;
++  }
++
+   for (const query of webQueries) {
+     try {
+       const results = await webSearch.webSearch(query);
+
+--- src/interaction/static/index.html	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/interaction/static/index.html	2026-09-17 10:37:08.449019996 +0000
+@@ -1235,7 +1235,7 @@
+                             <!-- LLM Endpoint input -->
+                             <div class="space-y-2">
+                                 <label class="text-[10px] font-mono text-secondary tracking-wider block">LOCAL LLM API ENDPOINT</label>
+-                                <input type="text" id="local-endpoint-input" placeholder="e.g. http://localhost:11434" class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
++                                <input type="text" id="local-endpoint-input" placeholder="e.g. http://192.168.1.50:11434/v1" class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                                 <span class="text-[8px] font-mono text-secondary/40 block">Works with Ollama, LM Studio, vLLM, KoboldCPP & OpenAI-compatible servers.</span>
+                             </div>
+ 
+@@ -4775,8 +4775,8 @@
+                 const data = await res.json();
+                 document.getElementById('api-key-input').value = CURRENT_API_KEY;
+                 document.getElementById('llm-mode-select').value = data.llmMode || "local-first";
+-                document.getElementById('local-endpoint-input').value = data.localLlmEndpoint || "http://localhost:11434";
+-                document.getElementById('local-model-input').value = data.localModelName || "llama3";
++                document.getElementById('local-endpoint-input').value = data.localLlmEndpoint || "http://127.0.0.1:11434/v1";
++                document.getElementById('local-model-input').value = data.localModelName || "qwen3";
+                 // The server no longer echoes the actual key back (it only
+                 // ever sends whether one is set) — leave the field blank so
+                 // saving other settings can't accidentally clear it, and use
+
+--- src/kernel/scheduler.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/kernel/scheduler.ts	2026-09-17 10:37:08.459412835 +0000
+@@ -193,6 +193,52 @@
+ }
+ 
+ /**
++ * Executes persistent objectives without requiring a chat message. This is the
++ * missing bridge between the objectives table and the executive: the old
++ * scheduler only surfaced objectives in briefings, so "autonomous" stopped at
++ * notification. The executor itself is injected to avoid a scheduler ->
++ * executive -> scheduler circular dependency.
++ *
++ * A successful non-coding objective is marked completed. A build objective that
++ * reaches an existing human-consult checkpoint stays active, honestly waiting
++ * rather than being marked complete.
++ */
++export function startAutonomousObjectiveJob(
++  executeObjective: (objective: string, username: string) => Promise<any>,
++  intervalMs = positiveIntegerEnv(process.env.AUTONOMY_INTERVAL_MS, 60_000)
++): NodeJS.Timeout {
++  if (process.env.JARVIS_AUTONOMY_ENABLED !== "true") {
++    observation.logTelemetry("info", "Scheduler", "Autonomous objective execution disabled — set JARVIS_AUTONOMY_ENABLED=true to enable it.");
++    return registerJob("autonomous-objectives", intervalMs, async () => {});
++  }
++  return registerJob("autonomous-objectives", intervalMs, async () => {
++    const usernames = await usersRepo.listUsernames();
++    for (const username of usernames) {
++      const due = await objectivesRepo.collectDueObjectives(username);
++      for (const objective of due) {
++        try {
++          const result = await executeObjective(objective.description, username);
++          const status = result?.status;
++          if (status === "success" || status === "success_low_confidence") {
++            await objectivesRepo.updateObjectiveStatus(username, objective.id, "completed");
++            pushNotification(username, `Objective completed autonomously: "${objective.description}"`, "success");
++          } else if (status === "awaiting_consult") {
++            pushNotification(username, `Objective "${objective.description}" reached a human-consult checkpoint; no claim of completion was made.`, "info");
++          } else if (status === "error" || status === "failed") {
++            pushNotification(username, `Autonomous objective "${objective.description}" did not complete: ${result?.message || "execution failed"}`, "warning");
++          }
++          await objectivesRepo.markCheckedIn([objective.id]);
++        } catch (err: any) {
++          await objectivesRepo.markCheckedIn([objective.id]);
++          observation.logTelemetry("warn", "AutonomousObjectives", `Objective #${objective.id} for "${username}" failed: ${err.message || err}`);
++          pushNotification(username, `Autonomous objective "${objective.description}" failed: ${err.message || err}`, "warning");
++        }
++      }
++    }
++  });
++}
++
++/**
+  * The autonomous-initiative half of continuity-of-self — periodically
+  * synthesizes one genuine reflective thought from real recorded
+  * self-reflections (see self/identity.ts) and pushes it as a
+
+--- src/routes/streamRoute.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/routes/streamRoute.ts	2026-09-17 10:37:08.469394256 +0000
+@@ -13,7 +13,8 @@
+ import type { Request, Response } from 'express';
+ import { GoogleGenAI } from '@google/genai';
+ import Groq from 'groq-sdk';
+-import { generateEmbedding } from '../services/embeddings.js';
++import { MindKernel } from '../self/kernel.js';
++import { normalizeLocalLlmUrl, assertSafeEgressUrl } from '../kernel/egress.js';
+ import { executeRAGPipeline } from '../kernel/state/ragEngine.js';
+ import { formatRAGContext } from '../kernel/state/contextFormatter.js';
+ 
+@@ -47,25 +48,75 @@
+   });
+ 
+   try {
+-    const queryEmbedding = await generateEmbedding(prompt);
++    const kernel = MindKernel.getInstance();
++    let enrichedPrompt = prompt;
+ 
+-    const contextChunks = await executeRAGPipeline({
+-      queryText: prompt,
+-      queryEmbedding,
+-      candidateLimit: 15,
+-      finalLimit: 3,
+-      sessionId,
+-    });
+-
+-    const formattedContext = formatRAGContext(contextChunks, 1500);
+-    const enrichedPrompt = formattedContext
+-      ? `${formattedContext}\n\nUser Question: ${prompt}`
+-      : prompt;
++    // RAG embeddings in this legacy streaming route are Gemini-only. Offline
++    // mode deliberately skips that path instead of turning a streaming chat
++    // endpoint into an implicit cloud dependency. The main /api/chat route is
++    // the canonical cognition/tool path.
++    if (!kernel.offlineMode && geminiApiKey) {
++      try {
++        const { generateEmbedding } = await import('../services/embeddings.js');
++        const queryEmbedding = await generateEmbedding(prompt);
++        const contextChunks = await executeRAGPipeline({
++          queryText: prompt,
++          queryEmbedding,
++          candidateLimit: 15,
++          finalLimit: 3,
++          sessionId,
++        });
++        const formattedContext = formatRAGContext(contextChunks, 1500);
++        enrichedPrompt = formattedContext ? `${formattedContext}\n\nUser Question: ${prompt}` : prompt;
++      } catch (err: any) {
++        console.warn(`[Stream RAG] unavailable; continuing without semantic context: ${err?.message || err}`);
++      }
++    }
+ 
+     if (isAborted) return;
+ 
+     let eventId = 1;
+ 
++    if (kernel.offlineMode) {
++      const targetUrl = normalizeLocalLlmUrl(kernel.localLlmEndpoint);
++      assertSafeEgressUrl(targetUrl);
++      const response = await fetch(targetUrl, {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++          ...(kernel.localApiKey ? { Authorization: `Bearer ${kernel.localApiKey}` } : {})
++        },
++        body: JSON.stringify({
++          model: kernel.localModelName,
++          messages: [{ role: 'user', content: enrichedPrompt }],
++          stream: true,
++        }),
++        signal: AbortSignal.timeout(180000),
++      });
++      if (!response.ok) throw new Error(`Local LLM returned status ${response.status}`);
++      const decoder = new TextDecoder('utf-8');
++      let buffer = '';
++      for await (const chunk of response.body as any) {
++        if (isAborted) break;
++        buffer += decoder.decode(chunk, { stream: true });
++        const lines = buffer.split('\n');
++        buffer = lines.pop() || '';
++        for (const line of lines) {
++          let trimmed = line.trim();
++          if (!trimmed) continue;
++          if (trimmed.startsWith('data: ')) trimmed = trimmed.slice(6).trim();
++          if (trimmed === '[DONE]') continue;
++          try {
++            const parsed = JSON.parse(trimmed);
++            const text = parsed.choices?.[0]?.delta?.content || parsed.message?.content || parsed.response || '';
++            if (text) res.write(`id: ${eventId++}\ndata: ${JSON.stringify({ text, provider: 'local', model: kernel.localModelName })}\n\n`);
++          } catch { /* incomplete SSE frame */ }
++        }
++      }
++      if (!isAborted) { res.write(`id: ${eventId}\ndata: [DONE]\n\n`); res.end(); }
++      return;
++    }
++
+     // Primary: Gemini API
+     try {
+       const responseStream = await ai.models.generateContentStream({
+
+--- src/runtime/cognition-router.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/runtime/cognition-router.ts	2026-09-17 10:37:11.298880747 +0000
+@@ -151,6 +151,14 @@
+   localModelName: string;
+   localApiKey?: string;
+   localEngine: { generateResponse: (message: string, workspace: CognitiveWorkspace, systemMetrics: any) => string };
++  // Optional live accessor so DB-persisted Settings changes take effect without
++  // requiring a process restart. The static fields remain the bootstrap fallback.
++  getLocalConfig?: () => { endpoint: string; modelName: string; apiKey?: string };
++  // Local tool calling is deliberately configurable because different GGUF
++  // models expose different chat-template/tool capabilities. It defaults ON:
++  // offline Jarvis must be capable of acting, not merely chatting.
++  localToolCalling?: boolean;
++  allowKeywordFallback?: boolean;
+   // Injectable transport seam — defaults to the real generateWithFallback
+   // (openai-compatible-client.js) so tests never make a real network call.
+   // Same DI pattern as this session's execFn-style seams elsewhere.
+@@ -166,8 +174,10 @@
+  * through. Fallback chain, in order:
+  *   1. Cloud providers, one key/model at a time, in the order given in
+  *      `models` (provider-prefixed strings like "groq:openai/gpt-oss-120b").
+- *   2. The local LLM endpoint (tools/tool_choice stripped from params).
+- *   3. The offline keyword-matching engine (LocalCognitiveEngine), wrapped
++ *   2. A first-class local model when `local:<model>` is explicitly requested.
++ *   3. The configured local LLM endpoint as the normal fallback. Tool schemas
++ *      are preserved when LOCAL_TOOL_CALLING is enabled.
++ *   4. The offline keyword-matching engine (LocalCognitiveEngine), wrapped
+  *      into the same OpenAI-compatible response shape every other tier
+  *      returns.
+  *
+@@ -254,6 +264,40 @@
+       }
+       const provider = model.slice(0, sepIdx);
+       const realModel = model.slice(sepIdx + 1);
++
++      // `local:<model>` is a real provider target, not an alias for the
++      // keyword fallback. It is what lets the coding agent and background
++      // cognition explicitly demand the local model without traversing cloud
++      // providers first.
++      if (provider === "local") {
++        const local = this.deps.getLocalConfig?.() ?? {
++          endpoint: this.deps.localLlmEndpoint,
++          modelName: this.deps.localModelName,
++          apiKey: this.deps.localApiKey,
++        };
++        try {
++          const localParams = { ...(params ?? {}) };
++          if (this.deps.localToolCalling !== false && localParams.tools) {
++            localParams.tool_choice ??= "auto";
++          } else {
++            delete localParams.tools;
++            delete localParams.tool_choice;
++          }
++          const normalizedUrl = normalizeLocalLlmUrl(local.endpoint);
++          assertSafeEgressUrl(normalizedUrl);
++          const localConfig: OpenAiCompatibleConfig = {
++            apiKey: local.apiKey ?? "",
++            baseUrl: stripKnownLocalSuffix(normalizedUrl),
++          };
++          const response = await this.transport(localConfig, localParams, [realModel || local.modelName]);
++          response.__provenance = { tier: "local", model: realModel || local.modelName };
++          return response;
++        } catch (err: any) {
++          observation.logTelemetry("warn", "Cognition", `Explicit local model "${model}" failed: ${err?.message || err}`);
++          continue;
++        }
++      }
++
+       if (provider !== "groq" && provider !== "gemini") {
+         observation.logTelemetry("warn", "Cognition", `Skipping model with unknown provider "${provider}": "${model}"`);
+         continue;
+@@ -344,44 +388,58 @@
+       }
+     }
+ 
+-    // Tier 2: local LLM endpoint, tools stripped — a local model getting a
+-    // tool-calling request it can't fulfill is worse than one that never
+-    // saw the option (see local_engine.ts and server.ts's LocalLLM branch
+-    // for the measured cost of tool declarations against a real local
+-    // model).
++    // Tier 3: local LLM endpoint. This is the normal offline fallback and
++    // must remain capable of receiving tools; otherwise "offline" merely
++    // means "chat without agency". Operators can explicitly disable native
++    // local tool calling for models whose chat template cannot handle it.
++    const local = this.deps.getLocalConfig?.() ?? {
++      endpoint: this.deps.localLlmEndpoint,
++      modelName: this.deps.localModelName,
++      apiKey: this.deps.localApiKey,
++    };
+     observation.logTelemetry(
+       "info",
+       "Cognition",
+-      `Cloud tier exhausted for "${username}"; falling through to the local LLM tier (${this.deps.localModelName} @ ${this.deps.localLlmEndpoint}).`
++      `Cloud tier exhausted for "${username}"; falling through to local LLM (${local.modelName} @ ${local.endpoint}).`
+     );
+     const localParams = { ...(params ?? {}) };
+-    delete localParams.tools;
+-    delete localParams.tool_choice;
++    if (this.deps.localToolCalling !== false && localParams.tools) {
++      localParams.tool_choice ??= "auto";
++    } else {
++      delete localParams.tools;
++      delete localParams.tool_choice;
++    }
+ 
+     try {
+-      const normalizedUrl = normalizeLocalLlmUrl(this.deps.localLlmEndpoint);
++      const normalizedUrl = normalizeLocalLlmUrl(local.endpoint);
+       assertSafeEgressUrl(normalizedUrl);
+       const localConfig: OpenAiCompatibleConfig = {
+-        apiKey: this.deps.localApiKey ?? "",
++        apiKey: local.apiKey ?? "",
+         baseUrl: stripKnownLocalSuffix(normalizedUrl),
+       };
+-      const response = await this.transport(localConfig, localParams, [this.deps.localModelName]);
++      const response = await this.transport(localConfig, localParams, [local.modelName]);
+       // See the cloud-tier return above for why this tag exists.
+-      response.__provenance = { tier: "local", model: this.deps.localModelName };
++      response.__provenance = { tier: "local", model: local.modelName };
+       return response;
+     } catch (err: any) {
+       observation.logTelemetry(
+         "warn",
+         "Cognition",
+-        `Local LLM tier failed for "${username}": ${err?.message || err}; falling through to the offline keyword engine.`
++        `Local LLM tier failed for "${username}": ${err?.message || err}.`
+       );
+     }
+ 
+-    // Tier 3: offline keyword engine — the unconditional final link in the
+-    // chain. No internal try/catch needed here: the outer
+-    // generateWithFallback() wrapper already guards this whole method, so
+-    // any failure here (e.g. a bug in an injected localEngine) still
+-    // degrades to the static apology response rather than throwing.
++    // The deterministic keyword engine is development-only. Production must
++    // surface an honest cognition failure instead of returning canned text
++    // that can be mistaken for a language-model answer.
++    if (this.deps.allowKeywordFallback === false) {
++      return {
++        choices: [{ message: { content: "", role: "assistant" } }],
++        __provenance: { tier: "error", model: "none" },
++        __error: "All configured cognition providers are unavailable.",
++      };
++    }
++
+     const lastUserMessage = extractLastUserMessage(params);
+     const workspace = new CognitiveWorkspace();
+     const systemMetrics = observation.getMetrics().system;
+
+--- src/runtime/groq-agent-client.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/runtime/groq-agent-client.ts	2026-09-17 10:37:11.299241680 +0000
+@@ -58,7 +58,14 @@
+ // (see cognition-router.ts's "expected provider:model" log line), which
+ // would degrade every coding-agent session straight to the local engine.
+ // JARVIS_CODING_AGENT_MODEL overrides must include the same prefix.
+-export const DEFAULT_MODELS = ["groq:openai/gpt-oss-120b", "groq:qwen/qwen3.6-27b"];
++// Local-first for true offline operation. Cloud models remain available as a
++// recovery/online acceleration tier when keys are configured. The CognitionRouter
++// understands `local:<model>` as a real tool-capable local target.
++export const DEFAULT_MODELS = [
++  `local:${process.env.JARVIS_LOCAL_LLM_MODEL?.trim() || "qwen3"}`,
++  "groq:openai/gpt-oss-120b",
++  "groq:qwen/qwen3.6-27b",
++];
+ 
+ export interface AgentToolCall {
+   id: string;
+
+--- src/runtime/openai-compatible-client.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/runtime/openai-compatible-client.ts	2026-09-17 10:37:08.499726715 +0000
+@@ -34,7 +34,7 @@
+           method: "POST",
+           headers: {
+             "Content-Type": "application/json",
+-            Authorization: `Bearer ${config.apiKey}`,
++            ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+           },
+           body: JSON.stringify({ ...params, model }),
+         },
+
+--- src/self/health-watchdog.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/self/health-watchdog.ts	2026-09-17 10:37:49.509918320 +0000
+@@ -271,7 +271,7 @@
+   | "postgres"
+   | "observation-platform"
+   | "voice-daemon"
+-  | "llama-cpp"
++  | "local-llm"
+   | "companion-staleness";
+ 
+ export interface HealthProblem {
+@@ -350,13 +350,13 @@
+     // reads it the same way, off the MindKernel singleton, never off
+     // process.env. Reading a guessed LOCAL_LLM_ENDPOINT env var here would
+     // silently check an always-empty URL and make this whole check useless.
+-    const llamaEndpoint = MindKernel.getInstance().localLlmEndpoint;
+-    if (llamaEndpoint) {
+-      const llamaOk = await deps.checkHttpReachable(llamaEndpoint);
+-      if (!llamaOk) problems.push({ key: "llama-cpp", message: `llama-cpp is unreachable at ${llamaEndpoint}.` });
++    const localLlmEndpoint = MindKernel.getInstance().localLlmEndpoint;
++    if (localLlmEndpoint) {
++      const localLlmOk = await deps.checkHttpReachable(localLlmEndpoint);
++      if (!localLlmOk) problems.push({ key: "local-llm", message: `Local LLM is unreachable at ${localLlmEndpoint}.` });
+     }
+   } catch (err: any) {
+-    problems.push({ key: "llama-cpp", message: `llama-cpp health check itself failed: ${err.message}` });
++    problems.push({ key: "local-llm", message: `Local LLM health check itself failed: ${err.message}` });
+   }
+ 
+   try {
+
+--- src/self/kernel.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/self/kernel.ts	2026-09-17 10:37:08.519570203 +0000
+@@ -20,16 +20,17 @@
+ export class MindKernel {
+   private static instance: MindKernel | null = null;
+ 
+-  public offlineMode = false;
+-  // Defaults to the "llama-cpp" service in docker-compose.yml — a GGUF model
+-  // from HOST_MODEL_DIR served entirely inside the Docker network, no host
+-  // bind-address dependency the way a host-run Ollama has (host.docker.internal
+-  // only helps if Ollama itself listens on more than 127.0.0.1 — see README).
+-  // Point this at your own Ollama/LM Studio/etc. endpoint in Settings if you
+-  // prefer that instead.
+-  public localLlmEndpoint = "http://llama-cpp:8080";
+-  public localModelName = "local-gguf";
+-  public localApiKey = "";
++  // Environment flag is a hard offline override. Persisted settings may still
++  // choose online-first for normal deployments, but an operator can force the
++  // entire process offline without relying on a DB write.
++  public offlineMode = process.env.JARVIS_OFFLINE_MODE === "true";
++  // The local brain may live on this host or on another trusted LAN machine.
++  // JARVIS_LOCAL_LLM_ENDPOINT / MODEL are environment overrides so Docker
++  // deployments can point directly at an Ollama server on the laptop without
++  // depending on the bundled llama.cpp container.
++  public localLlmEndpoint = process.env.JARVIS_LOCAL_LLM_ENDPOINT?.trim() || "http://127.0.0.1:11434/v1";
++  public localModelName = process.env.JARVIS_LOCAL_LLM_MODEL?.trim() || "qwen3";
++  public localApiKey = process.env.JARVIS_LOCAL_LLM_API_KEY?.trim() || "";
+   public llmMode = "local-first";
+ 
+   // 0-100 dials consumed by identity.ts's buildPersonalityPromptFragment to
+@@ -51,10 +52,10 @@
+   public async hydrateFromDb(): Promise<void> {
+     const row = await systemSettingsRepo.getSystemSettings();
+     if (!row) return;
+-    this.offlineMode = row.offline_mode;
+-    this.localLlmEndpoint = row.local_llm_endpoint;
+-    this.localModelName = row.local_model_name;
+-    this.localApiKey = row.local_api_key;
++    this.offlineMode = process.env.JARVIS_OFFLINE_MODE === "true" ? true : row.offline_mode;
++    this.localLlmEndpoint = process.env.JARVIS_LOCAL_LLM_ENDPOINT?.trim() || row.local_llm_endpoint;
++    this.localModelName = process.env.JARVIS_LOCAL_LLM_MODEL?.trim() || row.local_model_name;
++    this.localApiKey = process.env.JARVIS_LOCAL_LLM_API_KEY?.trim() || row.local_api_key;
+     this.llmMode = row.llm_mode;
+     this.personalityFormality = row.personality_formality;
+     this.personalityHumor = row.personality_humor;
+
+--- src/server.ts	2026-09-14 13:32:06.000000000 +0000
++++ /mnt/data/jarvis_manual_target/src/server.ts	2026-09-17 10:37:08.529799320 +0000
+@@ -262,7 +262,7 @@
+   });
+   observation.logTelemetry("info", "Cognition", "Gemini AI client successfully configured with API Key.");
+ } else {
+-  observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
++  observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Cloud Gemini features are unavailable; local cognition remains active.");
+ }
+ 
+ // ---------- Cognition Router Initialization (primary cloud tier) ----------
+@@ -281,8 +281,12 @@
+ // onto `cognitionRouter` / the `groqKeys`/`geminiKeys` arrays declared here.
+ const groqKeys = (process.env.GROQ_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+ const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
++// The cognition router is a required local runtime service. Cloud providers
++// are optional acceleration layers, never the switch that decides whether the
++// router exists. This is the key distinction between "cloud optional" and
++// "actually offline-capable".
+ let cognitionRouter: CognitionRouter | null = null;
+-if (groqKeys.length > 0 || geminiKeys.length > 0) {
++{
+   const keyPool = new KeyPool({ groq: groqKeys, gemini: geminiKeys });
+   // Read fresh, synchronous defaults here (module scope, before
+   // initDatabase()/MindKernel.hydrateFromDb() run later in async startup
+@@ -300,11 +304,19 @@
+     localLlmEndpoint: kernelDefaults.localLlmEndpoint,
+     localModelName: kernelDefaults.localModelName,
+     localApiKey: kernelDefaults.localApiKey,
++    getLocalConfig: () => {
++      const live = MindKernel.getInstance();
++      return { endpoint: live.localLlmEndpoint, modelName: live.localModelName, apiKey: live.localApiKey };
++    },
++    localToolCalling: process.env.LOCAL_TOOL_CALLING !== "false",
++    allowKeywordFallback: process.env.ALLOW_KEYWORD_FALLBACK === "true",
+     localEngine: LocalCognitiveEngine.getInstance(),
+   });
+-  observation.logTelemetry("info", "Cognition", "CognitionRouter configured from GROQ_API_KEYS/GEMINI_API_KEYS.");
+-} else {
+-  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEYS or GEMINI_API_KEYS configured. Cloud-backed cognition features unavailable — falling back to local LLM/keyword engine only.");
++  observation.logTelemetry(
++    "info",
++    "Cognition",
++    `CognitionRouter online. Cloud tiers: ${groqKeys.length + geminiKeys.length}; local model: ${kernelDefaults.localModelName}.`
++  );
+ }
+ briefing.configureGroq(cognitionRouter);
+ dailyAdaptation.configureGroq(cognitionRouter);
+@@ -699,7 +711,7 @@
+     // instead of inventing a result.
+     const systemInstruction = baseSystemInstruction;
+     const localSystemInstruction = baseSystemInstruction +
+-      "\n\nImportant: you are currently running as a local, fully offline model with no access to GitHub, email, or any other external tool or live data source. If the user asks you to look something up, send something, or take an action that would require one of those, say plainly that you don't have that capability while running locally, and suggest switching to online mode (Gemini) if they'd like it done for real. Never invent a plausible-sounding result for an action you did not actually perform.";
++      "\n\nYou are running on Jarvis's local cognition backend. Use the tools you were given when an action is available. In offline mode, do not invent live web, GitHub, email, calendar, or other network-backed results; those capabilities are blocked at the execution layer. Perform local work with the filesystem, vault, memory, sandbox, objectives, and other actually available tools.";
+ 
+     // We will decide which strategy to execute based on kernel.llmMode and kernel.offlineMode
+     let success = false;
+@@ -810,8 +822,10 @@
+       executionChain.push("LocalLLM");
+     }
+ 
+-    // Always append simulated as final fallback
+-    executionChain.push("Simulated");
++    // Never silently downgrade a failed real model into fabricated prose. The
++    // keyword engine remains available only as an explicit emergency mode for
++    // diagnostics/legacy deployments.
++    if (process.env.ALLOW_KEYWORD_FALLBACK === "true") executionChain.push("Simulated");
+ 
+     // Execute the chain
+     for (const step of executionChain) {
+@@ -822,101 +836,106 @@
+       if (success || fullReply) break;
+ 
+       if (step === "LocalLLM") {
+-        try {
+-          observation.logTelemetry("info", "Cognition", `Attempting Local LLM generation: endpoint=${kernel.localLlmEndpoint}, model=${kernel.localModelName}`);
+-          session.updateState({
+-            currentThought: "Querying Local LLM",
+-            executiveStatus: "Executing",
+-            activeCapability: `Local LLM (${kernel.localModelName})`
+-          }, observation);
+-
+-          const targetUrl = normalizeLocalLlmUrl(kernel.localLlmEndpoint);
+-          assertSafeEgressUrl(targetUrl);
+-
+-          const formattedMessages = workspace.userContext.history.map(msg => ({
+-            role: msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : 'user'),
+-            content: msg.content
+-          }));
+-
+-          // Not attempting tool-calling here on purpose: measured live against
+-          // a real local model (llama.cpp serving a 2.7B GGUF on CPU), a
+-          // non-streaming request with tool declarations took 130+ seconds
+-          // and the model ignored the tools entirely, answering in plain text
+-          // anyway. That's a pure latency tax for zero payoff for this class
+-          // of local model — real tool-calling lives on the Gemini branch
+-          // below, where it's fast and reliably supported. Revisit if a local
+-          // backend/model with confirmed tool support becomes the norm here.
+-          {
+-            const response = await fetch(targetUrl, {
+-              method: "POST",
+-              headers: {
+-                "Content-Type": "application/json",
+-                ...(kernel.localApiKey ? { "Authorization": `Bearer ${kernel.localApiKey}` } : {})
+-              },
+-              body: JSON.stringify({
+-                model: kernel.localModelName,
+-                messages: [
+-                  { role: "system", content: localSystemInstruction },
+-                  ...formattedMessages
+-                ],
+-                stream: true
+-              }),
+-              // CPU-based local inference is slow — measured 130+s for a ~100
+-              // word response from a small (2.7B) model on this machine. 10s
+-              // (the original value) was tuned for a cloud-speed backend and
+-              // aborted real local generations mid-stream. 3 minutes is a
+-              // first pass at a workable ceiling, not a carefully tuned one —
+-              // a faster model or GPU acceleration would need less.
+-              signal: AbortSignal.timeout(180000)
+-            });
+-
+-            if (!response.ok) {
+-              throw new Error(`Local LLM returned status: ${response.status}`);
+-            }
++        if (cognitionRouter) {
++          try {
++            observation.logTelemetry("info", "Cognition", `Attempting local cognition: model=${kernel.localModelName} endpoint=${kernel.localLlmEndpoint}`);
++            session.updateState({
++              currentThought: "Querying Local LLM",
++              executiveStatus: "Executing",
++              activeCapability: `Local LLM (${kernel.localModelName})`
++            }, observation);
+ 
+-            const decoder = new TextDecoder("utf-8");
+-            let buffer = "";
++            const localTools = toGroqTools(getAllToolDeclarations());
++            const messages: any[] = [
++              { role: "system", content: localSystemInstruction },
++              ...workspace.userContext.history.map(msg => ({
++                role: msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : 'user'),
++                content: msg.content
++              }))
++            ];
++            // Explicit local target means no accidental cloud traversal.
++            // Tool loops are bounded, so a malformed local model cannot spin
++            // forever. This is the same execution contract used by the cloud
++            // tool paths below, only with the local provider selected.
++            let response = await cognitionRouter.generateWithFallback(
++              req.username,
++              { messages, tools: localTools, tool_choice: "auto" },
++              [`local:${kernel.localModelName}`]
++            );
++            let toolCalls = response.choices?.[0]?.message?.tool_calls || [];
++            let guard = 0;
+ 
+-            for await (const chunk of response.body as any) {
+-              buffer += decoder.decode(chunk, { stream: true });
+-              let lines = buffer.split("\n");
+-              buffer = lines.pop() || "";
+-
+-              for (const line of lines) {
+-                let trimmed = line.trim();
+-                if (!trimmed) continue;
++            while (toolCalls.length > 0 && guard < 8) {
++              guard++;
++              const assistantMessage = response.choices[0].message;
++              messages.push({ role: "assistant", content: assistantMessage.content ?? null, tool_calls: assistantMessage.tool_calls });
++              const toolResponseMessages: any[] = [];
+ 
+-                if (trimmed.startsWith("data: ")) {
+-                  trimmed = trimmed.slice(6).trim();
++              for (const call of toolCalls) {
++                let args: Record<string, any> = {};
++                try {
++                  args = JSON.parse(call.function.arguments || "{}");
++                } catch {
++                  toolResponseMessages.push({
++                    role: "tool",
++                    tool_call_id: call.id,
++                    content: JSON.stringify({ error: "Malformed tool arguments; expected valid JSON." }),
++                  });
++                  continue;
+                 }
+-                if (trimmed === "[DONE]") continue;
+ 
+-                try {
+-                  const parsed = JSON.parse(trimmed);
+-                  let text = parsed.choices?.[0]?.delta?.content || "";
+-                  if (!text && parsed.message?.content) {
+-                    text = parsed.message.content;
+-                  }
+-                  if (!text && parsed.response) {
+-                    text = parsed.response;
+-                  }
+-                  if (text) {
+-                    fullReply += text;
+-                    res.write(`data: ${text}\n\n`);
+-                  }
+-                } catch (err) {
+-                  // partial line
++                const result = await executeTool(
++                  call.function.name || "",
++                  args,
++                  req.username,
++                  ai,
++                  kernel.localLlmEndpoint,
++                  { alreadyAttached: false, supportsRoundTrip: true }
++                );
++
++                if (result.needsClientAction === "capture_screen") {
++                  res.write("data: request_screen\n\n");
++                  res.write("data: [DONE]\n\n");
++                  res.end();
++                  success = true;
++                  succeededStep = labelForProvenance(response, "LocalLLM");
++                  return;
++                }
++                if (result.displayDirective) {
++                  res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
++                }
++                if (result.audioDirective) {
++                  res.write(`data: audio: ${JSON.stringify(result.audioDirective)}\n\n`);
+                 }
++                toolCallsExecuted.push({ name: result.name, ok: result.ok });
++                toolResponseMessages.push({
++                  role: "tool",
++                  tool_call_id: call.id,
++                  content: JSON.stringify(result.ok ? { output: result.output } : { error: result.error }),
++                });
+               }
++
++              messages.push(...toolResponseMessages);
++              response = await cognitionRouter.generateWithFallback(
++                req.username,
++                { messages, tools: localTools, tool_choice: "auto" },
++                [`local:${kernel.localModelName}`]
++              );
++              toolCalls = response.choices?.[0]?.message?.tool_calls || [];
+             }
+ 
++            const finalText = response.choices?.[0]?.message?.content || "";
++            if (!finalText) throw new Error("Local model returned neither text nor a tool call.");
++            for (const word of finalText.split(/(\s+)/)) {
++              if (!word) continue;
++              fullReply += word;
++              res.write(`data: ${word}\n\n`);
++            }
+             success = true;
++            succeededStep = labelForProvenance(response, "LocalLLM");
++          } catch (err: any) {
++            observation.logTelemetry("warn", "Cognition", `Local cognition failed: ${err.message || err}`);
+           }
+-
+-          succeededStep = "LocalLLM";
+-          observation.logTelemetry("info", "Cognition", "Local LLM content streaming completed successfully.");
+-        } catch (err: any) {
+-          observation.logTelemetry("warn", "Cognition", `Local LLM generation failed: ${err.message || err}`);
+         }
+       }
+ 
+@@ -1478,11 +1497,9 @@
+   res.json({ ticket: issueEventsTicket(req.username) });
+ });
+ 
+-// Explicitly set PostgreSQL connection parameters to ensure TCP connection to localhost
+-// This helps prevent peer authentication errors that can arise from unexpected
+-// Unix domain socket attempts or misconfigured host resolution within the container.
+-process.env.POSTGRES_HOST = process.env.POSTGRES_HOST || "127.0.0.1";
+-process.env.POSTGRES_PORT = process.env.POSTGRES_PORT || "5432";
++// Do not force PostgreSQL to localhost here. In Docker Compose the database is
++// the `postgres` service; db.ts already has that correct default. Operators can
++// still override POSTGRES_HOST/PORT explicitly for a host-native deployment.
+ 
+ export const asyncHandler = (fn: Function) => 
+   (req: Request, res: Response, next: NextFunction) => {
+@@ -1641,6 +1658,9 @@
+   personalGmail.startPersonalEmailWatchJob();
+   scheduler.startBriefingJob(cognitionRouter);
+   scheduler.startSelfReflectionJob(cognitionRouter);
++  scheduler.startAutonomousObjectiveJob(
++    async (objective, username) => executive.executeObjective(objective, await getSession(username), username)
++  );
+   scheduler.startWellbeingCheckJob();
+   scheduler.startMcpHealthCheckJob();
+   scheduler.startSelfHealthCheckJob();
+
