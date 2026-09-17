@@ -271,7 +271,7 @@ export type HealthCheckKey =
   | "postgres"
   | "observation-platform"
   | "voice-daemon"
-  | "llama-cpp"
+  | "local-llm"
   | "companion-staleness";
 
 export interface HealthProblem {
@@ -350,13 +350,13 @@ export async function assessSystemHealth(
     // reads it the same way, off the MindKernel singleton, never off
     // process.env. Reading a guessed LOCAL_LLM_ENDPOINT env var here would
     // silently check an always-empty URL and make this whole check useless.
-    const llamaEndpoint = MindKernel.getInstance().localLlmEndpoint;
-    if (llamaEndpoint) {
-      const llamaOk = await deps.checkHttpReachable(llamaEndpoint);
-      if (!llamaOk) problems.push({ key: "llama-cpp", message: `llama-cpp is unreachable at ${llamaEndpoint}.` });
+    const localLlmEndpoint = MindKernel.getInstance().localLlmEndpoint;
+    if (localLlmEndpoint) {
+      const localLlmOk = await deps.checkHttpReachable(localLlmEndpoint);
+      if (!localLlmOk) problems.push({ key: "local-llm", message: `Local LLM is unreachable at ${localLlmEndpoint}.` });
     }
   } catch (err: any) {
-    problems.push({ key: "llama-cpp", message: `llama-cpp health check itself failed: ${err.message}` });
+    problems.push({ key: "local-llm", message: `Local LLM health check itself failed: ${err.message}` });
   }
 
   try {

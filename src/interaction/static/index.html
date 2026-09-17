@@ -1235,7 +1235,7 @@
                             <!-- LLM Endpoint input -->
                             <div class="space-y-2">
                                 <label class="text-[10px] font-mono text-secondary tracking-wider block">LOCAL LLM API ENDPOINT</label>
-                                <input type="text" id="local-endpoint-input" placeholder="e.g. http://localhost:11434" class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
+                                <input type="text" id="local-endpoint-input" placeholder="e.g. http://192.168.1.50:11434/v1" class="w-full bg-bg border border-white/5 focus:border-primary/40 focus:outline-none rounded-xl px-4 py-2.5 text-xs font-mono text-white placeholder-secondary/40 transition-all">
                                 <span class="text-[8px] font-mono text-secondary/40 block">Works with Ollama, LM Studio, vLLM, KoboldCPP & OpenAI-compatible servers.</span>
                             </div>
 
@@ -4775,8 +4775,8 @@
                 const data = await res.json();
                 document.getElementById('api-key-input').value = CURRENT_API_KEY;
                 document.getElementById('llm-mode-select').value = data.llmMode || "local-first";
-                document.getElementById('local-endpoint-input').value = data.localLlmEndpoint || "http://localhost:11434";
-                document.getElementById('local-model-input').value = data.localModelName || "llama3";
+                document.getElementById('local-endpoint-input').value = data.localLlmEndpoint || "http://127.0.0.1:11434/v1";
+                document.getElementById('local-model-input').value = data.localModelName || "qwen3";
                 // The server no longer echoes the actual key back (it only
                 // ever sends whether one is set) — leave the field blank so
                 // saving other settings can't accidentally clear it, and use

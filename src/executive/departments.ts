@@ -1,4 +1,5 @@
 import { Type } from "@google/genai";
+import { MindKernel } from "../self/kernel.js";
 import { toGroqSchema } from "../runtime/groq-client.js";
 import type { CognitionRouter } from "../runtime/cognition-router.js";
 import { ObservationPlatform } from "../kernel/observation.js";
@@ -178,6 +179,13 @@ export async function runResearch(objective: string, router: CognitionRouter | n
   }
 
   const findings: string[] = [];
+
+  if (MindKernel.getInstance().offlineMode) {
+    observation.logTelemetry("info", "Departments", "Offline mode: skipping web search during research planning.");
+    webQueries = [];
+    wikipediaQuery = "";
+    checkThisRepo = false;
+  }
 
   for (const query of webQueries) {
     try {

@@ -58,7 +58,14 @@ import { toGroqSchema, generateWithFallback } from "./groq-client.js";
 // (see cognition-router.ts's "expected provider:model" log line), which
 // would degrade every coding-agent session straight to the local engine.
 // JARVIS_CODING_AGENT_MODEL overrides must include the same prefix.
-export const DEFAULT_MODELS = ["groq:openai/gpt-oss-120b", "groq:qwen/qwen3.6-27b"];
+// Local-first for true offline operation. Cloud models remain available as a
+// recovery/online acceleration tier when keys are configured. The CognitionRouter
+// understands `local:<model>` as a real tool-capable local target.
+export const DEFAULT_MODELS = [
+  `local:${process.env.JARVIS_LOCAL_LLM_MODEL?.trim() || "qwen3"}`,
+  "groq:openai/gpt-oss-120b",
+  "groq:qwen/qwen3.6-27b",
+];
 
 export interface AgentToolCall {
   id: string;

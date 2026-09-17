@@ -345,34 +345,17 @@ export async function createWorkspace(buildRequestId: number, baseBranch: string
       "--name", container,
       "--cpus", "1",
       "--memory", "1g",
-      // Network access stays on deliberately — package-registry access
-      // (npm/pip/etc. during the coding phase) is an accepted, explicit
-      // exception per this feature's design spec, not an oversight.
+      ...(process.env.JARVIS_OFFLINE_MODE === "true" ? ["--network", "none"] : []),
+      // Strict offline deployments disable all sandbox networking. Online
+      // coding mode keeps Docker's normal bridge so package registries remain
+      // available when the operator explicitly disables JARVIS_OFFLINE_MODE.
       //
-      // Investigated as part of a later security review (no --network flag
-      // needed): no explicit --network is passed here, so this container
-      // lands on Docker's plain default `bridge` network — a different,
-      // non-routed network from `jarvis-os_default`, the compose-generated
-      // network postgres/jarvis-builder/llama-cpp/whisper-cpp actually run
-      // on (none of those publish a port to the host). Live-verified: a
-      // container on the default bridge cannot reach jarvis-postgres at
-      // all (connection times out). This is Compose-network isolation
-      // specifically, not deployment-wide unreachability, though: `api`
-      // and `tts` DO publish ports to the host (docker-compose.yml's
-      // `ports:` entries), so they remain reachable from the default
-      // bridge via the host's own gateway IP — live-verified the same way.
-      // Reaching `api` this way still requires a valid X-API-Key the
-      // sandbox has no way to obtain (it starts with a clean environment,
-      // no credentials, by this same file's own design above), so this
-      // isn't an open path to the main app, just a narrower isolation
-      // boundary than "every other service" would suggest. Unrestricted
-      // internet egress (DNS and raw IP both work fine) remains the one
-      // risk still genuinely open. Closing that needs either --network
-      // none (which breaks the npm/pip access above) or a real
-      // allowlisting egress proxy — new infrastructure (a forward proxy, a
-      // curated domain allowlist, careful verification that legitimate
-      // coding-agent traffic still works) deliberately out of scope here,
-      // not a flag this call can set safely on its own.
+      // In offline mode there is no route to package registries, the host, or
+      // the Compose services from the coding sandbox.
+      //
+      // In online mode this container uses Docker's default bridge, which is
+      // isolated from the Compose network. Strict offline mode adds
+      // `--network none`, removing even internet egress.
       //
       // What these cap-drop/security-opt/pids-limit flags remove is
       // privilege this "free reign" shell never legitimately needs
@@ -724,12 +707,12 @@ export async function ensureChatSandbox(key: string): Promise<void> {
       "--name", container,
       "--cpus", "1",
       "--memory", "1g",
-      // Network access stays on deliberately, same as the build sandbox —
-      // package-registry access during exploration is an accepted,
-      // explicit exception, not an oversight. No explicit --network flag,
-      // so this lands on Docker's plain default bridge network, the same
-      // isolation boundary createWorkspace's own extensive comment above
-      // already documents (no route to postgres/jarvis-builder/etc.).
+      ...(process.env.JARVIS_OFFLINE_MODE === "true" ? ["--network", "none"] : []),
+      // Strict offline deployments disable all chat-sandbox networking.
+      // Online mode deliberately keeps the default bridge for package access.
+      // The conditional --network flag above is the actual enforcement point.
+      // In offline mode this lands on Docker's none network; otherwise it uses
+      // the plain default bridge and cannot reach Compose-only services.
       "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges:true",
       "--pids-limit", "512",

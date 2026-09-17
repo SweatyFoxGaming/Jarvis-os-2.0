@@ -193,6 +193,52 @@ export function startBriefingJob(router: CognitionRouter | null, intervalMs = 60
 }
 
 /**
+ * Executes persistent objectives without requiring a chat message. This is the
+ * missing bridge between the objectives table and the executive: the old
+ * scheduler only surfaced objectives in briefings, so "autonomous" stopped at
+ * notification. The executor itself is injected to avoid a scheduler ->
+ * executive -> scheduler circular dependency.
+ *
+ * A successful non-coding objective is marked completed. A build objective that
+ * reaches an existing human-consult checkpoint stays active, honestly waiting
+ * rather than being marked complete.
+ */
+export function startAutonomousObjectiveJob(
+  executeObjective: (objective: string, username: string) => Promise<any>,
+  intervalMs = positiveIntegerEnv(process.env.AUTONOMY_INTERVAL_MS, 60_000)
+): NodeJS.Timeout {
+  if (process.env.JARVIS_AUTONOMY_ENABLED !== "true") {
+    observation.logTelemetry("info", "Scheduler", "Autonomous objective execution disabled — set JARVIS_AUTONOMY_ENABLED=true to enable it.");
+    return registerJob("autonomous-objectives", intervalMs, async () => {});
+  }
+  return registerJob("autonomous-objectives", intervalMs, async () => {
+    const usernames = await usersRepo.listUsernames();
+    for (const username of usernames) {
+      const due = await objectivesRepo.collectDueObjectives(username);
+      for (const objective of due) {
+        try {
+          const result = await executeObjective(objective.description, username);
+          const status = result?.status;
+          if (status === "success" || status === "success_low_confidence") {
+            await objectivesRepo.updateObjectiveStatus(username, objective.id, "completed");
+            pushNotification(username, `Objective completed autonomously: "${objective.description}"`, "success");
+          } else if (status === "awaiting_consult") {
+            pushNotification(username, `Objective "${objective.description}" reached a human-consult checkpoint; no claim of completion was made.`, "info");
+          } else if (status === "error" || status === "failed") {
+            pushNotification(username, `Autonomous objective "${objective.description}" did not complete: ${result?.message || "execution failed"}`, "warning");
+          }
+          await objectivesRepo.markCheckedIn([objective.id]);
+        } catch (err: any) {
+          await objectivesRepo.markCheckedIn([objective.id]);
+          observation.logTelemetry("warn", "AutonomousObjectives", `Objective #${objective.id} for "${username}" failed: ${err.message || err}`);
+          pushNotification(username, `Autonomous objective "${objective.description}" failed: ${err.message || err}`, "warning");
+        }
+      }
+    }
+  });
+}
+
+/**
  * The autonomous-initiative half of continuity-of-self — periodically
  * synthesizes one genuine reflective thought from real recorded
  * self-reflections (see self/identity.ts) and pushes it as a

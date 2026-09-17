@@ -33,9 +33,14 @@ export async function embedText(text: string, ai: GoogleGenAI | null, localEndpo
     }
   }
 
-  if (localEndpoint) {
+  // The bundled local cognition server is llama.cpp, not Ollama. Do not
+  // probe its HTTP endpoint as if it were an Ollama embedding server on every
+  // memory operation; that creates avoidable 8s delays in strict offline mode.
+  // A dedicated embedding endpoint can be configured when desired.
+  const embeddingEndpoint = process.env.LOCAL_EMBEDDING_ENDPOINT || null;
+  if (localEndpoint && embeddingEndpoint) {
     try {
-      const origin = new URL(localEndpoint).origin;
+      const origin = new URL(embeddingEndpoint).origin;
       const res = await fetch(`${origin}/api/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -54,7 +59,7 @@ export async function embedText(text: string, ai: GoogleGenAI | null, localEndpo
         observation.logTelemetry(
           "warn",
           "Memory",
-          `Local embedding request failed (${res.status}): ${body}. Try "ollama pull nomic-embed-text" on the host.`
+          `Local embedding request failed (${res.status}): ${body}. Verify LOCAL_EMBEDDING_ENDPOINT and its embedding model.`
         );
       }
     } catch (err: any) {
@@ -80,15 +85,23 @@ export async function remember(
   ai: GoogleGenAI | null,
   localEndpoint: string | null
 ): Promise<boolean> {
-  if (!isVectorReady()) return false;
-  const embedding = await embedText(content, ai, localEndpoint);
-  if (!embedding) return false;
+  // The content store remains useful when the embedding backend is absent
+  // (for example, a strict offline install using only llama.cpp). Store the
+  // memory with a NULL vector and let recall() use lexical matching below.
   try {
     const db = getPool();
-    await db.query(
-      "INSERT INTO memory_embeddings (username, content, embedding) VALUES ($1, $2, $3::vector)",
-      [username, content, toVectorLiteral(embedding)]
-    );
+    const embedding = isVectorReady() ? await embedText(content, ai, localEndpoint) : null;
+    if (embedding) {
+      await db.query(
+        "INSERT INTO memory_embeddings (username, content, embedding) VALUES ($1, $2, $3::vector)",
+        [username, content, toVectorLiteral(embedding)]
+      );
+    } else {
+      await db.query(
+        "INSERT INTO memory_embeddings (username, content, embedding) VALUES ($1, $2, NULL)",
+        [username, content]
+      );
+    }
     return true;
   } catch (err: any) {
     observation.logTelemetry("warn", "Memory", `Failed to store memory embedding: ${err.message}`);
@@ -123,14 +136,30 @@ export async function recall(
   localEndpoint: string | null,
   limit = 4
 ): Promise<string[]> {
-  if (!isVectorReady()) return [];
-  const embedding = await embedText(query, ai, localEndpoint);
-  if (!embedding) return [];
+  const embedding = isVectorReady() ? await embedText(query, ai, localEndpoint) : null;
   try {
     const db = getPool();
+    if (embedding) {
+      const { rows } = await db.query(
+        `SELECT content FROM memory_embeddings WHERE username = $1 AND embedding IS NOT NULL ORDER BY embedding <=> $2::vector LIMIT $3`,
+        [username, toVectorLiteral(embedding), limit]
+      );
+      return rows.map((r: any) => r.content);
+    }
+
+    // Strict-offline fallback: rank by how many query tokens appear in the
+    // stored memory. It is not pretending to be semantic similarity; it is a
+    // deterministic local recall path that keeps memory alive without a
+    // second model service.
+    const tokens = [...new Set((query.toLowerCase().match(/[a-z0-9]{3,}/g) || []).slice(0, 12))];
+    if (tokens.length === 0) return [];
+    const clauses = tokens.map((_, i) => `LOWER(content) LIKE $${i + 2}`).join(" OR ");
+    const params: any[] = [username, ...tokens.map((t) => `%${t}%`), limit];
     const { rows } = await db.query(
-      `SELECT content FROM memory_embeddings WHERE username = $1 ORDER BY embedding <=> $2::vector LIMIT $3`,
-      [username, toVectorLiteral(embedding), limit]
+      `SELECT content, (${tokens.map((_, i) => `(CASE WHEN LOWER(content) LIKE $${i + 2} THEN 1 ELSE 0 END)`).join(" + ")}) AS match_score
+       FROM memory_embeddings WHERE username = $1 AND (${clauses})
+       ORDER BY match_score DESC, created_at DESC LIMIT $${tokens.length + 2}`,
+      params
     );
     return rows.map((r: any) => r.content);
   } catch (err: any) {

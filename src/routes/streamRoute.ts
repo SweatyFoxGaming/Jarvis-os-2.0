@@ -13,7 +13,8 @@
 import type { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import Groq from 'groq-sdk';
-import { generateEmbedding } from '../services/embeddings.js';
+import { MindKernel } from '../self/kernel.js';
+import { normalizeLocalLlmUrl, assertSafeEgressUrl } from '../kernel/egress.js';
 import { executeRAGPipeline } from '../kernel/state/ragEngine.js';
 import { formatRAGContext } from '../kernel/state/contextFormatter.js';
 
@@ -47,24 +48,74 @@ export async function handleChatStream(req: Request, res: Response) {
   });
 
   try {
-    const queryEmbedding = await generateEmbedding(prompt);
+    const kernel = MindKernel.getInstance();
+    let enrichedPrompt = prompt;
 
-    const contextChunks = await executeRAGPipeline({
-      queryText: prompt,
-      queryEmbedding,
-      candidateLimit: 15,
-      finalLimit: 3,
-      sessionId,
-    });
-
-    const formattedContext = formatRAGContext(contextChunks, 1500);
-    const enrichedPrompt = formattedContext
-      ? `${formattedContext}\n\nUser Question: ${prompt}`
-      : prompt;
+    // RAG embeddings in this legacy streaming route are Gemini-only. Offline
+    // mode deliberately skips that path instead of turning a streaming chat
+    // endpoint into an implicit cloud dependency. The main /api/chat route is
+    // the canonical cognition/tool path.
+    if (!kernel.offlineMode && geminiApiKey) {
+      try {
+        const { generateEmbedding } = await import('../services/embeddings.js');
+        const queryEmbedding = await generateEmbedding(prompt);
+        const contextChunks = await executeRAGPipeline({
+          queryText: prompt,
+          queryEmbedding,
+          candidateLimit: 15,
+          finalLimit: 3,
+          sessionId,
+        });
+        const formattedContext = formatRAGContext(contextChunks, 1500);
+        enrichedPrompt = formattedContext ? `${formattedContext}\n\nUser Question: ${prompt}` : prompt;
+      } catch (err: any) {
+        console.warn(`[Stream RAG] unavailable; continuing without semantic context: ${err?.message || err}`);
+      }
+    }
 
     if (isAborted) return;
 
     let eventId = 1;
+
+    if (kernel.offlineMode) {
+      const targetUrl = normalizeLocalLlmUrl(kernel.localLlmEndpoint);
+      assertSafeEgressUrl(targetUrl);
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(kernel.localApiKey ? { Authorization: `Bearer ${kernel.localApiKey}` } : {})
+        },
+        body: JSON.stringify({
+          model: kernel.localModelName,
+          messages: [{ role: 'user', content: enrichedPrompt }],
+          stream: true,
+        }),
+        signal: AbortSignal.timeout(180000),
+      });
+      if (!response.ok) throw new Error(`Local LLM returned status ${response.status}`);
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      for await (const chunk of response.body as any) {
+        if (isAborted) break;
+        buffer += decoder.decode(chunk, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          let trimmed = line.trim();
+          if (!trimmed) continue;
+          if (trimmed.startsWith('data: ')) trimmed = trimmed.slice(6).trim();
+          if (trimmed === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(trimmed);
+            const text = parsed.choices?.[0]?.delta?.content || parsed.message?.content || parsed.response || '';
+            if (text) res.write(`id: ${eventId++}\ndata: ${JSON.stringify({ text, provider: 'local', model: kernel.localModelName })}\n\n`);
+          } catch { /* incomplete SSE frame */ }
+        }
+      }
+      if (!isAborted) { res.write(`id: ${eventId}\ndata: [DONE]\n\n`); res.end(); }
+      return;
+    }
 
     // Primary: Gemini API
     try {

@@ -151,6 +151,14 @@ export interface RouterDeps {
   localModelName: string;
   localApiKey?: string;
   localEngine: { generateResponse: (message: string, workspace: CognitiveWorkspace, systemMetrics: any) => string };
+  // Optional live accessor so DB-persisted Settings changes take effect without
+  // requiring a process restart. The static fields remain the bootstrap fallback.
+  getLocalConfig?: () => { endpoint: string; modelName: string; apiKey?: string };
+  // Local tool calling is deliberately configurable because different GGUF
+  // models expose different chat-template/tool capabilities. It defaults ON:
+  // offline Jarvis must be capable of acting, not merely chatting.
+  localToolCalling?: boolean;
+  allowKeywordFallback?: boolean;
   // Injectable transport seam — defaults to the real generateWithFallback
   // (openai-compatible-client.js) so tests never make a real network call.
   // Same DI pattern as this session's execFn-style seams elsewhere.
@@ -166,8 +174,10 @@ export interface RouterDeps {
  * through. Fallback chain, in order:
  *   1. Cloud providers, one key/model at a time, in the order given in
  *      `models` (provider-prefixed strings like "groq:openai/gpt-oss-120b").
- *   2. The local LLM endpoint (tools/tool_choice stripped from params).
- *   3. The offline keyword-matching engine (LocalCognitiveEngine), wrapped
+ *   2. A first-class local model when `local:<model>` is explicitly requested.
+ *   3. The configured local LLM endpoint as the normal fallback. Tool schemas
+ *      are preserved when LOCAL_TOOL_CALLING is enabled.
+ *   4. The offline keyword-matching engine (LocalCognitiveEngine), wrapped
  *      into the same OpenAI-compatible response shape every other tier
  *      returns.
  *
@@ -254,6 +264,40 @@ export class CognitionRouter {
       }
       const provider = model.slice(0, sepIdx);
       const realModel = model.slice(sepIdx + 1);
+
+      // `local:<model>` is a real provider target, not an alias for the
+      // keyword fallback. It is what lets the coding agent and background
+      // cognition explicitly demand the local model without traversing cloud
+      // providers first.
+      if (provider === "local") {
+        const local = this.deps.getLocalConfig?.() ?? {
+          endpoint: this.deps.localLlmEndpoint,
+          modelName: this.deps.localModelName,
+          apiKey: this.deps.localApiKey,
+        };
+        try {
+          const localParams = { ...(params ?? {}) };
+          if (this.deps.localToolCalling !== false && localParams.tools) {
+            localParams.tool_choice ??= "auto";
+          } else {
+            delete localParams.tools;
+            delete localParams.tool_choice;
+          }
+          const normalizedUrl = normalizeLocalLlmUrl(local.endpoint);
+          assertSafeEgressUrl(normalizedUrl);
+          const localConfig: OpenAiCompatibleConfig = {
+            apiKey: local.apiKey ?? "",
+            baseUrl: stripKnownLocalSuffix(normalizedUrl),
+          };
+          const response = await this.transport(localConfig, localParams, [realModel || local.modelName]);
+          response.__provenance = { tier: "local", model: realModel || local.modelName };
+          return response;
+        } catch (err: any) {
+          observation.logTelemetry("warn", "Cognition", `Explicit local model "${model}" failed: ${err?.message || err}`);
+          continue;
+        }
+      }
+
       if (provider !== "groq" && provider !== "gemini") {
         observation.logTelemetry("warn", "Cognition", `Skipping model with unknown provider "${provider}": "${model}"`);
         continue;
@@ -344,44 +388,58 @@ export class CognitionRouter {
       }
     }
 
-    // Tier 2: local LLM endpoint, tools stripped — a local model getting a
-    // tool-calling request it can't fulfill is worse than one that never
-    // saw the option (see local_engine.ts and server.ts's LocalLLM branch
-    // for the measured cost of tool declarations against a real local
-    // model).
+    // Tier 3: local LLM endpoint. This is the normal offline fallback and
+    // must remain capable of receiving tools; otherwise "offline" merely
+    // means "chat without agency". Operators can explicitly disable native
+    // local tool calling for models whose chat template cannot handle it.
+    const local = this.deps.getLocalConfig?.() ?? {
+      endpoint: this.deps.localLlmEndpoint,
+      modelName: this.deps.localModelName,
+      apiKey: this.deps.localApiKey,
+    };
     observation.logTelemetry(
       "info",
       "Cognition",
-      `Cloud tier exhausted for "${username}"; falling through to the local LLM tier (${this.deps.localModelName} @ ${this.deps.localLlmEndpoint}).`
+      `Cloud tier exhausted for "${username}"; falling through to local LLM (${local.modelName} @ ${local.endpoint}).`
     );
     const localParams = { ...(params ?? {}) };
-    delete localParams.tools;
-    delete localParams.tool_choice;
+    if (this.deps.localToolCalling !== false && localParams.tools) {
+      localParams.tool_choice ??= "auto";
+    } else {
+      delete localParams.tools;
+      delete localParams.tool_choice;
+    }
 
     try {
-      const normalizedUrl = normalizeLocalLlmUrl(this.deps.localLlmEndpoint);
+      const normalizedUrl = normalizeLocalLlmUrl(local.endpoint);
       assertSafeEgressUrl(normalizedUrl);
       const localConfig: OpenAiCompatibleConfig = {
-        apiKey: this.deps.localApiKey ?? "",
+        apiKey: local.apiKey ?? "",
         baseUrl: stripKnownLocalSuffix(normalizedUrl),
       };
-      const response = await this.transport(localConfig, localParams, [this.deps.localModelName]);
+      const response = await this.transport(localConfig, localParams, [local.modelName]);
       // See the cloud-tier return above for why this tag exists.
-      response.__provenance = { tier: "local", model: this.deps.localModelName };
+      response.__provenance = { tier: "local", model: local.modelName };
       return response;
     } catch (err: any) {
       observation.logTelemetry(
         "warn",
         "Cognition",
-        `Local LLM tier failed for "${username}": ${err?.message || err}; falling through to the offline keyword engine.`
+        `Local LLM tier failed for "${username}": ${err?.message || err}.`
       );
     }
 
-    // Tier 3: offline keyword engine — the unconditional final link in the
-    // chain. No internal try/catch needed here: the outer
-    // generateWithFallback() wrapper already guards this whole method, so
-    // any failure here (e.g. a bug in an injected localEngine) still
-    // degrades to the static apology response rather than throwing.
+    // The deterministic keyword engine is development-only. Production must
+    // surface an honest cognition failure instead of returning canned text
+    // that can be mistaken for a language-model answer.
+    if (this.deps.allowKeywordFallback === false) {
+      return {
+        choices: [{ message: { content: "", role: "assistant" } }],
+        __provenance: { tier: "error", model: "none" },
+        __error: "All configured cognition providers are unavailable.",
+      };
+    }
+
     const lastUserMessage = extractLastUserMessage(params);
     const workspace = new CognitiveWorkspace();
     const systemMetrics = observation.getMetrics().system;

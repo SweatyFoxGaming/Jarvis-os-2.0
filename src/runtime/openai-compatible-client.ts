@@ -34,7 +34,7 @@ export async function generateWithFallback(config: OpenAiCompatibleConfig, param
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${config.apiKey}`,
+            ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
           },
           body: JSON.stringify({ ...params, model }),
         },

@@ -10,7 +10,7 @@ services:
       - "5432:5432"
       
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d jarvis"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d jarvis"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -25,8 +25,21 @@ services:
     ports:
       - "8765:8765"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jarvis
-      - LAPTOP_IP=192.168.3.12
+  - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jarvis
+  - LAPTOP_IP=${LAPTOP_IP:-192.168.3.12}
+
+  # Local cognition runs on the laptop through Ollama.
+  - JARVIS_LOCAL_LLM_ENDPOINT=http://${LAPTOP_IP:-192.168.3.12}:11434/v1
+  - JARVIS_LOCAL_LLM_MODEL=${JARVIS_LOCAL_LLM_MODEL:-qwen3}
+  - JARVIS_LOCAL_LLM_API_KEY=${JARVIS_LOCAL_LLM_API_KEY:-}
+
+  # Jarvis operating mode.
+  - JARVIS_OFFLINE_MODE=${JARVIS_OFFLINE_MODE:-true}
+  - JARVIS_AUTONOMY_ENABLED=${JARVIS_AUTONOMY_ENABLED:-true}
+  - AUTONOMY_INTERVAL_MS=${AUTONOMY_INTERVAL_MS:-60000}
+  - LOCAL_TOOL_CALLING=${LOCAL_TOOL_CALLING:-true}
+  - ALLOW_KEYWORD_FALLBACK=${ALLOW_KEYWORD_FALLBACK:-false}
+
     depends_on:
       - postgres
     restart: always

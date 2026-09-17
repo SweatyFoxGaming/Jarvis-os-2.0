@@ -1,5 +1,5 @@
 --- .env.example	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/.env.example	2026-09-17 10:37:08.389781059 +0000
++++ .env.example	2026-09-17 10:37:08.389781059 +0000
 @@ -29,10 +29,17 @@
  TZ=
  
@@ -57,67 +57,8 @@
  POSTGRES_PORT=
  # Optional overrides for the scheduler's daily data-retention job
 
---- docker-compose.yml	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/docker-compose.yml	2026-09-17 10:37:11.299385323 +0000
-@@ -46,10 +46,10 @@
-       # daemon process -- both containers must mount the same named volume
-       # at the same path for the socket file to be visible to both sides.
-       - voice-socket:/tmp/jarvis-voice
--    # Lets the container reach services on the host (e.g. a local Ollama instance
--    # on port 11434) via host.docker.internal — not automatic on native Linux Docker.
--    extra_hosts:
--      - "host.docker.internal:host-gateway"
-+    # Ollama may live on a separate machine on the trusted LAN. The endpoint is
-+    # configured with JARVIS_LOCAL_LLM_ENDPOINT and is intentionally not routed
-+    # through host.docker.internal. Strict offline mode blocks internet-backed
-+    # capabilities, but permits the explicitly configured local-model endpoint.
-     restart: unless-stopped
-     # The long (mapping) form is used for every entry, even though only
-     # start-order (the default condition) is needed for any of them now --
-@@ -58,8 +58,6 @@
-     depends_on:
-       postgres:
-         condition: service_started
--      llama-cpp:
--        condition: service_started
-       jarvis-builder:
-         condition: service_started
-       # Deliberately `service_started`, NOT `service_healthy`, even though
-@@ -92,6 +90,7 @@
-   # no host-networking/bind-address dependency the way a host-run Ollama has
-   # (see README's "Local LLM chat" note). Gemini stays fully optional.
-   llama-cpp:
-+    profiles: ["bundled-llm"]
-     image: ghcr.io/ggml-org/llama.cpp:server
-     container_name: jarvis-llama-cpp
-     volumes:
-
---- daemon/server.py	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/daemon/server.py	2026-09-17 10:37:09.774650911 +0000
-@@ -55,13 +55,13 @@
-     if action == "PERCEPTION_SCREEN":
-         return capture_screen_base64()
- 
--    if action_type == "VOICE_LISTEN":
--    timeout = payload.get("timeout", 10)
--    recognized_text = listen_once(timeout_seconds=timeout)
--    return {
--        "success": True,
--        "text": recognized_text
--    }
-+    if action == "VOICE_LISTEN":
-+        timeout = payload.get("timeout", 10)
-+        recognized_text = listen_once(timeout_seconds=timeout)
-+        return {
-+            "success": True,
-+            "text": recognized_text
-+        }
- 
-     raise ProtocolError(f"Unsupported action type: '{action}'")
- 
-
 --- jarvis-builder/workspace.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/jarvis-builder/workspace.ts	2026-09-17 10:37:08.411580709 +0000
++++ jarvis-builder/workspace.ts	2026-09-17 10:37:08.411580709 +0000
 @@ -345,34 +345,17 @@
        "--name", container,
        "--cpus", "1",
@@ -184,7 +125,7 @@
        "--pids-limit", "512",
 
 --- src/capabilities/tools.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/capabilities/tools.ts	2026-09-17 10:37:08.421067621 +0000
++++ src/capabilities/tools.ts	2026-09-17 10:37:08.421067621 +0000
 @@ -5,6 +5,7 @@
  import * as emailIntegration from "./providers/email.js";
  import * as tts from "../interaction/tts.js";
@@ -215,7 +156,7 @@
      if (!result.ok) {
 
 --- src/cognition/memory-store.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/cognition/memory-store.ts	2026-09-17 10:37:08.430496624 +0000
++++ src/cognition/memory-store.ts	2026-09-17 10:37:08.430496624 +0000
 @@ -33,9 +33,14 @@
      }
    }
@@ -311,7 +252,7 @@
    } catch (err: any) {
 
 --- src/executive/departments.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/executive/departments.ts	2026-09-17 10:37:08.439866559 +0000
++++ src/executive/departments.ts	2026-09-17 10:37:08.439866559 +0000
 @@ -1,4 +1,5 @@
  import { Type } from "@google/genai";
 +import { MindKernel } from "../self/kernel.js";
@@ -334,7 +275,7 @@
        const results = await webSearch.webSearch(query);
 
 --- src/interaction/static/index.html	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/interaction/static/index.html	2026-09-17 10:37:08.449019996 +0000
++++ src/interaction/static/index.html	2026-09-17 10:37:08.449019996 +0000
 @@ -1235,7 +1235,7 @@
                              <!-- LLM Endpoint input -->
                              <div class="space-y-2">
@@ -357,7 +298,7 @@
                  // saving other settings can't accidentally clear it, and use
 
 --- src/kernel/scheduler.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/kernel/scheduler.ts	2026-09-17 10:37:08.459412835 +0000
++++ src/kernel/scheduler.ts	2026-09-17 10:37:08.459412835 +0000
 @@ -193,6 +193,52 @@
  }
  
@@ -413,7 +354,7 @@
   * self-reflections (see self/identity.ts) and pushes it as a
 
 --- src/routes/streamRoute.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/routes/streamRoute.ts	2026-09-17 10:37:08.469394256 +0000
++++ src/routes/streamRoute.ts	2026-09-17 10:37:08.469394256 +0000
 @@ -13,7 +13,8 @@
  import type { Request, Response } from 'express';
  import { GoogleGenAI } from '@google/genai';
@@ -515,7 +456,7 @@
        const responseStream = await ai.models.generateContentStream({
 
 --- src/runtime/cognition-router.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/runtime/cognition-router.ts	2026-09-17 10:37:11.298880747 +0000
++++ src/runtime/cognition-router.ts	2026-09-17 10:37:11.298880747 +0000
 @@ -151,6 +151,14 @@
    localModelName: string;
    localApiKey?: string;
@@ -664,7 +605,7 @@
      const systemMetrics = observation.getMetrics().system;
 
 --- src/runtime/groq-agent-client.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/runtime/groq-agent-client.ts	2026-09-17 10:37:11.299241680 +0000
++++ src/runtime/groq-agent-client.ts	2026-09-17 10:37:11.299241680 +0000
 @@ -58,7 +58,14 @@
  // (see cognition-router.ts's "expected provider:model" log line), which
  // would degrade every coding-agent session straight to the local engine.
@@ -683,7 +624,7 @@
    id: string;
 
 --- src/runtime/openai-compatible-client.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/runtime/openai-compatible-client.ts	2026-09-17 10:37:08.499726715 +0000
++++ src/runtime/openai-compatible-client.ts	2026-09-17 10:37:08.499726715 +0000
 @@ -34,7 +34,7 @@
            method: "POST",
            headers: {
@@ -695,7 +636,7 @@
          },
 
 --- src/self/health-watchdog.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/self/health-watchdog.ts	2026-09-17 10:37:49.509918320 +0000
++++ src/self/health-watchdog.ts	2026-09-17 10:37:49.509918320 +0000
 @@ -271,7 +271,7 @@
    | "postgres"
    | "observation-platform"
@@ -726,7 +667,7 @@
    try {
 
 --- src/self/kernel.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/self/kernel.ts	2026-09-17 10:37:08.519570203 +0000
++++ src/self/kernel.ts	2026-09-17 10:37:08.519570203 +0000
 @@ -20,16 +20,17 @@
  export class MindKernel {
    private static instance: MindKernel | null = null;
@@ -772,7 +713,7 @@
      this.personalityHumor = row.personality_humor;
 
 --- src/server.ts	2026-09-14 13:32:06.000000000 +0000
-+++ /mnt/data/jarvis_manual_target/src/server.ts	2026-09-17 10:37:08.529799320 +0000
++++ src/server.ts	2026-09-17 10:37:08.529799320 +0000
 @@ -262,7 +262,7 @@
    });
    observation.logTelemetry("info", "Cognition", "Gemini AI client successfully configured with API Key.");

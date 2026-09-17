@@ -364,7 +364,7 @@ if (process.env.GEMINI_API_KEY) {
   });
   observation.logTelemetry("info", "Cognition", "Gemini AI client successfully configured with API Key.");
 } else {
-  observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Running AI features in simulated mode.");
+  observation.logTelemetry("warn", "Cognition", "No GEMINI_API_KEY detected. Cloud Gemini features are unavailable; local cognition remains active.");
 }
 
 // ---------- Cognition Router Initialization (primary cloud tier) ----------
@@ -383,8 +383,12 @@ if (process.env.GEMINI_API_KEY) {
 // onto `cognitionRouter` / the `groqKeys`/`geminiKeys` arrays declared here.
 const groqKeys = (process.env.GROQ_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
 const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+// The cognition router is a required local runtime service. Cloud providers
+// are optional acceleration layers, never the switch that decides whether the
+// router exists. This is the key distinction between "cloud optional" and
+// "actually offline-capable".
 let cognitionRouter: CognitionRouter | null = null;
-if (groqKeys.length > 0 || geminiKeys.length > 0) {
+{
   const keyPool = new KeyPool({ groq: groqKeys, gemini: geminiKeys });
   // Read fresh, synchronous defaults here (module scope, before
   // initDatabase()/MindKernel.hydrateFromDb() run later in async startup
@@ -402,11 +406,19 @@ if (groqKeys.length > 0 || geminiKeys.length > 0) {
     localLlmEndpoint: kernelDefaults.localLlmEndpoint,
     localModelName: kernelDefaults.localModelName,
     localApiKey: kernelDefaults.localApiKey,
+    getLocalConfig: () => {
+      const live = MindKernel.getInstance();
+      return { endpoint: live.localLlmEndpoint, modelName: live.localModelName, apiKey: live.localApiKey };
+    },
+    localToolCalling: process.env.LOCAL_TOOL_CALLING !== "false",
+    allowKeywordFallback: process.env.ALLOW_KEYWORD_FALLBACK === "true",
     localEngine: LocalCognitiveEngine.getInstance(),
   });
-  observation.logTelemetry("info", "Cognition", "CognitionRouter configured from GROQ_API_KEYS/GEMINI_API_KEYS.");
-} else {
-  observation.logTelemetry("warn", "Cognition", "No GROQ_API_KEYS or GEMINI_API_KEYS configured. Cloud-backed cognition features unavailable — falling back to local LLM/keyword engine only.");
+  observation.logTelemetry(
+    "info",
+    "Cognition",
+    `CognitionRouter online. Cloud tiers: ${groqKeys.length + geminiKeys.length}; local model: ${kernelDefaults.localModelName}.`
+  );
 }
 briefing.configureGroq(cognitionRouter);
 dailyAdaptation.configureGroq(cognitionRouter);
@@ -801,7 +813,7 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
     // instead of inventing a result.
     const systemInstruction = baseSystemInstruction;
     const localSystemInstruction = baseSystemInstruction +
-      "\n\nImportant: you are currently running as a local, fully offline model with no access to GitHub, email, or any other external tool or live data source. If the user asks you to look something up, send something, or take an action that would require one of those, say plainly that you don't have that capability while running locally, and suggest switching to online mode (Gemini) if they'd like it done for real. Never invent a plausible-sounding result for an action you did not actually perform.";
+      "\n\nYou are running on Jarvis's local cognition backend. Use the tools you were given when an action is available. In offline mode, do not invent live web, GitHub, email, calendar, or other network-backed results; those capabilities are blocked at the execution layer. Perform local work with the filesystem, vault, memory, sandbox, objectives, and other actually available tools.";
 
     // We will decide which strategy to execute based on kernel.llmMode and kernel.offlineMode
     let success = false;
@@ -912,8 +924,10 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       executionChain.push("LocalLLM");
     }
 
-    // Always append simulated as final fallback
-    executionChain.push("Simulated");
+    // Never silently downgrade a failed real model into fabricated prose. The
+    // keyword engine remains available only as an explicit emergency mode for
+    // diagnostics/legacy deployments.
+    if (process.env.ALLOW_KEYWORD_FALLBACK === "true") executionChain.push("Simulated");
 
     // Execute the chain
     for (const step of executionChain) {
@@ -924,101 +938,106 @@ app.post("/api/chat", validateApiKey, aiLimiter, async (req: any, res: any) => {
       if (success || fullReply) break;
 
       if (step === "LocalLLM") {
-        try {
-          observation.logTelemetry("info", "Cognition", `Attempting Local LLM generation: endpoint=${kernel.localLlmEndpoint}, model=${kernel.localModelName}`);
-          session.updateState({
-            currentThought: "Querying Local LLM",
-            executiveStatus: "Executing",
-            activeCapability: `Local LLM (${kernel.localModelName})`
-          }, observation);
+        if (cognitionRouter) {
+          try {
+            observation.logTelemetry("info", "Cognition", `Attempting local cognition: model=${kernel.localModelName} endpoint=${kernel.localLlmEndpoint}`);
+            session.updateState({
+              currentThought: "Querying Local LLM",
+              executiveStatus: "Executing",
+              activeCapability: `Local LLM (${kernel.localModelName})`
+            }, observation);
 
-          const targetUrl = normalizeLocalLlmUrl(kernel.localLlmEndpoint);
-          assertSafeEgressUrl(targetUrl);
+            const localTools = toGroqTools(getAllToolDeclarations());
+            const messages: any[] = [
+              { role: "system", content: localSystemInstruction },
+              ...workspace.userContext.history.map(msg => ({
+                role: msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : 'user'),
+                content: msg.content
+              }))
+            ];
+            // Explicit local target means no accidental cloud traversal.
+            // Tool loops are bounded, so a malformed local model cannot spin
+            // forever. This is the same execution contract used by the cloud
+            // tool paths below, only with the local provider selected.
+            let response = await cognitionRouter.generateWithFallback(
+              req.username,
+              { messages, tools: localTools, tool_choice: "auto" },
+              [`local:${kernel.localModelName}`]
+            );
+            let toolCalls = response.choices?.[0]?.message?.tool_calls || [];
+            let guard = 0;
 
-          const formattedMessages = workspace.userContext.history.map(msg => ({
-            role: msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : 'user'),
-            content: msg.content
-          }));
+            while (toolCalls.length > 0 && guard < 8) {
+              guard++;
+              const assistantMessage = response.choices[0].message;
+              messages.push({ role: "assistant", content: assistantMessage.content ?? null, tool_calls: assistantMessage.tool_calls });
+              const toolResponseMessages: any[] = [];
 
-          // Not attempting tool-calling here on purpose: measured live against
-          // a real local model (llama.cpp serving a 2.7B GGUF on CPU), a
-          // non-streaming request with tool declarations took 130+ seconds
-          // and the model ignored the tools entirely, answering in plain text
-          // anyway. That's a pure latency tax for zero payoff for this class
-          // of local model — real tool-calling lives on the Gemini branch
-          // below, where it's fast and reliably supported. Revisit if a local
-          // backend/model with confirmed tool support becomes the norm here.
-          {
-            const response = await fetch(targetUrl, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(kernel.localApiKey ? { "Authorization": `Bearer ${kernel.localApiKey}` } : {})
-              },
-              body: JSON.stringify({
-                model: kernel.localModelName,
-                messages: [
-                  { role: "system", content: localSystemInstruction },
-                  ...formattedMessages
-                ],
-                stream: true
-              }),
-              // CPU-based local inference is slow — measured 130+s for a ~100
-              // word response from a small (2.7B) model on this machine. 10s
-              // (the original value) was tuned for a cloud-speed backend and
-              // aborted real local generations mid-stream. 3 minutes is a
-              // first pass at a workable ceiling, not a carefully tuned one —
-              // a faster model or GPU acceleration would need less.
-              signal: AbortSignal.timeout(180000)
-            });
-
-            if (!response.ok) {
-              throw new Error(`Local LLM returned status: ${response.status}`);
-            }
-
-            const decoder = new TextDecoder("utf-8");
-            let buffer = "";
-
-            for await (const chunk of response.body as any) {
-              buffer += decoder.decode(chunk, { stream: true });
-              let lines = buffer.split("\n");
-              buffer = lines.pop() || "";
-
-              for (const line of lines) {
-                let trimmed = line.trim();
-                if (!trimmed) continue;
-
-                if (trimmed.startsWith("data: ")) {
-                  trimmed = trimmed.slice(6).trim();
-                }
-                if (trimmed === "[DONE]") continue;
-
+              for (const call of toolCalls) {
+                let args: Record<string, any> = {};
                 try {
-                  const parsed = JSON.parse(trimmed);
-                  let text = parsed.choices?.[0]?.delta?.content || "";
-                  if (!text && parsed.message?.content) {
-                    text = parsed.message.content;
-                  }
-                  if (!text && parsed.response) {
-                    text = parsed.response;
-                  }
-                  if (text) {
-                    fullReply += text;
-                    res.write(`data: ${text}\n\n`);
-                  }
-                } catch (err) {
-                  // partial line
+                  args = JSON.parse(call.function.arguments || "{}");
+                } catch {
+                  toolResponseMessages.push({
+                    role: "tool",
+                    tool_call_id: call.id,
+                    content: JSON.stringify({ error: "Malformed tool arguments; expected valid JSON." }),
+                  });
+                  continue;
                 }
+
+                const result = await executeTool(
+                  call.function.name || "",
+                  args,
+                  req.username,
+                  ai,
+                  kernel.localLlmEndpoint,
+                  { alreadyAttached: false, supportsRoundTrip: true }
+                );
+
+                if (result.needsClientAction === "capture_screen") {
+                  res.write("data: request_screen\n\n");
+                  res.write("data: [DONE]\n\n");
+                  res.end();
+                  success = true;
+                  succeededStep = labelForProvenance(response, "LocalLLM");
+                  return;
+                }
+                if (result.displayDirective) {
+                  res.write(`data: display: ${JSON.stringify(result.displayDirective)}\n\n`);
+                }
+                if (result.audioDirective) {
+                  res.write(`data: audio: ${JSON.stringify(result.audioDirective)}\n\n`);
+                }
+                toolCallsExecuted.push({ name: result.name, ok: result.ok });
+                toolResponseMessages.push({
+                  role: "tool",
+                  tool_call_id: call.id,
+                  content: JSON.stringify(result.ok ? { output: result.output } : { error: result.error }),
+                });
               }
+
+              messages.push(...toolResponseMessages);
+              response = await cognitionRouter.generateWithFallback(
+                req.username,
+                { messages, tools: localTools, tool_choice: "auto" },
+                [`local:${kernel.localModelName}`]
+              );
+              toolCalls = response.choices?.[0]?.message?.tool_calls || [];
             }
 
+            const finalText = response.choices?.[0]?.message?.content || "";
+            if (!finalText) throw new Error("Local model returned neither text nor a tool call.");
+            for (const word of finalText.split(/(\s+)/)) {
+              if (!word) continue;
+              fullReply += word;
+              res.write(`data: ${word}\n\n`);
+            }
             success = true;
+            succeededStep = labelForProvenance(response, "LocalLLM");
+          } catch (err: any) {
+            observation.logTelemetry("warn", "Cognition", `Local cognition failed: ${err.message || err}`);
           }
-
-          succeededStep = "LocalLLM";
-          observation.logTelemetry("info", "Cognition", "Local LLM content streaming completed successfully.");
-        } catch (err: any) {
-          observation.logTelemetry("warn", "Cognition", `Local LLM generation failed: ${err.message || err}`);
         }
       }
 
@@ -1580,11 +1599,9 @@ app.post("/api/events-ticket", validateApiKey, requireCapability("hud.read"), (r
   res.json({ ticket: issueEventsTicket(req.username) });
 });
 
-// Explicitly set PostgreSQL connection parameters to ensure TCP connection to localhost
-// This helps prevent peer authentication errors that can arise from unexpected
-// Unix domain socket attempts or misconfigured host resolution within the container.
-process.env.POSTGRES_HOST = process.env.POSTGRES_HOST || "127.0.0.1";
-process.env.POSTGRES_PORT = process.env.POSTGRES_PORT || "5432";
+// Do not force PostgreSQL to localhost here. In Docker Compose the database is
+// the `postgres` service; db.ts already has that correct default. Operators can
+// still override POSTGRES_HOST/PORT explicitly for a host-native deployment.
 
 export const asyncHandler = (fn: Function) => 
   (req: Request, res: Response, next: NextFunction) => {
@@ -1743,6 +1760,9 @@ initDatabase().then(async (ready) => {
   personalGmail.startPersonalEmailWatchJob();
   scheduler.startBriefingJob(cognitionRouter);
   scheduler.startSelfReflectionJob(cognitionRouter);
+  scheduler.startAutonomousObjectiveJob(
+    async (objective, username) => executive.executeObjective(objective, await getSession(username), username)
+  );
   scheduler.startWellbeingCheckJob();
   scheduler.startMcpHealthCheckJob();
   scheduler.startSelfHealthCheckJob();

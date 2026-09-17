@@ -20,16 +20,17 @@ import * as systemSettingsRepo from "../kernel/state/system-settings-repo.js";
 export class MindKernel {
   private static instance: MindKernel | null = null;
 
-  public offlineMode = false;
-  // Defaults to the "llama-cpp" service in docker-compose.yml — a GGUF model
-  // from HOST_MODEL_DIR served entirely inside the Docker network, no host
-  // bind-address dependency the way a host-run Ollama has (host.docker.internal
-  // only helps if Ollama itself listens on more than 127.0.0.1 — see README).
-  // Point this at your own Ollama/LM Studio/etc. endpoint in Settings if you
-  // prefer that instead.
-  public localLlmEndpoint = "http://llama-cpp:8080";
-  public localModelName = "local-gguf";
-  public localApiKey = "";
+  // Environment flag is a hard offline override. Persisted settings may still
+  // choose online-first for normal deployments, but an operator can force the
+  // entire process offline without relying on a DB write.
+  public offlineMode = process.env.JARVIS_OFFLINE_MODE === "true";
+  // The local brain may live on this host or on another trusted LAN machine.
+  // JARVIS_LOCAL_LLM_ENDPOINT / MODEL are environment overrides so Docker
+  // deployments can point directly at an Ollama server on the laptop without
+  // depending on the bundled llama.cpp container.
+  public localLlmEndpoint = process.env.JARVIS_LOCAL_LLM_ENDPOINT?.trim() || "http://127.0.0.1:11434/v1";
+  public localModelName = process.env.JARVIS_LOCAL_LLM_MODEL?.trim() || "qwen3";
+  public localApiKey = process.env.JARVIS_LOCAL_LLM_API_KEY?.trim() || "";
   public llmMode = "local-first";
 
   // 0-100 dials consumed by identity.ts's buildPersonalityPromptFragment to
@@ -51,10 +52,10 @@ export class MindKernel {
   public async hydrateFromDb(): Promise<void> {
     const row = await systemSettingsRepo.getSystemSettings();
     if (!row) return;
-    this.offlineMode = row.offline_mode;
-    this.localLlmEndpoint = row.local_llm_endpoint;
-    this.localModelName = row.local_model_name;
-    this.localApiKey = row.local_api_key;
+    this.offlineMode = process.env.JARVIS_OFFLINE_MODE === "true" ? true : row.offline_mode;
+    this.localLlmEndpoint = process.env.JARVIS_LOCAL_LLM_ENDPOINT?.trim() || row.local_llm_endpoint;
+    this.localModelName = process.env.JARVIS_LOCAL_LLM_MODEL?.trim() || row.local_model_name;
+    this.localApiKey = process.env.JARVIS_LOCAL_LLM_API_KEY?.trim() || row.local_api_key;
     this.llmMode = row.llm_mode;
     this.personalityFormality = row.personality_formality;
     this.personalityHumor = row.personality_humor;

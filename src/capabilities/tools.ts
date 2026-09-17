@@ -5,6 +5,7 @@ import * as github from "./providers/github.js";
 import * as emailIntegration from "./providers/email.js";
 import * as tts from "../interaction/tts.js";
 import { hasGrant } from "../kernel/security.js";
+import { MindKernel } from "../self/kernel.js";
 import { ObservationPlatform } from "../kernel/observation.js";
 import { AutonomousExecutive } from "../executive/autonomous_executive.js";
 import { getSession } from "../cognition/session.js";
@@ -557,6 +558,19 @@ async function executeToolInner(
   if (effectiveRequiredGrant && !hasGrant(username, effectiveRequiredGrant)) {
     observation.logAuditEvent(username, "tool_call_denied", "failed", `Missing grant "${effectiveRequiredGrant}" for tool "${name}"`);
     return { name, ok: false, error: `Missing capability grant "${effectiveRequiredGrant}"` };
+  }
+
+  // Offline mode must be an execution property, not merely a prompt hint.
+  // Network-backed tools are rejected at the last mile so a local model cannot
+  // accidentally turn "offline" into a hidden network request.
+  const OFFLINE_NETWORK_TOOLS = new Set([
+    "github_get_repo_or_file", "github_create_issue", "send_email",
+    "send_personal_email", "calendar_list_events", "calendar_create_event",
+    "get_news", "search_web", "get_briefing", "propose_mcp_server"
+  ]);
+  if (MindKernel.getInstance().offlineMode && (OFFLINE_NETWORK_TOOLS.has(name) || !!mcpTool)) {
+    observation.logAuditEvent(username, "tool_call_denied", "failed", `Offline mode blocks network-backed tool "${name}"`);
+    return { name, ok: false, error: `Tool "${name}" is unavailable while Jarvis is in strict offline mode.` };
   }
 
   if (mcpTool) {
