@@ -360,7 +360,7 @@ export async function writeWebResearchSource(
   if (capture.screenshot) {
     await writeBinaryAsset(
       screenshotPath,
-      capture.screenshot
+      Buffer.from(capture.screenshot, 'base64')
     );
 
     screenshotRef = `\n## Screenshot\n\n![[${screenshotPath}]]\n`;

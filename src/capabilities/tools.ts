@@ -923,11 +923,9 @@ async function executeToolInner(
           sessionPath,
           args.query,
           category,
-          sourceResults.map(
-            (source) => source.notePath,
-          ),
-          failures,
-        );
+          sourceResults.map((source) => source.notePath),
+          failures.map((f) => ({ url: f, error: 'Failed to retrieve source' })),
+      );
 
         output = {
           query: args.query,
