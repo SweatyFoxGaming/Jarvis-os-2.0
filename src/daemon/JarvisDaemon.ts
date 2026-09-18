@@ -43,9 +43,12 @@ export class JarvisDaemon extends EventEmitter {
       this.isRunning = true;
       console.log(`\n👁️ [Jarvis Background Daemon] Connected to Redis on "${this.channelName}"...`);
 
-      await this.subscriberClient.subscribe(this.channelName, async (message) => {
-        await this.handleMessage(message);
-      });
+      await this.subscriberClient.subscribe(
+  this.channelName,
+  async (message: string) => {
+    await this.handleMessage(message);
+  },
+);
     } catch {
       this.useMemoryFallback = true;
       this.isRunning = true;

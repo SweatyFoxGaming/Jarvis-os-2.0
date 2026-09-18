@@ -69,6 +69,9 @@ export const ALL_CAPABILITIES = [
   "objectives.write",
   "system.execute",
   "system.mcp_manage",
+  "web.search",
+  "research.execute",
+  "feature.propose",
   // Deliberately separate from system.execute (record_command_outcome,
   // which pairs with propose_command — also system.execute, so that pairing
   // is self-consistent). record_action_outcome pairs with actions gated by

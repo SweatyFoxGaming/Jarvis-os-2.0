@@ -240,6 +240,26 @@ export function parseNote(raw: string, fallbackTitle: string): ParsedNote {
 
   return { title, frontmatter, tags: [...tags], links };
 }
+export interface BrowserPageCapture {
+  title: string;
+  finalUrl: string;
+  capturedAt?: string;
+  contentHash: string;
+  screenshot?: string;
+  siteName?: string;
+  byline?: string;
+  publishedTime?: string;
+  excerpt?: string | null;
+  textContent: string;
+}
+
+export interface BrowserSearchResult {
+  title: string;
+  url: string;
+  description: string;
+  text?: string;
+  screenshotPath?: string;
+}
 
 export async function createNote(
   relativePath: string,
@@ -263,6 +283,233 @@ export async function createNote(
   await fs.chmod(target, 0o664);
   observation.logTelemetry("info", "Interaction", `Wrote vault note "${relativePath}"`);
   return { path: relativePath, bytesWritten: Buffer.byteLength(full) };
+}
+
+export async function writeBinaryAsset(
+  relativePath: string,
+  data: Uint8Array
+): Promise<{ path: string; bytesWritten: number }> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    throw new ObsidianIntegrationError(
+      "OBSIDIAN_VAULT_DIR is not configured.",
+      503
+    );
+  }
+
+  await ensureRootExists();
+
+  const target = resolveScopedPath(relativePath);
+
+  await assertRealPathWithinRoot(target);
+
+  await fs.mkdir(path.dirname(target), {
+    recursive: true,
+    mode: 0o775,
+  });
+
+  await fs.writeFile(target, data);
+  await fs.chmod(target, 0o664);
+
+  observation.logTelemetry(
+    "info",
+    "Interaction",
+    `Wrote vault asset "${relativePath}"`
+  );
+
+  return {
+    path: relativePath,
+    bytesWritten: data.byteLength,
+  };
+}
+
+export async function writeWebResearchSource(
+  capture: BrowserPageCapture,
+  category: string,
+  sessionPath: string,
+  query: string
+): Promise<{
+  notePath: string;
+  screenshotPath?: string;
+}> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    throw new ObsidianIntegrationError(
+      "OBSIDIAN_VAULT_DIR is not configured.",
+      503
+    );
+  }
+
+  const safeCategory = slugify(category) || "general";
+  const day = (
+  capture.capturedAt ||
+  new Date().toISOString()
+).slice(0, 10);
+
+  const hashSuffix = capture.contentHash.slice(0, 8);
+
+  const basename =
+    `${slugify(capture.title)}-${hashSuffix}`;
+
+  const notePath =
+    `Research/${safeCategory}/${day}/${basename}`;
+
+  const screenshotPath =
+    `Research/${safeCategory}/${day}/assets/${basename}.png`;
+
+  let screenshotRef = "";
+
+  if (capture.screenshot) {
+    await writeBinaryAsset(
+      screenshotPath,
+      capture.screenshot
+    );
+
+    screenshotRef = `\n## Screenshot\n\n![[${screenshotPath}]]\n`;
+  }
+
+  const lines = [
+    `# ${capture.title}`,
+    "",
+    `> Source: ${capture.finalUrl}`,
+    `> Captured: ${capture.capturedAt}`,
+    `> Research query: ${query}`,
+    "",
+    `> Research session: [[${sessionPath}]]`,
+    "",
+    "## Source metadata",
+    "",
+    `- Site: ${capture.siteName || "(unknown)"}`,
+    `- Author: ${capture.byline || "(unknown)"}`,
+    `- Published: ${capture.publishedTime || "(unknown)"}`,
+    `- Content hash: \`${capture.contentHash}\``,
+    "",
+  ];
+
+  if (capture.excerpt) {
+    lines.push(
+      "## Extracted summary",
+      "",
+      capture.excerpt,
+      ""
+    );
+  }
+
+  lines.push(
+    "## Extracted content",
+    "",
+    capture.textContent,
+    ""
+  );
+
+  if (screenshotRef) {
+    lines.push(
+      screenshotRef,
+      ""
+    );
+  }
+
+  const content = lines.join("\n");
+
+  await createNote(
+    notePath,
+    content,
+    withMocFrontmatter(
+      "Research",
+      {
+        type: "web-research-source",
+        category: safeCategory,
+        query,
+        source_url: capture.finalUrl,
+        captured_at: capture.capturedAt,
+        content_hash: capture.contentHash,
+        tags: [
+          "research",
+          "web",
+          safeCategory,
+        ],
+      },
+      day
+    )
+  );
+
+  await syncNoteToIndex(notePath);
+  await ensureLinkedInMoc("Research", notePath);
+
+  return {
+    notePath,
+    screenshotPath:
+      capture.screenshot
+        ? screenshotPath
+        : undefined,
+  };
+}
+
+export async function writeWebResearchSession(
+  sessionPath: string,
+  query: string,
+  category: string,
+  sourcePaths: string[],
+  failures: Array<{ url: string; error: string }>
+): Promise<void> {
+  if (!process.env.OBSIDIAN_VAULT_DIR) {
+    throw new ObsidianIntegrationError(
+      "OBSIDIAN_VAULT_DIR is not configured.",
+      503
+    );
+  }
+
+  const lines = [
+    `# Web Research — ${query}`,
+    "",
+    `- Category: \`${slugify(category)}\``,
+    `- Created: ${new Date().toISOString()}`,
+    "",
+    "## Sources",
+    "",
+    ...(
+      sourcePaths.length > 0
+        ? sourcePaths.map(
+            (source) => `- [[${source}]]`
+          )
+        : ["- No sources were successfully captured."]
+    ),
+    "",
+  ];
+
+  if (failures.length > 0) {
+    lines.push(
+      "## Failed sources",
+      "",
+      ...failures.map(
+        (failure) =>
+          `- ${failure.url} — ${failure.error}`
+      ),
+      ""
+    );
+  }
+
+  await createNote(
+    sessionPath,
+    lines.join("\n"),
+    withMocFrontmatter(
+      "Research",
+      {
+        type: "web-research-session",
+        category: slugify(category),
+        query,
+        source_count: sourcePaths.length,
+        failure_count: failures.length,
+        created: new Date().toISOString(),
+        tags: [
+          "research",
+          "web",
+          slugify(category),
+        ],
+      }
+    )
+  );
+
+  await syncNoteToIndex(sessionPath);
+  await ensureLinkedInMoc("Research", sessionPath);
 }
 
 export async function appendToNote(

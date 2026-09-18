@@ -19,6 +19,7 @@
   "dependencies": {
     "@google/genai": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "^0.6.0",
     "@simplewebauthn/server": "^13.3.2",
     "bcryptjs": "^2.4.3",
     "chokidar": "^5.0.0",
@@ -32,9 +33,13 @@
     "imapflow": "^1.0.164",
     "ioredis": "^5.4.1",
     "js-yaml": "^5.2.2",
+    "jsdom": "^30.1.0",
     "nodemailer": "^9.0.3",
     "pg": "^8.12.0",
+    "pgvector": "^0.3.0",
     "playwright": "^1.63.0",
+    "playwright-core": "^1.63.0",
+    "redis": "^6.2.1",
     "web-push": "^3.6.7",
     "ws": "^8.21.1"
   },

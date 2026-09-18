@@ -1,5 +1,5 @@
 import { Pool, PoolConfig } from 'pg';
-import { registerTypes } from 'pgvector/pg';
+import pgvector from 'pgvector/pg';
 
 export class ToolVectorStore {
   private pool: Pool;
@@ -33,7 +33,7 @@ export class ToolVectorStore {
     const client = await this.pool.connect();
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS vector');
-      await registerTypes(client);
+      await pgvector.registerTypes(client);
       
       await client.query(`
         CREATE TABLE IF NOT EXISTS system_tools (
