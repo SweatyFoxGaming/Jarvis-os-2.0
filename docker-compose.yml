@@ -71,11 +71,14 @@ services:
       
       - ADMIN_API_KEY=${ADMIN_API_KEY}
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - JARVIS_OFFLINE_MODE=${JARVIS_OFFLINE_MODE:-false}
 
       - LAPTOP_IP=${LAPTOP_IP:-192.168.3.12}
       - JARVIS_LOCAL_LLM_ENDPOINT=http://${LAPTOP_IP:-192.168.3.12}:11434/v1
       - JARVIS_LOCAL_LLM_MODEL=${JARVIS_LOCAL_LLM_MODEL:-qwen3}
       - JARVIS_LOCAL_LLM_API_KEY=${JARVIS_LOCAL_LLM_API_KEY:-}
+      - JARVIS_BUILDER_SECRET=${JARVIS_BUILDER_SECRET}
 
       - JARVIS_OFFLINE_MODE=${JARVIS_OFFLINE_MODE:-true}
       - JARVIS_AUTONOMY_ENABLED=${JARVIS_AUTONOMY_ENABLED:-true}
@@ -93,6 +96,20 @@ services:
       - .:/app
       - node_modules:/app/node_modules
       - voice-socket:/tmp/jarvis-voice
+      
+  
+  jarvis-builder:
+    build:
+      context: ./jarvis-builder
+      dockerfile: Dockerfile
+    container_name: jarvis-builder
+    environment:
+      - JARVIS_BUILDER_SECRET=${JARVIS_BUILDER_SECRET}
+      - JARVIS_REPO_HOST_PATH=${JARVIS_REPO_HOST_PATH:-/mnt/jarvis_home/jarvis-os}
+    volumes:
+      - ${JARVIS_REPO_HOST_PATH:-/mnt/jarvis_home/jarvis-os}:${JARVIS_REPO_HOST_PATH:-/mnt/jarvis_home/jarvis-os}
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
   redis:
     image: redis:alpine
     container_name: jarvis-redis
