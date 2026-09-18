@@ -27,9 +27,9 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-API_KEY=$(grep -E "^INTERNAL_API_KEY=" "$ENV_FILE" | cut -d= -f2)
+API_KEY=$(grep -E "^ADMIN_API_KEY=" "$ENV_FILE" | cut -d= -f2)
 if [ -z "$API_KEY" ]; then
-  echo "ERROR: INTERNAL_API_KEY not set in $ENV_FILE" >&2
+  echo "ERROR: ADMIN_API_KEY not set in $ENV_FILE" >&2
   exit 1
 fi
 

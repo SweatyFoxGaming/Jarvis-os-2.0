@@ -1,3 +1,4 @@
+import asyncio
 import os
 import asyncpg
 import uuid
@@ -5,14 +6,46 @@ import logging
 
 logger = logging.getLogger("AutonomyDB")
 
+
 class AutonomyDB:
     def __init__(self, db_url: str = None):
-        self.db_url = db_url or os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/jarvis")
+        self.db_url = db_url or os.getenv(
+            "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/jarvis"
+        )
         self.conn = None
 
-    async def connect(self):
-        self.conn = await asyncpg.connect(self.db_url)
-        await self._init_schema()
+    async def connect(self, retries: int = 10, initial_delay: float = 2.0):
+        delay = initial_delay
+        for attempt in range(1, retries + 1):
+            try:
+                logger.info(
+                    "Connecting to PostgreSQL "
+                    f"(attempt {attempt}/{retries})..."
+                )
+                self.conn = await asyncpg.connect(self.db_url)
+                await self._init_schema()
+                logger.info("PostgreSQL connection established.")
+                return
+            except (OSError, asyncpg.PostgresError) as exc:
+                if self.conn is not None:
+                    try:
+                        await self.conn.close()
+                    except Exception:
+                        pass
+                    self.conn = None
+                if attempt >= retries:
+                    logger.error(
+                        "PostgreSQL connection failed after "
+                        f"{retries} attempts: {exc}"
+                    )
+                    raise
+                logger.warning(
+                    "PostgreSQL unavailable "
+                    f"(attempt {attempt}/{retries}): {exc}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2.0, 15.0)
 
     async def _init_schema(self):
         await self.conn.execute("""
@@ -62,5 +95,7 @@ class AutonomyDB:
         return row
 
     async def list_tasks(self):
-        rows = await self.conn.fetch("SELECT task_id, title, status, created_at FROM autonomy_tasks ORDER BY created_at DESC")
+        rows = await self.conn.fetch(
+            "SELECT task_id, title, status, created_at FROM autonomy_tasks ORDER BY created_at DESC"
+        )
         return rows

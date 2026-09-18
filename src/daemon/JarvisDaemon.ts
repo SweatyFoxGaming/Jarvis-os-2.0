@@ -1,6 +1,6 @@
 import { createClient, RedisClientType } from 'redis';
 import { EventEmitter } from 'events';
-import { DirectiveOrchestrator } from '../orchestration/DirectiveOrchestrator';
+import { DirectiveOrchestrator } from '../orchestration/DirectiveOrchestrator.js';
 
 export class JarvisDaemon extends EventEmitter {
   private redisClient: RedisClientType | null = null;

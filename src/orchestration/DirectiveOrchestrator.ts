@@ -1,5 +1,5 @@
-import { ToolVectorStore } from '../capabilities/ToolVectorStore';
-import { ToolSandbox } from '../capabilities/ToolSandbox';
+import { ToolVectorStore } from '../capabilities/ToolVectorStore.js';
+import { ToolSandbox } from '../capabilities/ToolSandbox.js';
 import * as fs from 'fs';
 import * as path from 'path';
 

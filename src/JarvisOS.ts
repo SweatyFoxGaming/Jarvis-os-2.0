@@ -1,7 +1,7 @@
-import { DirectiveOrchestrator } from './orchestration/DirectiveOrchestrator';
-import { PipelineOrchestrator } from './orchestration/PipelineOrchestrator';
-import { JarvisDaemon } from './daemon/JarvisDaemon';
-import { ToolVectorStore } from './capabilities/ToolVectorStore';
+import { DirectiveOrchestrator } from './orchestration/DirectiveOrchestrator.js';
+import { PipelineOrchestrator } from './orchestration/PipelineOrchestrator.js';
+import { JarvisDaemon } from './daemon/JarvisDaemon.js';
+import { ToolVectorStore } from './capabilities/ToolVectorStore.js';
 
 export class JarvisOS {
   private directiveOrchestrator: DirectiveOrchestrator;

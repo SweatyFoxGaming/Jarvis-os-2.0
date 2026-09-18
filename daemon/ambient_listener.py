@@ -17,7 +17,7 @@ from typing import AsyncGenerator, Optional
 
 import numpy as np
 
-from daemon.protocol import UtteranceEndDetector
+from protocol import UtteranceEndDetector
 
 import os
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"

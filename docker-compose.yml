@@ -2,63 +2,131 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: jarvis_postgres
+
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: jarvis
+
     ports:
       - "5432:5432"
-      
+
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d jarvis"]
       interval: 5s
       timeout: 5s
       retries: 5
+
     volumes:
       - pgdata:/var/lib/postgresql/data
+
     restart: always
 
   jarvis-daemon:
     build: .
     container_name: jarvis_master_daemon
     command: python3 -m daemon.main
+
     ports:
       - "8765:8765"
+
     environment:
-  - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jarvis
-  - LAPTOP_IP=${LAPTOP_IP:-192.168.3.12}
-
-  # Local cognition runs on the laptop through Ollama.
-  - JARVIS_LOCAL_LLM_ENDPOINT=http://${LAPTOP_IP:-192.168.3.12}:11434/v1
-  - JARVIS_LOCAL_LLM_MODEL=${JARVIS_LOCAL_LLM_MODEL:-qwen3}
-  - JARVIS_LOCAL_LLM_API_KEY=${JARVIS_LOCAL_LLM_API_KEY:-}
-
-  # Jarvis operating mode.
-  - JARVIS_OFFLINE_MODE=${JARVIS_OFFLINE_MODE:-true}
-  - JARVIS_AUTONOMY_ENABLED=${JARVIS_AUTONOMY_ENABLED:-true}
-  - AUTONOMY_INTERVAL_MS=${AUTONOMY_INTERVAL_MS:-60000}
-  - LOCAL_TOOL_CALLING=${LOCAL_TOOL_CALLING:-true}
-  - ALLOW_KEYWORD_FALLBACK=${ALLOW_KEYWORD_FALLBACK:-false}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jarvis
+      - LAPTOP_IP=${LAPTOP_IP:-192.168.3.12}
+      - JARVIS_LOCAL_LLM_ENDPOINT=http://${LAPTOP_IP:-192.168.3.12}:11434/v1
+      - JARVIS_LOCAL_LLM_MODEL=${JARVIS_LOCAL_LLM_MODEL:-qwen3}
+      - JARVIS_LOCAL_LLM_API_KEY=${JARVIS_LOCAL_LLM_API_KEY:-}
+      - JARVIS_OFFLINE_MODE=${JARVIS_OFFLINE_MODE:-true}
+      - JARVIS_AUTONOMY_ENABLED=${JARVIS_AUTONOMY_ENABLED:-true}
+      - AUTONOMY_INTERVAL_MS=${AUTONOMY_INTERVAL_MS:-60000}
+      - LOCAL_TOOL_CALLING=${LOCAL_TOOL_CALLING:-true}
+      - ALLOW_KEYWORD_FALLBACK=${ALLOW_KEYWORD_FALLBACK:-false}
 
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+
     restart: always
+
     volumes:
       - .:/app
 
+  jarvis-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+
+    container_name: jarvis_api
+
+    command: npm run start
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jarvis
+      
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+
+      - LAPTOP_IP=${LAPTOP_IP:-192.168.3.12}
+      - JARVIS_LOCAL_LLM_ENDPOINT=http://${LAPTOP_IP:-192.168.3.12}:11434/v1
+      - JARVIS_LOCAL_LLM_MODEL=${JARVIS_LOCAL_LLM_MODEL:-qwen3}
+      - JARVIS_LOCAL_LLM_API_KEY=${JARVIS_LOCAL_LLM_API_KEY:-}
+
+      - JARVIS_OFFLINE_MODE=${JARVIS_OFFLINE_MODE:-true}
+      - JARVIS_AUTONOMY_ENABLED=${JARVIS_AUTONOMY_ENABLED:-true}
+      - AUTONOMY_INTERVAL_MS=${AUTONOMY_INTERVAL_MS:-60000}
+      - LOCAL_TOOL_CALLING=${LOCAL_TOOL_CALLING:-true}
+      - ALLOW_KEYWORD_FALLBACK=${ALLOW_KEYWORD_FALLBACK:-false}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    restart: always
+
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - voice-socket:/tmp/jarvis-voice
   redis:
     image: redis:alpine
     container_name: jarvis-redis
+
     ports:
       - "6379:6379"
+
     restart: always
 
   voice-daemon:
-    build: .
+    build:
+      context: ./daemon
+      dockerfile: Dockerfile
+
     container_name: jarvis-voice-daemon
+
+    devices:
+      - /dev/snd:/dev/snd
+
     environment:
       - AMBIENT_LISTENING_ENABLED=${AMBIENT_LISTENING_ENABLED:-false}
-    restart: unless-stopped
+      - AMBIENT_MIC_DEVICE=${AMBIENT_MIC_DEVICE:-}
+      - AMBIENT_SPEAKER_DEVICE=${AMBIENT_SPEAKER_DEVICE:-}
+      - AMBIENT_WAKE_WORD_THRESHOLD=${AMBIENT_WAKE_WORD_THRESHOLD:-0.5}
+
+    volumes:
+      - voice-socket:/tmp/jarvis-voice
+
+    restart: unless-stopped 
 
 volumes:
   pgdata:
+  node_modules:
+  voice-socket:
+
+
+  

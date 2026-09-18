@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { EventEnvelopeSchema, EventEnvelope, EventType } from '../types/protocol';
+import { EventEnvelopeSchema, EventEnvelope, EventType } from '../types/protocol.js';
 
 export type MessageHandler = (envelope: EventEnvelope) => void;
 
@@ -67,7 +67,7 @@ export class JarvisWSClient {
   }
 
   private handleIncomingMessage(rawData: string): void {
-    try:
+    try {
       const parsed = JSON.parse(rawData);
       const validationResult = EventEnvelopeSchema.safeParse(parsed);
 

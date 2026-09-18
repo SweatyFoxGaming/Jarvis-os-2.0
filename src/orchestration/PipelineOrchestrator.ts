@@ -1,4 +1,4 @@
-import { DirectiveOrchestrator } from './DirectiveOrchestrator';
+import { DirectiveOrchestrator } from './DirectiveOrchestrator.js';
 
 export class PipelineOrchestrator {
   private directiveOrchestrator: DirectiveOrchestrator;
