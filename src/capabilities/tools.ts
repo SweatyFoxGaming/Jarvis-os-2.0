@@ -28,7 +28,7 @@ import { listConstraints } from "../self/constraints.js";
 import * as rapport from "../self/rapport.js";
 import crypto from "node:crypto";
 import * as browserResearch from "./providers/web-browser.js";
-import * as obsidian from "../capabilities/providers/obsidian.js";
+import * as obsidian from "./providers/obsidian.js";
 
 const observation = ObservationPlatform.getInstance();
 
@@ -37,27 +37,8 @@ export interface ToolCallResult {
   ok: boolean;
   output?: any;
   error?: string;
-  // Set when a tool can't execute server-side and needs the connected
-  // client to do something first (currently only view_screen) — see
-  // Task 2 in docs/superpowers/plans/2026-07-20-view-screen-tool.md.
   needsClientAction?: "capture_screen";
-  // Set by display_content — relayed to the client as a "display: " SSE
-  // frame by /api/chat. See Task 1 in
-  // docs/superpowers/plans/2026-07-20-display-content-panel.md.
   displayDirective?: { type: string; title: string; content: any };
-  // Set by speak_text — relayed to the client as an "audio: " SSE frame by
-  // /api/chat, the same way displayDirective is. Without this, the audio
-  // synthesizeSpeech() actually produced was computed and then discarded:
-  // the tool reported {synthesized: true} back to the model as if the user
-  // had heard something, but the bytes never left the server. Not read on
-  // the local voice-daemon pipeline (src/interaction/voice-session.ts) —
-  // its tool loop only consumes result.ok/output/error, and that path's
-  // TTS happens once, over the daemon's socket, on the final assistant
-  // text (see audio-client.ts's voice:reply subscriber), not per
-  // speak_text call mid-turn. (Formerly worded around the removed
-  // live-voice.ts/Gemini-Live path, which had the same non-consumption for
-  // a different reason — no client channel at all, since Gemini's Live API
-  // spoke directly.)
   audioDirective?: { mimeType: string; base64: string };
 }
 
@@ -65,11 +46,6 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   github_get_repo_or_file: "github.read",
   github_create_issue: "github.issues.create",
   send_email: "email.send",
-  // Distinct from send_email's "email.send" (shared admin SMTP mailbox) —
-  // this gates the user's own connected Gmail account, and is auto-granted
-  // to every invited user (see DEFAULT_PERSONAL_CAPABILITIES in security.ts),
-  // whereas "email.send" is deliberately admin-only. See final-review
-  // finding C1.
   send_personal_email: "email.personal.send",
   speak_text: "tts.speak",
   decompose_plan: "executive.plan",
@@ -347,60 +323,60 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
-  name: "research_web",
-  description:
-    "Perform live web research without a search API key. Browse search results, open relevant public web pages, extract the useful readable content, capture screenshots, and store the source material in the user's Obsidian vault under Research/<category>. Use this for genuine research where the evidence should be preserved for future use.",
-  parameters: {
-    type: Type.OBJECT,
-    properties: {
-      query: {
-        type: Type.STRING,
-        description: "The research question or topic to investigate."
+    name: "research_web",
+    description:
+      "Perform live web research without a search API key. Browse search results, open relevant public web pages, extract the useful readable content, capture screenshots, and store the source material in the user's Obsidian vault under Research/<category>. Use this for genuine research where the evidence should be preserved for future use.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: {
+          type: Type.STRING,
+          description: "The research question or topic to investigate."
+        },
+        category: {
+          type: Type.STRING,
+          description:
+            "Vault category for the research, e.g. ai, coding, science, security, technology, business."
+        },
+        maxResults: {
+          type: Type.NUMBER,
+          description:
+            "Maximum number of search results to inspect. Keep this small for focused research."
+        },
+        screenshot: {
+          type: Type.BOOLEAN,
+          description:
+            "Capture and store a full-page screenshot for each successfully captured source."
+        }
       },
-      category: {
-        type: Type.STRING,
-        description:
-          "Vault category for the research, e.g. ai, coding, science, security, technology, business."
-      },
-      maxResults: {
-        type: Type.NUMBER,
-        description:
-          "Maximum number of search results to inspect. Keep this small for focused research."
-      },
-      screenshot: {
-        type: Type.BOOLEAN,
-        description:
-          "Capture and store a full-page screenshot for each successfully captured source."
-      }
+      required: ["query", "category"],
     },
-    required: ["query", "category"],
   },
-},
-{
-  name: "capture_web_page",
-  description:
-    "Open a specific public HTTP/HTTPS web page, extract its readable content, optionally capture a screenshot, and store it in the user's Obsidian research vault. This is for a specific URL rather than a search query.",
-  parameters: {
-    type: Type.OBJECT,
-    properties: {
-      url: {
-        type: Type.STRING,
-        description: "The public web page URL to inspect."
+  {
+    name: "capture_web_page",
+    description:
+      "Open a specific public HTTP/HTTPS web page, extract its readable content, optionally capture a screenshot, and store it in the user's Obsidian research vault. This is for a specific URL rather than a search query.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: {
+          type: Type.STRING,
+          description: "The public web page URL to inspect."
+        },
+        category: {
+          type: Type.STRING,
+          description:
+            "Vault category for the captured page."
+        },
+        screenshot: {
+          type: Type.BOOLEAN,
+          description:
+            "Capture and store a full-page screenshot."
+        }
       },
-      category: {
-        type: Type.STRING,
-        description:
-          "Vault category for the captured page."
-      },
-      screenshot: {
-        type: Type.BOOLEAN,
-        description:
-          "Capture and store a full-page screenshot."
-      }
+      required: ["url", "category"],
     },
-    required: ["url", "category"],
   },
-},
   {
     name: "get_security_status",
     description: "Get the real current network/system security status: unrecognized devices on the network, open security findings, and pending remediation proposals awaiting approval. Use this when the user asks about network security, unknown devices, or vulnerabilities.",
@@ -564,10 +540,9 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   },
 ];
 
-// Static declarations plus whatever MCP servers are currently approved and
-// reachable — called fresh each time a chat turn builds its Gemini
-// function-calling request, so a newly-approved server's tools appear
-// without a restart, and a disabled/unreachable one's disappear.
+// Alias for backwards compatibility if referenced elsewhere
+export const registeredTools = TOOL_DECLARATIONS;
+
 export function getAllToolDeclarations(): FunctionDeclaration[] {
   const mcpDeclarations: FunctionDeclaration[] = mcpRegistry.getCachedMcpTools().map(t => ({
     name: `mcp.${t.serverName}.${t.toolName}`,
@@ -585,24 +560,9 @@ async function executeToolInner(
   localEndpoint: string | null = null,
   screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
 ): Promise<ToolCallResult> {
-  // display_content has no real-world side effect or access to anything
-  // private beyond what the conversation already contains, so it's the one
-  // tool deliberately left out of PERMISSION_BY_TOOL/ALL_CAPABILITIES rather
-  // than gated behind a grant every user would need to be given anyway.
-  // list_constraints is ungated for a different reason: per this codebase's
-  // safety-constraint registry (src/self/constraints.ts), any authenticated
-  // user must be able to ask what Jarvis's hard limits are — gating that
-  // behind a capability grant would mean a user could be denied visibility
-  // into the very boundaries meant to protect them.
-  // get_rapport_summary is ungated for the same kind of reason: it only
-  // ever reflects the calling user's own recorded tone signals back to
-  // them (src/self/rapport.ts) — there's no other user's data reachable
-  // and nothing gated would meaningfully protect anyone by requiring a grant.
   const UNGATED_TOOLS = new Set(["display_content", "list_constraints", "get_rapport_summary"]);
   const requiredGrant = PERMISSION_BY_TOOL[name];
 
-  // Not a static tool — check whether it's a currently-cached MCP tool
-  // before concluding it's genuinely unknown.
   const mcpTool = !requiredGrant && !UNGATED_TOOLS.has(name)
     ? mcpRegistry.getCachedMcpTools().find(t => `mcp.${t.serverName}.${t.toolName}` === name)
     : undefined;
@@ -618,9 +578,6 @@ async function executeToolInner(
     return { name, ok: false, error: `Missing capability grant "${effectiveRequiredGrant}"` };
   }
 
-  // Offline mode must be an execution property, not merely a prompt hint.
-  // Network-backed tools are rejected at the last mile so a local model cannot
-  // accidentally turn "offline" into a hidden network request.
   const OFFLINE_NETWORK_TOOLS = new Set([
     "github_get_repo_or_file",
     "github_create_issue",
@@ -842,9 +799,6 @@ async function executeToolInner(
           8,
         );
 
-        // The installed browser provider exposes searchWeb() and capturePage()
-        // as the stable primitives. Build the research batch here rather than
-        // depending on the newer researchWeb() batch contract.
         const sessionId =
           `${Date.now()}-${crypto
             .randomBytes(3)
@@ -925,7 +879,7 @@ async function executeToolInner(
           category,
           sourceResults.map((source) => source.notePath),
           failures.map((f) => ({ url: f, error: 'Failed to retrieve source' })),
-      );
+        );
 
         output = {
           query: args.query,
@@ -1150,7 +1104,7 @@ async function executeToolInner(
         return { name, ok: false, error: `Unhandled tool "${name}"` };
     }
     observation.logAuditEvent(username, "tool_call", "success", `${name}(${JSON.stringify(args)})`);
-  return {
+    return {
       name,
       ok: true,
       output,
@@ -1166,11 +1120,6 @@ async function executeToolInner(
   }
 }
 
-// Fixed, per-tool-name human-readable label for the outcome ledger's
-// action_summary column — deliberately never interpolates any argument
-// value (recipient addresses, subjects, file paths, objective text), since
-// this table has no redaction, retention limit, or access control of its
-// own. Falls back to the bare tool name for anything unlisted.
 function summarizeAction(name: string): string {
   switch (name) {
     case "send_email":
@@ -1188,6 +1137,10 @@ function summarizeAction(name: string): string {
       return "set an objective";
     case "update_objective_status":
       return "updated an objective's status";
+    case "research_web":
+      return "researched the web";
+    case "capture_web_page":
+      return "captured a web page";
     default:
       return name;
   }
@@ -1206,15 +1159,6 @@ export async function executeTool(
   return result;
 }
 
-// Keyword triggers per tool, not a single flat list — makes it obvious which
-// tool a match implies. This is a hand-maintained list, deliberately not
-// derived from TOOL_DECLARATIONS: several tools (e.g. propose_command,
-// display_content, update_objective_status, record_command_outcome,
-// record_action_outcome, confirm_build_direction) are intentionally absent
-// because they should only ever be invoked as a model-driven follow-up,
-// never routed to directly by keyword match. If you add a tool that SHOULD
-// be keyword-routable, add its entry here too — nothing enforces the two
-// staying in sync.
 const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   github_get_repo_or_file: ["github", "repo", "repository", "pull request", "pr ", "branch"],
   github_create_issue: ["github", "issue", "repo", "repository"],
@@ -1232,6 +1176,8 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   reflect_on_self: ["what have you been thinking", "what do you think about", "what do you believe", "have you thought about", "your opinion on", "what did you say about"],
   get_news: ["news", "headlines", "what's happening in", "current events", "latest on"],
   search_web: ["search the web", "search for", "look up", "google", "find out about", "what's the latest"],
+  research_web: ["research the web", "web research", "investigate online", "deep search"],
+  capture_web_page: ["capture web page", "capture page", "save web page", "screenshot web page"],
   get_security_status: ["network security", "unknown device", "unrecognized device", "vulnerabilit", "security findings", "is my network safe"],
   view_screen: ["what's on my screen", "whats on my screen", "look at my screen", "what am i looking at", "help me with this error", "what does this say"],
   set_objective: ["help me", "i want to", "track this goal", "keep me accountable", "my goal is"],
@@ -1244,31 +1190,11 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   get_rapport_summary: ["how have i been coming across", "how have i seemed", "noticed anything about my mood", "how do i seem lately", "what have you noticed about me"],
 };
 
-/**
- * Heuristic only — used to decide *routing* (prefer a backend that can
- * actually fulfill the request), never to decide whether to execute a tool.
- * Real execution always goes through Gemini's own function-calling decision
- * plus the permission grant in executeTool(); this just avoids sending an
- * obviously tool-shaped request to a backend (the local model) that's known
- * to fabricate an answer instead of admitting it has no tool access.
- */
 export function looksToolShaped(message: string): boolean {
   const lower = message.toLowerCase();
   return Object.values(TOOL_TRIGGER_WORDS).some(words => words.some(w => lower.includes(w)));
 }
 
-/**
- * Narrower and stricter than looksToolShaped on purpose: that heuristic only
- * ever affects which backend is tried first (the LLM still decides
- * everything for itself), so a substring match anywhere in the message is
- * an acceptable false-positive rate. This one controls whether tools are
- * attached to the request AT ALL for a Groq turn — a false positive here
- * would silently remove real tool capability from a substantive request, so
- * it requires the trivial phrase to be the message's actual content (exact
- * match, or the message's first word(s) followed by a space), not merely
- * present somewhere inside a longer message, and caps message length
- * so a genuine multi-part request can never qualify no matter how it opens.
- */
 const TRIVIAL_PHRASES = [
   "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
   "thanks", "thank you", "ok", "okay", "sounds good", "got it", "cool",
@@ -1279,7 +1205,6 @@ const TRIVIAL_MAX_LENGTH = 50;
 export function looksTrivial(message: string): boolean {
   const trimmed = message.trim();
   if (trimmed.length > TRIVIAL_MAX_LENGTH) return false;
-  // Strip trailing punctuation to handle cases like "thanks!" or "good morning?"
   const stripped = trimmed.replace(/[!?.,:;-]+$/, '').toLowerCase();
   return TRIVIAL_PHRASES.some(p => stripped === p || stripped.startsWith(p + " "));
 }

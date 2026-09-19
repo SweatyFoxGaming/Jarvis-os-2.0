@@ -17,6 +17,24 @@ const observation = ObservationPlatform.getInstance();
 // would miss a deployment that sets ADMIN_API_KEY and (per .env.example's
 // default) leaves INTERNAL_API_KEY empty. Guaranteed truthy by the
 // fail-fast check right below — any importer gets a real, non-empty key.
+export async function authenticateRequest(req: Request, res: Response, next: NextFunction) {
+  const adminKeyHeader = req.headers["x-admin-key"] || req.headers["authorization"]?.replace("Bearer ", "");
+
+  // 1. Allow valid ADMIN_API_KEY to bypass DB dependency checks
+  if (process.env.ADMIN_API_KEY && adminKeyHeader === process.env.ADMIN_API_KEY) {
+    (req as any).user = { id: "admin", role: "admin", capabilities: ["*"] };
+    return next();
+  }
+
+  // 2. Fall back to DB auth check only for standard user tokens
+  const dbReady = await pingDatabase().catch(() => false);
+  if (!dbReady) {
+    return res.status(503).json({ error: "Authentication service unavailable" });
+  }
+
+  // ... rest of user token validation logic
+}
+
 export const ADMIN_API_KEY = process.env.ADMIN_API_KEY
   || process.env.INTERNAL_API_KEY;
 

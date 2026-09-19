@@ -7,36 +7,17 @@ import { assertSafeEgressUrl, normalizeLocalLlmUrl } from "../kernel/egress.js";
 
 const observation = ObservationPlatform.getInstance();
 
-// Real base URLs for the two cloud providers KeyPool knows about — see
-// docs/superpowers/specs/2026-08-03-omniroute-cognition-gateway-design.md
-// and groq-client.ts/omniroute history for why these are the OpenAI-
-// compatible endpoints rather than each vendor's native SDK surface.
 const PROVIDER_BASE_URLS: Record<Provider, string> = {
   groq: "https://api.groq.com/openai/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta/openai",
 };
 
-// Production value for the fair-share throttle delay. Overridable per
-// RouterDeps.throttleDelayMs so tests don't have to actually wait 3s —
-// mirrors Task 1's short-cooldown test pattern.
 export const DEFAULT_THROTTLE_DELAY_MS = 3000;
 
 function defaultDelay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// The default transport (generateWithFallback) always appends
-// "/chat/completions" onto whatever baseUrl it's given. normalizeLocalLlmUrl
-// already returns a *fully qualified* request URL (it may end in
-// "/chat/completions", "/generate", or "/api/chat" depending on the shape it
-// detected). Passing that straight through as "baseUrl" would produce
-// ".../chat/completions/chat/completions" for the common case — including
-// this codebase's own default local endpoint, "http://llama-cpp:8080",
-// which normalizes to ".../v1/chat/completions". Stripping a known suffix
-// here lets the transport's own "+/chat/completions" reproduce the
-// normalized URL exactly for that (dominant) case. See task-4-report.md for
-// the full reasoning, including the known limitation for "/generate" and
-// "/api/chat" shaped local servers.
 const KNOWN_LOCAL_URL_SUFFIXES = ["/chat/completions", "/generate", "/api/chat"];
 function stripKnownLocalSuffix(url: string): string {
   for (const suffix of KNOWN_LOCAL_URL_SUFFIXES) {
@@ -48,32 +29,8 @@ function stripKnownLocalSuffix(url: string): string {
   return url;
 }
 
-// A provider's error body/message is untrusted input — it can be
-// malicious or simply buggy (an absurdly long digit string, a value in
-// the billions). Number("9".repeat(400)) is Infinity; a naive parse of
-// that (or of a merely huge-but-finite value) straight into
-// KeyPool.reportFailure's retryAfterSeconds would either permanently
-// disable a key for the rest of the process lifetime (Infinity) or
-// effectively permanently (a cooldown lasting decades). This ceiling is
-// deliberately generous relative to any legitimate Retry-After value
-// (real APIs send seconds to low minutes) while still being finite.
 const MAX_RETRY_AFTER_SECONDS = 3600;
 
-// Best-effort extraction of a retry delay from a failed transport call.
-// The real generateWithFallback throws a plain Error with a message like
-// "OpenAI-compatible endpoint returned 429: <body>" — it doesn't currently surface the
-// Retry-After header value on the thrown error, so this falls back to
-// KeyPool's own default cooldown in that case (which is the common,
-// real-transport case today). This is deliberately written to also honor
-// an explicit numeric `retryAfterSeconds` property on the error (test
-// doubles and any future transport can set this) or a "retry-after: N"
-// substring in the message, so the plumbing is ready the moment a richer
-// error shape exists upstream. The extracted value — from EITHER branch —
-// is always clamped/sanitized before being returned: a non-finite result
-// (NaN/Infinity) returns `undefined` (KeyPool falls back to its own
-// DEFAULT_COOLDOWN_SECONDS), and any finite result is clamped to
-// [0, MAX_RETRY_AFTER_SECONDS]. Never trust a provider-controlled number
-// straight through to a cooldown timer.
 function parseRetryAfterSeconds(err: any): number | undefined {
   let candidate: number | undefined;
   if (err && typeof err.retryAfterSeconds === "number") {
@@ -84,31 +41,13 @@ function parseRetryAfterSeconds(err: any): number | undefined {
     candidate = match ? Number(match[1]) : undefined;
   }
   if (candidate === undefined || !Number.isFinite(candidate)) return undefined;
-  // Floor at 1, not 0 — a hostile or buggy "retry-after: 0" (or a negative
-  // value) must not zero out the cooldown this function exists to enforce;
-  // it should behave like "cool down briefly," never "don't cool down."
   return Math.min(Math.max(candidate, 1), MAX_RETRY_AFTER_SECONDS);
 }
 
-// The real transport (openai-compatible-client.ts) throws
-// `OpenAI-compatible endpoint returned ${status}: ${body}`, and a Groq
-// model-not-found 404's body contains `"code":"model_not_found"` — checked
-// as a message substring since the error shape is a plain Error, not a
-// structured object with the provider's parsed JSON attached. This is
-// deliberately narrow (this exact code, not "any 404") so an unrelated
-// 404 doesn't get misclassified into skipping the retry-other-keys path.
 function isModelNotFoundError(message: string): boolean {
   return /model_not_found/i.test(message);
 }
 
-// Prefers the response's own usage.total_tokens when the provider reported
-// it; otherwise falls back to a rough ~4-chars-per-token estimate over the
-// request messages and response content, so recordUsage always gets a
-// meaningful, non-zero number even against a provider that omits `usage`.
-// Clamped to a minimum of 1 on BOTH branches — a malformed provider
-// response with a zero or negative usage.total_tokens must not be able to
-// pollute the SUM(tokens) fair-share calculation in usage-repo.ts with a
-// non-positive contribution.
 function estimateTokens(response: any, params: any): number {
   const usage = response?.usage;
   if (usage && typeof usage.total_tokens === "number" && Number.isFinite(usage.total_tokens)) {
@@ -119,9 +58,6 @@ function estimateTokens(response: any, params: any): number {
   return Math.max(1, Math.round((requestChars + responseChars) / 4));
 }
 
-// The last user-authored message content, for handing to the offline
-// keyword engine — which takes a single plain-string message, not the
-// OpenAI-compatible `messages` array every other tier consumes.
 function extractLastUserMessage(params: any): string {
   const messages = Array.isArray(params?.messages) ? params.messages : [];
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -133,16 +69,6 @@ function extractLastUserMessage(params: any): string {
   return typeof last?.content === "string" ? last.content : "";
 }
 
-// Deliberately NOT `workspace`/`systemMetrics` fields here: CognitiveWorkspace
-// has a no-arg constructor (every compartment self-initializes) and
-// ObservationPlatform.getInstance().getMetrics().system is cheap and always
-// current, so the keyword-engine tier constructs a fresh, minimal
-// CognitiveWorkspace and reads live metrics at the point of need inside
-// generateWithFallback below, rather than from constructor-time-fixed
-// values threaded in from a request that, for most callers of this router
-// (departments.ts, identity.ts, reflection.ts, daily-adaptation.ts — all
-// background jobs with no real per-request CognitiveWorkspace in scope),
-// never existed in the first place.
 export interface RouterDeps {
   keyPool: KeyPool;
   recordUsage: typeof recordUsage;
@@ -151,41 +77,14 @@ export interface RouterDeps {
   localModelName: string;
   localApiKey?: string;
   localEngine: { generateResponse: (message: string, workspace: CognitiveWorkspace, systemMetrics: any) => string };
-  // Optional live accessor so DB-persisted Settings changes take effect without
-  // requiring a process restart. The static fields remain the bootstrap fallback.
   getLocalConfig?: () => { endpoint: string; modelName: string; apiKey?: string };
-  // Local tool calling is deliberately configurable because different GGUF
-  // models expose different chat-template/tool capabilities. It defaults ON:
-  // offline Jarvis must be capable of acting, not merely chatting.
   localToolCalling?: boolean;
   allowKeywordFallback?: boolean;
-  // Injectable transport seam — defaults to the real generateWithFallback
-  // (openai-compatible-client.js) so tests never make a real network call.
-  // Same DI pattern as this session's execFn-style seams elsewhere.
   transport?: (config: OpenAiCompatibleConfig, params: any, models: string[]) => Promise<any>;
-  // Injectable delay seam for the fair-share throttle, so tests can use a
-  // short wait instead of the real 3s default.
   delayFn?: (ms: number) => Promise<void>;
   throttleDelayMs?: number;
 }
 
-/**
- * The cognition router every LLM call in the app is meant to eventually go
- * through. Fallback chain, in order:
- *   1. Cloud providers, one key/model at a time, in the order given in
- *      `models` (provider-prefixed strings like "groq:openai/gpt-oss-120b").
- *   2. A first-class local model when `local:<model>` is explicitly requested.
- *   3. The configured local LLM endpoint as the normal fallback. Tool schemas
- *      are preserved when LOCAL_TOOL_CALLING is enabled.
- *   4. The offline keyword-matching engine (LocalCognitiveEngine), wrapped
- *      into the same OpenAI-compatible response shape every other tier
- *      returns.
- *
- * Before any of that, a fair-share throttle *delays* (never rejects) a
- * request from a user who's recently consumed well over their equal share
- * of tokens, but only while the key pool is actually strained — a heavy
- * user under an idle pool is never penalized.
- */
 export class CognitionRouter {
   private deps: RouterDeps;
   private transport: (config: OpenAiCompatibleConfig, params: any, models: string[]) => Promise<any>;
@@ -199,13 +98,6 @@ export class CognitionRouter {
     this.throttleDelayMs = deps.throttleDelayMs ?? DEFAULT_THROTTLE_DELAY_MS;
   }
 
-  // The one guarantee every caller in the app is meant to rely on: this
-  // method never throws. Any unexpected failure at any stage — including
-  // in the keyword-engine tier, which is meant to be the unconditional
-  // last resort — is caught here and turned into a static, honest,
-  // OpenAI-compatible-shaped apology response instead of propagating,
-  // since not every call site in this codebase defensively wraps its own
-  // call to the router.
   async generateWithFallback(username: string, params: any, models: string[]): Promise<any> {
     try {
       return await this.attemptFallbackChain(username, params, models);
@@ -234,18 +126,10 @@ export class CognitionRouter {
     try {
       share = await this.deps.getRecentShare(username, 10);
     } catch (err: any) {
-      // getRecentShare's real implementation already degrades to `null`
-      // internally and never throws — but deps.getRecentShare is
-      // injectable, so a caller/test-supplied implementation isn't bound
-      // by that contract. Treat a throw exactly like `null`: "no
-      // throttling signal," never a reason to fail the whole request.
       observation.logTelemetry("warn", "Cognition", `getRecentShare(${username}) threw unexpectedly, treating as "no throttling signal": ${err?.message || err}`);
       share = null;
     }
-    // Computed once and reused for both the log line and the actual
-    // throttle decision below — calling strainRatio() twice risked the
-    // logged "strain=" value silently disagreeing with what was decided,
-    // if the pool's cooldown state changed between the two calls.
+
     const strain = this.deps.keyPool.strainRatio();
     if (share !== null && share > 2.0 && strain > 0.5) {
       observation.logTelemetry(
@@ -265,10 +149,6 @@ export class CognitionRouter {
       const provider = model.slice(0, sepIdx);
       const realModel = model.slice(sepIdx + 1);
 
-      // `local:<model>` is a real provider target, not an alias for the
-      // keyword fallback. It is what lets the coding agent and background
-      // cognition explicitly demand the local model without traversing cloud
-      // providers first.
       if (provider === "local") {
         const local = this.deps.getLocalConfig?.() ?? {
           endpoint: this.deps.localLlmEndpoint,
@@ -277,12 +157,9 @@ export class CognitionRouter {
         };
         try {
           const localParams = { ...(params ?? {}) };
-          if (this.deps.localToolCalling !== false && localParams.tools) {
-            localParams.tool_choice ??= "auto";
-          } else {
-            delete localParams.tools;
-            delete localParams.tool_choice;
-          }
+          delete localParams.tools;
+          delete localParams.tool_choice;
+
           const normalizedUrl = normalizeLocalLlmUrl(local.endpoint);
           assertSafeEgressUrl(normalizedUrl);
           const localConfig: OpenAiCompatibleConfig = {
@@ -303,16 +180,6 @@ export class CognitionRouter {
         continue;
       }
 
-      // Retry within THIS provider across every one of its configured
-      // keys before giving up on this model entry and moving to the next
-      // one in `models`. This matters because every real call site in
-      // this codebase passes a single-element `models` array — without
-      // this inner loop, one transient 429 on a single key would fall
-      // all the way through to the local LLM tier even with several
-      // other healthy keys sitting in the pool for the same provider.
-      // Bounded by keyCount(provider) (not just "until getAvailableKey
-      // returns null") as a hard, finite circuit breaker independent of
-      // KeyPool's own cooldown-driven termination.
       const maxKeyAttempts = this.deps.keyPool.keyCount(provider);
       for (let attempt = 0; attempt < maxKeyAttempts; attempt++) {
         const key = await this.deps.keyPool.getAvailableKey(provider);
@@ -329,24 +196,12 @@ export class CognitionRouter {
         } catch (err: any) {
           const message = err?.message || String(err);
           if (isModelNotFoundError(message)) {
-            // The model name itself is invalid/removed from the provider's
-            // live catalog — this says nothing about the KEY's health.
-            // Cooling the key down here (the old behavior) needlessly
-            // cascades a bad model name into skipping every other model
-            // still left in `models`, even ones that would have worked —
-            // live-verified failure mode from the 2026-08-18 dead-Groq-
-            // model incident ("No available groq key (pool cooling down/
-            // exhausted); skipping model ...", on the very NEXT model,
-            // purely because this one 404'd on the only configured key).
-            // Retrying other keys for a dead model is equally pointless —
-            // it 404s on every key — so this breaks the key loop straight
-            // to the next model in `models` instead of the next key.
             observation.logTelemetry(
               "warn",
               "Cognition",
               `Cloud model "${model}" does not exist on ${provider}'s live catalog (model_not_found) — moving to the next model without penalizing this key: ${message}`
             );
-            break; // next model in `models`, this key stays fully available
+            break;
           }
           const retryAfterSeconds = parseRetryAfterSeconds(err);
           await this.deps.keyPool.reportFailure(provider, key, retryAfterSeconds);
@@ -355,13 +210,9 @@ export class CognitionRouter {
             "Cognition",
             `Cloud model "${model}" failed on one ${provider} key (retrying the next available key for this provider, if any): ${message}`
           );
-          continue; // next key for the same provider/model
+          continue;
         }
 
-        // Transport succeeded — `response` is already the value this call
-        // is going to return. recordUsage from here on is a best-effort
-        // side effect: nothing past this point may cause a real
-        // successful result to be lost or replaced with a retry/failure.
         try {
           await this.deps.recordUsage(username, estimateTokens(response, params));
         } catch (usageErr: any) {
@@ -371,27 +222,12 @@ export class CognitionRouter {
             `recordUsage failed after an already-successful cloud call for "${username}" (response is still returned, only tagged below): ${usageErr?.message || usageErr}`
           );
         }
-        // __provenance tags which tier actually produced this response —
-        // Verified Autonomy's first fix (2026-08-18): callers like
-        // server.ts's succeededStep previously assumed "this call didn't
-        // throw" meant "the models I passed in answered," even though this
-        // same method silently falls through to the local/offline tiers
-        // below on cloud exhaustion. A caller passing only groq: models and
-        // getting a local-tier response back would mislabel its own
-        // decision trace ("Answered via Groq") while a different backend
-        // actually answered — a real, live-caught self-narration
-        // fabrication, not a hypothetical one. Attached by mutation (not a
-        // new object) so callers/tests holding the original reference still
-        // see it — same object, more honestly labeled.
         response.__provenance = { tier: "cloud", provider, model: realModel };
         return response;
       }
     }
 
-    // Tier 3: local LLM endpoint. This is the normal offline fallback and
-    // must remain capable of receiving tools; otherwise "offline" merely
-    // means "chat without agency". Operators can explicitly disable native
-    // local tool calling for models whose chat template cannot handle it.
+    // Tier 3: local LLM endpoint fallback on cloud exhaustion
     const local = this.deps.getLocalConfig?.() ?? {
       endpoint: this.deps.localLlmEndpoint,
       modelName: this.deps.localModelName,
@@ -403,12 +239,8 @@ export class CognitionRouter {
       `Cloud tier exhausted for "${username}"; falling through to local LLM (${local.modelName} @ ${local.endpoint}).`
     );
     const localParams = { ...(params ?? {}) };
-    if (this.deps.localToolCalling !== false && localParams.tools) {
-      localParams.tool_choice ??= "auto";
-    } else {
-      delete localParams.tools;
-      delete localParams.tool_choice;
-    }
+    delete localParams.tools;
+    delete localParams.tool_choice;
 
     try {
       const normalizedUrl = normalizeLocalLlmUrl(local.endpoint);
@@ -418,7 +250,6 @@ export class CognitionRouter {
         baseUrl: stripKnownLocalSuffix(normalizedUrl),
       };
       const response = await this.transport(localConfig, localParams, [local.modelName]);
-      // See the cloud-tier return above for why this tag exists.
       response.__provenance = { tier: "local", model: local.modelName };
       return response;
     } catch (err: any) {
@@ -429,9 +260,6 @@ export class CognitionRouter {
       );
     }
 
-    // The deterministic keyword engine is development-only. Production must
-    // surface an honest cognition failure instead of returning canned text
-    // that can be mistaken for a language-model answer.
     if (this.deps.allowKeywordFallback === false) {
       return {
         choices: [{ message: { content: "", role: "assistant" } }],

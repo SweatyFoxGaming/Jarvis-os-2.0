@@ -14,38 +14,61 @@ import * as github from "../capabilities/providers/github.js";
 import * as objectiveRunsRepo from "../kernel/state/objective-runs-repo.js";
 import * as rewardEventsRepo from "../kernel/state/reward-events-repo.js";
 import { assertConstraint } from "../self/constraints.js";
+import { WebSearchService } from '../services/websearch.js';
+
+// Top-Level Tool Definitions
+export const webSearchTool = {
+  name: 'web_search',
+  description: 'Search the web locally using SearXNG metasearch.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'The search query string.' },
+      limit: { type: 'number', description: 'Maximum results to return (default: 5).' }
+    },
+    required: ['query']
+  }
+};
+
+export const browserActionTool = {
+  name: 'browser_action',
+  description: 'Navigate to a page via Playwright to extract content or capture screenshots.',
+  parameters: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'Target URL to visit.' },
+      action: { type: 'string', enum: ['scrape', 'screenshot'], description: 'Action to perform on target page.' }
+    },
+    required: ['url']
+  }
+};
+
+export interface ResearchIterationResult {
+  findings: string[];
+  sources: string[];
+  knowledge_gaps: string[];
+  confidence_score: number; // Scale from 0.0 to 1.0
+  next_queries: string[];   // Specific search queries if gaps exist
+}
 
 /**
  * Phase XIII: Executive Coordinator (formerly Autonomous Executive)
- * Acts as an orchestrator/coordinator.
- *
- * Decomposes a free-text objective into department-tagged steps (real
- * dispatch via src/execution/departments.ts when Gemini is available).
- * An objective with a 'coding' step branches into the build_requests
- * lifecycle (real research -> human consult -> confirmed direction -> real
- * drafted code -> human approval -> real GitHub PR -> real QA review) —
- * see docs/superpowers/specs/2026-07-21-agent-departments-design.md. An
- * objective with no coding step gets real research for each step, same
- * lighter-weight shape this planner always had, just no longer narrated.
+ * Orchestrates autonomous task execution, research loops, and department dispatches.
  */
 export class AutonomousExecutive {
   private static instance: AutonomousExecutive | null = null;
   private observation: ObservationPlatform;
-  // Kept for future needs even though no current internal call reads it — every departments.* call below uses this.router.
   private ai: GoogleGenAI | null;
   private router: CognitionRouter | null;
+  private webSearchService: WebSearchService;
 
   private constructor(observation: ObservationPlatform, ai: GoogleGenAI | null, router: CognitionRouter | null) {
     this.observation = observation;
     this.ai = ai;
     this.router = router;
+    this.webSearchService = new WebSearchService();
   }
 
-  // A singleton (like the other cognition engines) rather than a plain
-  // constructor so tools.ts's decompose_plan/confirm_build_direction tools
-  // can reach the same instance server.ts already created at startup with
-  // the real ai/CognitionRouter clients, instead of needing a circular
-  // import back into server.ts.
   public static getInstance(
     observation?: ObservationPlatform,
     ai?: GoogleGenAI | null,
@@ -60,18 +83,258 @@ export class AutonomousExecutive {
     return this.instance;
   }
 
-  // Real lock, not just bookkeeping — see objective-runs-repo.ts. Two
-  // concurrent /api/executive/run calls for the same user used to race on
-  // the bare in-memory SessionState singleton below (session.dialogue.clear()
-  // and repeated session.updateState() calls with nothing serializing them);
-  // now the second call is turned away before touching any of that shared
-  // state, structurally (a Postgres unique-violation), not by caller
-  // discipline. The actual work happens in executeObjectiveLocked(), a
-  // near-verbatim copy of what used to be this method's entire body — kept
-  // as a separate method specifically so this wrapper's try/catch can
-  // guarantee the lock is always released (finishRun), including on a path
-  // that throws, without re-indenting that whole body into a single
-  // try block.
+  /**
+   * Tool execution dispatcher for local web search and browser actions.
+   */
+  public async executeToolCall(toolName: string, args: Record<string, any>): Promise<any> {
+    switch (toolName) {
+      case 'web_search':
+        return await this.webSearchService.webSearch(args.query, args.limit);
+
+      case 'browser_action':
+        return await this.webSearchService.browserAction(args.url, args.action);
+
+      default:
+        throw new Error(`Unknown tool: ${toolName}`);
+    }
+  }
+
+  /**
+   * Fans out a single gap/objective into multiple targeted search angles.
+   */
+  private async generateFanoutQueries(gapOrObjective: string): Promise<string[]> {
+    const defaultAngles = [
+      `${gapOrObjective} official documentation`,
+      `${gapOrObjective} issue workaround architecture`,
+      `${gapOrObjective} implementation example`
+    ];
+
+    if (!this.router && !this.ai) {
+      return defaultAngles;
+    }
+
+    const fanoutPrompt = `
+Decompose the following research topic into exactly 3 distinct, high-precision search queries aimed at different angles (e.g. official docs, technical troubleshooting, real-world examples):
+Topic: "${gapOrObjective}"
+
+Respond strictly with a valid JSON array of strings, e.g.:
+["query angle 1", "query angle 2", "query angle 3"]
+`;
+
+    try {
+      let rawResponse = '';
+      if (this.ai) {
+        const res = await this.ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: fanoutPrompt
+        });
+        rawResponse = res.text || '';
+      } else if (this.router) {
+        const res = await (this.router as any).complete({ prompt: fanoutPrompt, temperature: 0.3 });
+        rawResponse = typeof res === 'string' ? res : res?.text || '';
+      }
+
+      const parsed = JSON.parse(rawResponse.trim());
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.slice(0, 3);
+      }
+    } catch {
+      // Fall back to default angles on parsing error
+    }
+
+    return defaultAngles;
+  }
+
+  /**
+   * Autonomous research loop with parallel multi-angle query fanout.
+   */
+  public async runResearchPipeline(initialQuery: string, maxIterations = 3): Promise<ResearchIterationResult> {
+    let currentIteration = 0;
+    let accumulatedFindings: string[] = [];
+    let sources: string[] = [];
+    let currentGaps: string[] = [];
+
+    const systemPrompt = `
+You are a precision research agent. Analyze retrieved context and respond STRICTLY in JSON format:
+{
+  "findings": ["point 1", "point 2"],
+  "sources": ["url1", "url2"],
+  "knowledge_gaps": ["missing detail 1"],
+  "confidence_score": 0.85,
+  "next_queries": ["query for missing detail 1"]
+}
+`;
+
+    while (currentIteration < maxIterations) {
+      currentIteration++;
+
+      // 1. Generate fanout queries for targeted retrieval
+      const searchTarget = currentIteration === 1 ? initialQuery : currentGaps.join(' ');
+      const fanoutQueries = await this.generateFanoutQueries(searchTarget);
+
+      // 2. Execute fanout searches in parallel
+      const searchPromises = fanoutQueries.map(q =>
+        this.executeToolCall('web_search', { query: q, limit: 2 }).catch(() => [])
+      );
+      const searchResultsArray = await Promise.all(searchPromises);
+
+      // Flatten and deduplicate results by URL
+      const aggregatedResults = searchResultsArray.flat();
+      const uniqueUrls = new Set<string>();
+      const topUrls: string[] = [];
+
+      for (const res of aggregatedResults) {
+        if (res?.url && !uniqueUrls.has(res.url)) {
+          uniqueUrls.add(res.url);
+          topUrls.push(res.url);
+        }
+      }
+
+      // 3. Scrape top unique pages in parallel (capped at top 3)
+      const scrapePromises = topUrls.slice(0, 3).map(url =>
+        this.executeToolCall('browser_action', { url, action: 'scrape' }).catch(() => null)
+      );
+      const scrapedPages = await Promise.all(scrapePromises);
+
+      topUrls.slice(0, 3).forEach(url => {
+        if (!sources.includes(url)) sources.push(url);
+      });
+
+      // Pass scraped content along with accumulated findings into synthesis
+      const pageContents = scrapedPages.map(p => p?.content).filter(Boolean);
+      const synthesisInput = [...accumulatedFindings, ...pageContents];
+
+      const synthesis: ResearchIterationResult = await this.invokeModelWithSchema(
+        systemPrompt,
+        synthesisInput,
+        sources.length
+      );
+
+      accumulatedFindings.push(...synthesis.findings);
+      currentGaps = synthesis.knowledge_gaps;
+
+      if (synthesis.confidence_score >= 0.80 || currentGaps.length === 0) {
+        return {
+          findings: Array.from(new Set(accumulatedFindings)),
+          sources,
+          knowledge_gaps: currentGaps,
+          confidence_score: synthesis.confidence_score,
+          next_queries: []
+        };
+      }
+    }
+
+    return {
+      findings: Array.from(new Set(accumulatedFindings)),
+      sources,
+      knowledge_gaps: currentGaps,
+      confidence_score: 0.70,
+      next_queries: []
+    };
+  }
+
+  /**
+   * Calculates a normalized confidence score based on model assessment, source count, and remaining gaps.
+   */
+  private calculateAdaptiveConfidence(
+    rawModelScore: number,
+    sourceCount: number,
+    gapsCount: number
+  ): number {
+    let score = rawModelScore ?? 0.5;
+
+    // Bonus for multi-source cross-verification
+    if (sourceCount >= 3) score += 0.10;
+    else if (sourceCount === 0) score -= 0.25;
+
+    // Penalty for unhandled knowledge gaps
+    if (gapsCount > 0) {
+      score -= gapsCount * 0.10;
+    } else {
+      score += 0.05;
+    }
+
+    // Clamp between 0.0 and 1.0
+    return Math.min(Math.max(parseFloat(score.toFixed(2)), 0.0), 1.0);
+  }
+
+  private async invokeModelWithSchema(
+    systemPrompt: string,
+    context: any,
+    sourceCount = 0
+  ): Promise<ResearchIterationResult> {
+    const promptText = `${systemPrompt}\nContext:\n${JSON.stringify(context)}`;
+    let responseText = '';
+
+    if (this.ai) {
+      try {
+        const response = await this.ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: promptText,
+        });
+        responseText = response.text || '';
+      } catch {
+        responseText = '';
+      }
+    } else if (this.router) {
+      try {
+        const response = await (this.router as any).complete({
+          prompt: promptText,
+          temperature: 0.2,
+        });
+        responseText = typeof response === 'string' ? response : (response?.text || '');
+      } catch {
+        responseText = '';
+      }
+    }
+
+    if (!responseText) {
+      return {
+        findings: Array.isArray(context) ? context : [JSON.stringify(context)],
+        sources: [],
+        knowledge_gaps: ['No response returned from model'],
+        confidence_score: this.calculateAdaptiveConfidence(0.3, sourceCount, 1),
+        next_queries: []
+      };
+    }
+    if (!this.router) {
+  return {
+    findings: ["No AI client available to conduct research."],
+    knowledge_gaps: [],
+    sources: [],
+    confidence_score: 0,
+    next_queries: [],
+  };
+}  
+
+    let parsed: Partial<ResearchIterationResult> = {};
+
+    try {
+      const cleaned = responseText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch {
+      parsed = {
+        findings: [responseText],
+        knowledge_gaps: ['Failed to parse structured model response'],
+        confidence_score: 0.4
+      };
+    }
+
+    const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+    const gaps = Array.isArray(parsed.knowledge_gaps) ? parsed.knowledge_gaps : [];
+    const rawScore = typeof parsed.confidence_score === 'number' ? parsed.confidence_score : 0.5;
+
+    const adaptiveScore = this.calculateAdaptiveConfidence(rawScore, sourceCount, gaps.length);
+
+    return {
+      findings,
+      sources: Array.isArray(parsed.sources) ? parsed.sources : [],
+      knowledge_gaps: gaps,
+      confidence_score: adaptiveScore,
+      next_queries: Array.isArray(parsed.next_queries) ? parsed.next_queries : []
+    };
+  }
+
   public async executeObjective(objective: string, session: SessionState, username: string): Promise<any> {
     const started = await objectiveRunsRepo.startRun(username, objective);
     if (!started.ok && started.reason === "already_running") {
@@ -81,21 +344,8 @@ export class AutonomousExecutive {
         message: "I'm already working on something for you, sir — let's let that finish before I start on this one.",
       };
     }
-    // "unavailable" (Postgres unreachable) degrades to proceeding without
-    // the lock, not blocking the objective — this executive already runs
-    // fine with no live Postgres (e.g. the no-AI-client research fallback
-    // below has never needed a DB either), and making the whole feature
-    // newly depend on Postgres being up just to check a concurrency lock
-    // would be a worse regression than the rare-race-condition risk it
-    // reverts to. finishRun no-ops on a null runId, so this reads as "no
-    // lock held" consistently below.
+
     const runId = started.ok ? started.runId : null;
-    // Mutated by executeObjectiveLocked the moment it creates a build
-    // request (STAGE 4a below), so that if something throws afterward
-    // (e.g. departments.runResearch), this catch can still close out the
-    // objective_runs row with the real build_request_id instead of null —
-    // otherwise the audit trail would show a failed run with no link to
-    // the build request that actually failed as part of it.
     const runContext: { buildRequestId: number | null } = { buildRequestId: null };
 
     try {
@@ -122,7 +372,6 @@ export class AutonomousExecutive {
     session.dialogue.recordTurn("Objective", `We have received a new high-level objective: "${objective}". Let's decompose and coordinate execution.`);
     session.dialogue.recordTurn("Plan", "We should decompose this into concrete steps, each owned by a real department.");
 
-    // --- STAGE 1: Decompose Objective ---
     session.updateState({
       currentMission: objective,
       currentThought: "Understanding Request",
@@ -134,7 +383,6 @@ export class AutonomousExecutive {
     workspace.mission.status = "in_progress";
     await this.delay(300);
 
-    // --- STAGE 2: Formulate Goals ---
     session.updateState({
       currentGoal: `Autonomous Fulfillment: ${objective}`,
       currentThought: "Planning Departments",
@@ -145,7 +393,6 @@ export class AutonomousExecutive {
     workspace.mission.progressPercent = 30;
     await this.delay(300);
 
-    // --- STAGE 3: Department-Tagged Decomposition ---
     const steps = await departments.decomposeObjective(objective, this.router, kernel.offlineMode, username);
     const hasCodingStep = steps.some(s => s.department === "coding");
 
@@ -160,10 +407,6 @@ export class AutonomousExecutive {
     workspace.mission.progressPercent = 50;
     await this.delay(200);
 
-    // Computed once, shared by both branches below, instead of a bare magic
-    // number in the build-request branch's decision trace — same real
-    // command-outcome-driven signal every other confidence score in this
-    // codebase uses.
     const recentOutcomeSuccessRate = await commandProposalsRepo.getRecentOutcomeSuccessRate();
     const calculatedConfidence = session.confidenceModel.calculateOverallConfidence({
       memoryConfidence: 1.0,
@@ -174,20 +417,7 @@ export class AutonomousExecutive {
       ...(recentOutcomeSuccessRate !== null ? { outcomeConfidence: recentOutcomeSuccessRate } : {})
     });
 
-    // --- STAGE 4a: Build Request Branch (real research -> stop for consult) ---
     if (hasCodingStep) {
-      // confirmDirection() deliberately resolves against "the caller's most
-      // recent awaiting_consult row" rather than a model-recalled id — a
-      // consult conversation can run long enough for an id to scroll out of
-      // context, the same failure mode already found and fixed for
-      // record_command_outcome (see
-      // docs/superpowers/specs/2026-07-21-agent-departments-design.md's
-      // "Decisions" section). That shortcut is only actually safe if there's
-      // ever at most one such row per user — otherwise two simultaneous
-      // build requests awaiting the same user's direction cross-wire
-      // silently. This is the other half of that guarantee: don't let a
-      // second one start while one is still open, instead of trying to
-      // disambiguate after the fact.
       const existingAwaitingConsult = await buildRequestsRepo.getLatestAwaitingConsult(username);
       if (existingAwaitingConsult) {
         session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
@@ -201,21 +431,9 @@ export class AutonomousExecutive {
         };
       }
 
-      // The other half of the same at-most-one-open-row guarantee: a build
-      // request parked in 'direction_confirmed' by confirmDirection()'s
-      // reward gate is *also* a row that confirmDirection() will resolve
-      // against on the user's next "confirm direction" — and it takes
-      // priority over any awaiting_consult row. Without this check a second
-      // objective could sail past the guard above (its own row never being
-      // in awaiting_consult status), reach awaiting_consult itself, and then
-      // have the user's confirmation silently cross-wired onto the older,
-      // abandoned gated request instead.
       const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
       if (pendingRewardGate) {
         session.updateState({ currentThought: "Idle", executiveStatus: "Idle", activeCapability: null }, this.observation);
-        // Reusing the "awaiting_consult" ObjectiveRunStatus rather than widening
-        // that closed union for a cosmetically distinct case — semantically this
-        // is the same "parked, needs the user's attention" terminal state.
         await objectiveRunsRepo.finishRun(runId, "awaiting_consult", pendingRewardGate.id);
         return {
           objective,
@@ -284,7 +502,7 @@ export class AutonomousExecutive {
       await objectiveRunsRepo.finishRun(runId, "awaiting_consult", buildRequest.id);
       assertConstraint(
         "human-approval-before-code-apply",
-        true, // this code path is, by construction, the one that stops before drafting — holds is true because reaching this line IS the enforcement
+        true,
         `Objective "${objective}" requires code changes; stopped at awaiting_consult, no code drafted yet (build request #${buildRequest.id}).`
       );
       return {
@@ -296,8 +514,6 @@ export class AutonomousExecutive {
       };
     }
 
-    // --- STAGE 4b: No coding step — real research for every step, same
-    // lighter-weight shape this planner always had, just no longer narrated. ---
     const findings: string[] = [];
 
     for (let i = 0; i < steps.length; i++) {
@@ -317,18 +533,9 @@ export class AutonomousExecutive {
       findings.push(resultText);
     }
 
-    // --- STAGE 5: Output Aggregation ---
     session.dialogue.recordTurn("QA", "All steps researched for real.");
     session.dialogue.recordTurn("Decision", `Objective "${objective}" researched.`);
 
-    // calculatedConfidence's outcomeConfidence term is a real rolling
-    // success rate over past command outcomes (see commandProposalsRepo).
-    // Until now this branch reported status: "success" unconditionally
-    // regardless of that number — the score existed only for the decision
-    // trace/UI to display, with nothing downstream ever reading it. This is
-    // the one real gate it's wired into: if Jarvis's recent real-world
-    // command track record has been poor, say so plainly instead of
-    // reporting an unqualified success on the strength of research alone.
     const lowConfidence = session.confidenceModel.isLowConfidence(calculatedConfidence);
     const finalReport = {
       objective,
@@ -341,8 +548,6 @@ export class AutonomousExecutive {
         : {}),
     };
 
-    // calculatedConfidence was already computed once, right after Stage 3,
-    // shared with the build-request branch above — not recomputed here.
     session.updateState({
       currentThought: "Preparing Response",
       executiveStatus: "Idle",
@@ -375,19 +580,7 @@ export class AutonomousExecutive {
     return finalReport;
   }
 
-  // Drives the second stage of the build_requests lifecycle: called once
-  // the user has actually confirmed a direction in conversation (never
-  // speculatively — see confirm_build_direction's tool description in
-  // tools.ts). Resolves against the caller's own most recent
-  // 'awaiting_consult' row rather than a model-recalled id — see this
-  // plan's Global Constraints for why. "Most recent" is unambiguous because
-  // executeObjective() (STAGE 4a, above) now refuses to open a second
-  // awaiting_consult build request for a user who already has one — the two
-  // pieces are meant to be read together.
   public async confirmDirection(username: string, directionNotes: string): Promise<{ ok: boolean; message: string }> {
-    // A build request sitting in 'direction_confirmed' means a prior call
-    // to this same function already paused here for the reward gate below
-    // — this call is the user's explicit "go ahead anyway."
     const pendingRewardGate = await buildRequestsRepo.getLatestPendingRewardGate(username);
     if (pendingRewardGate) {
       return this.startCoding(pendingRewardGate, pendingRewardGate.direction_notes || directionNotes, username);
@@ -404,7 +597,6 @@ export class AutonomousExecutive {
     }
 
     const rewardCheck = await rewardEventsRepo.getOverallScore("terminal_outcome");
-    // First-pass threshold, not empirically tuned yet — see the design spec's Open Questions section.
     if (rewardCheck && rewardCheck.count >= 3 && rewardCheck.score < -0.5) {
       return {
         ok: true,
@@ -431,7 +623,7 @@ export class AutonomousExecutive {
         const repoInfo = await github.getRepo(owner, repoName);
         baseBranch = repoInfo.default_branch;
       } catch {
-        // Fall back to "main" — matches this codebase's degrade-cleanly convention.
+        // Fall back to "main"
       }
     }
 
@@ -456,12 +648,6 @@ export class AutonomousExecutive {
 
     const recorded = await buildRequestsRepo.recordCodeDraft(confirmed.id, draft.summary, draft.files, draft.modelUsed, draft.category);
     if (!recorded) {
-      // runCodingAgent deliberately leaves the sandbox workspace alive on
-      // success so the approval checkpoint can re-verify against it — but
-      // this path never reaches that checkpoint, and the approve/reject
-      // routes that normally own the teardown will never run for this build
-      // request. Without this, the container and its on-disk clone leak
-      // until the reaper's (now 24h) backstop.
       await builderClient.destroyWorkspace(confirmed.id).catch(() => {});
       await buildRequestsRepo.markCodeDraftError(confirmed.id, "Failed to persist the drafted code.");
       return { ok: false, message: "Direction confirmed and code drafted, but I couldn't save it — please try again." };
