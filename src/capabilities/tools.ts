@@ -29,8 +29,12 @@ import * as rapport from "../self/rapport.js";
 import crypto from "node:crypto";
 import * as browserResearch from "./providers/web-browser.js";
 import * as obsidian from "./providers/obsidian.js";
+import * as deepResearch from "../executive/deep-research.js";
+import * as researchJobsRepo from "../kernel/state/research-jobs-repo.js";
 
 const observation = ObservationPlatform.getInstance();
+
+const MIN_DEEP_RESEARCH_HOURS = 0.25; // scheduler runs at 12 minutes by default; keep one real round possible
 
 export interface ToolCallResult {
   name: string;
@@ -73,6 +77,9 @@ const PERMISSION_BY_TOOL: Record<string, string> = {
   get_vault_note: "vault.read",
   get_vault_backlinks: "vault.read",
   write_vault_note: "vault.write",
+  start_deep_research: "research.manage",
+  check_research_progress: "research.manage",
+  stop_research_job: "research.manage",
   run_sandbox_command: "system.sandbox_execute",
   reset_sandbox: "system.sandbox_execute",
   research_web: "research.execute",
@@ -277,6 +284,53 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
         content: { type: Type.STRING, description: "The full note content (Markdown, may include [[wikilinks]] and #tags)" },
       },
       required: ["path", "content"],
+    },
+  },
+  {
+    name: "estimate_research_time",
+    description:
+      "Give an honest, reasoned estimate for real research time on a topic. This is informational only and makes no commitment. Use it before discussing or starting a multi-hour research job.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        topic: { type: Type.STRING, description: "The research topic to estimate" },
+      },
+      required: ["topic"],
+    },
+  },
+  {
+    name: "start_deep_research",
+    description:
+      "Begin a real, paced, multi-round research job ONLY after the user has explicitly approved a duration. Findings accumulate over real wall-clock time in the vault; this does not return an instant finished result.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        topic: { type: Type.STRING, description: "The research topic" },
+        targetDurationHours: { type: Type.NUMBER, description: "The duration in hours the user explicitly approved" },
+      },
+      required: ["topic", "targetDurationHours"],
+    },
+  },
+  {
+    name: "check_research_progress",
+    description: "Check a deep-research job's current status, elapsed progress, and completed round count.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        jobId: { type: Type.NUMBER, description: "The deep research job id" },
+      },
+      required: ["jobId"],
+    },
+  },
+  {
+    name: "stop_research_job",
+    description: "Stop a running deep-research job early while keeping all findings already written to the vault.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        jobId: { type: Type.NUMBER, description: "The deep research job id" },
+      },
+      required: ["jobId"],
     },
   },
   {
@@ -560,7 +614,7 @@ async function executeToolInner(
   localEndpoint: string | null = null,
   screenContext: { alreadyAttached: boolean; supportsRoundTrip: boolean } = { alreadyAttached: false, supportsRoundTrip: false }
 ): Promise<ToolCallResult> {
-  const UNGATED_TOOLS = new Set(["display_content", "list_constraints", "get_rapport_summary"]);
+  const UNGATED_TOOLS = new Set(["display_content", "list_constraints", "get_rapport_summary", "estimate_research_time"]);
   const requiredGrant = PERMISSION_BY_TOOL[name];
 
   const mcpTool = !requiredGrant && !UNGATED_TOOLS.has(name)
@@ -684,6 +738,88 @@ async function executeToolInner(
       case "write_vault_note":
         output = await obsidian.createNote(args.path, args.content);
         break;
+      case "estimate_research_time": {
+        output = await deepResearch.estimateResearchTime(String(args.topic || ""), briefing.getConfiguredGroq(), username);
+        break;
+      }
+      case "start_deep_research": {
+        const topic = String(args.topic || "").trim();
+        const targetDurationHours = Number(args.targetDurationHours);
+        if (!topic) return { name, ok: false, error: "A research topic is required." };
+        if (!Number.isFinite(targetDurationHours) || targetDurationHours < MIN_DEEP_RESEARCH_HOURS) {
+          return { name, ok: false, error: `targetDurationHours must be at least ${MIN_DEEP_RESEARCH_HOURS} hours (15 minutes).` };
+        }
+        if (!process.env.OBSIDIAN_VAULT_DIR) {
+          return { name, ok: false, error: "Deep research requires OBSIDIAN_VAULT_DIR to be configured so findings can be preserved." };
+        }
+        const existing = await researchJobsRepo.listRunningResearchJobs();
+        const topicAlreadyRunning = existing.some(job => job.requested_by === username && job.topic.toLowerCase() === topic.toLowerCase());
+        if (topicAlreadyRunning) {
+          return { name, ok: false, error: `A deep-research job for "${topic}" is already running.` };
+        }
+        // The job row needs its final vault path at insert time, while the
+        // numeric job id does not exist until after the insert. A timestamped
+        // suffix gives every run a stable, collision-resistant path without a
+        // second mutable repo operation.
+        const notePath = `Research/${obsidian.slugify(topic)}-${Date.now()}`;
+        const job = await researchJobsRepo.createResearchJob(topic, targetDurationHours, notePath, username);
+        try {
+          await obsidian.createNote(
+            job.vault_note_path,
+            `# ${topic}\n\nDeep research job started — committed to ~${targetDurationHours} hour(s). Real findings will be added below one round at a time.\n`,
+            {
+              type: "deep-research",
+              research_job_id: job.id,
+              target_duration_hours: targetDurationHours,
+              created: new Date().toISOString(),
+              Category: "[[Research MOC]]",
+              Date: `[[${new Date().toISOString().slice(0, 10)}]]`,
+            }
+          );
+          await obsidian.linkResearchNote(job.vault_note_path);
+        } catch (err: any) {
+          await researchJobsRepo.markError(job.id);
+          return { name, ok: false, error: `Deep research could not create its vault note: ${err?.message || err}` };
+        }
+        output = {
+          jobId: job.id,
+          topic,
+          targetDurationHours,
+          notePath: job.vault_note_path,
+          message: `Started. Real findings will accumulate in ${job.vault_note_path} as each research round completes.`,
+        };
+        break;
+      }
+      case "check_research_progress": {
+        const jobId = Number(args.jobId);
+        if (!Number.isInteger(jobId) || jobId <= 0) return { name, ok: false, error: "jobId must be a positive integer." };
+        const job = await researchJobsRepo.getResearchJob(jobId);
+        if (!job || job.requested_by !== username) return { name, ok: false, error: `No research job found with id ${jobId}.` };
+        const elapsedHours = Math.max(0, (Date.now() - new Date(job.started_at).getTime()) / 3_600_000);
+        output = {
+          jobId: job.id,
+          topic: job.topic,
+          status: job.status,
+          roundsCompleted: job.rounds_completed,
+          targetDurationHours: job.target_duration_hours,
+          elapsedHours: Number(elapsedHours.toFixed(2)),
+          notePath: job.vault_note_path,
+          startedAt: job.started_at,
+          lastRoundAt: job.last_round_at,
+          completedAt: job.completed_at,
+        };
+        break;
+      }
+      case "stop_research_job": {
+        const jobId = Number(args.jobId);
+        if (!Number.isInteger(jobId) || jobId <= 0) return { name, ok: false, error: "jobId must be a positive integer." };
+        const jobBeforeStop = await researchJobsRepo.getResearchJob(jobId);
+        if (!jobBeforeStop || jobBeforeStop.requested_by !== username) return { name, ok: false, error: `No research job found with id ${jobId}.` };
+        const stopped = await researchJobsRepo.markStopped(jobId);
+        if (!stopped) return { name, ok: false, error: `Research job ${jobId} is not running.` };
+        output = { stopped: true, jobId: stopped.id, roundsCompleted: stopped.rounds_completed, notePath: stopped.vault_note_path };
+        break;
+      }
       case "query_knowledge_graph":
         output = { results: await knowledgeGraph.queryKnowledge(username, args.query) };
         break;
@@ -1133,6 +1269,12 @@ function summarizeAction(name: string): string {
       return "wrote a file";
     case "write_vault_note":
       return "wrote a vault note";
+    case "start_deep_research":
+      return "started deep research";
+    case "check_research_progress":
+      return "checked deep research progress";
+    case "stop_research_job":
+      return "stopped deep research";
     case "set_objective":
       return "set an objective";
     case "update_objective_status":
@@ -1186,6 +1328,7 @@ const TOOL_TRIGGER_WORDS: Record<string, string[]> = {
   get_vault_note: ["read my note", "open my note", "what does my note say"],
   get_vault_backlinks: ["what links to", "backlinks for", "what references"],
   write_vault_note: ["add this to my vault", "save this to my vault", "create a vault note"],
+  estimate_research_time: ["how long would it take to research", "how long will it take to research", "how long to research", "estimate research time"],
   list_constraints: ["what are your limits", "what won't you do", "what will you not do", "what are your safety constraints", "what are your hard limits"],
   get_rapport_summary: ["how have i been coming across", "how have i seemed", "noticed anything about my mood", "how do i seem lately", "what have you noticed about me"],
 };

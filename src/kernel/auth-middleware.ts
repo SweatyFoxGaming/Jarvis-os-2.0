@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { ObservationPlatform } from "./observation.js";
+import { pingDatabase } from "./state/db.js";
 import * as usersRepo from "./state/users-repo.js";
 import { type Request, type Response, type NextFunction } from 'express';
 

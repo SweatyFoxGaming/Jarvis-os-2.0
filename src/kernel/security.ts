@@ -82,6 +82,7 @@ export const ALL_CAPABILITIES = [
   "outcome.record",
   "vault.read",
   "vault.write",
+  "research.manage",
   "settings.write",
   "evolution.read",
   "evolution.manage",

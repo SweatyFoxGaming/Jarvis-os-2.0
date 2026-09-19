@@ -12,6 +12,8 @@ import * as mcpServersRepo from "./state/mcp-servers-repo.js";
 import * as mcpRegistry from "../capabilities/mcp-registry.js";
 import * as obsidian from "../capabilities/providers/obsidian.js";
 import * as vaultRepo from "./state/vault-repo.js";
+import * as researchJobsRepo from "./state/research-jobs-repo.js";
+import * as deepResearch from "../executive/deep-research.js";
 import * as sessionRepo from "./state/session-repo.js";
 import * as transcriptEventsRepo from "./state/transcript-events-repo.js";
 import * as evolutionRepo from "./state/evolution-repo.js";
@@ -502,6 +504,54 @@ export function startVaultSyncJob(intervalMs = 15 * 60 * 1000): NodeJS.Timeout |
         await vaultRepo.deleteNote(row.path);
       } catch (err: any) {
         observation.logTelemetry("warn", "VaultSync", `Failed to prune deleted note "${row.path}": ${err.message}`);
+      }
+    }
+  });
+}
+
+/**
+ * Advances each persistent deep-research job by exactly one round per tick.
+ * A job does NOT run all remaining rounds immediately: the wall-clock
+ * duration the user approved is real, and every tick contributes at most one
+ * fresh research round. Once the committed duration has elapsed, the next
+ * tick performs one final synthesis and closes the job.
+ */
+export function startDeepResearchJob(
+  router: CognitionRouter | null,
+  intervalMs = 12 * 60 * 1000,
+): NodeJS.Timeout {
+  return registerJob("deep-research", intervalMs, async () => {
+    const jobs = await researchJobsRepo.listRunningResearchJobs();
+    const now = Date.now();
+
+    for (const job of jobs) {
+      const elapsedHours = Math.max(0, (now - new Date(job.started_at).getTime()) / 3_600_000);
+      const isFinalRound = elapsedHours >= Number(job.target_duration_hours);
+
+      try {
+        await deepResearch.runDeepResearchRound(job, router, isFinalRound);
+        if (isFinalRound) {
+          await researchJobsRepo.markCompleted(job.id);
+          pushNotification(
+            job.requested_by,
+            `Deep research on "${job.topic}" is complete. The final synthesis is in ${job.vault_note_path}.`,
+            "success"
+          );
+        }
+      } catch (err: any) {
+        // A transient model/web/vault failure should not turn a multi-hour
+        // commitment into a terminal job. Leave it active so the next tick
+        // can retry; explicit stop_research_job is the terminal cancellation.
+        observation.logTelemetry(
+          "warn",
+          "DeepResearch",
+          `Research job #${job.id} skipped this tick: ${err?.message || err}`
+        );
+        pushNotification(
+          job.requested_by,
+          `I couldn't complete the next research round for "${job.topic}" this cycle. The job remains active and will retry on the next research cycle.`,
+          "warning"
+        );
       }
     }
   });

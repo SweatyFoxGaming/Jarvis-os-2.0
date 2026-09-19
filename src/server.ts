@@ -1665,6 +1665,7 @@ initDatabase().then(async (ready) => {
   scheduler.startMcpHealthCheckJob();
   scheduler.startSelfHealthCheckJob();
   scheduler.startVaultSyncJob();
+  scheduler.startDeepResearchJob(cognitionRouter);
   scheduler.startDataRetentionJob();
 });
 

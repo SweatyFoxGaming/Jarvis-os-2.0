@@ -631,6 +631,16 @@ function buildRequestNoteBasename(buildRequestId: number, objective: string): st
  * immediately at the point of persistence" pattern for everything else
  * that isn't explicitly a background job.
  */
+/**
+ * Add an idempotent link to a note in the Research MOC. This is intentionally
+ * narrow rather than making every generic vault write auto-link itself: chat
+ * can still create ordinary notes anywhere without surprising side effects.
+ */
+export async function linkResearchNote(notePath: string): Promise<void> {
+  const target = notePath.replace(/\.md$/i, "");
+  await ensureLinkedInMoc("Research", target);
+}
+
 export async function writeResearchNote(
   buildRequestId: number,
   objective: string,
