@@ -164,7 +164,7 @@ export type HealthCheckKey =
   | "postgres"
   | "observation-platform"
   | "voice-daemon"
-  | "local-llm"
+  | "llama-cpp"
   | "companion-staleness";
 
 export interface HealthProblem {
@@ -234,13 +234,13 @@ export async function assessSystemHealth(
       const localLlmOk = await deps.checkHttpReachable(normalizedUrl);
       if (!localLlmOk) {
         problems.push({
-          key: "local-llm",
-          message: `Local LLM (llama-cpp) is unreachable at ${localLlmEndpoint}.`,
+          key: "llama-cpp",
+          message: `llama-cpp is unreachable at ${localLlmEndpoint}.`,
         });
       }
     }
   } catch (err: any) {
-    problems.push({ key: "local-llm", message: `Local LLM health check itself failed: ${err.message}` });
+    problems.push({ key: "llama-cpp", message: `llama-cpp health check itself failed: ${err.message}` });
   }
 
   try {

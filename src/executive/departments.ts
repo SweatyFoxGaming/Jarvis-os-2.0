@@ -234,7 +234,7 @@ export async function runResearch(
 
   if (!router || getModelTargets().length === 0) {
     return {
-      summary: "No AI client available to conduct research.",
+      summary: "No capable model is available right now, so I couldn't do real research on this — I'd need the cognition router reachable to plan and synthesize findings.",
     };
   }
 
@@ -264,7 +264,7 @@ export async function runResearch(
     );
 
     return {
-      summary: "No AI client available to conduct research.",
+      summary: "No capable model is available right now, so I couldn't do real research on this — I'd need the cognition router reachable to plan and synthesize findings.",
     };
   }
 }
@@ -281,7 +281,7 @@ export async function reviewCodeDiff(
   username: string,
 ): Promise<string> {
   if (!router || getModelTargets().length === 0) {
-    return "No AI client available to review code changes.";
+    return "No capable model was available to review this change — please review the diff yourself before merging.";
   }
 
   const modelTargets = getModelTargets();
@@ -322,7 +322,7 @@ export async function reviewCodeDiff(
       `reviewCodeDiff failed: ${err?.message || String(err)}`,
     );
 
-    return "No AI client available to review code changes.";
+    return "No capable model was available to review this change — please review the diff yourself before merging.";
   }
 }
 
@@ -358,7 +358,7 @@ export async function reviewTaskDiff(
   if (!router || getModelTargets().length === 0) {
     return {
       approved: false,
-      findings: "No AI client available to perform task review.",
+      findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure GROQ_API_KEYS or GEMINI_API_KEYS to enable the coding agent's review gate.",
     };
   }
 
@@ -418,7 +418,7 @@ export async function reviewTaskDiff(
 
     return {
       approved: false,
-      findings: "No AI client available to perform task review.",
+      findings: "No capable model was available to review this task — holding rather than shipping it unreviewed. Configure GROQ_API_KEYS or GEMINI_API_KEYS to enable the coding agent's review gate.",
     };
   }
 }

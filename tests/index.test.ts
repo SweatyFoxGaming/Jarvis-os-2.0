@@ -2174,7 +2174,7 @@ function isPortInUse(port: number): Promise<boolean> {
 // Fixed here so admin-key assertions across the HTTP Boundary tests below
 // can rely on its exact value, whichever dedicated port each test spawns
 // its own server on.
-const TEST_ADMIN_API_KEY = process.env.INTERNAL_API_KEY || "test-only-smoke-test-key-not-a-real-secret";
+const TEST_ADMIN_API_KEY = process.env.ADMIN_API_KEY || process.env.INTERNAL_API_KEY || "test-only-smoke-test-key-not-a-real-secret";
 
 // Every HTTP Boundary test below needs the same three things: spawn a real
 // server on its own dedicated port (never reuse :3000 — see the cold-start
@@ -2192,9 +2192,22 @@ async function spawnTestServer(port: number, extraEnv: Record<string, string> = 
   if (await isPortInUse(port)) {
     throw new Error(`HTTP Boundary: port ${port} is already in use by something else — refusing to run this check against an untested process.`);
   }
+  // Keep the spawned server's two legacy admin-key env names aligned.
+  // The production middleware intentionally resolves ADMIN_API_KEY first and
+  // INTERNAL_API_KEY second; inheriting both from the developer shell while
+  // only overriding INTERNAL_API_KEY made these tests authenticate with one
+  // key but the server expect the other, producing misleading 503s before the
+  // route under test could run.
+  const testAdminKey = extraEnv.ADMIN_API_KEY || extraEnv.INTERNAL_API_KEY || TEST_ADMIN_API_KEY;
   const child = spawn(path.join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/server.ts"], {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), ...extraEnv },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      ...extraEnv,
+      ADMIN_API_KEY: testAdminKey,
+      INTERNAL_API_KEY: testAdminKey,
+    },
     stdio: "ignore",
   });
   let spawnError: Error | null = null;
